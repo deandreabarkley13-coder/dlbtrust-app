@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 
 const require = createRequire(import.meta.url);
-const { MftOsEngine, channelReadiness, normalizeEntry, FILE_TYPES } = require('../server/integrations/os/mftOsEngine');
+const { MftOsEngine, channelReadiness, normalizeEntry, parsePacs008, FILE_TYPES } = require('../server/integrations/os/mftOsEngine');
 const { parseNACHAFile, generateNACHAFile } = require('../server/integrations/ach/nachaGenerator');
 const pool = require('../server/integrations/bonds/pgPool');
 
@@ -20,8 +20,8 @@ function store() {
   const files: Row[] = [];
   const events: Row[] = [];
 
-  const FILE_COLUMNS = ['file_id', 'channel_id', 'file_type', 'filename', 'content', 'content_hash', 'size_bytes',
-    'entry_count', 'credit_cents', 'debit_cents', 'effective_date', 'entries', 'built_by', 'transport', 'memo'];
+  const FILE_COLUMNS = ['file_id', 'channel_id', 'file_type', 'format', 'status', 'filename', 'content', 'content_hash', 'size_bytes',
+    'entry_count', 'credit_cents', 'debit_cents', 'effective_date', 'entries', 'built_by', 'approved_by', 'transport', 'memo', 'source_ref'];
 
   const query = vi.fn(async (sql: any, params: any[] = []) => {
     const text = String(sql).replace(/\s+/g, ' ').trim();
@@ -45,15 +45,19 @@ function store() {
     }
 
     if (text.startsWith('INSERT INTO mft_files')) {
-      const row: Row = { format: 'nacha', status: 'built', built_at: new Date().toISOString(), approved_by: null, remote_path: null,
+      const row: Row = { built_at: new Date().toISOString(), remote_path: null,
         archive_path: null, bank_reference: null, failure_reason: null, approved_at: null, transmitted_at: null, acknowledged_at: null, settled_at: null };
       FILE_COLUMNS.forEach((col, i) => { row[col] = col === 'entries' ? JSON.parse(params[i]) : params[i]; });
+      if (row.approved_by) row.approved_at = new Date().toISOString();
       files.push(row);
       return { rows: [row] };
     }
     if (text.startsWith('SELECT * FROM mft_files WHERE file_id')) return { rows: files.filter(f => f.file_id === params[0]) };
     if (text.startsWith('SELECT * FROM mft_files WHERE channel_id = $1 AND filename')) {
       return { rows: files.filter(f => f.channel_id === params[0] && f.filename === params[1]) };
+    }
+    if (text.startsWith('SELECT * FROM mft_files WHERE channel_id = $1 AND source_ref')) {
+      return { rows: [...files].reverse().filter(f => f.channel_id === params[0] && f.source_ref === params[1] && f.status !== 'rejected') };
     }
     if (text.startsWith('SELECT file_id, transmitted_at FROM mft_files')) {
       return { rows: files.filter(f => f.channel_id === params[0] && f.content_hash === params[1] && f.file_id !== params[2]
@@ -321,5 +325,130 @@ describe('MFT OS — entry normalisation', () => {
     expect(normalizeEntry(payee({ direction: 'debit', accountType: 'savings' }), spec, 0).transactionCode).toBe('37');
     expect(() => normalizeEntry(payee({ amountCents: 0 }), spec, 0)).toThrow(/positive integer/);
     expect(() => normalizeEntry(payee({ name: '' }), spec, 0)).toThrow(/receiver name/);
+  });
+});
+
+describe('MFT OS — wire payments as pacs.008', () => {
+  const wire = (over: Row = {}) => ({ routingNumber: '021000021', accountNumber: '9876543210', amountCents: 2_500_000, name: 'Settlement Bank N.A.', endToEndId: 'E2E-100', remittance: 'Fund settlement', ...over });
+
+  it('builds a pacs.008 whose header count and control sum match its transactions, and refuses to build without a debtor account', async () => {
+    store();
+    await MftOsEngine.ensureTables();
+    delete process.env.MFT_DEBTOR_ACCOUNT;
+    await expect(MftOsEngine.build({ fileType: 'wire_payment', builtBy: 'maker', entries: [wire()] })).rejects.toMatchObject({ code: 'MFT_NOT_CONFIGURED' });
+
+    process.env.MFT_DEBTOR_ACCOUNT = '5550001111';
+    process.env.MFT_ORIGIN_BIC = 'DLBTUS33';
+    const { file } = await MftOsEngine.build({
+      fileType: 'wire_payment', builtBy: 'maker',
+      entries: [wire(), wire({ bic: 'CHASUS33XXX', routingNumber: '', amountCents: 100_000, name: 'Vendor GmbH', endToEndId: 'E2E-101' })],
+    });
+    expect(file.format).toBe('pacs.008');
+    expect(file.filename).toMatch(/_WIRE_PAYMENT_.*\.xml$/);
+    expect(file.entryCount).toBe(2);
+    expect(file.creditCents).toBe(2_600_000);
+    expect(file.entries[0].account).toBe('******3210');
+    expect(file.entries[1].bic).toBe('CHASUS33XXX');
+
+    const full = await MftOsEngine.get(file.fileId, { withContent: true });
+    const parsed = parsePacs008(full.content);
+    expect(parsed).toMatchObject({ count: 2, totalCents: 2_600_000, currency: 'USD', messageId: file.fileId });
+    expect(parsed.transactions.map((t: Row) => t.endToEndId)).toEqual(['E2E-100', 'E2E-101']);
+    expect(full.content).toContain('<BICFI>DLBTUS33</BICFI>');
+    expect(full.content).toContain('<MmbId>021000021</MmbId>');
+    expect(full.content).toContain('<BICFI>CHASUS33XXX</BICFI>');
+    expect(full.content).not.toContain('123456789');
+    delete process.env.MFT_DEBTOR_ACCOUNT;
+    delete process.env.MFT_ORIGIN_BIC;
+  });
+
+  it('rejects a pacs.008 whose header lies about its transactions', () => {
+    const doc = (count: number, total: string) => `<?xml version="1.0"?><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"><FIToFICstmrCdtTrf>
+      <GrpHdr><MsgId>M1</MsgId><NbOfTxs>${count}</NbOfTxs><TtlIntrBkSttlmAmt Ccy="USD">${total}</TtlIntrBkSttlmAmt></GrpHdr>
+      <CdtTrfTxInf><PmtId><EndToEndId>E1</EndToEndId></PmtId><IntrBkSttlmAmt Ccy="USD">100.00</IntrBkSttlmAmt><Cdtr><Nm>A</Nm></Cdtr><CdtrAcct><Id><Othr><Id>1</Id></Othr></Id></CdtrAcct></CdtTrfTxInf>
+      <CdtTrfTxInf><PmtId><EndToEndId>E2</EndToEndId></PmtId><IntrBkSttlmAmt Ccy="USD">0.50</IntrBkSttlmAmt><Cdtr><Nm>B</Nm></Cdtr><CdtrAcct><Id><Othr><Id>2</Id></Othr></Id></CdtrAcct></CdtTrfTxInf>
+    </FIToFICstmrCdtTrf></Document>`;
+    expect(parsePacs008(doc(2, '100.50'))).toMatchObject({ count: 2, totalCents: 10_050 });
+    expect(() => parsePacs008(doc(1, '100.50'))).toThrow(/does not match/);
+    expect(() => parsePacs008(doc(2, '100.00'))).toThrow(/does not match/);
+    expect(() => parsePacs008('<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001"></Document>')).toThrow(/Not a pacs.008/);
+  });
+
+  it('a wire entry needs a BIC or a valid routing number', () => {
+    const spec = FILE_TYPES.wire_payment;
+    expect(normalizeEntry(wire(), spec, 0)).toMatchObject({ routingNumber: '021000021', bic: '', accountNumber: '9876543210', direction: 'credit' });
+    expect(normalizeEntry(wire({ bic: 'chasus33', routingNumber: '' }), spec, 0).bic).toBe('CHASUS33');
+    expect(() => normalizeEntry(wire({ routingNumber: '123456789' }), spec, 0)).toThrow(/BIC or a routing number/);
+    expect(() => normalizeEntry(wire({ bic: 'BAD' }), spec, 0)).toThrow(/8 or 11 characters/);
+    expect(() => normalizeEntry(wire({ direction: 'debit' }), spec, 0)).toThrow(/credits only/);
+  });
+});
+
+describe('MFT OS — ingesting files other engines rendered', () => {
+  const nacha = (amountCents = 125_000) => generateNACHAFile({}, [{
+    secCode: 'PPD', serviceClassCode: '220', companyEntryDescription: 'DIRECT DEP', effectiveEntryDate: new Date('2026-09-04T00:00:00Z'),
+    entries: [{ receivingRouting: '021000021', accountNumber: '123456789', amountCents, transactionCode: '22', individualId: 'BEN-1', individualName: 'Jane Beneficiary' }],
+  }]);
+
+  it('registers a NACHA file under its source, classifies it, masks accounts, and returns the same file for the same source and bytes', async () => {
+    store();
+    await MftOsEngine.ensureTables();
+    const content = nacha();
+    const first = await MftOsEngine.ingest({ content, format: 'nacha', filename: 'ACH-1.ach', sourceRef: 'ach:BATCH-1', builtBy: 'payer-os' });
+    expect(first.reused).toBe(false);
+    expect(first.file).toMatchObject({ fileType: 'direct_deposit', status: 'built', filename: 'ACH-1.ach', sourceRef: 'ach:BATCH-1', entryCount: 1, creditCents: 125_000, effectiveDate: '2026-09-04' });
+    expect(first.file.entries[0].account).toBe('*****6789');
+
+    const again = await MftOsEngine.ingest({ content, format: 'nacha', sourceRef: 'ach:BATCH-1', builtBy: 'payer-os' });
+    expect(again.reused).toBe(true);
+    expect(again.file.fileId).toBe(first.file.fileId);
+
+    await expect(MftOsEngine.ingest({ content: nacha(999_999), format: 'nacha', sourceRef: 'ach:BATCH-1', builtBy: 'payer-os' }))
+      .rejects.toMatchObject({ code: 'MFT_SOURCE_CONFLICT' });
+  });
+
+  it('carries upstream dual control across, under the same four-eyes rule', async () => {
+    store();
+    await MftOsEngine.ensureTables();
+    await expect(MftOsEngine.ingest({ content: nacha(), sourceRef: 'ach:B-2', builtBy: 'trustee-a', approvedBy: 'TRUSTEE-A' }))
+      .rejects.toMatchObject({ code: 'MFT_FOUR_EYES' });
+    const { file } = await MftOsEngine.ingest({ content: nacha(), sourceRef: 'ach:B-2', builtBy: 'trustee-a', approvedBy: 'trustee-b' });
+    expect(file).toMatchObject({ status: 'approved', builtBy: 'trustee-a', approvedBy: 'trustee-b' });
+    const events = await MftOsEngine.events(file.fileId);
+    expect(events.map((e: Row) => e.eventType)).toEqual(['built', 'approved']);
+    expect(events[1].detail.carriedFrom).toBe('ach:B-2');
+  });
+
+  it('refuses a NACHA file whose control record does not match its entries, and a debit file under a credit-only type', async () => {
+    store();
+    await MftOsEngine.ensureTables();
+    const tampered = nacha().split('\n').map(l => l.startsWith('6') ? l.slice(0, 29) + '0000000001' + l.slice(39) : l).join('\n');
+    await expect(MftOsEngine.ingest({ content: tampered, builtBy: 'x' })).rejects.toMatchObject({ code: 'MFT_CONTROL_MISMATCH' });
+    const debit = generateNACHAFile({}, [{ secCode: 'CCD', serviceClassCode: '225', effectiveEntryDate: new Date(),
+      entries: [{ receivingRouting: '021000021', accountNumber: '1', amountCents: 100, transactionCode: '27', individualName: 'Counterparty' }] }]);
+    expect((await MftOsEngine.ingest({ content: debit, builtBy: 'x' })).file.fileType).toBe('clearing_settlement');
+    await expect(MftOsEngine.ingest({ content: debit, fileType: 'vendor_payment', builtBy: 'x' })).rejects.toMatchObject({ code: 'MFT_DEBIT_NOT_ALLOWED' });
+    await expect(MftOsEngine.ingest({ content: 'not a file', builtBy: 'x' })).rejects.toMatchObject({ code: 'MFT_BAD_CONTENT' });
+  });
+
+  it('deliver() ingests and transmits in one step, and a second delivery of the same source is a replay that writes nothing', async () => {
+    store();
+    await MftOsEngine.ensureTables();
+    const args = { content: nacha(), filename: 'ACH-3.ach', sourceRef: 'ach:B-3', builtBy: 'trustee-a', approvedBy: 'trustee-b' };
+    const first = await MftOsEngine.deliver(args);
+    expect(first).toMatchObject({ transmitted: true, replay: false, reused: false });
+    expect(first.file.status).toBe('transmitted');
+    const outbound = path.join(process.env.MFT_SPOOL_DIR!, 'default', 'payments', 'outbound');
+    expect(fs.readdirSync(outbound)).toEqual(['ACH-3.ach']);
+
+    const second = await MftOsEngine.deliver(args);
+    expect(second).toMatchObject({ transmitted: false, replay: true, reused: true });
+    expect(second.file.fileId).toBe(first.file.fileId);
+    expect(fs.readdirSync(outbound)).toEqual(['ACH-3.ach']);
+
+    const unreleased = await MftOsEngine.deliver({ ...args, sourceRef: 'ach:B-4', filename: 'ACH-4.ach', approvedBy: null }).catch(e => e);
+    expect(unreleased).toMatchObject({ code: 'MFT_WRONG_STATE' });
+    expect((await MftOsEngine.list({ sourceRef: 'ach:B-4' }))[0].status).toBe('built');
+    expect(fs.readdirSync(outbound)).toEqual(['ACH-3.ach']);
   });
 });

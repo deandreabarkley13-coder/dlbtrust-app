@@ -44,6 +44,7 @@ const { assertTransition, bankHoldsFile, paymentOutcomeFor, WireStateError, TRAN
 const { parseAdvice, WireAdviceError } = require('./wireAdviceParser');
 const { InHouseBankEngine } = require('../inHouseBankEngine');
 const { DualLedgerEngine } = require('../dualLedgerEngine');
+const { MftOsEngine, MftError } = require('../../os/mftOsEngine');
 
 class WireHostToHostError extends Error {
   constructor(message, code = 'WIRE_H2H_ERROR', status = 400, details = {}) {
@@ -89,6 +90,18 @@ class WireHostToHostEngine {
 
   static async ensureTables() {
     return WireIdempotencyVault.ensureTables();
+  }
+
+  /**
+   * The channel this engine reads and writes. With WIRE_H2H_MFT_CHANNEL set,
+   * the host, credentials and directory layout are the MFT channel's; the
+   * wire-specific settings (rails, SLAs, prefix) stay this engine's own.
+   */
+  static async _channel() {
+    const config = getWireChannelConfig();
+    if (config.transport !== 'mft') return config;
+    const mft = await MftOsEngine.transportFor(config.mftChannelId);
+    return { ...config, ...mft, transport: mft.transport, via: 'mft', mftChannelId: config.mftChannelId };
   }
 
   /**
@@ -200,7 +213,7 @@ class WireHostToHostEngine {
 
   /** Write the file and record the outcome. Only ever called by a reservation holder. */
   static async _deliver(transmission, payment, { actor }) {
-    const config = getWireChannelConfig();
+    const config = await this._channel();
     assertTransition(transmission.state, 'transmitting', transmission);
     const transmitting = await WireIdempotencyVault.apply(transmission.transmissionId, 'transmitting', {
       actor,
@@ -208,11 +221,31 @@ class WireHostToHostEngine {
     });
 
     let remotePath;
+    let mftFileId = null;
     try {
-      remotePath = await withWireTransport(
-        session => session.put(config.outboundPath, transmitting.filename, transmitting.payload),
-        config
-      );
+      if (config.via === 'mft') {
+        const approvals = payment.approvals || [];
+        const approver = approvals.length ? approvals[approvals.length - 1].approver : null;
+        const delivered = await MftOsEngine.deliver({
+          channelId: config.mftChannelId,
+          fileType: 'wire_payment',
+          format: 'pacs.008',
+          content: transmitting.payload,
+          filename: transmitting.filename,
+          sourceRef: `wire:${payment.paymentId}`,
+          builtBy: payment.initiatedBy || 'in-house-bank',
+          approvedBy: approver,
+          memo: payment.memo || payment.description || null,
+          actor,
+        });
+        remotePath = delivered.file.remotePath;
+        mftFileId = delivered.file.fileId;
+      } else {
+        remotePath = await withWireTransport(
+          session => session.put(config.outboundPath, transmitting.filename, transmitting.payload),
+          config
+        );
+      }
     } catch (err) {
       // Nothing was renamed into place, so the bank cannot have a complete
       // file: this is a genuine failure and the wire may be retried.
@@ -228,7 +261,7 @@ class WireHostToHostEngine {
         actor,
         payload: { transmissionId: failed.transmissionId, filename: failed.filename, error: err.message },
       });
-      throw err instanceof WireTransportError
+      throw err instanceof WireTransportError || err instanceof MftError
         ? err
         : new WireHostToHostError(`Wire transmission failed: ${err.message}`, 'WIRE_H2H_TRANSMIT_FAILED', 502);
     }
@@ -237,7 +270,7 @@ class WireHostToHostEngine {
     const transmitted = await WireIdempotencyVault.apply(transmitting.transmissionId, 'transmitted', {
       actor,
       reason: 'file renamed into the bank outbound directory',
-      evidence: { remotePath, payloadHash: transmitting.payloadHash, transport: config.transport },
+      evidence: { remotePath, payloadHash: transmitting.payloadHash, transport: config.transport, mftFileId },
       patch: { remotePath },
     });
     await DualLedgerEngine.appendEvent({
@@ -251,9 +284,10 @@ class WireHostToHostEngine {
         payloadHash: transmitted.payloadHash,
         transport: config.transport,
         host: config.host || null,
+        mftFileId,
       },
     });
-    return { transmitted: true, replay: false, reason: null, transmission: transmitted };
+    return { transmitted: true, replay: false, reason: null, transmission: transmitted, mftFileId };
   }
 
   /**
@@ -267,7 +301,7 @@ class WireHostToHostEngine {
    */
   static async ingestAdvices({ actor = 'reconciliation', limit = 200 } = {}) {
     await this.ensureTables();
-    const config = getWireChannelConfig();
+    const config = await this._channel();
     const results = { files: 0, records: 0, applied: [], duplicates: [], unmatched: [], errors: [] };
 
     await withWireTransport(async session => {

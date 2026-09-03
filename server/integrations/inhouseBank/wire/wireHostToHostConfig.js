@@ -49,9 +49,12 @@ function joinRemote(base, child) {
 function getWireChannelConfig() {
   const root = text('WIRE_H2H_REMOTE_ROOT', '/wire');
   const host = text('WIRE_H2H_SFTP_HOST');
+  const mftChannelId = text('WIRE_H2H_MFT_CHANNEL');
   return {
-    // Transport
-    transport: host ? 'sftp' : 'spool',
+    // Transport. Naming an MFT channel hands delivery to the MFT register,
+    // which then owns the bank host, the bytes and the release decision.
+    transport: mftChannelId ? 'mft' : host ? 'sftp' : 'spool',
+    mftChannelId,
     host,
     port: intEnv('WIRE_H2H_SFTP_PORT', 22, { min: 1, max: 65535 }),
     username: text('WIRE_H2H_SFTP_USER'),
@@ -107,6 +110,9 @@ function wireChannelReadiness() {
     }
   }
   const warnings = [];
+  if (config.transport === 'mft') {
+    warnings.push(`Wire files are delivered through MFT channel ${config.mftChannelId}; its readiness is checked at transmission.`);
+  }
   if (config.transport === 'spool') {
     warnings.push(`No WIRE_H2H_SFTP_HOST: files are written to the local spool at ${config.spoolDir} and reach no bank.`);
   }

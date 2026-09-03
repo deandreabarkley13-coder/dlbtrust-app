@@ -10,6 +10,7 @@ const { ACHEngine } = require('../server/integrations/ach/achEngine');
 const { SystemSettings } = require('../server/integrations/ach/systemSettings');
 const { AS2Partners } = require('../server/integrations/ach/as2Partners');
 const { WireEngine } = require('../server/integrations/wire/wireEngine');
+const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const PAYEES = {
@@ -120,6 +121,7 @@ describe('Payer OS — the trust originating its own payments', () => {
     process.env.CLEARING_FUNDING_OPERATING_ACCOUNT = '1010';
     delete process.env.PAYER_OS_MAX_AMOUNT_CENTS;
     delete process.env.ACH_SFTP_URL;
+    delete process.env.ACH_MFT_CHANNEL;
   });
 
   afterEach(() => {
@@ -438,6 +440,57 @@ describe('Payer OS — the trust originating its own payments', () => {
       process.env.ACH_SFTP_URL = 'sftp://trust@bank.example.com:22/incoming';
       noAchChannel('production');
       expect(await PayerOsEngine.achChannel()).toMatchObject({ ready: true });
+    });
+
+    it('reports the MFT register as the channel when ACH is pointed at it, ready only when the register is', async () => {
+      process.env.ACH_MFT_CHANNEL = 'default';
+      noAchChannel('production');
+      const channel = vi.spyOn(MftOsEngine, 'channel').mockResolvedValue({
+        channelId: 'default', name: 'Trust bank file channel', bankName: 'Originating bank',
+        readiness: { ready: false, transport: 'spool', blockers: ['channel has no bank host and spool transmission is not allowed in production'] },
+      } as any);
+      const blocked = await PayerOsEngine.achChannel();
+      expect(blocked).toMatchObject({ ready: false, via: 'mft', mftChannelId: 'default', transport: 'spool' });
+      expect(blocked.reason).toMatch(/spool transmission is not allowed/);
+
+      channel.mockResolvedValue({
+        channelId: 'default', name: 'Trust bank file channel', bankName: 'Originating bank',
+        readiness: { ready: true, transport: 'sftp', blockers: [] },
+      } as any);
+      expect(await PayerOsEngine.achChannel()).toMatchObject({ ready: true, via: 'mft', provider: 'MFT Trust bank file channel (Originating bank)' });
+    });
+  });
+
+  describe('originating through the MFT register', () => {
+    it('hands the approving trustee to the register so the file is released by the second signature, not the first', async () => {
+      process.env.ACH_MFT_CHANNEL = 'default';
+      ledger(5_000_000);
+      noAchChannel();
+      vi.spyOn(MftOsEngine, 'channel').mockResolvedValue({
+        channelId: 'default', name: 'Trust bank file channel', bankName: null, readiness: { ready: true, transport: 'sftp', blockers: [] },
+      } as any);
+      vi.spyOn(PaymentComplianceGate, 'verifyRecordedScreening').mockResolvedValue({} as any);
+      vi.spyOn(PayerOsEngine, 'get').mockResolvedValue({
+        disbursement_id: 'PAYVP-1',
+        disbursement_type: 'vendor_payout',
+        rail: 'ach',
+        status: 'approved',
+        amount_cents: 250_000,
+        payee_key: 'acme',
+        funding_source_key: 'trust:1010',
+        sec_code: 'CCD',
+        initiated_by: 'trustee-one',
+        approved_by: 'trustee-two',
+        metadata: JSON.stringify({ screeningId: 'SCR-1' }),
+      } as any);
+      vi.spyOn(ACHEngine, 'createBatch').mockResolvedValue({ batch_id: 'ACH-77' } as any);
+      vi.spyOn(ACHEngine, 'getBatch').mockResolvedValue({ batch_id: 'ACH-77', status: 'transmitted' } as any);
+      const transmit = vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true, mode: 'mft' } as any);
+
+      const update = vi.spyOn(PayerOsEngine, '_update');
+      await PayerOsEngine.send('PAYVP-1');
+      expect(update).toHaveBeenLastCalledWith('PAYVP-1', expect.objectContaining({ status: 'sent', rail_reference: 'ACH-77' }), 'sent', null, { batchId: 'ACH-77', channel: 'MFT Trust bank file channel' });
+      expect(transmit).toHaveBeenCalledWith('ACH-77', { approvedBy: 'trustee-two', actor: 'trustee-two' });
     });
   });
 

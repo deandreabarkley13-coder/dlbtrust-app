@@ -77,6 +77,7 @@ router.get('/files', operatorAuth, async (req, res) => {
       channelId: req.query.channelId || null,
       fileType: req.query.fileType || null,
       status: req.query.status || null,
+      sourceRef: req.query.sourceRef || null,
       limit: req.query.limit,
     }) });
   } catch (err) { sendError(res, err); }
