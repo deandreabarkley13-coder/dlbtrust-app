@@ -149,6 +149,7 @@
   const modules = [
     { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
     { key:'treasury', name:'Corporate Treasury Management', desc:'Multi-bank cash positioning, pools, liquidity forecast, investments, and treasury payment workflows', stat:'', endpoint:null, action:'openCorporateTreasuryPanel' },
+    { key:'ptccma', name:'PTC Cash Management Account', desc:'Digital CMA for the Private Trust Company: operating / liquidity reserve / investment sweep sub-ledgers, policy-driven rebalancing, wire + ACH-to-Lili rails, live Lili balance feed', stat:'', endpoint:null, action:'openPtcCmaPanel' },
     { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
     { key:'journal-entries', name:'Journal Entries', desc:'Post principal and coupon interest credits', stat:'', endpoint:null, action:'openJournalEntryPanel' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
@@ -429,6 +430,7 @@
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
       }
+      api('/api/finops/ptc-cma').then(r => { if (r && r.data) setStat('ptccma', fmt(Number(r.data.liquidCents || 0) / 100, 0)); }).catch(() => {});
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
         const cbTotal = balances.filter(b => b.type === 'cash' || b.type === 'core_banking').reduce((a,b)=>a+balanceDollars(b),0);
@@ -7232,6 +7234,159 @@
 
   async function syncCorporateTreasury() {
     try { const res = await api('/api/finops/corporate-treasury/sync', { method: 'POST' }); show('Synced ' + res.data.updated + ' accounts', false, 'ct-status'); openCorporateTreasuryPanel(); } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  // ── PTC Digital Cash Management Account ──────────────────────────────────
+  let cmaSelectedId = null;
+  async function openPtcCmaPanel(cmaId) {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'PTC Cash Management Account';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const ov = await api('/api/finops/ptc-cma');
+      const accounts = (ov.data && ov.data.accounts) || [];
+      cmaSelectedId = cmaId || cmaSelectedId || (accounts[0] && accounts[0].cma_id) || null;
+      const selected = accounts.find(a => a.cma_id === cmaSelectedId) || accounts[0] || null;
+      const movements = selected ? (await api('/api/finops/ptc-cma/' + selected.cma_id + '/movements?limit=25').catch(()=>({data:[]}))).data : [];
+      body.innerHTML = renderPtcCmaPanel(ov.data, selected, movements);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderPtcCmaPanel(ov, cma, movements) {
+    const rails = ov.rails || {};
+    const railBadge = (k, label) => `<span class="badge ${rails[k] ? 'active' : 'inactive'}">${label}: ${rails[k] ? 'available' : 'unavailable'}</span>`;
+    const acctTabs = (ov.accounts || []).map(a => `<button class="btn btn-sm" ${cma && a.cma_id === cma.cma_id ? 'style="font-weight:700"' : ''} onclick="openPtcCmaPanel('${a.cma_id}')">${a.name} <span class="badge ${a.position.health === 'healthy' ? 'active' : a.position.health === 'critical' ? 'failed' : 'pending'}">${a.position.health}</span></button>`).join(' ') || '<span class="muted">No CMA provisioned yet</span>';
+
+    let detail = '';
+    if (cma) {
+      const p = cma.position; const pol = p.policy; const L = p.ledgersUsd; const f = p.forecast; const bank = p.linkedBank || {};
+      const alerts = (p.alerts || []).map(a => `<div class="status ${a.level === 'critical' ? 'err' : ''}" style="margin-top:4px;">[${a.level}] ${a.message}</div>`).join('') || '<div class="muted">No liquidity alerts — within policy</div>';
+      const movRows = (movements || []).map(m => `<tr><td>${new Date(m.created_at).toLocaleString()}</td><td>${m.kind}</td><td>${m.rail}</td><td>${m.from_ledger || (m.direction === 'in' ? 'external' : '')} → ${m.to_ledger || (m.direction === 'out' ? 'external' : '')}</td><td>${fmt(m.amount_usd, 2)}</td><td><span class="badge ${m.status}">${m.status}</span></td><td>${m.external_ref || ''}</td><td>${m.reason || ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No movements</td></tr>';
+      detail =
+        '<div class="card" style="background:#0b1220;">' +
+          `<h3>${cma.name} <span class="badge ${cma.status === 'active' ? 'active' : 'inactive'}">${cma.status}</span> <span class="muted" style="font-size:12px">${cma.cma_id} · ${cma.ptc_entity_id} · ${cma.trust_id}</span></h3>` +
+          '<div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:12px;">' +
+            `<div><div class="muted">Total CMA Cash</div><div style="font-size:20px; font-weight:700;">${fmt(p.totalUsd, 2)}</div></div>` +
+            `<div><div class="muted">Operating</div><div style="font-size:20px; font-weight:700;">${fmt(L.operating, 2)}</div><div class="muted" style="font-size:11px">floor ${fmt(pol.minOperatingCents/100,0)} · target ${fmt(pol.targetOperatingCents/100,0)} · ceiling ${fmt(pol.maxOperatingCents/100,0)}</div></div>` +
+            `<div><div class="muted">Liquidity Reserve</div><div style="font-size:20px; font-weight:700;">${fmt(L.liquidity_reserve, 2)}</div><div class="muted" style="font-size:11px">required ${fmt(p.requiredReserveCents/100,0)} (${pol.reserveRatioBps/100}%)</div></div>` +
+            `<div><div class="muted">Investment Sweep</div><div style="font-size:20px; font-weight:700;">${fmt(L.investment_sweep, 2)}</div><div class="muted" style="font-size:11px">${pol.sweepInstrument.toUpperCase()} @ ${pol.sweepYieldBps/100}%</div></div>` +
+            `<div><div class="muted">Coverage (${f.horizonDays}d outflows)</div><div style="font-size:20px; font-weight:700;">${f.coverageDays === null ? '—' : f.coverageDays + 'd'}</div><div class="muted" style="font-size:11px">out ${fmt(f.outflowsCents/100,0)} · in ${fmt(f.inflowsCents/100,0)}</div></div>` +
+          '</div>' +
+          `<div style="margin-top:8px;" class="muted">Linked bank: ${bank.provider || 'none'} ${bank.accountName || ''} ${bank.accountNumberMasked || ''} — ${bank.available ? 'balance ' + fmt(bank.balanceCents/100, 2) + ' (live via MCP)' : (bank.reason || 'balance unavailable')}</div>` +
+          '<div style="margin-top:8px;">' +
+            `<button class="btn" onclick="cmaRebalance('${cma.cma_id}', true)">Preview Rebalance</button> ` +
+            `<button class="btn" onclick="cmaRebalance('${cma.cma_id}', false)">Rebalance Now</button> ` +
+            `<button class="btn" onclick="openPtcCmaPanel('${cma.cma_id}')">Refresh</button> ` +
+            `<button class="btn btn-sm" onclick="cmaSetStatus('${cma.cma_id}', '${cma.status === 'active' ? 'frozen' : 'active'}')">${cma.status === 'active' ? 'Freeze' : 'Unfreeze'}</button>` +
+          '</div>' +
+          '<div id="cma-status" class="status hidden"></div>' +
+          '<div style="margin-top:8px;"><h4 style="margin:4px 0">Liquidity Alerts</h4>' + alerts + '</div>' +
+        '</div>' +
+        '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">' +
+          '<div class="card" style="background:#0b1220;">' +
+            '<h3>Liquidity Policy</h3>' +
+            `<div class="token-bar"><input id="cma-pol-min" type="number" step="0.01" style="flex:1" value="${pol.minOperatingCents/100}" placeholder="Operating floor USD" /><input id="cma-pol-target" type="number" step="0.01" style="flex:1" value="${pol.targetOperatingCents/100}" placeholder="Operating target USD" /><input id="cma-pol-max" type="number" step="0.01" style="flex:1" value="${pol.maxOperatingCents/100}" placeholder="Operating ceiling USD" /></div>` +
+            `<div class="token-bar"><input id="cma-pol-reserve" type="number" style="flex:1" value="${pol.reserveRatioBps}" placeholder="Reserve ratio (bps)" /><input id="cma-pol-days" type="number" style="flex:1" value="${pol.minCoverageDays}" placeholder="Min coverage days" />` +
+            `<select id="cma-pol-inst">${['mmf','t_bill','repo','term_deposit'].map(i => `<option value="${i}" ${i===pol.sweepInstrument?'selected':''}>${i}</option>`).join('')}</select><input id="cma-pol-yield" type="number" style="width:90px" value="${pol.sweepYieldBps}" placeholder="Yield bps" /></div>` +
+            `<div class="token-bar"><label><input type="checkbox" id="cma-pol-auto" ${pol.autoRebalance ? 'checked' : ''}/> Auto-rebalance</label></div>` +
+            `<button class="btn" onclick="cmaSavePolicy('${cma.cma_id}')">Save Policy</button>` +
+          '</div>' +
+          '<div class="card" style="background:#0b1220;">' +
+            '<h3>Fund CMA (inbound)</h3>' +
+            '<div class="token-bar"><select id="cma-fund-rail"><option value="wire">Incoming wire</option><option value="internal">Internal transfer</option></select><input id="cma-fund-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /><select id="cma-fund-ledger"><option value="operating">→ operating</option><option value="liquidity_reserve">→ liquidity reserve</option><option value="investment_sweep">→ investment sweep</option></select></div>' +
+            '<div class="token-bar"><input id="cma-fund-ref" style="flex:1" placeholder="Bank reference / IMAD (leave blank to record an expected wire)" /><input id="cma-fund-reason" style="flex:1" placeholder="Reason" /></div>' +
+            `<button class="btn" onclick="cmaFund('${cma.cma_id}')">Record Funding</button>` +
+            '<h3 style="margin-top:12px">Disburse (outbound)</h3>' +
+            '<div class="token-bar"><select id="cma-dis-rail"><option value="wire">Fedwire (WireEngine, approval-gated)</option><option value="ach_lili">ACH credit → DB Net Mgmt Lili (queued until ODFI)</option><option value="internal">Internal / ledger only</option></select><input id="cma-dis-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+            '<div class="token-bar"><input id="cma-dis-name" style="flex:1" placeholder="Beneficiary name (wire)" /><input id="cma-dis-routing" style="width:120px" placeholder="Routing (wire)" /><input id="cma-dis-account" style="flex:1" placeholder="Account (wire)" /><input id="cma-dis-bank" style="flex:1" placeholder="Bank name" /></div>' +
+            '<div class="token-bar"><input id="cma-dis-reason" style="flex:1" placeholder="Purpose / memo" /></div>' +
+            `<button class="btn" onclick="cmaDisburse('${cma.cma_id}')">Disburse</button>` +
+            '<div class="muted" style="font-size:11px; margin-top:6px">Ledger is debited immediately; the movement stays <b>pending</b> until the rail (wire approval/settlement, ODFI transmission) confirms. Nothing here claims funds have moved.</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card" style="background:#0b1220;">' +
+          '<h3>Movements</h3>' +
+          '<table class="table"><thead><tr><th>When</th><th>Kind</th><th>Rail</th><th>Ledger</th><th>Amount</th><th>Status</th><th>Ref</th><th>Reason</th></tr></thead><tbody>' + movRows + '</tbody></table>' +
+        '</div>';
+    }
+
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>PTC Digital Cash Management</h3>' +
+        `<div class="muted">${ov.count} account(s) · total ${fmt(Number(ov.totalCents)/100, 2)} · liquid ${fmt(Number(ov.liquidCents)/100, 2)}</div>` +
+        '<div style="margin:6px 0">' + railBadge('wire', 'Wire') + ' ' + railBadge('ach_lili', 'ACH → Lili') + ' ' + railBadge('lili_balance_feed', 'Lili balance feed') + '</div>' +
+        '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:6px;">' + acctTabs + '</div>' +
+        '<div style="margin-top:8px;"><button class="btn" onclick="cmaRebalanceAll()">Rebalance All</button> <button class="btn" onclick="openPtcCmaPanel()">Refresh</button></div>' +
+        '<div id="cma-ov-status" class="status hidden"></div>' +
+      '</div>' +
+      detail +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Provision New CMA</h3>' +
+        '<div class="token-bar"><input id="cma-new-name" style="flex:1" value="PTC Digital Cash Management Account" placeholder="Name" /><input id="cma-new-ptc" style="flex:1" value="PTC-DLB-TRUST" placeholder="PTC entity ID" /><input id="cma-new-trust" style="flex:1" value="TRUST-DLB-001" placeholder="Trust ID" /></div>' +
+        '<div class="token-bar"><input id="cma-new-opening" type="number" step="0.01" style="flex:1" placeholder="Opening balance USD (internal allocation, optional)" /><input id="cma-new-bank-routing" style="width:130px" placeholder="Lili routing" /><input id="cma-new-bank-account" style="flex:1" placeholder="Lili account # (stored masked)" /></div>' +
+        '<button class="btn" onclick="cmaProvision()">Provision CMA</button>' +
+        '<div class="muted" style="font-size:11px; margin-top:6px">Creates operating / liquidity_reserve / investment_sweep sub-ledgers in Corporate Treasury with the default policy (floor $250k · target $500k · ceiling $1M · 10% reserve · 30-day coverage · MMF sweep). Edit the policy after provisioning.</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function cmaProvision() {
+    try {
+      const acct = el('cma-new-bank-account').value.trim();
+      const res = await api('/api/finops/ptc-cma', { method: 'POST', body: JSON.stringify({
+        name: el('cma-new-name').value.trim() || undefined, ptcEntityId: el('cma-new-ptc').value.trim() || undefined, trustId: el('cma-new-trust').value.trim() || undefined,
+        openingBalanceCents: Math.round(Number(el('cma-new-opening').value || 0) * 100) || undefined,
+        linkedBank: { provider: 'lili', routingNumber: el('cma-new-bank-routing').value.trim(), accountNumber: acct || undefined },
+      }) });
+      openPtcCmaPanel(res.data.cma_id);
+    } catch(e) { show(e.message, true, 'cma-ov-status'); }
+  }
+  async function cmaRebalanceAll() {
+    try { const res = await api('/api/finops/ptc-cma/rebalance-all', { method: 'POST' }); show('Rebalanced: ' + JSON.stringify(res.data), false, 'cma-ov-status'); openPtcCmaPanel(); } catch(e) { show(e.message, true, 'cma-ov-status'); }
+  }
+  async function cmaRebalance(id, dryRun) {
+    try {
+      const res = await api('/api/finops/ptc-cma/' + id + '/rebalance', { method: 'POST', body: JSON.stringify({ dryRun }) });
+      const moves = dryRun ? res.data.plan.moves : res.data.moves;
+      const txt = moves.length ? moves.map(m => `${m.fromLedger} → ${m.toLedger}: ${fmt(m.amountCents/100, 2)} (${m.reason})`).join('; ') : 'No moves needed — within policy';
+      show((dryRun ? 'Plan: ' : 'Executed: ') + txt, false, 'cma-status');
+      if (!dryRun) setTimeout(() => openPtcCmaPanel(id), 1200);
+    } catch(e) { show(e.message, true, 'cma-status'); }
+  }
+  async function cmaSetStatus(id, status) {
+    try { await api('/api/finops/ptc-cma/' + id + '/status', { method: 'POST', body: JSON.stringify({ status }) }); openPtcCmaPanel(id); } catch(e) { show(e.message, true, 'cma-status'); }
+  }
+  async function cmaSavePolicy(id) {
+    try {
+      await api('/api/finops/ptc-cma/' + id + '/policy', { method: 'PATCH', body: JSON.stringify({
+        minOperating: Number(el('cma-pol-min').value), targetOperating: Number(el('cma-pol-target').value), maxOperating: Number(el('cma-pol-max').value),
+        reserveRatioBps: Number(el('cma-pol-reserve').value), minCoverageDays: Number(el('cma-pol-days').value),
+        sweepInstrument: el('cma-pol-inst').value, sweepYieldBps: Number(el('cma-pol-yield').value), autoRebalance: el('cma-pol-auto').checked,
+      }) });
+      openPtcCmaPanel(id);
+    } catch(e) { show(e.message, true, 'cma-status'); }
+  }
+  async function cmaFund(id) {
+    try {
+      const res = await api('/api/finops/ptc-cma/' + id + '/fund', { method: 'POST', body: JSON.stringify({
+        rail: el('cma-fund-rail').value, amount: Number(el('cma-fund-amount').value), toLedger: el('cma-fund-ledger').value,
+        externalRef: el('cma-fund-ref').value.trim() || undefined, reason: el('cma-fund-reason').value.trim(),
+      }) });
+      show('Funding ' + res.data.status + ': ' + fmt(res.data.amountUsd, 2), false, 'cma-status');
+      setTimeout(() => openPtcCmaPanel(id), 1200);
+    } catch(e) { show(e.message, true, 'cma-status'); }
+  }
+  async function cmaDisburse(id) {
+    try {
+      const res = await api('/api/finops/ptc-cma/' + id + '/disburse', { method: 'POST', body: JSON.stringify({
+        rail: el('cma-dis-rail').value, amount: Number(el('cma-dis-amount').value), reason: el('cma-dis-reason').value.trim(), memo: el('cma-dis-reason').value.trim(),
+        beneficiary: { name: el('cma-dis-name').value.trim(), routingNumber: el('cma-dis-routing').value.trim(), accountNumber: el('cma-dis-account').value.trim(), bankName: el('cma-dis-bank').value.trim() },
+      }) });
+      show('Disbursement ' + res.data.status + ' via ' + res.data.rail + (res.data.externalRef ? ' — ref ' + res.data.externalRef : ''), false, 'cma-status');
+      setTimeout(() => openPtcCmaPanel(id), 1200);
+    } catch(e) { show(e.message, true, 'cma-status'); }
   }
 
   async function createCorporateTreasuryAccount() {
