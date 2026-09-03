@@ -156,6 +156,9 @@ try { app.use('/api/wealth-os', require(path.join(HD, 'server', 'routes', 'wealt
 try { app.use('/api/token-control', require(path.join(HD, 'server', 'routes', 'tokenControl'))); console.log('[token-control] loaded'); } catch(e) { console.warn('[token-control]', e.message); }
 try { app.use('/api/attestation-os', require(path.join(HD, 'server', 'routes', 'attestationOs'))); console.log('[attestation-os] loaded'); } catch(e) { console.warn('[attestation-os]', e.message); }
 
+// MFT OS — managed file transfer for bank payment files: direct deposit, vendor payments, clearing and settlement
+try { app.use('/api/mft-os', require(path.join(HD, 'server', 'routes', 'mftOs'))); console.log('[mft-os] loaded'); } catch(e) { console.warn('[mft-os]', e.message); }
+
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
 try { app.use('/api/camel', require(path.join(HD, 'server', 'routes', 'camel'))); console.log('[camel] loaded'); } catch(e) { console.warn('[camel]', e.message); }
@@ -341,6 +344,12 @@ async function initializeDatabase() {
     await WireEngine.ensureTables();
     console.log('[wire] tables ensured');
   } catch(e) { console.warn('[wire] table init:', e.message); }
+
+  try {
+    var MftOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'mftOsEngine')).MftOsEngine;
+    await MftOsEngine.ensureTables();
+    console.log('[mft-os] tables ensured');
+  } catch(e) { console.warn('[mft-os] table init:', e.message); }
 
   try {
     var WireOriginationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wireOriginationEngine')).WireOriginationEngine;
