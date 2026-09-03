@@ -152,7 +152,7 @@ class ACHEngine {
    * Looks up batch.partner_id to route to the correct AS2 partner.
    * Falls back to default partner or global AS2_CONFIG if no partner_id.
    */
-  static async transmitBatch(batchId) {
+  static async transmitBatch(batchId, { approvedBy = null, actor = null } = {}) {
     const batch = await ACHEngine.getBatch(batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
     const nonTransmittable = ['transmitting', 'transmitted', 'accepted', 'settled', 'returned', 'cancelled'];
@@ -172,7 +172,12 @@ class ACHEngine {
 
     // Resolve partner config for this batch
     let partnerConfig = null;
-    if (productionConfig) {
+    if (ACHEngine.mftChannelId()) {
+      // The MFT register: one file channel under every rail, in every mode.
+      // It keeps the bytes, the hash and the release decision, so it wins
+      // over any bare endpoint.
+      partnerConfig = ACHEngine.mftPartnerConfig();
+    } else if (productionConfig) {
       // Production mode: use the configured external bank endpoint
       partnerConfig = productionConfig;
       console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION MODE → ${productionConfig.partnerName}`);
@@ -223,7 +228,32 @@ class ACHEngine {
       console.log(`[ACH] transmitBatch(${batchId}): calling ${protocol} transmit`);
 
       let result;
-      if (protocol === 'bill_api') {
+      if (protocol === 'mft') {
+        const { MftOsEngine } = require('../os/mftOsEngine');
+        const delivered = await MftOsEngine.deliver({
+          channelId: partnerConfig.mftChannelId || ACHEngine.mftChannelId(),
+          format: 'nacha',
+          content: nachaContent,
+          filename: batch.filename,
+          sourceRef: `ach:${batchId}`,
+          builtBy: batch.created_by || 'system',
+          approvedBy: approvedBy || null,
+          memo: batch.entry_description || null,
+          actor: actor || approvedBy || batch.created_by || 'ach-engine',
+        });
+        const file = delivered.file;
+        result = {
+          success: true,
+          mode: 'mft',
+          message_id: file.fileId,
+          status_code: 200,
+          mdn_received: false,
+          response_body: JSON.stringify({ fileId: file.fileId, filename: file.filename, remotePath: file.remotePath, transport: file.transport, contentHash: file.contentHash, replay: delivered.replay }),
+          mftFile: file,
+          replay: delivered.replay,
+        };
+        console.log(`[ACH] transmitBatch(${batchId}): MFT → ${file.fileId} on ${file.transport} (${delivered.replay ? 'replay' : 'transmitted'})`);
+      } else if (protocol === 'bill_api') {
         // BILL Cash Account: submit via BILL's RecordARPayment API
         const billClient = require('../bill/billClient');
         const totalDollars = (batch.total_amount_cents || 0) / 100;
@@ -323,6 +353,21 @@ class ACHEngine {
       ).catch(e => console.error(`[ACH] Failed to set batch status to failed:`, e.message));
       throw err;
     }
+  }
+
+  /** The MFT channel ACH files travel on, if the trust has pointed ACH at the register. */
+  static mftChannelId() {
+    return String(process.env.ACH_MFT_CHANNEL || '').trim();
+  }
+
+  static mftPartnerConfig() {
+    const channelId = ACHEngine.mftChannelId();
+    return {
+      partnerId: `MFT:${channelId}`,
+      partnerName: `MFT register (${channelId})`,
+      protocol: 'mft',
+      mftChannelId: channelId,
+    };
   }
 
   /**

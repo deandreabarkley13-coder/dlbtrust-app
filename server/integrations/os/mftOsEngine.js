@@ -18,6 +18,14 @@
  *   clearing_settlement     CCD/CTX mixed debits and credits between the
  *                           trust's own settlement accounts and its
  *                           counterparties — end-of-day nets.
+ *   wire_payment            ISO 20022 pacs.008 credit transfers — one
+ *                           envelope, one or many wires.
+ *
+ * Two doors in. `build` renders a file from entries. `ingest` takes a file
+ * another engine already rendered (an ACH batch's NACHA, a wire's pacs.008),
+ * parses it back to prove it adds up, and registers it under the caller's
+ * `sourceRef` — so a rail that keeps its own record still transmits through
+ * this one, and the same source is never registered twice.
  *
  * Lifecycle (nothing skips a step, and nothing goes backwards):
  *
@@ -59,6 +67,7 @@ const { openWireTransport } = require('../inhouseBank/wire/wireTransport');
 const FILE_TYPES = {
   direct_deposit: {
     label: 'Direct deposit',
+    format: 'nacha',
     secCode: 'PPD',
     serviceClassCode: '220',
     entryDescription: 'DIRECT DEP',
@@ -66,6 +75,7 @@ const FILE_TYPES = {
   },
   vendor_payment: {
     label: 'Vendor payment',
+    format: 'nacha',
     secCode: 'CCD',
     serviceClassCode: '220',
     entryDescription: 'VENDOR PAY',
@@ -73,14 +83,24 @@ const FILE_TYPES = {
   },
   clearing_settlement: {
     label: 'Clearing and settlement',
+    format: 'nacha',
     secCode: 'CCD',
     serviceClassCode: '200',
     entryDescription: 'SETTLEMENT',
     allowDebits: true,
   },
+  wire_payment: {
+    label: 'Wire payment',
+    format: 'pacs.008',
+    secCode: null,
+    serviceClassCode: null,
+    entryDescription: 'WIRE',
+    allowDebits: false,
+  },
 };
 
-const FORMATS = ['nacha'];
+const FORMATS = ['nacha', 'pacs.008'];
+const EXTENSIONS = { nacha: 'ach', 'pacs.008': 'xml' };
 const TRANSPORTS = ['sftp', 'spool'];
 
 const STATUSES = ['built', 'approved', 'transmitted', 'acknowledged', 'settled', 'rejected'];
@@ -159,6 +179,122 @@ function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
+function escapeXml(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function unescapeXml(value) {
+  return String(value || '')
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+}
+
+function xmlText(block, tag) {
+  const m = new RegExp(`<${tag}(?:\\s[^>]*)?>([^<]*)</${tag}>`).exec(block || '');
+  return m ? unescapeXml(m[1].trim()) : '';
+}
+
+function xmlBlock(block, tag) {
+  const m = new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)</${tag}>`).exec(block || '');
+  return m ? m[1] : '';
+}
+
+function moneyToCents(text) {
+  const s = String(text || '').trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(s)) return NaN;
+  const [whole, frac = ''] = s.split('.');
+  return Number(whole) * 100 + Number((frac + '00').slice(0, 2));
+}
+
+/**
+ * Read a pacs.008 back the way the bank will: header count and control sum
+ * against the transactions actually carried. Anything that does not add up
+ * is a parse failure, not a file.
+ */
+function parsePacs008(xml) {
+  const s = String(xml || '');
+  if (!/urn:iso:std:iso:20022:tech:xsd:pacs\.008/.test(s)) throw new MftError('Not a pacs.008 document', 'MFT_BAD_CONTENT', 400);
+  const header = xmlBlock(s, 'GrpHdr');
+  if (!header) throw new MftError('pacs.008 has no GrpHdr', 'MFT_BAD_CONTENT', 400);
+  const transactions = [];
+  const re = /<CdtTrfTxInf>([\s\S]*?)<\/CdtTrfTxInf>/g;
+  let m;
+  while ((m = re.exec(s))) {
+    const tx = m[1];
+    const amountTag = /<IntrBkSttlmAmt\s+Ccy="([^"]*)"\s*>([^<]*)<\/IntrBkSttlmAmt>/.exec(tx);
+    const amountCents = amountTag ? moneyToCents(amountTag[2]) : NaN;
+    if (!Number.isInteger(amountCents) || amountCents <= 0) throw new MftError('pacs.008 transaction has no positive IntrBkSttlmAmt', 'MFT_BAD_CONTENT', 400);
+    transactions.push({
+      endToEndId: xmlText(xmlBlock(tx, 'PmtId'), 'EndToEndId'),
+      instructionId: xmlText(xmlBlock(tx, 'PmtId'), 'InstrId'),
+      currency: amountTag[1],
+      amountCents,
+      creditorName: xmlText(xmlBlock(tx, 'Cdtr'), 'Nm'),
+      creditorAccount: xmlText(xmlBlock(tx, 'CdtrAcct'), 'Id'),
+      creditorAgent: xmlText(xmlBlock(tx, 'CdtrAgt'), 'BICFI') || xmlText(xmlBlock(tx, 'CdtrAgt'), 'MmbId'),
+    });
+  }
+  if (!transactions.length) throw new MftError('pacs.008 carries no CdtTrfTxInf', 'MFT_BAD_CONTENT', 400);
+  const declaredCount = Number(xmlText(header, 'NbOfTxs'));
+  const ctrlSumTag = /<(?:TtlIntrBkSttlmAmt|CtrlSum)(?:\s[^>]*)?>([^<]*)</.exec(header);
+  const declaredCents = ctrlSumTag ? moneyToCents(ctrlSumTag[1]) : NaN;
+  const totalCents = transactions.reduce((t, x) => t + x.amountCents, 0);
+  if (declaredCount !== transactions.length || declaredCents !== totalCents) {
+    throw new MftError(
+      `pacs.008 header does not match its transactions (count ${declaredCount}/${transactions.length}, total ${declaredCents}/${totalCents})`,
+      'MFT_CONTROL_MISMATCH',
+      400
+    );
+  }
+  return { messageId: xmlText(header, 'MsgId'), createdAt: xmlText(header, 'CreDtTm'), count: transactions.length, totalCents, currency: transactions[0].currency, transactions };
+}
+
+function renderPacs008({ messageId, entries, env, channel }) {
+  const ccy = escapeXml(env.currency);
+  const total = (entries.reduce((t, e) => t + e.amountCents, 0) / 100).toFixed(2);
+  const tx = entries.map(e => `    <CdtTrfTxInf>
+      <PmtId>
+        <InstrId>${escapeXml(e.instructionId)}</InstrId>
+        <EndToEndId>${escapeXml(e.endToEndId)}</EndToEndId>
+      </PmtId>
+      <IntrBkSttlmAmt Ccy="${ccy}">${(e.amountCents / 100).toFixed(2)}</IntrBkSttlmAmt>
+      <ChrgBr>SLEV</ChrgBr>
+      <Dbtr><Nm>${escapeXml(env.companyName)}</Nm></Dbtr>
+      <DbtrAcct><Id><Othr><Id>${escapeXml(env.debtorAccount)}</Id></Othr></Id></DbtrAcct>
+      <DbtrAgt><FinInstnId>${env.originBic ? `<BICFI>${escapeXml(env.originBic)}</BICFI>` : `<ClrSysMmbId><MmbId>${escapeXml(env.odfiRouting)}</MmbId></ClrSysMmbId>`}</FinInstnId></DbtrAgt>
+      <CdtrAgt><FinInstnId>${e.bic ? `<BICFI>${escapeXml(e.bic)}</BICFI>` : `<ClrSysMmbId><MmbId>${escapeXml(e.routingNumber)}</MmbId></ClrSysMmbId>`}</FinInstnId></CdtrAgt>
+      <Cdtr><Nm>${escapeXml(e.name)}</Nm></Cdtr>
+      <CdtrAcct><Id><Othr><Id>${escapeXml(e.accountNumber)}</Id></Othr></Id></CdtrAcct>
+      <Purp><Cd>${escapeXml(e.purposeCode)}</Cd></Purp>${e.remittance ? `
+      <RmtInf><Ustrd>${escapeXml(e.remittance)}</Ustrd></RmtInf>` : ''}
+    </CdtTrfTxInf>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>${escapeXml(messageId)}</MsgId>
+      <CreDtTm>${new Date().toISOString()}</CreDtTm>
+      <NbOfTxs>${entries.length}</NbOfTxs>
+      <TtlIntrBkSttlmAmt Ccy="${ccy}">${total}</TtlIntrBkSttlmAmt>
+      <SttlmInf><SttlmMtd>CLRG</SttlmMtd></SttlmInf>
+      <InstgAgt><FinInstnId>${env.originBic ? `<BICFI>${escapeXml(env.originBic)}</BICFI>` : `<ClrSysMmbId><MmbId>${escapeXml(env.odfiRouting)}</MmbId></ClrSysMmbId>`}</FinInstnId></InstgAgt>
+      ${channel.bankName ? `<InstdAgt><FinInstnId><Nm>${escapeXml(channel.bankName)}</Nm></FinInstnId></InstdAgt>` : ''}
+    </GrpHdr>
+${tx}
+  </FIToFICstmrCdtTrf>
+</Document>
+`;
+}
+
+/** Which register type a NACHA file another engine rendered belongs under. */
+function fileTypeForNacha(parsed) {
+  const batches = parsed.batches || [];
+  const control = parsed.fileControl || {};
+  if (Number(control.totalDebit) > 0) return 'clearing_settlement';
+  if (batches.length && batches.every(b => String(b.secCode || '').toUpperCase() === 'PPD')) return 'direct_deposit';
+  return 'vendor_payment';
+}
+
 /**
  * The trust's default channel, from the environment. Any secret the channel
  * needs is read from the environment at connect time and is never written to
@@ -192,6 +328,9 @@ function getMftConfig() {
     companyName: text('MFT_COMPANY_NAME', ORIGINATOR_NAME),
     companyId: text('MFT_COMPANY_ID', ORIGINATOR_ID),
     odfiRouting: text('MFT_ODFI_ROUTING', ODFI_ROUTING),
+    originBic: text('MFT_ORIGIN_BIC'),
+    debtorAccount: text('MFT_DEBTOR_ACCOUNT'),
+    currency: text('MFT_CURRENCY', 'USD').toUpperCase(),
   };
 }
 
@@ -270,6 +409,7 @@ function mapFile(row, { withContent = false } = {}) {
     debit: dollars(row.debit_cents),
     effectiveDate: row.effective_date,
     entries: parseJson(row.entries, []),
+    sourceRef: row.source_ref || null,
     builtBy: row.built_by,
     approvedBy: row.approved_by,
     transport: row.transport,
@@ -294,17 +434,42 @@ function mapFile(row, { withContent = false } = {}) {
  */
 function normalizeEntry(raw, spec, index) {
   const where = `entry ${index + 1}`;
-  const routing = String(raw.routingNumber || raw.receivingRouting || '').replace(/\D/g, '');
-  if (!validateRouting(routing)) throw new MftError(`${where}: routing number ${routing || '(blank)'} fails the ABA check digit`, 'MFT_BAD_ROUTING', 400);
-  const account = String(raw.accountNumber || '').trim();
-  if (!account || account.length > 17) throw new MftError(`${where}: account number must be 1–17 characters`, 'MFT_BAD_ACCOUNT', 400);
   const amountCents = Math.round(Number(raw.amountCents));
   if (!Number.isInteger(amountCents) || amountCents <= 0) throw new MftError(`${where}: amountCents must be a positive integer`, 'MFT_BAD_AMOUNT', 400);
-  if (amountCents > 9999999999) throw new MftError(`${where}: ${dollars(amountCents)} exceeds the NACHA entry limit`, 'MFT_BAD_AMOUNT', 400);
-  const name = String(raw.name || raw.individualName || '').trim();
+  const name = String(raw.name || raw.individualName || raw.creditorName || '').trim();
   if (!name) throw new MftError(`${where}: receiver name is required`, 'MFT_BAD_NAME', 400);
   const direction = raw.direction === 'debit' ? 'debit' : 'credit';
   if (direction === 'debit' && !spec.allowDebits) throw new MftError(`${where}: a ${spec.label.toLowerCase()} file carries credits only`, 'MFT_DEBIT_NOT_ALLOWED', 400);
+  const routing = String(raw.routingNumber || raw.receivingRouting || '').replace(/\D/g, '');
+
+  if (spec.format === 'pacs.008') {
+    const bic = String(raw.bic || '').trim().toUpperCase();
+    if (bic && !/^[A-Z0-9]{8}([A-Z0-9]{3})?$/.test(bic)) throw new MftError(`${where}: BIC ${bic} is not 8 or 11 characters`, 'MFT_BAD_BIC', 400);
+    if (!bic && !validateRouting(routing)) throw new MftError(`${where}: a wire needs the creditor agent's BIC or a routing number that passes the ABA check digit`, 'MFT_BAD_ROUTING', 400);
+    const account = String(raw.accountNumber || raw.iban || '').trim();
+    if (!account || account.length > 34) throw new MftError(`${where}: account number must be 1–34 characters`, 'MFT_BAD_ACCOUNT', 400);
+    const endToEndId = String(raw.endToEndId || raw.reference || '').trim().slice(0, 35);
+    return {
+      routingNumber: bic ? '' : routing,
+      bic,
+      accountNumber: account,
+      amountCents,
+      name: name.slice(0, 140),
+      identifier: String(raw.identifier || '').slice(0, 35),
+      direction: 'credit',
+      transactionCode: null,
+      endToEndId,
+      instructionId: String(raw.instructionId || endToEndId || '').slice(0, 35),
+      purposeCode: String(raw.purposeCode || 'OTHR').toUpperCase().slice(0, 4),
+      remittance: String(raw.remittance || raw.memo || '').slice(0, 140),
+      reference: raw.reference || endToEndId || null,
+    };
+  }
+
+  if (!validateRouting(routing)) throw new MftError(`${where}: routing number ${routing || '(blank)'} fails the ABA check digit`, 'MFT_BAD_ROUTING', 400);
+  const account = String(raw.accountNumber || '').trim();
+  if (!account || account.length > 17) throw new MftError(`${where}: account number must be 1–17 characters`, 'MFT_BAD_ACCOUNT', 400);
+  if (amountCents > 9999999999) throw new MftError(`${where}: ${dollars(amountCents)} exceeds the NACHA entry limit`, 'MFT_BAD_AMOUNT', 400);
   const savings = raw.accountType === 'savings';
   const transactionCode = direction === 'debit' ? (savings ? '37' : '27') : (savings ? '32' : '22');
   return {
@@ -368,7 +533,9 @@ const MftOsEngine = {
         acknowledged_at TIMESTAMPTZ,
         settled_at TIMESTAMPTZ
       )`);
+    await pool.query('ALTER TABLE mft_files ADD COLUMN IF NOT EXISTS source_ref TEXT');
     await pool.query('CREATE INDEX IF NOT EXISTS mft_files_channel_hash_idx ON mft_files (channel_id, content_hash)');
+    await pool.query('CREATE INDEX IF NOT EXISTS mft_files_source_ref_idx ON mft_files (source_ref)');
     await pool.query('CREATE INDEX IF NOT EXISTS mft_files_status_idx ON mft_files (status)');
     await pool.query(`
       CREATE TABLE IF NOT EXISTS mft_events (
@@ -474,6 +641,23 @@ const MftOsEngine = {
     return { ...c, readiness: channelReadiness(c) };
   },
 
+  /**
+   * A channel's live transport settings and directory layout, for an engine
+   * that reads the bank's own advice files off the same host. Secrets are
+   * resolved here and go no further than the session that uses them.
+   */
+  async transportFor(channelId) {
+    const channel = await this.channel(channelId);
+    return {
+      ...transportConfig(channel),
+      outboundPath: channel.config.outboundPath,
+      ackPath: channel.config.ackPath,
+      returnPath: channel.config.returnPath,
+      archivePath: channel.config.archivePath,
+      readiness: channel.readiness,
+    };
+  },
+
   async setChannelStatus(channelId, status, actor) {
     if (!['active', 'suspended'].includes(status)) throw new MftError('status must be active or suspended', 'MFT_BAD_CHANNEL', 400);
     await this.channel(channelId);
@@ -510,64 +694,193 @@ const MftOsEngine = {
 
     const effective = effectiveDate ? new Date(effectiveDate) : new Date(Date.now() + 86400000);
     if (Number.isNaN(effective.getTime())) throw new MftError('effectiveDate is not a date', 'MFT_BAD_DATE', 400);
-    let serviceClass = spec.serviceClassCode;
-    if (spec.allowDebits) serviceClass = creditCents && debitCents ? '200' : debitCents ? '225' : '220';
-
-    const content = generateNACHAFile(
-      { immediateDestination: env.odfiRouting, immediateOrigin: env.companyId, immediateDestinationName: channel.bankName || undefined, immediateOriginName: env.companyName },
-      [{
-        secCode: spec.secCode,
-        serviceClassCode: serviceClass,
-        companyEntryDescription: (entryDescription || spec.entryDescription).slice(0, 10),
-        effectiveEntryDate: effective,
-        companyName: env.companyName,
-        companyId: env.companyId,
-        entries: normalized.map(e => ({
-          receivingRouting: e.routingNumber,
-          accountNumber: e.accountNumber,
-          amountCents: e.amountCents,
-          transactionCode: e.transactionCode,
-          individualId: e.identifier,
-          individualName: e.name,
-        })),
-      }]
-    );
-
-    const parsed = parseNACHAFile(content);
-    const control = parsed.fileControl || {};
-    if (Number(control.entryCount) !== normalized.length || Number(control.totalCredit) !== creditCents || Number(control.totalDebit) !== debitCents) {
-      throw new MftError(
-        `Rendered file control totals do not match its entries (entries ${control.entryCount}/${normalized.length}, credit ${control.totalCredit}/${creditCents}, debit ${control.totalDebit}/${debitCents})`,
-        'MFT_CONTROL_MISMATCH',
-        500
-      );
-    }
 
     const fileId = newId('MFT');
-    const contentHash = sha256(content);
-    const filename = `${channel.config.filePrefix}_${fileType.toUpperCase()}_${stamp()}_${fileId.split('-').pop()}.ach`;
+    let content;
+    if (spec.format === 'pacs.008') {
+      if (!env.debtorAccount) throw new MftError('MFT_DEBTOR_ACCOUNT is unset: a wire file must name the account it draws on', 'MFT_NOT_CONFIGURED', 412);
+      normalized.forEach((e, i) => {
+        if (!e.endToEndId) e.endToEndId = `${fileId}-${String(i + 1).padStart(4, '0')}`;
+        if (!e.instructionId) e.instructionId = e.endToEndId;
+        if (!e.reference) e.reference = e.endToEndId;
+      });
+      content = renderPacs008({ messageId: fileId, entries: normalized, env, channel });
+      const parsed = parsePacs008(content);
+      if (parsed.count !== normalized.length || parsed.totalCents !== creditCents) {
+        throw new MftError(`Rendered pacs.008 does not match its entries (count ${parsed.count}/${normalized.length}, total ${parsed.totalCents}/${creditCents})`, 'MFT_CONTROL_MISMATCH', 500);
+      }
+    } else {
+      let serviceClass = spec.serviceClassCode;
+      if (spec.allowDebits) serviceClass = creditCents && debitCents ? '200' : debitCents ? '225' : '220';
+      content = generateNACHAFile(
+        { immediateDestination: env.odfiRouting, immediateOrigin: env.companyId, immediateDestinationName: channel.bankName || undefined, immediateOriginName: env.companyName },
+        [{
+          secCode: spec.secCode,
+          serviceClassCode: serviceClass,
+          companyEntryDescription: (entryDescription || spec.entryDescription).slice(0, 10),
+          effectiveEntryDate: effective,
+          companyName: env.companyName,
+          companyId: env.companyId,
+          entries: normalized.map(e => ({
+            receivingRouting: e.routingNumber,
+            accountNumber: e.accountNumber,
+            amountCents: e.amountCents,
+            transactionCode: e.transactionCode,
+            individualId: e.identifier,
+            individualName: e.name,
+          })),
+        }]
+      );
+      const control = parseNACHAFile(content).fileControl || {};
+      if (Number(control.entryCount) !== normalized.length || Number(control.totalCredit) !== creditCents || Number(control.totalDebit) !== debitCents) {
+        throw new MftError(
+          `Rendered file control totals do not match its entries (entries ${control.entryCount}/${normalized.length}, credit ${control.totalCredit}/${creditCents}, debit ${control.totalDebit}/${debitCents})`,
+          'MFT_CONTROL_MISMATCH',
+          500
+        );
+      }
+    }
+
     const publicEntries = normalized.map(e => ({
       name: e.name,
       identifier: e.identifier,
       routingNumber: e.routingNumber,
+      bic: e.bic || undefined,
       account: mask(e.accountNumber),
       amountCents: e.amountCents,
       direction: e.direction,
       reference: e.reference,
     }));
 
+    return this._register({
+      fileId, channel, fileType, format: spec.format, content, filename: null, sourceRef: null,
+      entryCount: normalized.length, creditCents, debitCents, effectiveDate: effective.toISOString().slice(0, 10),
+      entries: publicEntries, builtBy, approvedBy: null, memo,
+    });
+  },
+
+  /**
+   * Register a file another engine rendered. The bytes are parsed back and
+   * the register's totals are the file's own. `sourceRef` names the caller's
+   * record (`ach:<batchId>`, `wire:<paymentId>`): the same source with the
+   * same bytes returns the file already registered, so a retry upstream is a
+   * replay here rather than a second file. Dual control the caller already
+   * ran carries over through `approvedBy`, under the same rule as `approve`.
+   */
+  async ingest({ channelId = 'default', fileType = null, format = 'nacha', content, filename = null, sourceRef = null, builtBy = null, approvedBy = null, memo = null } = {}) {
+    if (!content || typeof content !== 'string') throw new MftError('ingest needs the rendered file content', 'MFT_EMPTY', 400);
+    if (!FORMATS.includes(format)) throw new MftError(`Unknown format ${format}; one of ${FORMATS.join(', ')}`, 'MFT_BAD_FORMAT', 400);
+    if (!builtBy) throw new MftError('builtBy is required: every file names who built it', 'MFT_NO_ACTOR', 400);
+
+    let entryCount, creditCents, debitCents, effective = null, entries;
+    if (format === 'pacs.008') {
+      const parsed = parsePacs008(content);
+      fileType = fileType || 'wire_payment';
+      entryCount = parsed.count;
+      creditCents = parsed.totalCents;
+      debitCents = 0;
+      entries = parsed.transactions.map(t => ({
+        name: t.creditorName, identifier: t.instructionId, routingNumber: /^\d{9}$/.test(t.creditorAgent) ? t.creditorAgent : '', bic: /^\d{9}$/.test(t.creditorAgent) ? undefined : t.creditorAgent || undefined,
+        account: mask(t.creditorAccount), amountCents: t.amountCents, direction: 'credit', reference: t.endToEndId || null,
+      }));
+    } else {
+      let parsed;
+      try { parsed = parseNACHAFile(content); } catch (e) { throw new MftError(`Content is not a NACHA file: ${e.message}`, 'MFT_BAD_CONTENT', 400); }
+      const control = parsed.fileControl;
+      if (!control) throw new MftError('NACHA file has no file control record', 'MFT_BAD_CONTENT', 400);
+      const seen = (parsed.batches || []).flatMap(b => b.entries || []);
+      entryCount = Number(control.entryCount);
+      creditCents = Number(control.totalCredit);
+      debitCents = Number(control.totalDebit);
+      const sumCredit = seen.filter(e => /^(2[123]|3[123])$/.test(e.transactionCode)).reduce((s, e) => s + Number(e.amountCents || e.amount || 0), 0);
+      const sumDebit = seen.filter(e => /^(2[789]|3[789])$/.test(e.transactionCode)).reduce((s, e) => s + Number(e.amountCents || e.amount || 0), 0);
+      if (seen.length !== entryCount || sumCredit !== creditCents || sumDebit !== debitCents) {
+        throw new MftError(
+          `NACHA control totals do not match the entries carried (entries ${entryCount}/${seen.length}, credit ${creditCents}/${sumCredit}, debit ${debitCents}/${sumDebit})`,
+          'MFT_CONTROL_MISMATCH',
+          400
+        );
+      }
+      fileType = fileType || fileTypeForNacha(parsed);
+      const b0 = (parsed.batches || [])[0];
+      if (b0 && /^\d{6}$/.test(b0.effectiveDate)) effective = `20${b0.effectiveDate.slice(0, 2)}-${b0.effectiveDate.slice(2, 4)}-${b0.effectiveDate.slice(4, 6)}`;
+      entries = seen.map(e => ({
+        name: e.individualName || e.receiverName || '', identifier: e.individualId || '', routingNumber: e.receivingRouting || e.routingNumber || '',
+        account: mask(e.accountNumber), amountCents: Number(e.amountCents || e.amount || 0), direction: /^(2[789]|3[789])$/.test(e.transactionCode) ? 'debit' : 'credit', reference: e.traceNumber || null,
+      }));
+    }
+
+    const spec = FILE_TYPES[fileType];
+    if (!spec) throw new MftError(`Unknown file type ${fileType}`, 'MFT_BAD_FILE_TYPE', 400);
+    if (spec.format !== format) throw new MftError(`${spec.label} files are ${spec.format}, not ${format}`, 'MFT_BAD_FORMAT', 400);
+    if (debitCents > 0 && !spec.allowDebits) throw new MftError(`A ${spec.label.toLowerCase()} file carries credits only`, 'MFT_DEBIT_NOT_ALLOWED', 400);
+
+    const channel = await this.channel(channelId);
+    if (!channel.fileTypes.includes(fileType)) throw new MftError(`Channel ${channelId} does not carry ${spec.label.toLowerCase()} files`, 'MFT_TYPE_NOT_CARRIED', 409);
+    const env = getMftConfig();
+    if (env.maxFileCents > 0 && creditCents + debitCents > env.maxFileCents) {
+      throw new MftError(`File total ${dollars(creditCents + debitCents)} exceeds the channel ceiling ${dollars(env.maxFileCents)}`, 'MFT_OVER_CEILING', 409);
+    }
+
+    const contentHash = sha256(content);
+    if (sourceRef) {
+      const { rows } = await pool.query(
+        `SELECT * FROM mft_files WHERE channel_id = $1 AND source_ref = $2 AND status <> 'rejected' ORDER BY built_at DESC LIMIT 1`,
+        [channelId, sourceRef]
+      );
+      if (rows.length) {
+        if (rows[0].content_hash !== contentHash) {
+          throw new MftError(
+            `${sourceRef} is already registered as ${rows[0].file_id} with different bytes; reject that file before registering another for the same source`,
+            'MFT_SOURCE_CONFLICT',
+            409,
+            { fileId: rows[0].file_id }
+          );
+        }
+        return { file: mapFile(rows[0]), reused: true, duplicateOf: null, readiness: channel.readiness };
+      }
+    }
+
+    if (approvedBy && String(approvedBy).toLowerCase() === String(builtBy).toLowerCase()) {
+      throw new MftError(`${approvedBy} built this file and cannot also release it`, 'MFT_FOUR_EYES', 403);
+    }
+
+    const out = await this._register({
+      fileId: newId('MFT'), channel, fileType, format, content, filename, sourceRef,
+      entryCount, creditCents, debitCents, effectiveDate: effective, entries, builtBy, approvedBy, memo,
+    });
+    return { ...out, reused: false };
+  },
+
+  /**
+   * Ingest and transmit in one call — the path the rails take. Exactly the
+   * same controls as the two steps apart; nothing is skipped because the
+   * caller is another engine.
+   */
+  async deliver({ actor = null, force = false, ...ingestArgs } = {}) {
+    const registered = await this.ingest(ingestArgs);
+    const sent = await this.transmit(registered.file.fileId, { actor: actor || ingestArgs.approvedBy || ingestArgs.builtBy, force });
+    return { ...sent, reused: registered.reused, readiness: registered.readiness };
+  },
+
+  async _register({ fileId, channel, fileType, format, content, filename, sourceRef, entryCount, creditCents, debitCents, effectiveDate, entries, builtBy, approvedBy, memo }) {
+    const contentHash = sha256(content);
+    const ext = EXTENSIONS[format];
+    const safeName = filename ? String(filename).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) : '';
+    const name = safeName || `${channel.config.filePrefix}_${fileType.toUpperCase()}_${stamp()}_${fileId.split('-').pop()}.${ext}`;
+    const status = approvedBy ? 'approved' : 'built';
     const { rows } = await pool.query(
       `INSERT INTO mft_files (file_id, channel_id, file_type, format, status, filename, content, content_hash, size_bytes,
-                              entry_count, credit_cents, debit_cents, effective_date, entries, built_by, transport, memo)
-       VALUES ($1, $2, $3, 'nacha', 'built', $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15) RETURNING *`,
-      [fileId, channelId, fileType, filename, content, contentHash, Buffer.byteLength(content, 'utf8'),
-        normalized.length, creditCents, debitCents, effective.toISOString().slice(0, 10), JSON.stringify(publicEntries), builtBy, channel.readiness.transport, memo]
+                              entry_count, credit_cents, debit_cents, effective_date, entries, built_by, approved_by, approved_at, transport, memo, source_ref)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, ${approvedBy ? 'NOW()' : 'NULL'}, $17, $18, $19) RETURNING *`,
+      [fileId, channel.channelId, fileType, format, status, name, content, contentHash, Buffer.byteLength(content, 'utf8'),
+        entryCount, creditCents, debitCents, effectiveDate, JSON.stringify(entries), builtBy, approvedBy, channel.readiness.transport, memo, sourceRef]
     );
-    await this._event(fileId, channelId, 'built', builtBy, { entryCount: normalized.length, creditCents, debitCents, contentHash });
+    await this._event(fileId, channel.channelId, 'built', builtBy, { entryCount, creditCents, debitCents, contentHash, format, sourceRef });
+    if (approvedBy) await this._event(fileId, channel.channelId, 'approved', approvedBy, { creditCents, debitCents, carriedFrom: sourceRef });
 
-    const duplicate = await this._duplicateOf(channelId, contentHash, fileId);
-    const file = mapFile(rows[0]);
-    return { file, duplicateOf: duplicate ? duplicate.file_id : null, readiness: channel.readiness };
+    const duplicate = await this._duplicateOf(channel.channelId, contentHash, fileId);
+    return { file: mapFile(rows[0]), duplicateOf: duplicate ? duplicate.file_id : null, readiness: channel.readiness };
   },
 
   // ── Release ──────────────────────────────────────────────────────────────
@@ -662,7 +975,7 @@ const MftOsEngine = {
     const env = getMftConfig();
     const dir = path.join(env.archiveDir, channel.channelId);
     await fsp.mkdir(dir, { recursive: true });
-    const target = path.join(dir, `${row.content_hash}.ach`);
+    const target = path.join(dir, `${row.content_hash}.${EXTENSIONS[row.format] || 'dat'}`);
     await fsp.writeFile(target, row.content, 'utf8');
     return target;
   },
@@ -752,10 +1065,11 @@ const MftOsEngine = {
     return { fileId, contentHash: row.content_hash, intact: recomputed === row.content_hash, archiveMatches };
   },
 
-  async list({ channelId = null, fileType = null, status = null, limit = 50 } = {}) {
+  async list({ channelId = null, fileType = null, status = null, sourceRef = null, limit = 50 } = {}) {
     const where = [];
     const params = [];
     if (channelId) { params.push(channelId); where.push(`channel_id = $${params.length}`); }
+    if (sourceRef) { params.push(sourceRef); where.push(`source_ref = $${params.length}`); }
     if (fileType) { params.push(fileType); where.push(`file_type = $${params.length}`); }
     if (status) { params.push(status); where.push(`status = $${params.length}`); }
     params.push(Math.min(Math.max(Number(limit) || 50, 1), 500));
@@ -783,7 +1097,7 @@ const MftOsEngine = {
     const inFlight = IN_FLIGHT.reduce((s, k) => s + byStatus[k].creditCents + byStatus[k].debitCents, 0);
     return {
       engine: 'mft-os',
-      fileTypes: Object.fromEntries(Object.entries(FILE_TYPES).map(([k, v]) => [k, { label: v.label, secCode: v.secCode, allowDebits: v.allowDebits }])),
+      fileTypes: Object.fromEntries(Object.entries(FILE_TYPES).map(([k, v]) => [k, { label: v.label, format: v.format, secCode: v.secCode, allowDebits: v.allowDebits }])),
       formats: FORMATS,
       transports: TRANSPORTS,
       channels: channels.map(c => ({ channelId: c.channelId, name: c.name, bankName: c.bankName, status: c.status, transport: c.transport, readiness: c.readiness })),
@@ -841,4 +1155,4 @@ const MftOsEngine = {
   },
 };
 
-module.exports = { MftOsEngine, MftError, FILE_TYPES, STATUSES, TRANSITIONS, getMftConfig, channelReadiness, normalizeEntry, mask };
+module.exports = { MftOsEngine, MftError, FILE_TYPES, FORMATS, STATUSES, TRANSITIONS, getMftConfig, channelReadiness, normalizeEntry, parsePacs008, fileTypeForNacha, mask };

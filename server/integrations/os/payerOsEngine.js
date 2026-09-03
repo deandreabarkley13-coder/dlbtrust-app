@@ -56,6 +56,7 @@ const { FundingSourceRegistry, FundingSourceError } = require('../inhouseBank/cl
 const { SettlementFundingEngine } = require('../inhouseBank/settlementFundingEngine');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
 const { StablecoinPayoutRail } = require('./stablecoinPayoutRail');
+const { MftOsEngine } = require('./mftOsEngine');
 
 /**
  * What the trust is allowed to push, and how. `rail` is not negotiable per
@@ -872,7 +873,7 @@ const PayerOsEngine = {
         individualName: credit.name,
         memo: row.memo || '',
       }]);
-      await ACHEngine.transmitBatch(batch.batch_id);
+      await ACHEngine.transmitBatch(batch.batch_id, { approvedBy: row.approved_by, actor: row.approved_by });
     } catch (error) {
       await this._update(disbursementId, {
         status: 'failed',
@@ -1049,6 +1050,24 @@ const PayerOsEngine = {
   async achChannel() {
     let mode = 'unknown';
     try { mode = await SystemSettings.getMode(); } catch { mode = 'unknown'; }
+
+    const mftChannelId = ACHEngine.mftChannelId();
+    if (mftChannelId) {
+      let channel = null;
+      let reason = null;
+      try { channel = await MftOsEngine.channel(mftChannelId); } catch (error) { reason = error.message; }
+      const ready = Boolean(channel && channel.readiness.ready);
+      return {
+        ready,
+        mode,
+        via: 'mft',
+        mftChannelId,
+        transport: channel ? channel.readiness.transport : null,
+        provider: channel ? `MFT ${channel.name}${channel.bankName ? ` (${channel.bankName})` : ''}` : `MFT channel ${mftChannelId}`,
+        partnerId: null,
+        reason: ready ? null : (reason || `MFT channel ${mftChannelId} cannot transmit: ${channel.readiness.blockers.join('; ')}`),
+      };
+    }
 
     let production = null;
     try { production = await SystemSettings.getProductionPartnerConfig(); } catch { production = null; }

@@ -13,6 +13,7 @@ const { WireIdempotencyVault } = require('../server/integrations/inhouseBank/wir
 const { WireHostToHostEngine } = require('../server/integrations/inhouseBank/wire/wireHostToHostEngine');
 const { InHouseBankEngine } = require('../server/integrations/inhouseBank/inHouseBankEngine');
 const { DualLedgerEngine } = require('../server/integrations/inhouseBank/dualLedgerEngine');
+const { MftOsEngine, MftError } = require('../server/integrations/os/mftOsEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 type Row = Record<string, any>;
@@ -341,8 +342,44 @@ describe('wire idempotency vault and engine', () => {
   afterEach(() => {
     pool.query = originalQuery;
     delete process.env.WIRE_H2H_SPOOL_DIR;
+    delete process.env.WIRE_H2H_MFT_CHANNEL;
     fs.rmSync(dir, { recursive: true, force: true });
     vi.restoreAllMocks();
+  });
+
+  it('hands the file to the MFT register when the channel is pointed at it, keeping its own vault and ledger trail', async () => {
+    process.env.WIRE_H2H_MFT_CHANNEL = 'default';
+    expect(getWireChannelConfig()).toMatchObject({ transport: 'mft', mftChannelId: 'default' });
+    expect(WireHostToHostEngine.readiness()).toMatchObject({ ready: true, transport: 'mft' });
+    vi.spyOn(MftOsEngine, 'transportFor').mockResolvedValue({ transport: 'sftp', host: 'sftp.bank.test', outboundPath: '/wire/outbound', ackPath: '/wire/ack', returnPath: '/wire/returns' } as any);
+    const deliver = vi.spyOn(MftOsEngine, 'deliver').mockResolvedValue({
+      transmitted: true, replay: false, file: { fileId: 'MFT-1', remotePath: '/wire/outbound/PTCWIRE_20260201T120000_IHB-1.xml' },
+    } as any);
+    (InHouseBankEngine.require as any).mockResolvedValue(dispatchedPayment({
+      initiatedBy: 'trustee-one', approvals: [{ approver: 'trustee-two', approvedAt: '2026-02-01T11:00:00.000Z' }],
+    }));
+
+    const result = await WireHostToHostEngine.transmit('IHB-1', { actor: 'operator-a' });
+    expect(result).toMatchObject({ transmitted: true, mftFileId: 'MFT-1' });
+    expect(result.transmission).toMatchObject({ state: 'transmitted', remotePath: '/wire/outbound/PTCWIRE_20260201T120000_IHB-1.xml' });
+    expect(deliver).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'default', fileType: 'wire_payment', format: 'pacs.008', content: PACS008,
+      filename: 'PTCWIRE_20260201T120000_IHB-1.xml', sourceRef: 'wire:IHB-1', builtBy: 'trustee-one', approvedBy: 'trustee-two', actor: 'operator-a',
+    }));
+    expect(fs.existsSync(path.join(dir, 'wire', 'outbound'))).toBe(false);
+
+    const second = await WireHostToHostEngine.transmit('IHB-1', { actor: 'operator-b' });
+    expect(second).toMatchObject({ transmitted: false, replay: true });
+    expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('a refusal by the register leaves the wire failed and retryable, with the register\'s reason', async () => {
+    process.env.WIRE_H2H_MFT_CHANNEL = 'default';
+    vi.spyOn(MftOsEngine, 'transportFor').mockResolvedValue({ transport: 'spool', outboundPath: '/wire/outbound' } as any);
+    vi.spyOn(MftOsEngine, 'deliver').mockRejectedValue(new MftError('the builder cannot release the file', 'MFT_FOUR_EYES', 403));
+
+    await expect(WireHostToHostEngine.transmit('IHB-1', { actor: 'operator-a' })).rejects.toMatchObject({ code: 'MFT_FOUR_EYES' });
+    expect(state.transmissions[0].state).toBe('failed');
   });
 
   it('transmits a dispatched payment exactly once, however many times it is pushed', async () => {
