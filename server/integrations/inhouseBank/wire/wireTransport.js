@@ -149,6 +149,11 @@ class SftpSession {
     return target;
   }
 
+  async remove(remotePath) {
+    await this._call('unlink', remotePath);
+    return true;
+  }
+
   async close() {
     try { this._conn.end(); } catch { /* connection already gone */ }
   }
@@ -207,6 +212,11 @@ class SpoolSession {
     await fsp.mkdir(path.dirname(target), { recursive: true });
     await fsp.rename(this._local(fromPath), target);
     return `${toDir}/${filename}`;
+  }
+
+  async remove(remotePath) {
+    await fsp.unlink(this._local(remotePath));
+    return true;
   }
 
   async close() {
