@@ -236,20 +236,23 @@ class LiliMcpEngine {
     return await res.json();
   }
 
-  static async getAccessToken() {
+  static async getAccessToken({ forceRefresh = false } = {}) {
     const cfg = await this.getConfig();
     if (!this.isConfigured(cfg)) return null;
-    if (cfg.accessToken) return cfg.accessToken;
+    if (cfg.accessToken && !forceRefresh) return cfg.accessToken;
     if (cfg.refreshToken) {
       try {
         const refreshed = await this._refreshAccessToken(cfg);
         return refreshed.access_token;
       } catch (e) {
+        this._lastRefreshError = e.message;
         return null;
       }
     }
     return null;
   }
+
+  static _lastRefreshError = null;
 
   static async _refreshAccessToken(cfg) {
     if (!cfg.refreshToken || !cfg.clientId) throw new Error('Refresh token and client id required');
@@ -267,12 +270,15 @@ class LiliMcpEngine {
     if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status} ${await res.text()}`);
     const data = await res.json();
     if (!data.access_token) throw new Error('OAuth refresh did not return access_token');
+    await setSetting('LILI_OAUTH_ACCESS_TOKEN', safeEncrypt(data.access_token));
+    if (data.refresh_token) await setSetting('LILI_OAUTH_REFRESH_TOKEN', safeEncrypt(data.refresh_token));
+    this._lastRefreshError = null;
     return data;
   }
 
   static _sessionId = null;
 
-  static async _mcpPost(body, { accessToken } = {}) {
+  static async _mcpPost(body, { accessToken, retried = false } = {}) {
     const cfg = await this.getConfig();
     const token = accessToken || await this.getAccessToken();
     if (!token) throw new Error('Lili MCP not authenticated');
@@ -291,6 +297,11 @@ class LiliMcpEngine {
     if (sessionId) this._sessionId = sessionId;
     const contentType = res.headers.get('content-type') || '';
     const text = await res.text();
+    if (res.status === 401 && !retried && !accessToken) {
+      const fresh = await this.getAccessToken({ forceRefresh: true });
+      if (fresh && fresh !== token) return this._mcpPost(body, { accessToken: fresh, retried: true });
+      throw new Error(`Lili MCP session expired and refresh failed${this._lastRefreshError ? `: ${this._lastRefreshError}` : ''}; re-run the OAuth capture (liliMcpOAuthSetup.js)`);
+    }
     if (!res.ok && !contentType.includes('event-stream')) {
       throw new Error(`MCP request failed: ${res.status} ${text}`);
     }
