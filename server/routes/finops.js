@@ -68,6 +68,7 @@ const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorE
 const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
 const { LiveFinTechEndpointEngine } = require('../integrations/dapp/liveFintechEndpointEngine');
 const { CorporateTreasuryEngine } = require('../integrations/finops/corporateTreasuryEngine');
+const { PtcCashManagementEngine } = require('../integrations/finops/ptcCashManagementEngine');
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
 const { HostToHostEngine } = require('../integrations/dapp/hostToHostEngine');
@@ -2831,6 +2832,61 @@ router.post('/corporate-treasury/workflows/:id/approve', operatorAuth, async (re
 
 router.post('/corporate-treasury/workflows/:id/execute', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CorporateTreasuryEngine.executeWorkflow(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ── PTC Digital Cash Management Account ──────────────────────────────────
+const cmaActor = req => (req.body && (req.body.actor || req.body.createdBy)) || getUserId(req);
+
+router.get('/ptc-cma', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.getOverview() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcCashManagementEngine.provision({ ...(req.body || {}), createdBy: cmaActor(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma/rebalance-all', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.rebalanceAll({ actor: cmaActor(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc-cma/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await PtcCashManagementEngine.getAccount(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc-cma/:id/position', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.getPosition(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc-cma/:id/movements', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.listMovements(req.params.id, { limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc-cma/:id/history', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.getLiquidityHistory(req.params.id, { limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.patch('/ptc-cma/:id/policy', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.updatePolicy(req.params.id, req.body || {}, cmaActor(req)) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma/:id/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.setStatus(req.params.id, req.body && req.body.status) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma/:id/rebalance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcCashManagementEngine.rebalance(req.params.id, { actor: cmaActor(req), dryRun: Boolean(req.body && req.body.dryRun) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma/:id/fund', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcCashManagementEngine.recordFunding(req.params.id, { ...(req.body || {}), createdBy: cmaActor(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-cma/:id/disburse', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcCashManagementEngine.disburse(req.params.id, { ...(req.body || {}), createdBy: cmaActor(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
