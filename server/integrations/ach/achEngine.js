@@ -163,6 +163,20 @@ class ACHEngine {
     const nachaContent = batch.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
 
+    // Third-Party Sender preflight: ODFI agreement, approved Originator, limits, return rates.
+    // Advisory unless TPS_OS_ENFORCE=true, in which case a blocked preflight refuses transmission.
+    const { TpsOsEngine } = require('../os/thirdPartySenderOsEngine');
+    let tpsPreflight = null;
+    try {
+      tpsPreflight = await TpsOsEngine.gateTransmission(batch, { actor: actor || approvedBy });
+    } catch (e) {
+      if (e.code === 'TPS_PREFLIGHT_BLOCKED') throw e;
+      console.warn(`[ACH] transmitBatch(${batchId}): TPS preflight unavailable — ${e.message}`);
+    }
+    if (tpsPreflight && !tpsPreflight.allowed) {
+      console.warn(`[ACH] transmitBatch(${batchId}): TPS preflight advisory blockers — ${tpsPreflight.blockers.join('; ')}`);
+    }
+
     // Check system mode — production routes to configured external bank endpoint
     const { SystemSettings } = require('./systemSettings');
     const systemMode = await SystemSettings.getMode();
