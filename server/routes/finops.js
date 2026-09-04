@@ -54,6 +54,7 @@ const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDeposi
 const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRailEngine');
 const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
 const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
+const { LiliDirectDepositEngine } = require('../integrations/payments/liliDirectDepositEngine');
 const { NickelMcpEngine } = require('../integrations/os/osEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 const { PaymentComplianceGate } = require('../integrations/compliance/paymentComplianceGate');
@@ -2205,6 +2206,52 @@ router.post('/compliance/screenings/:id/approve', operatorAuth, writeRateLimiter
 
 router.post('/compliance/screenings/:id/block', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await ComplianceEngine.block(req.params.id, { ...req.body, reviewedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Lili Direct Deposit (ACH credit → ODFI → Lili, reconciled via MCP) ─────
+
+router.get('/lili/direct-deposits/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.getWorkflowStatus() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/destination', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.setDestination({ ...req.body, updatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/destination/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.syncDestinationFromLili({ ...req.body, updatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/direct-deposits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.listDirectDeposits(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiliDirectDepositEngine.createDirectDeposit({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/transmit-queued', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.transmitQueued({ actor: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.reconcile(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/direct-deposits/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiliDirectDepositEngine.getDirectDeposit(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Direct deposit not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/:id/transmit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.transmit(req.params.id, { approvedBy: req.body.approvedBy || null, actor: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/direct-deposits/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
