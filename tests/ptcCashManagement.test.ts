@@ -43,7 +43,7 @@ const cmaRow: any = {
   linked_bank: { provider: 'lili' }, policy: {},
 };
 
-const { PtcCashManagementEngine, DEFAULT_POLICY } = require('../server/integrations/finops/ptcCashManagementEngine');
+const { PtcCashManagementEngine, DEFAULT_POLICY, liquidityTier } = require('../server/integrations/finops/ptcCashManagementEngine');
 
 function setLedgers(op: number, rs: number, sw: number) {
   accounts['CMA-1-operating'] = { account_id: 'CMA-1-operating', balance_cents: op, available_cents: op };
@@ -60,6 +60,40 @@ describe('PtcCashManagementEngine policy', () => {
     expect(p.minOperatingCents).toBe(10000); expect(p.maxOperatingCents).toBe(30000); expect(p.reserveRatioBps).toBe(500);
     expect(() => PtcCashManagementEngine.normalizePolicy({ minOperating: 500, targetOperating: 200 })).toThrow(/minOperating <= targetOperating/);
     expect(() => PtcCashManagementEngine.normalizePolicy({ sweepInstrument: 'crypto' })).toThrow(/sweepInstrument/);
+    expect(() => PtcCashManagementEngine.normalizePolicy({ minOperating: 100, warningOperating: 50, targetOperating: 200 })).toThrow(/warningOperating/);
+  });
+
+  it('applies the signed trust liquidity policy preset (tiers, semi-annual coverage, reference)', () => {
+    const p = PtcCashManagementEngine.normalizePolicy({ preset: 'trust_lcmp_2026' });
+    expect(p).toMatchObject({ minOperatingCents: 25_000_000, warningOperatingCents: 50_000_000, targetOperatingCents: 100_000_000, maxOperatingCents: 200_000_000, minCoverageDays: 182 });
+    expect(p.reference).toMatchObject({ name: 'Liquidity & Capital Management Policy', effectiveDate: '2026-09-03' });
+    expect(PtcCashManagementEngine.normalizePolicy({ preset: 'trust_lcmp_2026', minCoverageDays: 90 }).minCoverageDays).toBe(90);
+    expect(() => PtcCashManagementEngine.normalizePolicy({ preset: 'nope' })).toThrow(/unknown policy preset/);
+    expect(liquidityTier(300_000_000, p)).toBe('optimal');
+    expect(liquidityTier(150_000_000, p)).toBe('target');
+    expect(liquidityTier(75_000_000, p)).toBe('below_target');
+    expect(liquidityTier(30_000_000, p)).toBe('warning');
+    expect(liquidityTier(185, p)).toBe('critical');
+  });
+});
+
+describe('PtcCashManagementEngine.planRebalance mandated actions', () => {
+  const trust = PtcCashManagementEngine.normalizePolicy({ preset: 'trust_lcmp_2026' });
+  it('critical floor: mandatory drawdown unwinds the whole investment sweep', () => {
+    const plan = PtcCashManagementEngine.planRebalance(pos(10_000_000, 5_000_000, 80_000_000, trust));
+    expect(plan.moves[0]).toMatchObject({ fromLedger: 'investment_sweep', toLedger: 'operating', amountCents: 80_000_000 });
+    expect(plan.projected.investment_sweep).toBe(0);
+    expect(plan.liquidityTier).toBe('below_target');
+  });
+  it('warning tier: excess reserve is held, not released to investments', () => {
+    // liquid $400k (< $500k warning): reserve above the 10% requirement stays put
+    const held = PtcCashManagementEngine.planRebalance(pos(30_000_000, 10_000_000, 0, trust));
+    expect(held.discretionarySweepsSuspended).toBe(true);
+    expect(held.moves.filter(m => m.toLedger === 'investment_sweep')).toEqual([]);
+    // liquid $600k (above warning): the same excess reserve is released
+    const released = PtcCashManagementEngine.planRebalance(pos(50_000_000, 10_000_000, 0, trust));
+    expect(released.discretionarySweepsSuspended).toBe(false);
+    expect(released.moves).toContainEqual(expect.objectContaining({ fromLedger: 'liquidity_reserve', toLedger: 'investment_sweep' }));
   });
 });
 
