@@ -46,7 +46,8 @@ function cents(opts, centsKey, dollarKey, dflt = 0) {
 }
 
 const DEFAULT_POLICY = {
-  minOperatingCents: 25000000,      // $250k floor
+  minOperatingCents: 25000000,      // $250k critical floor
+  warningOperatingCents: 50000000,  // $500k caution level → discretionary sweeps suspended
   targetOperatingCents: 50000000,   // $500k target
   maxOperatingCents: 100000000,     // $1M ceiling → sweep excess
   reserveRatioBps: 1000,            // 10% of CMA cash held in liquidity reserve
@@ -54,7 +55,56 @@ const DEFAULT_POLICY = {
   sweepInstrument: 'mmf',
   sweepYieldBps: 450,
   autoRebalance: true,
+  reference: null,                  // { name, effectiveDate, reviewFrequency, adoptedBy[] } of the governing written policy
 };
+
+/**
+ * Policy presets. `trust_lcmp_2026` encodes the signed DeAndrea Lavar Barkley Trust Company
+ * "Liquidity & Capital Management Policy" (effective 2026-09-03, executed 2026-09-04):
+ *   Optimal ≥ $2M · Target minimum $1M · Warning $500k · Critical floor < $250k
+ *   $1M coupon inflow/yr in two $500k semi-annual installments; $2M outflows/yr ($1M per semi-annual cycle)
+ *   Liquidity buffer 1% of $100M AUM; target minimum must cover one full semi-annual distribution cycle.
+ */
+const POLICY_PRESETS = {
+  trust_lcmp_2026: {
+    minOperatingCents: 25000000,
+    warningOperatingCents: 50000000,
+    targetOperatingCents: 100000000,
+    maxOperatingCents: 200000000,
+    reserveRatioBps: 1000,
+    minCoverageDays: 182,
+    sweepInstrument: 't_bill',
+    sweepYieldBps: 450,
+    autoRebalance: true,
+    reference: {
+      name: 'Liquidity & Capital Management Policy',
+      issuer: 'DeAndrea Lavar Barkley Trust Company (Custodian and Issuer)',
+      trust: 'DeAndrea Lavar Barkley Irrevocable Trust',
+      effectiveDate: '2026-09-03',
+      executedDate: '2026-09-04',
+      reviewFrequency: 'semi-annual / on-demand',
+      adoptedBy: ['DeAndre Barkley (Managing Trustee / Issuer)', 'Melissa Robinson (Co-Trustee / Custodian Delegate)'],
+      aumCents: 10000000000000,
+      allocation: { coreFixedIncomeBps: 9700, successionReserveBps: 200, liquidityBufferBps: 100 },
+      cashFlows: { couponInflowPerCycleCents: 50000000, outflowPerCycleCents: 100000000, cycleMonths: 6 },
+      tiers: {
+        optimal: { thresholdCents: 200000000, action: 'Standard execution of semi-annual distributions & operating budgets' },
+        target_minimum: { thresholdCents: 100000000, action: 'Covers 1 full semi-annual distribution cycle; maintain strict monitoring' },
+        warning: { thresholdCents: 50000000, action: 'Suspend discretionary capital allocations; review upcoming bond maturities' },
+        critical: { thresholdCents: 25000000, action: 'Emergency liquidity state: immediate Co-Trustee meeting; mandatory liquidity drawdown protocol' },
+      },
+    },
+  },
+};
+
+/** Liquidity tier of liquid cash (operating + reserve) against the policy thresholds. */
+function liquidityTier(liquidCents, pol) {
+  if (liquidCents < pol.minOperatingCents) return 'critical';
+  if (liquidCents < pol.warningOperatingCents) return 'warning';
+  if (liquidCents < pol.targetOperatingCents) return 'below_target';
+  if (liquidCents < pol.maxOperatingCents) return 'target';
+  return 'optimal';
+}
 
 class PtcCashManagementEngine {
   static async ensureTables() {
@@ -108,19 +158,35 @@ class PtcCashManagementEngine {
   }
 
   static normalizePolicy(input = {}, base = DEFAULT_POLICY) {
+    if (input.preset) {
+      const preset = POLICY_PRESETS[input.preset];
+      if (!preset) throw new Error(`unknown policy preset '${input.preset}' (expected ${Object.keys(POLICY_PRESETS).join('|')})`);
+      const { preset: _p, ...overrides } = input;
+      return this.normalizePolicy(overrides, { ...base, ...preset });
+    }
+    const minOperatingCents = cents(input, 'minOperatingCents', 'minOperating', base.minOperatingCents);
+    const targetOperatingCents = cents(input, 'targetOperatingCents', 'targetOperating', base.targetOperatingCents);
+    // An unspecified warning threshold inherits the base value, clamped into [floor, target] so tightening the
+    // floor/target alone never produces an inconsistent policy.
+    const inheritedWarning = Math.min(Math.max(base.warningOperatingCents !== undefined ? base.warningOperatingCents : minOperatingCents, minOperatingCents), targetOperatingCents);
     const p = {
       ...base,
-      minOperatingCents: cents(input, 'minOperatingCents', 'minOperating', base.minOperatingCents),
-      targetOperatingCents: cents(input, 'targetOperatingCents', 'targetOperating', base.targetOperatingCents),
+      minOperatingCents,
+      warningOperatingCents: cents(input, 'warningOperatingCents', 'warningOperating', inheritedWarning),
+      targetOperatingCents,
       maxOperatingCents: cents(input, 'maxOperatingCents', 'maxOperating', base.maxOperatingCents),
       reserveRatioBps: input.reserveRatioBps !== undefined ? Number(input.reserveRatioBps) : base.reserveRatioBps,
       minCoverageDays: input.minCoverageDays !== undefined ? Number(input.minCoverageDays) : base.minCoverageDays,
       sweepInstrument: input.sweepInstrument || base.sweepInstrument,
       sweepYieldBps: input.sweepYieldBps !== undefined ? Number(input.sweepYieldBps) : base.sweepYieldBps,
       autoRebalance: input.autoRebalance !== undefined ? Boolean(input.autoRebalance) : base.autoRebalance,
+      reference: input.reference !== undefined ? (input.reference || null) : (base.reference || null),
     };
     if (p.minOperatingCents < 0 || p.targetOperatingCents < p.minOperatingCents || p.maxOperatingCents < p.targetOperatingCents) {
       throw new Error('policy requires 0 <= minOperating <= targetOperating <= maxOperating');
+    }
+    if (p.warningOperatingCents < p.minOperatingCents || p.warningOperatingCents > p.targetOperatingCents) {
+      throw new Error('policy requires minOperating <= warningOperating <= targetOperating');
     }
     if (p.reserveRatioBps < 0 || p.reserveRatioBps > 10000) throw new Error('reserveRatioBps must be 0..10000');
     if (!['mmf', 't_bill', 'repo', 'term_deposit'].includes(p.sweepInstrument)) throw new Error('sweepInstrument must be mmf, t_bill, repo or term_deposit');
@@ -287,9 +353,14 @@ class PtcCashManagementEngine {
     const requiredReserveCents = Math.round(totalCents * pol.reserveRatioBps / 10000);
 
     const bank = await this.getLinkedBankBalance(row);
+    const tier = liquidityTier(liquidCents, pol);
+    const tierRef = pol.reference && pol.reference.tiers && pol.reference.tiers[tier === 'below_target' ? 'warning' : tier === 'target' ? 'target_minimum' : tier];
 
     const alerts = [];
     if (ledgers.operating < pol.minOperatingCents) alerts.push({ level: 'critical', code: 'OPERATING_BELOW_MIN', message: `Operating ${dollars(ledgers.operating)} below floor ${dollars(pol.minOperatingCents)}` });
+    if (tier === 'critical') alerts.push({ level: 'critical', code: 'LIQUIDITY_CRITICAL', message: `Liquid cash ${dollars(liquidCents)} below critical floor ${dollars(pol.minOperatingCents)} — ${tierRef ? tierRef.action : 'emergency liquidity state; unwind sweep, no discretionary allocations'}` });
+    else if (tier === 'warning') alerts.push({ level: 'warning', code: 'LIQUIDITY_WARNING', message: `Liquid cash ${dollars(liquidCents)} below warning threshold ${dollars(pol.warningOperatingCents)} — ${tierRef ? tierRef.action : 'discretionary capital allocations suspended'}` });
+    else if (tier === 'below_target') alerts.push({ level: 'info', code: 'LIQUIDITY_BELOW_TARGET', message: `Liquid cash ${dollars(liquidCents)} below target minimum ${dollars(pol.targetOperatingCents)} — strict monitoring` });
     if (ledgers.operating > pol.maxOperatingCents) alerts.push({ level: 'info', code: 'OPERATING_ABOVE_MAX', message: `Operating ${dollars(ledgers.operating)} above ceiling ${dollars(pol.maxOperatingCents)} — excess sweepable` });
     if (ledgers.liquidity_reserve < requiredReserveCents) alerts.push({ level: 'warning', code: 'RESERVE_SHORTFALL', message: `Reserve ${dollars(ledgers.liquidity_reserve)} below required ${dollars(requiredReserveCents)}` });
     if (coverageDays !== null && coverageDays < pol.minCoverageDays) alerts.push({ level: 'warning', code: 'COVERAGE_SHORT', message: `Liquid cash covers ${coverageDays}d of forecast outflows (< ${pol.minCoverageDays}d)` });
@@ -302,6 +373,7 @@ class PtcCashManagementEngine {
       requiredReserveCents, excessOperatingCents: Math.max(0, ledgers.operating - pol.maxOperatingCents),
       operatingShortfallCents: Math.max(0, pol.minOperatingCents - ledgers.operating),
       forecast: { horizonDays: horizon, inflowsCents, outflowsCents, dailyBurnCents: Math.round(dailyBurnCents), coverageDays, coverageRatio },
+      liquidityTier: tier, mandatedAction: tierRef ? tierRef.action : null, discretionarySweepsSuspended: tier === 'critical' || tier === 'warning',
       linkedBank: bank, alerts, health: alerts.some(a => a.level === 'critical') ? 'critical' : alerts.some(a => a.level === 'warning') ? 'warning' : 'healthy',
     };
     await pool.query('INSERT INTO ptc_cma_liquidity_snapshots (cma_id, snapshot) VALUES ($1,$2)', [row.cma_id, JSON.stringify(snapshot)]).catch(() => {});
@@ -319,7 +391,12 @@ class PtcCashManagementEngine {
 
     const total = L.operating + L.liquidity_reserve + L.investment_sweep;
     const requiredReserve = Math.round(total * pol.reserveRatioBps / 10000);
+    const warningCents = pol.warningOperatingCents !== undefined ? pol.warningOperatingCents : pol.minOperatingCents;
 
+    // 0. Critical floor (emergency liquidity state): mandatory drawdown — unwind the whole sweep into operating.
+    if (L.operating + L.liquidity_reserve < pol.minOperatingCents) {
+      push('investment_sweep', 'operating', L.investment_sweep, 'Critical floor breached — mandatory liquidity drawdown from investment sweep');
+    }
     // 1. Operating floor: pull from sweep first, then reserve.
     if (L.operating < pol.minOperatingCents) {
       const need = pol.targetOperatingCents - L.operating;
@@ -331,7 +408,7 @@ class PtcCashManagementEngine {
       const need = requiredReserve - L.liquidity_reserve;
       push('operating', 'liquidity_reserve', Math.min(need, Math.max(0, L.operating - pol.targetOperatingCents)), 'Fund liquidity reserve from operating');
       if (L.liquidity_reserve < requiredReserve) push('investment_sweep', 'liquidity_reserve', Math.min(requiredReserve - L.liquidity_reserve, L.investment_sweep), 'Fund liquidity reserve from investment sweep');
-    } else if (L.liquidity_reserve > requiredReserve) {
+    } else if (L.liquidity_reserve > requiredReserve && L.operating + L.liquidity_reserve >= warningCents) {
       push('liquidity_reserve', 'investment_sweep', L.liquidity_reserve - requiredReserve, 'Release excess reserve to investment sweep');
     }
     // 3. Coverage: liquid cash (operating + reserve) must cover minCoverageDays of forecast outflows.
@@ -340,10 +417,12 @@ class PtcCashManagementEngine {
     const liquid = L.operating + L.liquidity_reserve;
     if (liquid < requiredLiquid) push('investment_sweep', 'operating', Math.min(requiredLiquid - liquid, L.investment_sweep), `Unwind sweep to cover ${pol.minCoverageDays}d of forecast outflows`);
     // 4. Operating ceiling: sweep excess into investments, down to target (or the coverage floor if higher).
+    //    Discretionary sweeps are suspended while liquid cash sits at or below the warning threshold.
     const sweepFloor = Math.max(pol.targetOperatingCents, requiredLiquid - L.liquidity_reserve);
-    if (L.operating > pol.maxOperatingCents && L.operating > sweepFloor) push('operating', 'investment_sweep', L.operating - sweepFloor, 'Sweep excess operating cash to investments');
+    const sweepsSuspended = L.operating + L.liquidity_reserve < warningCents;
+    if (!sweepsSuspended && L.operating > pol.maxOperatingCents && L.operating > sweepFloor) push('operating', 'investment_sweep', L.operating - sweepFloor, 'Sweep excess operating cash to investments');
 
-    return { moves, projected: L, requiredReserveCents: requiredReserve, requiredLiquidCents: requiredLiquid };
+    return { moves, projected: L, requiredReserveCents: requiredReserve, requiredLiquidCents: requiredLiquid, liquidityTier: liquidityTier(L.operating + L.liquidity_reserve, { ...pol, warningOperatingCents: warningCents }), discretionarySweepsSuspended: sweepsSuspended };
   }
 
   static async rebalance(cmaId, { actor = 'system', dryRun = false } = {}) {
@@ -475,9 +554,10 @@ class PtcCashManagementEngine {
       rails: { wire: Boolean(WireEngine), ach_lili: Boolean(LiliDirectDepositEngine), lili_balance_feed: Boolean(LiliMcpEngine) },
       subLedgers: SUB_LEDGERS,
       defaultPolicy: DEFAULT_POLICY,
+      policyPresets: Object.fromEntries(Object.entries(POLICY_PRESETS).map(([k, p]) => [k, { name: p.reference && p.reference.name, effectiveDate: p.reference && p.reference.effectiveDate, minOperatingCents: p.minOperatingCents, warningOperatingCents: p.warningOperatingCents, targetOperatingCents: p.targetOperatingCents, maxOperatingCents: p.maxOperatingCents, minCoverageDays: p.minCoverageDays }])),
       accounts,
     };
   }
 }
 
-module.exports = { PtcCashManagementEngine, DEFAULT_POLICY, SUB_LEDGERS, RAILS };
+module.exports = { PtcCashManagementEngine, DEFAULT_POLICY, POLICY_PRESETS, SUB_LEDGERS, RAILS, liquidityTier };

@@ -7268,13 +7268,18 @@
     if (cma) {
       const p = cma.position; const pol = p.policy; const L = p.ledgersUsd; const f = p.forecast; const bank = p.linkedBank || {};
       const alerts = (p.alerts || []).map(a => `<div class="status ${a.level === 'critical' ? 'err' : ''}" style="margin-top:4px;">[${a.level}] ${a.message}</div>`).join('') || '<div class="muted">No liquidity alerts — within policy</div>';
+      const tier = p.liquidityTier || '';
+      const tierBadge = tier ? `<span class="badge ${tier === 'critical' ? 'failed' : tier === 'warning' ? 'pending' : 'active'}">${tier.replace('_', ' ')}</span>` : '';
+      const ref = pol.reference;
+      const refLine = ref ? `<div class="muted" style="font-size:11px; margin-top:4px">Governing policy: <b>${ref.name}</b>${ref.effectiveDate ? ' · effective ' + ref.effectiveDate : ''}${ref.reviewFrequency ? ' · review ' + ref.reviewFrequency : ''}${ref.adoptedBy ? ' · adopted by ' + ref.adoptedBy.join(', ') : ''}</div>` : '<div class="muted" style="font-size:11px; margin-top:4px">No written policy reference attached — apply a preset below.</div>';
+      const presets = Object.entries(ov.policyPresets || {});
       const movRows = (movements || []).map(m => `<tr><td>${new Date(m.created_at).toLocaleString()}</td><td>${m.kind}</td><td>${m.rail}</td><td>${m.from_ledger || (m.direction === 'in' ? 'external' : '')} → ${m.to_ledger || (m.direction === 'out' ? 'external' : '')}</td><td>${fmt(m.amount_usd, 2)}</td><td><span class="badge ${m.status}">${m.status}</span></td><td>${m.external_ref || ''}</td><td>${m.reason || ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No movements</td></tr>';
       detail =
         '<div class="card" style="background:#0b1220;">' +
           `<h3>${cma.name} <span class="badge ${cma.status === 'active' ? 'active' : 'inactive'}">${cma.status}</span> <span class="muted" style="font-size:12px">${cma.cma_id} · ${cma.ptc_entity_id} · ${cma.trust_id}</span></h3>` +
           '<div style="display:grid; grid-template-columns: repeat(5, 1fr); gap:12px;">' +
             `<div><div class="muted">Total CMA Cash</div><div style="font-size:20px; font-weight:700;">${fmt(p.totalUsd, 2)}</div></div>` +
-            `<div><div class="muted">Operating</div><div style="font-size:20px; font-weight:700;">${fmt(L.operating, 2)}</div><div class="muted" style="font-size:11px">floor ${fmt(pol.minOperatingCents/100,0)} · target ${fmt(pol.targetOperatingCents/100,0)} · ceiling ${fmt(pol.maxOperatingCents/100,0)}</div></div>` +
+            `<div><div class="muted">Operating ${tierBadge}</div><div style="font-size:20px; font-weight:700;">${fmt(L.operating, 2)}</div><div class="muted" style="font-size:11px">floor ${fmt(pol.minOperatingCents/100,0)} · warning ${fmt((pol.warningOperatingCents !== undefined ? pol.warningOperatingCents : pol.minOperatingCents)/100,0)} · target ${fmt(pol.targetOperatingCents/100,0)} · optimal ${fmt(pol.maxOperatingCents/100,0)}</div></div>` +
             `<div><div class="muted">Liquidity Reserve</div><div style="font-size:20px; font-weight:700;">${fmt(L.liquidity_reserve, 2)}</div><div class="muted" style="font-size:11px">required ${fmt(p.requiredReserveCents/100,0)} (${pol.reserveRatioBps/100}%)</div></div>` +
             `<div><div class="muted">Investment Sweep</div><div style="font-size:20px; font-weight:700;">${fmt(L.investment_sweep, 2)}</div><div class="muted" style="font-size:11px">${pol.sweepInstrument.toUpperCase()} @ ${pol.sweepYieldBps/100}%</div></div>` +
             `<div><div class="muted">Coverage (${f.horizonDays}d outflows)</div><div style="font-size:20px; font-weight:700;">${f.coverageDays === null ? '—' : f.coverageDays + 'd'}</div><div class="muted" style="font-size:11px">out ${fmt(f.outflowsCents/100,0)} · in ${fmt(f.inflowsCents/100,0)}</div></div>` +
@@ -7287,12 +7292,14 @@
             `<button class="btn btn-sm" onclick="cmaSetStatus('${cma.cma_id}', '${cma.status === 'active' ? 'frozen' : 'active'}')">${cma.status === 'active' ? 'Freeze' : 'Unfreeze'}</button>` +
           '</div>' +
           '<div id="cma-status" class="status hidden"></div>' +
+          (p.mandatedAction ? `<div class="status ${tier === 'critical' ? 'err' : ''}" style="margin-top:8px">Mandated action (${tier.replace('_', ' ')}): ${p.mandatedAction}${p.discretionarySweepsSuspended ? ' — discretionary sweeps to investments are suspended by the rebalancer' : ''}</div>` : '') +
           '<div style="margin-top:8px;"><h4 style="margin:4px 0">Liquidity Alerts</h4>' + alerts + '</div>' +
         '</div>' +
         '<div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">' +
           '<div class="card" style="background:#0b1220;">' +
-            '<h3>Liquidity Policy</h3>' +
-            `<div class="token-bar"><input id="cma-pol-min" type="number" step="0.01" style="flex:1" value="${pol.minOperatingCents/100}" placeholder="Operating floor USD" /><input id="cma-pol-target" type="number" step="0.01" style="flex:1" value="${pol.targetOperatingCents/100}" placeholder="Operating target USD" /><input id="cma-pol-max" type="number" step="0.01" style="flex:1" value="${pol.maxOperatingCents/100}" placeholder="Operating ceiling USD" /></div>` +
+            '<h3>Liquidity Policy</h3>' + refLine +
+            (presets.length ? `<div class="token-bar" style="margin-top:6px"><select id="cma-pol-preset">${presets.map(([k, v]) => `<option value="${k}">${v.name || k} (floor ${fmt(v.minOperatingCents/100,0)} · warning ${fmt(v.warningOperatingCents/100,0)} · target ${fmt(v.targetOperatingCents/100,0)} · optimal ${fmt(v.maxOperatingCents/100,0)} · ${v.minCoverageDays}d)</option>`).join('')}</select><button class="btn btn-sm" onclick="cmaApplyPreset('${cma.cma_id}')">Apply signed policy</button></div>` : '') +
+            `<div class="token-bar"><input id="cma-pol-min" type="number" step="0.01" style="flex:1" value="${pol.minOperatingCents/100}" placeholder="Critical floor USD" title="Critical floor" /><input id="cma-pol-warn" type="number" step="0.01" style="flex:1" value="${(pol.warningOperatingCents !== undefined ? pol.warningOperatingCents : pol.minOperatingCents)/100}" placeholder="Warning threshold USD" title="Warning threshold" /><input id="cma-pol-target" type="number" step="0.01" style="flex:1" value="${pol.targetOperatingCents/100}" placeholder="Target minimum USD" title="Target minimum" /><input id="cma-pol-max" type="number" step="0.01" style="flex:1" value="${pol.maxOperatingCents/100}" placeholder="Optimal level USD" title="Optimal level / sweep ceiling" /></div>` +
             `<div class="token-bar"><input id="cma-pol-reserve" type="number" style="flex:1" value="${pol.reserveRatioBps}" placeholder="Reserve ratio (bps)" /><input id="cma-pol-days" type="number" style="flex:1" value="${pol.minCoverageDays}" placeholder="Min coverage days" />` +
             `<select id="cma-pol-inst">${['mmf','t_bill','repo','term_deposit'].map(i => `<option value="${i}" ${i===pol.sweepInstrument?'selected':''}>${i}</option>`).join('')}</select><input id="cma-pol-yield" type="number" style="width:90px" value="${pol.sweepYieldBps}" placeholder="Yield bps" /></div>` +
             `<div class="token-bar"><label><input type="checkbox" id="cma-pol-auto" ${pol.autoRebalance ? 'checked' : ''}/> Auto-rebalance</label></div>` +
@@ -7369,11 +7376,18 @@
   async function cmaSavePolicy(id) {
     try {
       await api('/api/finops/ptc-cma/' + id + '/policy', { method: 'PATCH', body: JSON.stringify({
-        minOperating: Number(el('cma-pol-min').value), targetOperating: Number(el('cma-pol-target').value), maxOperating: Number(el('cma-pol-max').value),
+        minOperating: Number(el('cma-pol-min').value), warningOperating: Number(el('cma-pol-warn').value), targetOperating: Number(el('cma-pol-target').value), maxOperating: Number(el('cma-pol-max').value),
         reserveRatioBps: Number(el('cma-pol-reserve').value), minCoverageDays: Number(el('cma-pol-days').value),
         sweepInstrument: el('cma-pol-inst').value, sweepYieldBps: Number(el('cma-pol-yield').value), autoRebalance: el('cma-pol-auto').checked,
       }) });
       openPtcCmaPanel(id, { msg: 'Policy saved', target: 'cma-pol-status' });
+    } catch(e) { show(e.message, true, 'cma-pol-status'); }
+  }
+  async function cmaApplyPreset(id) {
+    try {
+      const preset = el('cma-pol-preset').value;
+      await api('/api/finops/ptc-cma/' + id + '/policy', { method: 'PATCH', body: JSON.stringify({ preset }) });
+      openPtcCmaPanel(id, { msg: 'Applied policy preset ' + preset, target: 'cma-pol-status' });
     } catch(e) { show(e.message, true, 'cma-pol-status'); }
   }
   async function cmaFund(id) {
