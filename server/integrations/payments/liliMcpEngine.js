@@ -264,7 +264,7 @@ class LiliMcpEngine {
     if (cfg.accessToken && !forceRefresh) return cfg.accessToken;
     if (cfg.refreshToken) {
       try {
-        const refreshed = await this._refreshAccessToken(cfg);
+        const refreshed = await this._refreshSingleFlight(cfg);
         return refreshed.access_token;
       } catch (e) {
         this._lastRefreshError = e.message;
@@ -275,6 +275,18 @@ class LiliMcpEngine {
   }
 
   static _lastRefreshError = null;
+  static _refreshInFlight = null;
+
+  /**
+   * Refresh tokens are rotated on each grant, so concurrent callers share one in-flight refresh: a second
+   * request presenting an already-consumed token is rejected and may revoke the grant entirely.
+   */
+  static _refreshSingleFlight(cfg) {
+    if (!this._refreshInFlight) {
+      this._refreshInFlight = this._refreshAccessToken(cfg).finally(() => { this._refreshInFlight = null; });
+    }
+    return this._refreshInFlight;
+  }
 
   static async _refreshAccessToken(cfg) {
     if (!cfg.refreshToken || !cfg.clientId) throw new Error('Refresh token and client id required');

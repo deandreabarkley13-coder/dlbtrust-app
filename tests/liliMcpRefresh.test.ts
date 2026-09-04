@@ -81,6 +81,22 @@ describe('Lili MCP — expired access tokens are refreshed and persisted', () =>
     expect(settings.LILI_OAUTH_ACCESS_TOKEN).toBe('fresh-token');
   });
 
+  it('concurrent 401s share a single refresh so the one-time refresh token is never presented twice', async () => {
+    let resolveRefresh: (v: any) => void = () => {};
+    fetchMock.mockImplementation(async (url: string, init: any) => {
+      if (url.endsWith('/oauth/token')) return new Promise(r => { resolveRefresh = r; }).then(() => response(200, { access_token: 'fresh-token', refresh_token: 'refresh-2' }));
+      if (init.headers.Authorization === 'Bearer stale-token') return response(401, '');
+      return response(200, { jsonrpc: '2.0', id: 1, result: { tools: [] } });
+    });
+    const both = Promise.all([listTools(), listTools()]);
+    await new Promise(r => setTimeout(r, 10));
+    resolveRefresh(null);
+    await both;
+    const tokenCalls = fetchMock.mock.calls.filter(c => String(c[0]).endsWith('/oauth/token'));
+    expect(tokenCalls).toHaveLength(1);
+    expect(settings.LILI_OAUTH_REFRESH_TOKEN).toBe('refresh-2');
+  });
+
   it('sends the resource indicator on refresh and exposes the last refresh error in the public status', async () => {
     fetchMock
       .mockResolvedValueOnce(response(401, ''))
