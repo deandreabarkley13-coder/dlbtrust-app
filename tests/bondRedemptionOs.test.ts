@@ -224,7 +224,8 @@ describe('Bond Redemption OS lifecycle', () => {
     expect(TrustAccountingEngine.getFundingPosition).not.toHaveBeenCalled();
     const settled = await BondRedemptionOsEngine.settleBatch(b.batchId, { settledBy: 'trustee' });
     expect(settled.status).toBe('settled');
-    expect(BondEngine.receivePrincipal).toHaveBeenCalledWith(7, 1_000_000, {});
+    expect(BondEngine.payPrincipal).toHaveBeenCalledWith(7, 1_000_000, {});
+    expect(BondEngine.receivePrincipal).not.toHaveBeenCalled();
     expect(TrustAccountingEngine.postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
       lines: [expect.objectContaining({ accountCode: GL.CASH, debitAmount: 1_000_000 }), expect.objectContaining({ accountCode: GL.BOND_INVESTMENTS, creditAmount: 1_000_000 })],
     }));
