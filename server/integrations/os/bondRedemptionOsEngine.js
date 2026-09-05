@@ -5,7 +5,7 @@
  * off the books without anyone hand-typing a principal payment.
  *
  * The bond engine already knows how to pay or receive principal on one bond
- * (`BondEngine.payPrincipal` / `receivePrincipal`), and the DataBridge already
+ * (`BondEngine.payPrincipal`), and the DataBridge already
  * carries interest accruals into the trust GL. What did not exist was the
  * process around the principal event: who called it, when the record date was
  * struck, which holders were owed what, whether the cash was there before the
@@ -86,7 +86,7 @@ const BATCH_TRANSITIONS = Object.freeze({
 const GL = Object.freeze({
   CASH: process.env.BOND_REDEMPTION_CASH_GL || '1000',
   BOND_INVESTMENTS: process.env.BOND_REDEMPTION_INVESTMENT_GL || '1100',
-  BONDS_PAYABLE: process.env.BOND_REDEMPTION_PAYABLE_GL || '2200',
+  BONDS_PAYABLE: process.env.BOND_REDEMPTION_PAYABLE_GL || '2300',
 });
 
 class BondRedemptionError extends Error {
@@ -536,7 +536,7 @@ const BondRedemptionOsEngine = {
       if (n.status === 'settled') { results.push({ noticeId: n.noticeId, status: 'settled', skipped: true }); continue; }
       try {
         const amount = dollarsFromCents(n.principalCents);
-        const bondResult = n.direction === 'issuer' ? await BondEngine.payPrincipal(n.bondId, amount, {}) : await BondEngine.receivePrincipal(n.bondId, amount, {});
+        const bondResult = await BondEngine.payPrincipal(n.bondId, amount, {});
         const bondTxnId = bondResult && bondResult.transaction ? String(bondResult.transaction.id) : (bondResult && bondResult.id ? String(bondResult.id) : null);
         const retired = bondResult && Number(bondResult.new_principal_balance ?? bondResult.new_balance ?? 1) === 0;
         if (retired && n.kind !== 'maturity') {
