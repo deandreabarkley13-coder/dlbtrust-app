@@ -236,6 +236,32 @@ class DataBridge {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Bond Redemption OS posts its own GL entry at settlement; this drains any
+   * settled notice that still has no journal entry (settled with postGl=false,
+   * or a GL failure at settlement time) so a redemption can never stay off
+   * the trust ledger.
+   */
+  static async syncBondRedemptionsToAccounting() {
+    var { BondRedemptionOsEngine } = require('../os/bondRedemptionOsEngine');
+    var syncId = 'SYNC-BOND-RDM-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var synced = 0;
+    var failed = 0;
+    var errors = [];
+    var pending = await BondRedemptionOsEngine.unpostedSettlements({ limit: 100 });
+    for (var i = 0; i < pending.length; i++) {
+      try {
+        await BondRedemptionOsEngine.postSettlementToGl(pending[i].noticeId, { postedBy: 'data_bridge' });
+        synced++;
+      } catch (e) {
+        failed++;
+        errors.push({ noticeId: pending[i].noticeId, error: e.message });
+      }
+    }
+    await DataBridge._logSync(syncId, 'bond_redemptions', 'bond_redemption_os', 'trust_accounting', synced, 0, failed, { errors: errors });
+    return { syncId: syncId, pending: pending.length, synced: synced, failed: failed, errors: errors };
+  }
+
+  /**
    * Sync settled ACH batches into trust accounting as journal entries.
    * ACH engine currently has no trust accounting integration at all.
    */
@@ -1520,6 +1546,23 @@ class DataBridge {
     } catch (e) { status.modules.trust_accounting = { error: e.message }; }
 
     try {
+      var rdmExists = await DataBridge._tableExists('bond_redemption_notices');
+      if (rdmExists) {
+        var rdm = await pool.query(`
+          SELECT COUNT(*) FILTER (WHERE status = 'settled') AS settled,
+                 COUNT(*) FILTER (WHERE status = 'settled' AND journal_entry_id IS NULL) AS unposted,
+                 COUNT(*) FILTER (WHERE status IN ('announced', 'record_struck', 'cleared', 'batched')) AS in_flight
+          FROM bond_redemption_notices`);
+        status.modules.bond_redemption_os = {
+          settled: parseInt(rdm.rows[0].settled),
+          unpostedToLedger: parseInt(rdm.rows[0].unposted),
+          inFlight: parseInt(rdm.rows[0].in_flight),
+        };
+        if (parseInt(rdm.rows[0].unposted) > 0 && status.syncHealth === 'healthy') status.syncHealth = 'degraded';
+      }
+    } catch (e) { status.modules.bond_redemption_os = { error: e.message }; }
+
+    try {
       // Fineract GL status
       var glMappings = await pool.query(`SELECT COUNT(*) AS c FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal'`);
       status.modules.fineract_gl = {
@@ -1798,6 +1841,10 @@ class DataBridge {
     // 1. Sync bonds to accounting
     try { results.bonds = await DataBridge.syncBondsToAccounting(); }
     catch (e) { results.bonds = { error: e.message }; }
+
+    // 1b. Post settled bond redemptions that have not reached the GL
+    try { results.bondRedemptions = await DataBridge.syncBondRedemptionsToAccounting(); }
+    catch (e) { results.bondRedemptions = { error: e.message }; }
 
     // 2. Sync ACH to accounting
     try { results.ach = await DataBridge.syncACHToAccounting(); }

@@ -25,6 +25,7 @@
     "trust:back-office": "node server/scripts/wealthBackOffice.js",
     "trust:token-control": "node server/scripts/tokenControl.js",
     "trust:attest": "node server/scripts/attestationOs.js",
+    "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },
