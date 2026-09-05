@@ -161,6 +161,8 @@ try { app.use('/api/mft-os', require(path.join(HD, 'server', 'routes', 'mftOs'))
 // M2M OS — machine identities, partner handshakes and the unattended delivery cycle for MFT channels
 try { app.use('/api/m2m-os', require(path.join(HD, 'server', 'routes', 'm2mOs'))); console.log('[m2m-os] loaded'); } catch(e) { console.warn('[m2m-os]', e.message); }
 try { app.use('/api/tps-os', require(path.join(HD, 'server', 'routes', 'tpsOs'))); console.log('[tps-os] loaded'); } catch(e) { console.warn('[tps-os]', e.message); }
+// Bond Redemption Clearing & Settlement OS — maturity/call notices, record-date snapshot, clearing gate, netted batches, GL posting
+try { app.use('/api/bond-redemption-os', require(path.join(HD, 'server', 'routes', 'bondRedemptionOs'))); console.log('[bond-redemption-os] loaded'); } catch(e) { console.warn('[bond-redemption-os]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }

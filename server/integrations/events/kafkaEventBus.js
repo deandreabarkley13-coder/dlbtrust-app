@@ -25,6 +25,8 @@ const TOPICS = {
   distributionSigned: 'trust.distribution.signed',
   distributionSettled: 'trust.distribution.settled',
   ledgerPosted: 'trust.ledger.posted',
+  bondRedemptionAnnounced: 'trust.bond.redemption.announced',
+  bondRedemptionSettled: 'trust.bond.redemption.settled',
 };
 
 const TOPIC_LIST = Object.values(TOPICS);
