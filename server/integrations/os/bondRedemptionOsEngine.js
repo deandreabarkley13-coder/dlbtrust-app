@@ -662,7 +662,7 @@ const BondRedemptionOsEngine = {
     const wanted = [
       [GL.CASH, 'Cash — Trust Operating', 'asset', 'cash'],
       [GL.BOND_INVESTMENTS, 'Bond Investments', 'asset', 'investment'],
-      [GL.BONDS_PAYABLE, 'Bonds Payable', 'liability', 'long_term_debt'],
+      [GL.BONDS_PAYABLE, 'Bonds Payable', 'liability', 'payable'],
     ];
     for (const [code, name, type, subType] of wanted) {
       const exists = await pool.query('SELECT 1 FROM trust_accounts WHERE account_code = $1', [code]);

@@ -5,6 +5,36 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Bond Redemption OS (backend and CLI)
+
+- Routes mount at `/api/bond-redemption-os`; the DataBridge module summary is
+  `/api/accounting/bridge/status`. The drain API is `POST /ledger/sync` under the
+  redemption prefix (CLI command is `ledger-sync`, not the HTTP path).
+- Use the standard local startup below. No external provider credentials or
+  payment rails are needed; forced funding only bypasses the local GL cash check.
+- For redemption fixtures, insert disposable rows into `bonds` and `bond_balances`
+  with a past maturity and small principal; never fully redeem the real DLB-PRB
+  bond. API/CLI principal amounts are integer cents, while bond balances are dollars.
+- API lifecycle: announce notice → record `{}` → clear → open batch with explicit
+  `noticeIds: [id]` → fund → settle. Explicit notice IDs prevent capturing unrelated
+  cleared notices. Default allocation is `trust:operating`.
+- Verify the bond balance and status independently of the returned settlement
+  status, particularly for holder-direction redemptions. `calendar` provides a
+  convenient user-visible check of outstanding principal before/after a CLI run.
+- `run --bond ID --direction holder --by ACTOR --no-gl` allows testing the deferred
+  GL path. Confirm one unposted notice, then `ledger-sync` reports `synced: 1`;
+  a second drain should report `synced: 0` and leave exactly one journal.
+- Cleanup only fixture-owned notices, allocations, batches, events, canonical
+  outbox entries, bond transactions/balances/bonds, and journals. Reverse GL balance
+  deltas from those journals before deleting them; deleting journal rows alone does
+  not undo `trust_accounts.balance`. Preserve unrelated sync logs and balances.
+- Check GL account names as well as codes: a seeded chart may already use an
+  engine default code for another purpose; the engine does not rename existing GLs.
+
+### Devin Secrets Needed
+
+- None beyond the standard local PostgreSQL and configured admin-token setup.
+
 ## URLs and credentials
 
 - Local: `http://localhost:3002` (entrypoint `server/server-3002.js`)
