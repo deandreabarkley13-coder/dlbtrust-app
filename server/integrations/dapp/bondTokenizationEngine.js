@@ -113,6 +113,11 @@ class BondTokenizationEngine {
     };
   }
 
+  /** The wallet that holds unsold units and signs live mints, burns and transfers. */
+  static operatorAddress() {
+    return getConfig().operatorAddress || null;
+  }
+
   static readiness() {
     const cfg = this.getConfig();
     const issues = [];
@@ -412,6 +417,71 @@ class BondTokenizationEngine {
   }
 
   /**
+   * Move existing units from the operator wallet to a holder. Supply does not
+   * change; the register moves the balance between the two holders in step
+   * with the ERC-20 transfer, so a subscription delivery never leaves the
+   * chain and the books disagreeing.
+   */
+  static async applyTransfer({ tokenId, amount, toAddress, fromAddress } = {}) {
+    await ensureTable();
+    const token = await this.getToken(tokenId);
+    if (token.status !== 'active') throw new Error('Token not active');
+    const units = Number(amount) || 0;
+    if (units <= 0) throw new Error('amount must be positive');
+    if (!toAddress || !/^0x[0-9a-fA-F]{40}$/.test(String(toAddress))) throw new Error('toAddress must be an EVM address');
+    const cfg = this.getConfig();
+    const from = fromAddress || getConfig().operatorAddress || 'treasury';
+    let txHash = null;
+
+    if (!cfg.shadow) {
+      if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
+      const operator = getConfig().operatorAddress || '';
+      if (!operator || String(from).toLowerCase() !== operator.toLowerCase()) {
+        throw new Error(`on-chain transfer is only possible from the operator wallet ${operator || '(unset)'}, not ${from}`);
+      }
+      const { wallet, publicClient, fees } = walletClient();
+      const abi = getBondTokenAbi();
+      const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
+      const raw = viem.parseUnits(String(units), decimals);
+      const hash = await wallet.writeContract({
+        address: token.token_address,
+        abi,
+        functionName: 'transfer',
+        args: [toAddress, raw],
+        ...fees,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+      if (receipt.status !== 'success') throw new Error(`transfer failed: ${receipt.transactionHash}`);
+      txHash = receipt.transactionHash;
+    }
+
+    if (pool) {
+      const debited = await pool.query(
+        `UPDATE bond_token_holders SET balance = balance - $3, updated_at = NOW()
+          WHERE token_id = $1 AND holder_address = $2 AND balance >= $3
+          RETURNING balance`,
+        [tokenId, from, units]
+      );
+      if (!debited.rows.length) throw new Error(`${from} does not hold ${units} of ${tokenId}`);
+      await pool.query(
+        `INSERT INTO bond_token_holders (id, token_id, holder_address, balance) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (token_id, holder_address) DO UPDATE SET balance = bond_token_holders.balance + $4, updated_at = NOW()`,
+        [id('BTH'), tokenId, toAddress, units]
+      );
+    } else {
+      const src = memory.holdings.get(`${tokenId}:${from}`);
+      if (!src || src.balance < units) throw new Error(`${from} does not hold ${units} of ${tokenId}`);
+      src.balance -= units;
+      const key = `${tokenId}:${toAddress}`;
+      const dst = memory.holdings.get(key) || { id: id('BTH'), token_id: tokenId, holder_address: toAddress, balance: 0 };
+      dst.balance += units;
+      memory.holdings.set(key, dst);
+    }
+
+    return { token, transferred: units, from, to: toAddress, txHash };
+  }
+
+  /**
    * What the contract itself says exists. Only meaningful in live mode against
    * a deployed address; a shadow token has no contract to ask.
    */
@@ -471,6 +541,160 @@ class BondTokenizationEngine {
       return null;
     }
     return Array.from(memory.tokens.values()).find(t => String(t.token_address || '').toLowerCase() === addr && t.token_address && !t.token_address.startsWith('shadow-')) || null;
+  }
+
+  /**
+   * Where a token row actually lives relative to the deployed chain: an
+   * `on_chain` token is a live contract on the configured chain, `foreign_chain`
+   * a contract elsewhere (testnet leftovers), `shadow` a ledger-only record.
+   */
+  static classifyToken(token, chainId = this.getConfig().chainId) {
+    const address = String((token && token.token_address) || '');
+    if (!address || address.startsWith('shadow-')) return 'shadow';
+    const meta = (token && token.metadata) || {};
+    const tokenChain = Number(meta.chainId);
+    if (Number.isFinite(tokenChain) && tokenChain !== Number(chainId)) return 'foreign_chain';
+    return 'on_chain';
+  }
+
+  static _mergeMetadata(token, patch) {
+    const meta = (token.metadata && typeof token.metadata === 'object') ? token.metadata : {};
+    return { ...meta, ...patch };
+  }
+
+  /**
+   * Close a token's register entry. Only a record with no live claim behind it
+   * can be retired this way: a shadow or foreign-chain token never held trust
+   * value on the deployed chain, and an on-chain token qualifies only once the
+   * contract itself reports zero supply. Anything else still has to be burned.
+   */
+  static async retire({ tokenId, reason, retiredBy = null } = {}) {
+    await ensureTable();
+    const token = await this.getToken(tokenId);
+    if (token.status === 'retired') throw new Error(`${tokenId} is already retired`);
+    const why = String(reason || '').trim();
+    if (!why) throw new Error('reason is required to retire a token');
+
+    const placement = this.classifyToken(token);
+    let chainSupply = null;
+    if (placement === 'on_chain') {
+      chainSupply = await this.chainSupply(tokenId);
+      if (chainSupply > 0) {
+        throw new Error(`${token.token_symbol} still has ${chainSupply} in circulation on chain; burn it before retiring`);
+      }
+    }
+
+    const writtenOff = {
+      total_supply: Number(token.total_supply || 0),
+      tokenized_principal: Number(token.tokenized_principal || 0),
+      tokenized_interest: Number(token.tokenized_interest || 0),
+    };
+    const metadata = this._mergeMetadata(token, {
+      retired: { reason: why, retiredBy, at: new Date().toISOString(), placement, chainSupply, writtenOff },
+    });
+
+    if (pool) {
+      await pool.query(
+        `UPDATE bond_tokens SET status = 'retired', total_supply = 0, tokenized_principal = 0, tokenized_interest = 0,
+                metadata = $2::jsonb, updated_at = NOW() WHERE id = $1`,
+        [tokenId, JSON.stringify(metadata)]
+      );
+      await pool.query('UPDATE bond_token_holders SET balance = 0, updated_at = NOW() WHERE token_id = $1', [tokenId]);
+    } else {
+      memory.tokens.set(tokenId, { ...token, status: 'retired', total_supply: 0, tokenized_principal: 0, tokenized_interest: 0, metadata });
+      for (const [key, h] of memory.holdings) if (h.token_id === tokenId) memory.holdings.set(key, { ...h, balance: 0 });
+    }
+    return { token: await this.getToken(tokenId), placement, chainSupply, writtenOff };
+  }
+
+  /**
+   * Make the register agree with the contract. The contract is the instrument;
+   * when the two differ the ledger is what moves. The delta lands on principal
+   * (interest is only ever tokenized deliberately) and on the largest holding,
+   * which for every trust token is the operator wallet.
+   */
+  static async syncSupplyFromChain({ tokenId, syncedBy = null } = {}) {
+    await ensureTable();
+    const token = await this.getToken(tokenId);
+    if (this.classifyToken(token) !== 'on_chain') throw new Error(`${token.token_symbol} is not a contract on the deployed chain`);
+    const chainSupply = await this.chainSupply(tokenId);
+    const ledgerSupply = Number(token.total_supply || 0);
+    const delta = Number((chainSupply - ledgerSupply).toFixed(8));
+    if (delta === 0) return { token, chainSupply, ledgerSupply, delta: 0, changed: false };
+
+    const totalSupply = chainSupply;
+    const principal = Math.max(0, Number(token.tokenized_principal || 0) + delta);
+    const interest = Number(token.tokenized_interest || 0);
+    const metadata = this._mergeMetadata(token, {
+      chainSync: { at: new Date().toISOString(), syncedBy, from: ledgerSupply, to: chainSupply, delta },
+    });
+
+    if (pool) {
+      await pool.query(
+        `UPDATE bond_tokens SET total_supply = $2, tokenized_principal = $3, tokenized_interest = $4, metadata = $5::jsonb, updated_at = NOW() WHERE id = $1`,
+        [tokenId, totalSupply, principal, interest, JSON.stringify(metadata)]
+      );
+      const holder = await pool.query(
+        'SELECT id FROM bond_token_holders WHERE token_id = $1 ORDER BY balance DESC LIMIT 1', [tokenId]
+      );
+      if (holder.rows.length) {
+        await pool.query(
+          'UPDATE bond_token_holders SET balance = GREATEST(0, balance + $2), updated_at = NOW() WHERE id = $1',
+          [holder.rows[0].id, delta]
+        );
+      } else if (delta > 0) {
+        await pool.query(
+          'INSERT INTO bond_token_holders (id, token_id, holder_address, balance) VALUES ($1, $2, $3, $4)',
+          [id('BTH'), tokenId, getConfig().operatorAddress || 'treasury', delta]
+        );
+      }
+    } else {
+      memory.tokens.set(tokenId, { ...token, total_supply: totalSupply, tokenized_principal: principal, tokenized_interest: interest, metadata });
+      const holders = Array.from(memory.holdings.entries()).filter(([, h]) => h.token_id === tokenId).sort((a, b) => b[1].balance - a[1].balance);
+      if (holders.length) memory.holdings.set(holders[0][0], { ...holders[0][1], balance: Math.max(0, holders[0][1].balance + delta) });
+    }
+    return { token: await this.getToken(tokenId), chainSupply, ledgerSupply, delta, changed: true };
+  }
+
+  /**
+   * Keep supply tied to the bond as it amortizes. For each active token backed
+   * by a bond on the deployed chain, ask Cap Control how much no longer has
+   * principal behind it and raise that as a burn awaiting a second trustee —
+   * never burn unattended. One open movement per token at a time.
+   */
+  static async syncSupplyToPrincipal({ initiatedBy = 'bond-token-supply-sync' } = {}) {
+    const { MintExchangeOsEngine } = require('../os/mintExchangeOsEngine');
+    const tokens = (await this.listTokens()).filter(t => t.status === 'active' && t.bond_id != null && this.classifyToken(t) === 'on_chain');
+    const results = [];
+    for (const token of tokens) {
+      const entry = { tokenId: token.id, symbol: token.token_symbol, requiredCents: 0, action: 'none' };
+      try {
+        const required = await MintExchangeOsEngine.burnRequired(token.id);
+        entry.requiredCents = required.requiredCents;
+        if (required.requiredCents <= 0) { results.push(entry); continue; }
+        const open = await MintExchangeOsEngine.list({ kind: 'burn', tokenId: token.id, limit: 50 });
+        const pending = open.find(m => ['pending_approval', 'approved', 'executing'].includes(m.status));
+        if (pending) { entry.action = 'pending'; entry.movementId = pending.movement_id; results.push(entry); continue; }
+        const holder = required.holders.find(h => h.balanceCents >= required.requiredCents);
+        if (!holder) { entry.action = 'no_holder_covers'; results.push(entry); continue; }
+        const movement = await MintExchangeOsEngine.request({
+          kind: 'burn',
+          tokenId: token.id,
+          holderAddress: holder.holderAddress,
+          principalCents: required.principalCents,
+          interestCents: required.interestCents,
+          initiatedBy,
+          memo: `supply sync: ${required.required} over the ${required.ceiling.basis} ceiling`,
+        });
+        entry.action = 'raised';
+        entry.movementId = movement.movement_id;
+      } catch (err) {
+        entry.action = 'error';
+        entry.error = err.message;
+      }
+      results.push(entry);
+    }
+    return { checked: tokens.length, results };
   }
 }
 

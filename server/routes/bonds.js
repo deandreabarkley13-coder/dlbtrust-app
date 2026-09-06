@@ -27,7 +27,10 @@ const { FineractClient } = require('../integrations/fineract/fineractClient');
 // Canonical fixed-income view: ledger positions + live metrics + tokenization + platform status.
 router.get('/unified', operatorAuth, async (req, res) => {
   try {
-    const snapshot = await FixedIncomeDataService.getUnifiedSnapshot({ includeLive: req.query.live !== 'false' });
+    const snapshot = await FixedIncomeDataService.getUnifiedSnapshot({
+      includeLive: req.query.live !== 'false',
+      includeHolders: req.query.holders === 'true',
+    });
     res.json({ success: true, data: snapshot });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

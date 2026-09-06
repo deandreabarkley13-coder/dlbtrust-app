@@ -253,4 +253,13 @@ router.get('/burn-required/:tokenId', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+/** Raise (never execute) burns for every bond-backed token whose supply exceeds its bond. */
+router.post('/supply-sync', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
+    const data = await BondTokenizationEngine.syncSupplyToPrincipal({ initiatedBy: principal(req) || 'bond-token-supply-sync' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;

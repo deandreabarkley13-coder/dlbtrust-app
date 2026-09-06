@@ -154,6 +154,7 @@ try { app.use('/api/payer', require(path.join(HD, 'server', 'routes', 'payer')))
 // Wealth Back Office OS — one floor over treasury, core banking, bookkeeping, trust accounting, payouts, tax, fixed income, CRM, scheduling and messaging
 try { app.use('/api/wealth-os', require(path.join(HD, 'server', 'routes', 'wealthOs'))); console.log('[wealth-back-office] loaded'); } catch(e) { console.warn('[wealth-back-office]', e.message); }
 try { app.use('/api/token-control', require(path.join(HD, 'server', 'routes', 'tokenControl'))); console.log('[token-control] loaded'); } catch(e) { console.warn('[token-control]', e.message); }
+try { app.use('/api/bond-subscriptions', require(path.join(HD, 'server', 'routes', 'bondSubscriptions'))); console.log('[bond-subscriptions] loaded'); } catch(e) { console.warn('[bond-subscriptions]', e.message); }
 try { app.use('/api/attestation-os', require(path.join(HD, 'server', 'routes', 'attestationOs'))); console.log('[attestation-os] loaded'); } catch(e) { console.warn('[attestation-os]', e.message); }
 
 // MFT OS — managed file transfer for bank payment files: direct deposit, vendor payments, clearing and settlement
@@ -943,6 +944,38 @@ initializeDatabase().then(function() {
       console.log('[operator-gas-tank] auto-check scheduled every ' + checkIntervalMs + 'ms');
     }
   } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
+
+  // Bond-token supply sync: raises a maker/checker burn whenever tokenized supply
+  // exceeds the amortized bond principal. OFF unless BOND_TOKEN_SUPPLY_SYNC_MS is set.
+  try {
+    var supplySyncMs = parseInt(process.env.BOND_TOKEN_SUPPLY_SYNC_MS || '0', 10);
+    if (supplySyncMs > 0) {
+      setInterval(function() {
+        var BondTokenizationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bondTokenizationEngine')).BondTokenizationEngine;
+        BondTokenizationEngine.syncSupplyToPrincipal().then(function(result) {
+          var raised = result.results.filter(function(r) { return r.action === 'raised'; }).length;
+          console.log('[bond-token-supply-sync] checked ' + result.checked + ' token(s), raised ' + raised + ' burn(s)');
+        }).catch(function(err) {
+          console.warn('[bond-token-supply-sync] tick failed:', err.message);
+        });
+      }, supplySyncMs);
+      console.log('[bond-token-supply-sync] scheduler started every ' + supplySyncMs + 'ms');
+    }
+    // Bond subscriptions: settle paid thirdweb payments by delivering units. OFF unless BOND_SUBSCRIPTION_SYNC_MS is set.
+    var subscriptionSyncMs = parseInt(process.env.BOND_SUBSCRIPTION_SYNC_MS || '0', 10);
+    if (subscriptionSyncMs > 0) {
+      setInterval(function() {
+        var BondSubscriptionEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondSubscriptionEngine')).BondSubscriptionEngine;
+        BondSubscriptionEngine.syncOpen().then(function(results) {
+          var delivered = results.filter(function(r) { return r.status === 'DELIVERED'; }).length;
+          if (results.length) console.log('[bond-subscriptions] synced ' + results.length + ', delivered ' + delivered);
+        }).catch(function(err) {
+          console.warn('[bond-subscriptions] tick failed:', err.message);
+        });
+      }, subscriptionSyncMs);
+      console.log('[bond-subscriptions] scheduler started every ' + subscriptionSyncMs + 'ms');
+    }
+  } catch(e) { console.warn('[bond-token-supply-sync] scheduler:', e.message); }
 
   // Melio vendor-payment sync scheduler (approves/exports pending melio invoices).
   // OFF unless MELIO_SYNC_SCHEDULE_MS is set. Set MELIO_SYNC_AUTO_APPROVE=true to auto-approve.
