@@ -50,6 +50,8 @@ const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
+let FixedIncomeDataService;
+try { FixedIncomeDataService = require('../integrations/bonds/fixedIncomeDataService').FixedIncomeDataService; } catch (e) { FixedIncomeDataService = null; }
 let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
 let CustomerIdentificationEngine;
@@ -1656,13 +1658,17 @@ router.post('/master-wallets/backfill', adminAuth, writeRateLimiter(), async (re
 
 router.get('/bonds/portfolio', adminAuth, async (req, res) => {
   try {
-    if (!BondEngine) throw new Error('BondEngine not available');
-    const bonds = await BondEngine.listBonds();
+    if (!FixedIncomeDataService) throw new Error('FixedIncomeDataService not available');
+    const status = req.query.status === 'all' ? 'all' : 'active';
+    const [bonds, totals] = await Promise.all([
+      FixedIncomeDataService.listPositions({ status }),
+      FixedIncomeDataService.getPortfolioTotals({ status })
+    ]);
     const metrics = [];
     for (const bond of bonds) {
       try { metrics.push(await LiveBondEngine.getBondLiveMetrics(bond.id)); } catch (e) { metrics.push({ bond_id: bond.id, bond_name: bond.bond_name, error: e.message }); }
     }
-    res.json({ success: true, data: { bonds, metrics } });
+    res.json({ success: true, data: { status, bonds, metrics, totals } });
   } catch (err) { sendError(res, err); }
 });
 
