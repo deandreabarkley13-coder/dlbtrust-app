@@ -20,6 +20,11 @@
  *   THIRDWEB_SERVER_WALLET_LIVE=true             → the transfer is submitted
  *     and its thirdweb transaction id is recorded for reconciliation.
  *
+ * Every send also passes the trust distribution policy (distributionPolicy.js):
+ * the caller states the USD value, requester role and expense purpose, and
+ * the per-transaction USD ceiling for that role is enforced before anything
+ * is recorded or submitted.
+ *
  * Reads (readiness, list, balance, transaction status) are always allowed
  * when a secret key is present. Every send, shadow or live, is written to
  * `thirdweb_server_wallet_transfers` (or memory without a DB) for audit.
@@ -30,6 +35,7 @@
  */
 
 const { getConfig: getBaseConfig } = require('./config');
+const DistributionPolicy = require('./distributionPolicy');
 
 let viem;
 try { viem = require('viem'); } catch (e) { /* address validation degrades to a regex */ }
@@ -93,7 +99,12 @@ async function ensureTables() {
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     )
-  `).catch((e) => { tablesReady = null; throw e; });
+  `).then(() => pool.query(`
+    ALTER TABLE thirdweb_server_wallet_transfers
+      ADD COLUMN IF NOT EXISTS requester_role TEXT,
+      ADD COLUMN IF NOT EXISTS amount_usd NUMERIC,
+      ADD COLUMN IF NOT EXISTS purpose TEXT
+  `)).catch((e) => { tablesReady = null; throw e; });
   return tablesReady;
 }
 
@@ -137,6 +148,7 @@ class ThirdwebServerWalletEngine {
       vaultAccessTokenConfigured: Boolean(cfg.vaultAccessToken),
       maxQuantityPerSend: cfg.maxQuantityPerSend.toString(),
       allowedRecipients: cfg.allowedRecipients,
+      distributionPolicy: DistributionPolicy.getPolicy(),
       canSend: cfg.enabled && cfg.live && Boolean(cfg.secretKey) && Boolean(cfg.address),
       ready: issues.length === 0,
       issues,
@@ -262,13 +274,18 @@ class ThirdwebServerWalletEngine {
 
   /**
    * Transfer native or ERC-20 value from the server wallet. `quantity` is in
-   * smallest units (wei). Shadow unless THIRDWEB_SERVER_WALLET_LIVE=true;
-   * both outcomes are recorded.
+   * smallest units (wei); `amountUsd` is its USD value, checked against the
+   * requester role's per-transaction limit. Shadow unless
+   * THIRDWEB_SERVER_WALLET_LIVE=true; both outcomes are recorded.
    */
-  static async send({ to, quantity, tokenAddress = null, chainId, reference = null, memo = null } = {}) {
+  static async send({
+    to, quantity, tokenAddress = null, chainId, reference = null, memo = null,
+    amountUsd, requesterRole = 'beneficiary', purpose,
+  } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('THIRDWEB_SERVER_WALLET_ENABLED=false');
     if (!isAddress(to)) throw new Error('recipient address invalid');
+    const policy = DistributionPolicy.enforce({ requesterRole, amountUsd, purpose, purposeRequired: true });
     if (tokenAddress && !isAddress(tokenAddress)) throw new Error('tokenAddress invalid');
     const amount = toBigInt(quantity);
     if (amount <= 0n) throw new Error('quantity must be positive');
@@ -296,6 +313,10 @@ class ThirdwebServerWalletEngine {
       transactionHash: null,
       reference,
       memo,
+      requesterRole: policy.requesterRole,
+      amountUsd: policy.amountUsd,
+      purpose: policy.purpose,
+      limitUsd: policy.limitUsd,
       error: null,
     };
 
@@ -335,12 +356,14 @@ class ThirdwebServerWalletEngine {
     await pool.query(
       `INSERT INTO thirdweb_server_wallet_transfers
          (id, chain_id, from_address, to_address, token_address, quantity, shadow, status,
-          thirdweb_transaction_id, transaction_hash, reference, memo, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+          thirdweb_transaction_id, transaction_hash, reference, memo, error,
+          requester_role, amount_usd, purpose)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         record.id, record.chainId, record.from || '', record.to, record.tokenAddress, record.quantity,
         record.shadow, record.status, record.transactionId, record.transactionHash,
         record.reference, record.memo, record.error,
+        record.requesterRole, record.amountUsd, record.purpose,
       ]
     );
   }
@@ -365,7 +388,8 @@ class ThirdwebServerWalletEngine {
     await ensureTables();
     const { rows } = await pool.query(
       `SELECT id, chain_id, from_address, to_address, token_address, quantity::text AS quantity, shadow, status,
-              thirdweb_transaction_id, transaction_hash, reference, memo, error, created_at, updated_at
+              thirdweb_transaction_id, transaction_hash, reference, memo, error,
+              requester_role, amount_usd::float8 AS amount_usd, purpose, created_at, updated_at
          FROM thirdweb_server_wallet_transfers
         ORDER BY created_at DESC
         LIMIT $1`,
@@ -384,6 +408,9 @@ class ThirdwebServerWalletEngine {
       transactionHash: r.transaction_hash,
       reference: r.reference,
       memo: r.memo,
+      requesterRole: r.requester_role,
+      amountUsd: r.amount_usd,
+      purpose: r.purpose,
       error: r.error,
       createdAt: r.created_at,
       updatedAt: r.updated_at,

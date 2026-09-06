@@ -17,6 +17,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole, getTrusteeByRole } = require('./trustees');
+const DistributionPolicy = require('./distributionPolicy');
 
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
@@ -186,6 +187,7 @@ class DistributionRequestEngine {
     currency = 'USD',
     destinationAddress,
     memo,
+    purpose,
     proofId,
     safeId,
     sourceType,
@@ -199,6 +201,7 @@ class DistributionRequestEngine {
     if (!beneficiaryEmail) throw new Error('beneficiaryEmail required');
     if (!amountUsd || Number(amountUsd) <= 0) throw new Error('amountUsd required');
     if (!destinationAddress) throw new Error('destinationAddress required');
+    const policy = DistributionPolicy.enforce({ requesterRole, amountUsd, purpose });
 
     const amountCents = Math.round(Number(amountUsd) * 100);
 
@@ -233,7 +236,7 @@ class DistributionRequestEngine {
       signatures: [],
       payout_id: null,
       tx_hash: null,
-      metadata: { ...metadata, requesterRole, createdBy },
+      metadata: { ...metadata, requesterRole, createdBy, purpose: policy.purpose, limitUsd: policy.limitUsd },
       created_by: createdBy || null,
     };
 

@@ -977,7 +977,11 @@ router.get('/thirdweb/server-wallet/balance', operatorAuth, async (req, res) => 
 });
 
 router.post('/thirdweb/server-wallet/send', adminAuth, writeRateLimiter(), async (req, res) => {
-  try { res.status(201).json({ success: true, data: await ThirdwebServerWalletEngine.send(req.body || {}) }); } catch (err) { sendError(res, err); }
+  try {
+    const body = req.body || {};
+    const requesterRole = body.requesterRole || (isTrusteePortalUser(req) ? 'trustee' : 'beneficiary');
+    res.status(201).json({ success: true, data: await ThirdwebServerWalletEngine.send({ ...body, requesterRole }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) => {
