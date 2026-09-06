@@ -25,6 +25,9 @@
     .row .amt { font-weight:700; }
     button.act { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:6px 10px; cursor:pointer; font-weight:600; }
     button.act:disabled { opacity:.4; cursor:default; }
+    .fund input { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:6px 8px; font-size:12px; }
+    .fund input[type=number] { width:80px; }
+    .fund input[type=text] { flex:1; min-width:0; }
     .muted { color:var(--muted); }
     #status { min-height:16px; font-size:12px; color:var(--muted); margin-top:4px; white-space:pre-wrap; }
     .issues { color:var(--gold); font-size:11px; margin-top:6px; }
@@ -49,6 +52,16 @@
       <div class="kpi"><div class="v" id="k-wallet">—</div><div class="l">thirdweb treasury wallet</div></div>
     </div>
     <div class="issues" id="issues"></div>
+  </div>
+
+  <div class="card fund">
+    <h2>Fund treasury wallet <span id="c-fund" class="muted"></span></h2>
+    <div class="row" style="border-top:0;gap:6px">
+      <input type="number" id="fund-amount" min="1" step="0.01" placeholder="USD" />
+      <input type="text" id="fund-source" placeholder="cash:CA-OPERATING" />
+      <button class="act" id="fund">Fund</button>
+    </div>
+    <div id="topups"><span class="muted">Loading…</span></div>
   </div>
 
   <div class="card">

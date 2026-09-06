@@ -36,6 +36,8 @@ if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 let BondSubscriptionEngine = null;
 try { ({ BondSubscriptionEngine } = require('../bonds/bondSubscriptionEngine')); } catch (e) { /* optional */ }
+let ThirdwebTreasuryFundingEngine = null;
+try { ({ ThirdwebTreasuryFundingEngine } = require('./thirdwebTreasuryFundingEngine')); } catch (e) { /* optional */ }
 let MessagingEngine = null;
 try { ({ MessagingEngine } = require('../messaging/messagingEngine')); } catch (e) { /* optional */ }
 
@@ -418,7 +420,11 @@ class ThirdwebSettlementEngine {
     if (BondSubscriptionEngine && BondSubscriptionEngine.syncOpen) {
       try { subscriptions = await BondSubscriptionEngine.syncOpen(); } catch (e) { subscriptions = [{ error: e.message }]; }
     }
-    return { asOf: new Date().toISOString(), checked, repaired, results, subscriptions };
+    let topUps = [];
+    if (ThirdwebTreasuryFundingEngine && ThirdwebTreasuryFundingEngine.syncOpen) {
+      try { topUps = await ThirdwebTreasuryFundingEngine.syncOpen(); } catch (e) { topUps = [{ error: e.message }]; }
+    }
+    return { asOf: new Date().toISOString(), checked, repaired, results, subscriptions, topUps };
   }
 
   // ─── webhooks ────────────────────────────────────────────────────────────
@@ -495,11 +501,18 @@ class ThirdwebSettlementEngine {
       return { handled: true, ...(await this._applyTransaction(tx)) };
     }
     if (topic.startsWith('pay.')) {
-      if (!BondSubscriptionEngine) return { handled: false, reason: 'bond subscriptions unavailable' };
-      const { rows } = await query('SELECT id FROM bond_subscriptions WHERE payment_id = $1', [data.paymentId]);
       const synced = [];
-      for (const r of rows) synced.push(await BondSubscriptionEngine.sync(r.id).catch((e) => ({ id: r.id, error: e.message })));
-      return { handled: true, paymentId: data.paymentId, status: data.status, subscriptions: synced };
+      if (BondSubscriptionEngine) {
+        const { rows } = await query('SELECT id FROM bond_subscriptions WHERE payment_id = $1', [data.paymentId]);
+        for (const r of rows) synced.push(await BondSubscriptionEngine.sync(r.id).catch((e) => ({ id: r.id, error: e.message })));
+      }
+      const topUps = [];
+      if (ThirdwebTreasuryFundingEngine) {
+        const rows = await ThirdwebTreasuryFundingEngine.topUpsByPaymentId(data.paymentId);
+        for (const r of rows) topUps.push(await ThirdwebTreasuryFundingEngine.syncTopUp(r.id).catch((e) => ({ id: r.id, error: e.message })));
+      }
+      if (!BondSubscriptionEngine && !ThirdwebTreasuryFundingEngine) return { handled: false, reason: 'payment consumers unavailable' };
+      return { handled: true, paymentId: data.paymentId, status: data.status, subscriptions: synced, topUps };
     }
     if (topic.startsWith('insight.')) {
       const cfg = this.getConfig();

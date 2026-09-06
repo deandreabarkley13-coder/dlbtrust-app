@@ -13,6 +13,10 @@
  *   node server/scripts/thirdwebSettlementWire.js --expense <id>
  *   node server/scripts/thirdwebSettlementWire.js --settle-all    every approved payable with an EVM destination
  *   node server/scripts/thirdwebSettlementWire.js --watch [sec]   reconcile loop (default 30s)
+ *   node server/scripts/thirdwebSettlementWire.js --fund <usd> [--source cash:CA-OPERATING]
+ *                                                                 fund the treasury wallet from a canonical ERP account
+ *                                                                 (creates the thirdweb checkout; booked on COMPLETED)
+ *   node server/scripts/thirdwebSettlementWire.js --fund-sync [id] sync one or every open top-up
  *
  * THIRDWEB_SERVER_WALLET_LIVE=false (default) records shadow transfers only;
  * nothing reaches thirdweb. Secret values are never printed.
@@ -21,9 +25,10 @@
 require('dotenv').config();
 
 const { ThirdwebSettlementEngine } = require('../integrations/dapp/thirdwebSettlementEngine');
+const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
 
 function parseArgs(argv) {
-  const out = { reconcile: false, distributions: [], expenses: [], settleAll: false, watch: null, json: false };
+  const out = { reconcile: false, distributions: [], expenses: [], settleAll: false, watch: null, json: false, fund: null, source: null, fundSync: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -33,6 +38,9 @@ function parseArgs(argv) {
     else if (arg === '--settle-all') out.settleAll = true;
     else if (arg === '--watch') { out.watch = next && !next.startsWith('--') ? Number(next) : 30; if (next && !next.startsWith('--')) i += 1; }
     else if (arg === '--json') out.json = true;
+    else if (arg === '--fund') { out.fund = Number(next); i += 1; }
+    else if (arg === '--source') { out.source = next; i += 1; }
+    else if (arg === '--fund-sync') { out.fundSync = next && !next.startsWith('--') ? next : 'all'; if (next && !next.startsWith('--')) i += 1; }
     else throw new Error(`unknown argument "${arg}"`);
   }
   return out;
@@ -64,8 +72,26 @@ async function settleQueue() {
   return results;
 }
 
+async function fundTreasury(amountUsd, source) {
+  if (!Number.isFinite(amountUsd) || amountUsd <= 0) throw new Error('--fund requires a positive USD amount');
+  const [sourceType, sourceAccountId] = source ? String(source).split(':') : [undefined, undefined];
+  const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({
+    amountFiat: amountUsd, sourceType, sourceAccountId, requestedBy: 'thirdwebSettlementWire', requesterRole: 'trustee',
+  });
+  console.log(`\n[fund] complete the checkout to deliver ${topUp.quantity} ${topUp.symbol} to ${topUp.recipient}:\n  ${topUp.link}`);
+  console.log('[fund] the ERP entry is booked only when thirdweb reports COMPLETED (webhook or --fund-sync).');
+  return topUp;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args.fund != null || args.fundSync) {
+    print('funding readiness', ThirdwebTreasuryFundingEngine.readiness());
+    if (args.fund != null) print('fund', await fundTreasury(args.fund, args.source));
+    if (args.fundSync === 'all') print('fund-sync', await ThirdwebTreasuryFundingEngine.syncOpen());
+    else if (args.fundSync) print(`fund-sync ${args.fundSync}`, await ThirdwebTreasuryFundingEngine.syncTopUp(args.fundSync));
+    return;
+  }
   const readiness = ThirdwebSettlementEngine.readiness();
   print('readiness', readiness);
   if (!readiness.live) console.log('\n[shadow] THIRDWEB_SERVER_WALLET_LIVE is not true: transfers are recorded, nothing is broadcast.');

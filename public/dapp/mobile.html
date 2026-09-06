@@ -177,6 +177,17 @@
       <button class="btn" onclick="saveOperatorToken()">Save &amp; load queue</button>
       <div id="tw-status" class="status hidden"></div>
     </div>
+    <div class="card">
+      <h2>Fund treasury wallet <span id="tw-fund-balance" class="small"></span></h2>
+      <p class="small">Draws from a canonical ERP cash account (Fineract/trust ledger is the authority on availability) and delivers USDC to the server wallet through thirdweb Payments. The ledger entry (Dr 1210 on-chain asset / Cr cash) posts only when thirdweb reports the payment COMPLETED.</p>
+      <label>Amount (USD)</label>
+      <input type="number" id="tw-fund-amount" min="1" step="0.01" placeholder="10.00" />
+      <label>Source account</label>
+      <input type="text" id="tw-fund-source" placeholder="cash:CA-OPERATING" />
+      <button class="btn" onclick="twFund()">Create funding checkout</button>
+      <div id="tw-fund-list" class="small">—</div>
+      <button class="btn" onclick="twFundSync()">Sync top-ups with thirdweb</button>
+    </div>
     <div class="card"><h2>Distributions <span id="tw-c-dist" class="small"></span></h2><div id="tw-dist" class="small">—</div></div>
     <div class="card"><h2>Expenses <span id="tw-c-exp" class="small"></span></h2><div id="tw-exp" class="small">—</div></div>
     <div class="card"><h2>Open on-chain transfers <span id="tw-c-open" class="small"></span></h2><div id="tw-open" class="small">—</div>
@@ -408,6 +419,50 @@ async function loadTreasury() {
       ? q.openTransfers.map(t => `<div style="padding:6px 0;border-top:1px solid var(--border)">${t.amountUsd != null ? usd(t.amountUsd) : t.quantity} · ${t.status} → ${shortAddr(t.to)}<br>${t.reference || t.id}</div>`).join('')
       : 'No transfers awaiting confirmation.';
     show((q.readiness.issues.length ? q.readiness.issues.join(' · ') + ' · ' : '') + 'Live as of ' + new Date(q.asOf).toLocaleTimeString(), false, 'tw-status');
+    loadFunding(q.readiness);
+  } catch (e) { show(e.message, true, 'tw-status'); }
+}
+
+async function loadFunding(readiness) {
+  try {
+    const [ready, topUps, bal] = await Promise.all([
+      opApi('/api/dapp/treasury-funding/readiness'),
+      opApi('/api/dapp/treasury-funding/topups?limit=10'),
+      readiness && readiness.settlementToken
+        ? opApi(`/api/dapp/thirdweb/server-wallet/balance?tokenAddress=${encodeURIComponent(readiness.settlementToken)}`).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const b = Array.isArray(bal) ? bal[0] : bal;
+    el('tw-fund-balance').textContent = b && b.displayValue != null ? `${Number(b.displayValue).toLocaleString()} ${b.symbol || ''} on chain ${ready.chainId}` : '';
+    if (!el('tw-fund-source').value && ready.holdSourceAccountId) el('tw-fund-source').value = `${ready.holdSourceType}:${ready.holdSourceAccountId}`;
+    el('tw-fund-list').innerHTML = topUps.length
+      ? topUps.map(t => `<div style="padding:6px 0;border-top:1px solid var(--border)">${usd(t.amountFiat)} → ${t.symbol} · <b>${t.status}</b>${t.booked ? ' · booked' : ''}<br>${t.sourceType}:${t.sourceAccountId} · ${t.id}${t.link && t.status === 'PENDING' ? ` · <a href="${t.link}" target="_blank" rel="noopener">complete payment</a>` : ''}${t.transactionHash ? `<br>tx ${shortAddr(t.transactionHash)}` : ''}</div>`).join('')
+      : 'No treasury top-ups yet.';
+  } catch (e) { el('tw-fund-list').textContent = e.message; }
+}
+
+async function twFund() {
+  const amount = Number(el('tw-fund-amount').value);
+  const source = el('tw-fund-source').value.trim();
+  if (!(amount > 0)) { show('Enter a positive USD amount', true, 'tw-status'); return; }
+  const [sourceType, sourceAccountId] = source ? source.split(':') : [undefined, undefined];
+  if (!confirm(`Create a thirdweb funding checkout for ${usd(amount)} from ${source || 'the default hold account'} to the treasury wallet?`)) return;
+  show('Creating funding checkout…', false, 'tw-status');
+  try {
+    const t = await opApi('/api/dapp/treasury-funding/topups', { method: 'POST', body: JSON.stringify({ amountFiat: amount, sourceType, sourceAccountId }) });
+    show(`${t.id} created — complete the payment to deliver ${t.symbol} to the treasury.`, false, 'tw-status');
+    if (t.link) window.open(t.link, '_blank', 'noopener');
+    loadFunding();
+  } catch (e) { show(e.message, true, 'tw-status'); }
+}
+
+async function twFundSync() {
+  show('Syncing top-ups…', false, 'tw-status');
+  try {
+    const r = await opApi('/api/dapp/thirdweb/settlement/reconcile', { method: 'POST', body: '{}' });
+    const done = (r.topUps || []).filter(t => t.booked).length;
+    show(`Synced ${(r.topUps || []).length} top-up(s); ${done} booked.`, false, 'tw-status');
+    loadTreasury();
   } catch (e) { show(e.message, true, 'tw-status'); }
 }
 

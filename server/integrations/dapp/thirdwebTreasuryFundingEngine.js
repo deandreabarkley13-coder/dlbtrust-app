@@ -440,11 +440,49 @@ class ThirdwebTreasuryFundingEngine {
     return rows[0] ? this._fromRow(rows[0]) : null;
   }
 
-  static async listTopUps({ limit = 25 } = {}) {
-    if (!pool || !pool.query) return memoryTopUps.slice(0, limit);
+  static async listTopUps({ limit = 25, status = null } = {}) {
+    const n = Math.min(Math.max(Number(limit) || 25, 1), 500);
+    if (!pool || !pool.query) return memoryTopUps.filter((r) => !status || r.status === status).slice(0, n);
     await ensureTables();
-    const { rows } = await pool.query('SELECT * FROM thirdweb_treasury_topups ORDER BY created_at DESC LIMIT $1', [Number(limit)]);
+    const { rows } = status
+      ? await pool.query('SELECT * FROM thirdweb_treasury_topups WHERE status = $1 ORDER BY created_at DESC LIMIT $2', [status, n])
+      : await pool.query('SELECT * FROM thirdweb_treasury_topups ORDER BY created_at DESC LIMIT $1', [n]);
     return rows.map((row) => this._fromRow(row));
+  }
+
+  /** Top-ups thirdweb has not yet reported terminal, or reported COMPLETED but not yet booked. */
+  static async openTopUps({ limit = 500 } = {}) {
+    const n = Math.min(Math.max(Number(limit) || 500, 1), 2000);
+    if (!pool || !pool.query) {
+      return memoryTopUps.filter((r) => r.paymentId && (!TERMINAL_STATUSES.has(r.status) || (r.status === 'COMPLETED' && !r.booked))).slice(0, n);
+    }
+    await ensureTables();
+    const { rows } = await pool.query(
+      `SELECT * FROM thirdweb_treasury_topups
+        WHERE payment_id IS NOT NULL
+          AND (status NOT IN ('COMPLETED', 'FAILED') OR (status = 'COMPLETED' AND booked = FALSE))
+        ORDER BY created_at ASC LIMIT $1`,
+      [n]
+    );
+    return rows.map((row) => this._fromRow(row));
+  }
+
+  static async topUpsByPaymentId(paymentId) {
+    if (!paymentId) return [];
+    if (!pool || !pool.query) return memoryTopUps.filter((r) => r.paymentId === paymentId);
+    await ensureTables();
+    const { rows } = await pool.query('SELECT * FROM thirdweb_treasury_topups WHERE payment_id = $1', [paymentId]);
+    return rows.map((row) => this._fromRow(row));
+  }
+
+  /** Sync every open top-up; used by the reconcile loop and the webhook fallback. */
+  static async syncOpen() {
+    const open = await this.openTopUps();
+    const results = [];
+    for (const r of open) {
+      try { results.push(await this.syncTopUp(r.id)); } catch (e) { results.push({ id: r.id, error: e.message }); }
+    }
+    return results;
   }
 }
 
