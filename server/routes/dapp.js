@@ -39,6 +39,7 @@ const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine'
 const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
 const { getTrusteeByRole } = require('../integrations/dapp/trustees');
 const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProvisioner');
+const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -924,6 +925,35 @@ router.get('/aa/readiness', operatorAuth, async (req, res) => {
     // stays in place and is used when SMART_ACCOUNT_PROVIDER=simple_account.
     const data = await AccountAbstractionEngine.readiness();
     res.json({ success: true, data: { ...data, wallet: SmartWalletProvisioner.readiness() } });
+  } catch (err) { sendError(res, err); }
+});
+
+// thirdweb calls this from its paymaster before sponsoring a user operation
+// (project > account abstraction > settings > server verifier). It is
+// authenticated by the THIRDWEB_VERIFIER_SECRET shared header rather than a
+// portal session, and it authorizes nothing while sponsorship is not live.
+router.post('/thirdweb/sponsorship/verify', writeRateLimiter(), async (req, res) => {
+  try {
+    const auth = ThirdwebSponsorshipPolicy.authorize(req.headers || {});
+    if (!auth.ok) return res.status(401).json({ isAllowed: false, reason: auth.reason });
+    const { clientId, chainId, userOp } = req.body || {};
+    const decision = await ThirdwebSponsorshipPolicy.evaluate({ clientId, chainId, userOp });
+    return res.json({ isAllowed: decision.isAllowed, reason: decision.reason });
+  } catch (err) {
+    // Fail closed: an evaluation error must never sponsor gas.
+    return res.status(200).json({ isAllowed: false, reason: `policy evaluation failed: ${err.message}` });
+  }
+});
+
+router.get('/thirdweb/sponsorship/policy', operatorAuth, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        policy: ThirdwebSponsorshipPolicy.describe(),
+        recentDecisions: await ThirdwebSponsorshipPolicy.recentDecisions(req.query.limit),
+      },
+    });
   } catch (err) { sendError(res, err); }
 });
 

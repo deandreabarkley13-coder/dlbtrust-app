@@ -112,6 +112,26 @@ async function main() {
     return { address: sa.address, provider: sa.provider, mode: sa.mode, whitelisted: sa.whitelisted };
   });
 
+  // ── 1b. thirdweb sponsorship policy (the trust's server verifier) ─────────
+  await runStep('sponsorship: policy is described and not enforcing in shadow', async () => {
+    const { ok, body } = await call('GET', '/api/dapp/thirdweb/sponsorship/policy');
+    assert(ok, body && body.error);
+    const policy = (body.data && body.data.policy) || {};
+    assert(policy.enforcing === false, 'sponsorship policy reports it is enforcing: gas would be spent');
+    return policy;
+  });
+
+  await runStep('sponsorship: verifier refuses unauthenticated callers', async () => {
+    const { status, body } = await call('POST', '/api/dapp/thirdweb/sponsorship/verify', {
+      clientId: 'smoke',
+      chainId: 1,
+      userOp: { sender: state.smartAccount && state.smartAccount.address, targets: [], gasLimit: '500000', gasPrice: '1000000000' },
+    });
+    assert(status === 401, `expected 401 without the verifier secret, got ${status}`);
+    assert(body && body.isAllowed === false, 'unauthenticated verifier call did not deny sponsorship');
+    return { status, isAllowed: body.isAllowed, reason: body.reason };
+  });
+
   // ── 2. SIWE wallet-only login ─────────────────────────────────────────────
   await runStep('siwe: nonce + signature authenticates a connected wallet', async () => {
     const { privateKeyToAccount } = require('viem/accounts');
