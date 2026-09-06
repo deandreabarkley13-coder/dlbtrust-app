@@ -503,13 +503,15 @@ class AccountAbstractionEngine {
 
   static async whitelistSender(address, allowed = true) {
     await ensureTables();
-    const cfg = this._checkDeps();
+    const cfg = this.getConfig();
     const paymaster = await this._loadPaymaster();
     const paymasterAddress = cfg.paymasterAddress || paymaster?.paymaster_address;
     if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) {
+      // Shadow whitelisting records intent off-chain, so it needs no signer.
       if (cfg.aaShadow) return { shadow: true, paymaster: paymasterAddress, address, allowed };
       throw new Error('paymaster not deployed');
     }
+    this._checkDeps();
     const wallet = this._walletClient(cfg);
     const publicClient = this._publicClient(cfg);
     const fees = await this._feeValues(publicClient, cfg);

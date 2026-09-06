@@ -57,6 +57,11 @@ class OnOffRampEngine {
       list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: false, issues: ['SpritzEngine not available'] });
     }
 
+    // Internal shadow rail. Always available, moves no value: it records the
+    // ramp intent and books the fee so the propose/approve/execute lifecycle is
+    // exercisable without any provider credentials or *_LIVE flag.
+    list.push({ id: 'trust_shadow', name: 'Internal Shadow Rail (no value movement)', directions: ['onramp', 'offramp', 'exchange'], ready: true, issues: [] });
+
     // Trust internal P2P market
     if (TrustMarketEngine) {
       list.push({ id: 'trust_market', name: 'DLB Trust P2P Market', directions: ['onramp', 'offramp', 'exchange'], ready: true, issues: [] });
@@ -184,6 +189,20 @@ class OnOffRampEngine {
       }
     }
 
+    // Internal shadow rail, offered for every direction so a ramp can always be
+    // quoted, approved and booked without touching an external provider.
+    routes.push({
+      provider: 'trust_shadow',
+      name: 'Internal Shadow Rail (no value movement)',
+      direction,
+      sourceAsset: sourceAsset || 'USD',
+      targetAsset: targetAsset || 'USDC',
+      amount,
+      status: 'ready',
+      instructions: 'Records the ramp and books the trust fee internally. No external transfer is initiated.',
+      issues: [],
+    });
+
     // Monetization: quote the configurable bps spread alongside the route. The
     // fee is only *booked* when the approved proposal executes.
     const fee = RampFeeEngine.quote({ amount, direction, asset: sourceAsset || 'USD' });
@@ -241,6 +260,16 @@ class OnOffRampEngine {
   static async _executeProvider(proposal) {
     const p = proposal.payload || {};
     const { provider, direction } = p;
+
+    if (provider === 'trust_shadow') {
+      return {
+        status: 'shadow_recorded',
+        provider,
+        direction,
+        amount: p.amount,
+        instructions: 'Shadow rail: the ramp and its fee are recorded internally; no external value moved.',
+      };
+    }
 
     if (direction === 'exchange' || (provider === 'trust_market' && direction !== 'onramp' && direction !== 'offramp')) {
       return TrustMarketEngine._execute({ payload: { action: 'create_offer', ...p } });

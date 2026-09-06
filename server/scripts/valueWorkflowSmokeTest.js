@@ -22,6 +22,8 @@
  *     node server/scripts/valueWorkflowSmokeTest.js
  */
 
+const { getTrusteeByRole } = require('../integrations/dapp/trustees');
+
 const BASE_URL = (process.env.VALUE_TEST_BASE_URL || 'http://localhost:3002').replace(/\/$/, '');
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.VALUE_TEST_VERBOSE !== 'false';
@@ -80,12 +82,12 @@ async function main() {
   await runStep('auth: send OTP code', async () => {
     const { ok, body } = await call('POST', '/api/dapp/auth/send-code', { email: EMAIL });
     assert(ok, (body && body.error) || `status ${body}`);
-    state.otp = body.data && (body.data.code || body.data.otp || body.data.pin);
+    state.otp = (body.data && (body.data.code || body.data.otp || body.data.pin)) || process.env.VALUE_TEST_OTP;
     return { sent: true, codeReturned: Boolean(state.otp) };
   });
 
   await runStep('auth: verify OTP provisions a deterministic smart account', async () => {
-    assert(state.otp, 'OTP code not returned by the server (configure a mail provider or set VALUE_TEST_OTP)');
+    assert(state.otp, 'OTP code unavailable: run the server with DAPP_OTP_ALWAYS_SHOW_CODE=true (non-production) or set VALUE_TEST_OTP');
     const { ok, body } = await call('POST', '/api/dapp/auth/verify', { email: EMAIL, code: state.otp });
     assert(ok, body && body.error);
     const data = body.data || {};
@@ -144,7 +146,7 @@ async function main() {
   await runStep('ramp: propose carries the quoted fee into the proposal', async () => {
     const { ok, body } = await call('POST', '/api/finops/ramps/requests', {
       direction: 'onramp', sourceAsset: 'USD', targetAsset: 'USDC', amount: '1000',
-      provider: 'trust_market', createdBy: 'value-workflow-smoke',
+      provider: 'trust_shadow', createdBy: 'value-workflow-smoke',
     });
     assert(ok, body && body.error);
     state.proposalId = body.data && body.data.proposalId;
@@ -154,22 +156,44 @@ async function main() {
 
   await runStep('ramp: approve + execute in shadow and book the fee', async () => {
     assert(state.proposalId, 'no proposal to approve');
-    const approve = await call('POST', `/api/finops/ramps/requests/${state.proposalId}/approve`, {
-      approverEmail: process.env.VALUE_TEST_APPROVER || 'deandreabarkley13@gmail.com',
-      role: 'administration',
-    });
-    assert(approve.ok, approve.body && approve.body.error);
+    const proposalRes = await call('GET', `/api/finops/ramps/requests/${state.proposalId}`);
+    assert(proposalRes.ok, proposalRes.body && proposalRes.body.error);
+    const roles = (proposalRes.body.data && proposalRes.body.data.required_roles) || [];
+    assert(roles.length, 'proposal declared no required approval roles');
 
-    const exec = await call('POST', `/api/finops/ramps/requests/${state.proposalId}/execute`, {});
+    // Each consensus role can only be signed by its trustee of record. The
+    // consensus engine executes as soon as the threshold is met, so the last
+    // approval response already carries the execution result.
+    const approvals = [];
+    let executed = null;
+    for (const role of roles) {
+      const trustee = getTrusteeByRole(role);
+      assert(trustee, `no trustee of record for role ${role}`);
+      const approve = await call('POST', `/api/finops/ramps/requests/${state.proposalId}/approve`, {
+        approverEmail: trustee.email,
+        role,
+      });
+      assert(approve.ok, approve.body && approve.body.error);
+      const data = approve.body.data || {};
+      approvals.push({ role, status: data.status });
+      if (data.status === 'executed') { executed = data; break; }
+      if (data.status === 'approved') break;
+    }
+
+    if (!executed) {
+      const exec = await call('POST', `/api/finops/ramps/requests/${state.proposalId}/execute`, {});
+      assert(exec.ok, exec.body && exec.body.error);
+      executed = exec.body.data || {};
+    }
     // Execution can legitimately report a provider-side "not configured" state
     // in shadow mode; the fee bookkeeping is what this step verifies.
-    const result = (exec.body && exec.body.data && (exec.body.data.result || exec.body.data)) || {};
+    const result = executed.result || executed;
     const fee = result.fee || null;
     if (state.quoteFee && state.quoteFee.feeBps > 0) {
       assert(fee, 'execution returned no fee record');
       assert(['booked', 'already_booked'].includes(fee.status), `fee not booked: ${fee.status} ${fee.error || ''}`);
     }
-    return { approved: approve.body.data && approve.body.data.status, fee: fee || 'no fee configured (RAMP_FEE_BPS=0)' };
+    return { approvals, fee: fee || 'no fee configured (RAMP_FEE_BPS=0)' };
   });
 
   // ── 4. Document anchoring ─────────────────────────────────────────────────
