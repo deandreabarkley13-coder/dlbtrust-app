@@ -918,7 +918,13 @@ router.get('/sovereign-trust/orders', operatorAuth, async (req, res) => {
 // ═════════════════════════════════════════════════════════════════════════════
 
 router.get('/aa/readiness', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await AccountAbstractionEngine.readiness() }); } catch (err) { sendError(res, err); }
+  try {
+    // `wallet` reports the provider actually issuing accounts (thirdweb by
+    // default); the rest describes the self-hosted paymaster stack, which
+    // stays in place and is used when SMART_ACCOUNT_PROVIDER=simple_account.
+    const data = await AccountAbstractionEngine.readiness();
+    res.json({ success: true, data: { ...data, wallet: SmartWalletProvisioner.readiness() } });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/aa/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {

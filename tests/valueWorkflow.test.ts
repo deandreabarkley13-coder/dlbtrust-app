@@ -51,6 +51,8 @@ describe('smart wallet provisioning (shadow)', () => {
   });
 
   it('still returns an address when the paymaster whitelist call fails', async () => {
+    // Whitelist calls only exist on the self-hosted paymaster provider.
+    process.env.SMART_ACCOUNT_PROVIDER = 'simple_account';
     vi.spyOn(AccountAbstractionEngine, 'whitelistSender').mockRejectedValue(new Error('paymaster not deployed'));
     const record = await SmartWalletProvisioner.provisionForUser({ id: 'U-4', email: 'x@example.com' });
     expect(record.address).toMatch(/^0x/);

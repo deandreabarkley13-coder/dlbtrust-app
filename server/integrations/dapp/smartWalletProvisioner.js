@@ -4,20 +4,31 @@
  * Smart Wallet Provisioner — unified wallet issuance for portal users.
  *
  * Bridges Connect & Auth (email OTP / SIWE) to the ERC-4337 stack: every
- * authenticated portal user gets one deterministic SimpleAccount smart wallet
- * whose owner is their EOA, and that account is whitelisted on the trust's
- * SovereignTrustPaymaster so the user never needs native gas.
+ * authenticated portal user gets one deterministic smart wallet whose owner is
+ * their EOA, plus gas sponsorship so the user never needs native gas.
  *
- * No value moves here. Provisioning is address derivation plus a paymaster
- * whitelist call, and the whitelist call itself stays a shadow no-op until
- * AA_SHADOW=false (see AccountAbstractionEngine.whitelistSender). With
- * AA_SHADOW=true (the default) the predicted address is derived off-chain and
- * nothing is broadcast on any chain.
+ * Two providers implement that, chosen with SMART_ACCOUNT_PROVIDER:
+ *
+ *   thirdweb (default) — thirdweb's AccountFactory, bundler and project-level
+ *     gas sponsorship (ThirdwebWalletEngine). Sponsorship eligibility is a
+ *     project policy, so there is no on-chain whitelist transaction.
+ *   simple_account — the self-hosted SimpleAccountFactory plus the trust's own
+ *     SovereignTrustPaymaster (AccountAbstractionEngine), which does whitelist
+ *     each sender on chain once AA_SHADOW=false.
+ *
+ * No value moves here under either provider. Provisioning is address
+ * derivation plus a sponsorship registration, and both stay shadow no-ops
+ * until the provider's own flag is flipped (THIRDWEB_SHADOW=false /
+ * AA_SHADOW=false). While shadow is on — the default — the predicted address
+ * is derived off-chain and nothing is broadcast on any chain.
  */
 
 const crypto = require('crypto');
 
 const { AccountAbstractionEngine } = require('./accountAbstractionEngine');
+const { ThirdwebWalletEngine } = require('./thirdwebWalletEngine');
+
+const THIRDWEB = 'thirdweb';
 
 let viem;
 try { viem = require('viem'); } catch (e) { /* address derivation falls back to the shadow hash */ }
@@ -67,6 +78,7 @@ async function ensureColumns() {
     await pool.query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS smart_account_address TEXT`);
     await pool.query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS smart_account_owner TEXT`);
     await pool.query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS smart_account_mode TEXT`);
+    await pool.query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS smart_account_provider TEXT`);
   })().catch((e) => {
     columnsReady = null;
     throw e;
@@ -76,14 +88,31 @@ async function ensureColumns() {
 
 class SmartWalletProvisioner {
   static config() {
+    const provider = (process.env.SMART_ACCOUNT_PROVIDER || THIRDWEB).toLowerCase();
+    const enabled = (process.env.SMART_ACCOUNT_AUTO_PROVISION || 'true') !== 'false';
+    const index = BigInt(process.env.SMART_ACCOUNT_INDEX || '0');
+    if (provider === THIRDWEB) {
+      const tw = ThirdwebWalletEngine.getConfig();
+      return {
+        provider: THIRDWEB,
+        enabled: enabled && tw.enabled,
+        shadow: tw.shadow !== false,
+        chainId: tw.chainId,
+        factory: tw.factory,
+        paymasterAddress: null,
+        accountSalt: tw.accountSalt,
+        index,
+      };
+    }
     const aa = AccountAbstractionEngine.getConfig();
     return {
-      enabled: (process.env.SMART_ACCOUNT_AUTO_PROVISION || 'true') !== 'false',
+      provider: 'simple_account',
+      enabled,
       shadow: aa.aaShadow !== false,
       chainId: aa.chainId,
       factory: aa.factory,
       paymasterAddress: aa.paymasterAddress,
-      index: BigInt(process.env.SMART_ACCOUNT_INDEX || '0'),
+      index,
     };
   }
 
@@ -97,6 +126,10 @@ class SmartWalletProvisioner {
   /** Predicted counterfactual smart-account address; never deploys anything. */
   static async predictAddress(owner, index = this.config().index) {
     const cfg = this.config();
+    if (cfg.provider === THIRDWEB) {
+      const predicted = await ThirdwebWalletEngine.predictAccountAddress(owner, cfg.accountSalt);
+      return { address: predicted.address, mode: predicted.mode, ...(predicted.issue ? { issue: predicted.issue } : {}) };
+    }
     if (!cfg.shadow) {
       try {
         return { address: checksum(await AccountAbstractionEngine.getSmartAccountAddress(owner, index)), mode: 'live' };
@@ -108,9 +141,10 @@ class SmartWalletProvisioner {
   }
 
   /**
-   * Provision (or re-read) the user's smart account and whitelist it on the
-   * paymaster. Best-effort by design: a login must never fail because the
-   * chain, the paymaster, or the database is unavailable.
+   * Provision (or re-read) the user's smart account and register it for
+   * sponsored gas with the active provider. Best-effort by design: a login
+   * must never fail because the chain, the provider, or the database is
+   * unavailable.
    */
   static async provisionForUser(user = {}) {
     const cfg = this.config();
@@ -119,12 +153,17 @@ class SmartWalletProvisioner {
     const owner = this.ownerFor(user);
     const existing = user.smart_account_address || user.smartAccountAddress;
     const sameOwner = String(user.smart_account_owner || '').toLowerCase() === String(owner).toLowerCase();
-    const predicted = existing && sameOwner
+    // A stored address belongs to the provider that derived it, so switching
+    // SMART_ACCOUNT_PROVIDER re-predicts instead of reusing the old address.
+    const storedProvider = user.smart_account_provider || user.smartAccountProvider;
+    const sameProvider = !storedProvider || storedProvider === cfg.provider;
+    const predicted = existing && sameOwner && sameProvider
       ? { address: checksum(existing), mode: user.smart_account_mode || (cfg.shadow ? 'shadow' : 'live') }
       : await this.predictAddress(owner, cfg.index);
 
     const record = {
       enabled: true,
+      provider: cfg.provider,
       owner,
       ownerType: (user.wallet_address || user.walletAddress) ? 'linked_wallet' : 'derived',
       address: predicted.address,
@@ -138,11 +177,20 @@ class SmartWalletProvisioner {
     if (predicted.issue) record.issue = predicted.issue;
 
     try {
-      const whitelist = await AccountAbstractionEngine.whitelistSender(record.address, true);
-      record.whitelisted = Boolean(whitelist && (whitelist.success || whitelist.shadow));
-      record.paymaster = (whitelist && whitelist.paymaster) || cfg.paymasterAddress || null;
-      if (whitelist && whitelist.shadow) record.whitelistMode = 'shadow';
-      else if (whitelist && whitelist.tx) record.whitelistTx = whitelist.tx;
+      if (cfg.provider === THIRDWEB) {
+        // thirdweb gates sponsorship with a project policy, so eligibility is
+        // recorded locally and no whitelist transaction is ever sent.
+        const sponsorship = ThirdwebWalletEngine.registerSponsoredSender(record.address, true);
+        record.whitelisted = true;
+        record.whitelistMode = sponsorship.shadow ? 'shadow' : 'policy';
+        record.sponsorship = sponsorship.policy;
+      } else {
+        const whitelist = await AccountAbstractionEngine.whitelistSender(record.address, true);
+        record.whitelisted = Boolean(whitelist && (whitelist.success || whitelist.shadow));
+        record.paymaster = (whitelist && whitelist.paymaster) || cfg.paymasterAddress || null;
+        if (whitelist && whitelist.shadow) record.whitelistMode = 'shadow';
+        else if (whitelist && whitelist.tx) record.whitelistTx = whitelist.tx;
+      }
     } catch (e) {
       record.whitelistError = e.message;
     }
@@ -160,13 +208,21 @@ class SmartWalletProvisioner {
       await ensureColumns();
       await pool.query(
         `UPDATE dapp_users
-            SET smart_account_address = $1, smart_account_owner = $2, smart_account_mode = $3, updated_at = NOW()
-          WHERE id = $4`,
-        [record.address, record.owner, record.mode, userId]
+            SET smart_account_address = $1, smart_account_owner = $2, smart_account_mode = $3,
+                smart_account_provider = $4, updated_at = NOW()
+          WHERE id = $5`,
+        [record.address, record.owner, record.mode, record.provider, userId]
       );
     } catch (e) {
       console.warn('[smartWallet] persist failed:', e.message);
     }
+  }
+
+  /** Wallet-provider status for operator readiness views. */
+  static readiness() {
+    const cfg = this.config();
+    if (cfg.provider === THIRDWEB) return { walletProvider: THIRDWEB, autoProvision: cfg.enabled, ...ThirdwebWalletEngine.readiness() };
+    return { walletProvider: 'simple_account', autoProvision: cfg.enabled, shadow: cfg.shadow, chainId: cfg.chainId, factory: cfg.factory, paymasterAddress: cfg.paymasterAddress };
   }
 
   /** Cached view used by request-time auth so logins stay cheap. */
@@ -179,12 +235,14 @@ class SmartWalletProvisioner {
     if (cached) return cached;
     const address = user.smart_account_address || user.smartAccountAddress;
     if (!address) return null;
+    const cfg = this.config();
     return {
       enabled: true,
+      provider: user.smart_account_provider || user.smartAccountProvider || cfg.provider,
       owner: user.smart_account_owner || user.smartAccountOwner || null,
       address,
       mode: user.smart_account_mode || user.smartAccountMode || 'shadow',
-      chainId: this.config().chainId,
+      chainId: cfg.chainId,
     };
   }
 }
