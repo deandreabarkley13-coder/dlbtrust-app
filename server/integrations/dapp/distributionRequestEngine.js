@@ -307,8 +307,9 @@ class DistributionRequestEngine {
       request.proof_id = proofId;
     }
 
-    const approvals = request.approvals || [];
-    if (approvals.some(a => a.role === normalizedRole)) throw new Error(`Role ${normalizedRole} has already approved this request`);
+    const approvals = [...(request.approvals || [])];
+    if (approvals.some(a => a.role === normalizedRole)) throw Object.assign(new Error(`Role ${normalizedRole} has already approved this request`), { status: 409, code: 'ALREADY_APPROVED' });
+    if (normalizedRole === 'checker' && !approvals.some(a => a.role === 'maker')) throw Object.assign(new Error('Maker approval required before checker can approve'), { status: 409, code: 'MAKER_APPROVAL_REQUIRED' });
 
     approvals.push({
       role: normalizedRole,
@@ -325,7 +326,6 @@ class DistributionRequestEngine {
     if (isMaker) {
       updates.status = 'under_review';
     } else if (isChecker) {
-      if (!approvals.some(a => a.role === 'maker')) throw new Error('Maker approval required before checker can approve');
       updates.status = 'approved';
     }
 
@@ -377,8 +377,10 @@ class DistributionRequestEngine {
         }
       } catch (e) { console.warn('[DistributionRequestEngine] beneficiary email failed:', e.message); }
 
-      // Auto-execute on checker approval
-      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
+      // Auto-execute on checker approval through the payout center, unless the
+      // request is paid over another rail (e.g. the thirdweb server wallet).
+      const payoutRail = (request.metadata && request.metadata.payoutRail) || 'payout_center';
+      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false' && payoutRail === 'payout_center') {
         try {
           const executed = await this.executeRequest(requestId);
           result = this._rowToObject(await this.getRequest(requestId));
