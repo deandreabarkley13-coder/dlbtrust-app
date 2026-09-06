@@ -308,8 +308,8 @@ class DistributionRequestEngine {
     }
 
     const approvals = [...(request.approvals || [])];
-    if (approvals.some(a => a.role === normalizedRole)) throw new Error(`Role ${normalizedRole} has already approved this request`);
-    if (normalizedRole === 'checker' && !approvals.some(a => a.role === 'maker')) throw new Error('Maker approval required before checker can approve');
+    if (approvals.some(a => a.role === normalizedRole)) throw Object.assign(new Error(`Role ${normalizedRole} has already approved this request`), { status: 409, code: 'ALREADY_APPROVED' });
+    if (normalizedRole === 'checker' && !approvals.some(a => a.role === 'maker')) throw Object.assign(new Error('Maker approval required before checker can approve'), { status: 409, code: 'MAKER_APPROVAL_REQUIRED' });
 
     approvals.push({
       role: normalizedRole,

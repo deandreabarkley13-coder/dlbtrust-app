@@ -32,21 +32,25 @@ function getPolicy() {
   };
 }
 
+function reject(message, code) {
+  return Object.assign(new Error(message), { status: 422, code });
+}
+
 function normalizeRequesterRole(role) {
   const r = String(role || '').toLowerCase();
   if (r.includes('trustee')) return 'trustee';
   if (r === 'beneficiary' || r === '') return 'beneficiary';
-  throw new Error('requesterRole must be beneficiary or trustee');
+  throw reject('requesterRole must be beneficiary or trustee', 'INVALID_ROLE');
 }
 
 function normalizePurpose(purpose, { required = false } = {}) {
   const { purposes } = getPolicy();
   const p = String(purpose || '').trim().toLowerCase();
   if (!p) {
-    if (required) throw new Error(`purpose required (one of ${purposes.join(', ')})`);
+    if (required) throw reject(`purpose required (one of ${purposes.join(', ')})`, 'PURPOSE_REQUIRED');
     return null;
   }
-  if (!purposes.includes(p)) throw new Error(`purpose "${p}" not permitted; allowed: ${purposes.join(', ')}`);
+  if (!purposes.includes(p)) throw reject(`purpose "${p}" not permitted; allowed: ${purposes.join(', ')}`, 'PURPOSE_NOT_PERMITTED');
   return p;
 }
 
@@ -57,7 +61,7 @@ function normalizePurpose(purpose, { required = false } = {}) {
 function enforce({ requesterRole, amountUsd, purpose, purposeRequired = false } = {}) {
   const role = normalizeRequesterRole(requesterRole);
   const usd = Number(amountUsd);
-  if (!Number.isFinite(usd) || usd <= 0) throw new Error('amountUsd must be a positive number');
+  if (!Number.isFinite(usd) || usd <= 0) throw reject('amountUsd must be a positive number', 'INVALID_AMOUNT');
   const limitUsd = getPolicy().limitsUsd[role];
   if (limitUsd > 0 && usd > limitUsd) {
     const err = new Error(`${role} distribution of $${usd.toLocaleString('en-US')} exceeds the $${limitUsd.toLocaleString('en-US')} per-transaction limit`);
