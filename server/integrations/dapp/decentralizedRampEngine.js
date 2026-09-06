@@ -452,9 +452,10 @@ class DecentralizedRampEngine {
       });
     }
 
-    if (['moonpay', 'circle_mint', 'coinbase_treasury', 'coinbase_spot', 'spritz', 'fiat_ramp', 'on_off_ramp'].includes(provider)) {
+    if (['moonpay', 'circle_mint', 'coinbase_treasury', 'coinbase_spot', 'spritz', 'fiat_ramp', 'on_off_ramp', 'trust_shadow'].includes(provider)) {
       if (!OnOffRampEngine) throw new Error('OnOffRampEngine not available');
-      return OnOffRampEngine._execute({ payload: { provider: routeProvider || provider, direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, targetAddress, network, ...p } });
+      // The proposal id carries through so the ramp fee journal stays idempotent.
+      return OnOffRampEngine._execute({ id: proposal.id, created_by: proposal.created_by, payload: { provider: routeProvider || provider, direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, targetAddress, network, ...p } });
     }
 
     if (provider.includes('trust_market')) {
