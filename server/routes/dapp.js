@@ -43,6 +43,7 @@ const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSpon
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
+const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
 const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
@@ -1035,6 +1036,46 @@ router.post('/expense-wallets/fund', adminAuth, writeRateLimiter(), async (req, 
 
 router.get('/expense-wallets/fundings', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await BeneficiaryExpenseWalletEngine.recentFundings(req.query.limit) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Treasury funding via thirdweb bridge (fiat → on-chain, no extra provider) ─
+
+router.get('/treasury-funding/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: ThirdwebTreasuryFundingEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-funding/convert', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebTreasuryFundingEngine.convert(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-funding/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebTreasuryFundingEngine.treasuryBalances(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-funding/topups', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebTreasuryFundingEngine.listTopUps(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-funding/topups', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    res.status(201).json({
+      success: true,
+      data: await ThirdwebTreasuryFundingEngine.createTopUp({
+        ...body,
+        requesterRole: body.requesterRole || 'trustee',
+        requestedBy: body.requestedBy || (req.user && req.user.email) || null,
+      })
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-funding/topups/:id/sync', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebTreasuryFundingEngine.syncTopUp(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-funding/swap', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ThirdwebTreasuryFundingEngine.swap(req.body || {}) }); } catch (err) { sendError(res, err); }
 });
 
 // ─── Trust Ecosystem (browser extension + mobile app) ─────────────────────────
