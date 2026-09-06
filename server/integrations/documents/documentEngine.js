@@ -9,6 +9,23 @@
 'use strict';
 
 const pool = require('../bonds/pgPool');
+const { DocumentStorageAdapter } = require('./storageAdapter');
+
+let storageColumnsReady = null;
+
+// Older databases predate the storage anchoring columns; add them lazily so
+// document creation works whether or not migrate-docs-accounting.sql was re-run.
+async function ensureStorageColumns() {
+  if (storageColumnsReady) return storageColumnsReady;
+  storageColumnsReady = (async () => {
+    await pool.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_uri TEXT`);
+    await pool.query(`ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT`);
+  })().catch((e) => {
+    storageColumnsReady = null;
+    throw e;
+  });
+  return storageColumnsReady;
+}
 
 class DocumentEngine {
 
@@ -22,20 +39,39 @@ class DocumentEngine {
 
     const fileSizeBytes = content ? Buffer.byteLength(content, 'utf8') : 0;
 
+    // Anchor the document: always hash the content, and pin it only when a
+    // storage backend is configured with DOCUMENT_STORAGE_LIVE=true. Defaults
+    // to shadow mode, where nothing leaves the process.
+    const anchor = await DocumentStorageAdapter.anchor({ documentId, content, contentType: contentType || 'text/plain' })
+      .catch((e) => ({ contentHash: DocumentStorageAdapter.contentHash(content), storageUri: null, mode: 'shadow', error: e.message }));
+
+    await ensureStorageColumns().catch((e) => console.warn('[documents] storage columns unavailable:', e.message));
+
+    const enrichedMetadata = {
+      ...(metadata || {}),
+      storage: {
+        backend: anchor.backend || 'none',
+        mode: anchor.mode,
+        ...(anchor.error ? { error: anchor.error } : {}),
+      },
+    };
+
     const result = await pool.query(
       `INSERT INTO documents
          (document_id, document_name, document_type, category, content, content_type,
           file_size_bytes, bond_id, contact_id, cash_account_id,
-          reference_type, reference_id, tags, metadata, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          reference_type, reference_id, tags, metadata, status, created_by,
+          storage_uri, content_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         documentId, documentName, documentType, category || 'general',
         content || null, contentType || 'text/plain', fileSizeBytes,
         bondId || null, contactId || null, cashAccountId || null,
         referenceType || null, referenceId || null,
-        tags || null, JSON.stringify(metadata || {}),
+        tags || null, JSON.stringify(enrichedMetadata),
         status || 'active', createdBy || null,
+        anchor.storageUri || null, anchor.contentHash || null,
       ]
     );
     return result.rows[0];

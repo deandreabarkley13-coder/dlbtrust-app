@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS documents (
     'text/plain','text/html','application/json','application/pdf'
   )),
   file_size_bytes INTEGER,
+  -- Decentralized storage anchoring: content_hash is always computed locally,
+  -- storage_uri points at the pinned object (or a shadow:// marker until
+  -- DOCUMENT_STORAGE_LIVE=true with a configured backend).
+  storage_uri     TEXT,
+  content_hash    TEXT,
   bond_id         INTEGER REFERENCES bonds(id),
   contact_id      TEXT,
   cash_account_id TEXT,
@@ -68,6 +73,11 @@ CREATE TABLE IF NOT EXISTS documents (
   created_at      TIMESTAMPTZ DEFAULT NOW(),
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Backfill for databases created before storage anchoring existed.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS storage_uri TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT;
+CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);
 
 -- ─── Generated Documents (from templates) ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS generated_documents (

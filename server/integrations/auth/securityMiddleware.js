@@ -7,7 +7,7 @@
  *  - Helmet.js security headers (XSS, clickjacking, MIME sniffing, CSP)
  *  - Rate limiting (global, auth, API write)
  *  - CORS lockdown
- *  - JWT + legacy token authentication
+ *  - JWT + SIWE (EIP-4361) + legacy token authentication
  *  - Role-based access control
  *  - Request sanitization
  *  - CSRF token generation/validation
@@ -19,6 +19,17 @@ const cors = require('cors');
 const crypto = require('crypto');
 const { UserAuth, JWT_SECRET } = require('./userAuth');
 const { ApiCredentials } = require('../ach/apiCredentials');
+
+let jwt;
+try { jwt = require('jsonwebtoken'); } catch (e) { /* JWT auth path disabled */ }
+
+let SiweAuth;
+try { SiweAuth = require('./siweAuth').SiweAuth; } catch (e) { /* SIWE auth path disabled */ }
+
+let SmartWalletProvisioner;
+try { SmartWalletProvisioner = require('../dapp/smartWalletProvisioner').SmartWalletProvisioner; } catch (e) { /* smart wallets unavailable */ }
+let DappEngine;
+try { DappEngine = require('../dapp/dappEngine').DappEngine; } catch (e) { /* dApp user lookup unavailable */ }
 
 // ─── Helmet Security Headers ──────────────────────────────────────────────────
 function helmetMiddleware() {
@@ -217,9 +228,12 @@ function requireAuth(options = {}) {
 }
 
 // ─── dApp Portal Auth (email/OTP users with multi-role support) ─────────────────
-// Accepts admin token OR a dApp user JWT issued by DappEngine.verifyOtp.
+// Accepts admin token, a dApp user JWT issued by DappEngine.verifyOtp, or a SIWE
+// signature from a connected wallet (no email required). Authentication only
+// establishes identity: any value movement downstream stays in shadow mode
+// until the relevant *_LIVE / *_SHADOW env flags are set.
 function dappAuth(options = {}) {
-  const { role: requiredRole = 'viewer' } = options;
+  const { role: requiredRole = 'viewer', optional = false } = options;
 
   const ROLE_LEVELS = {
     beneficiary: 10,
@@ -245,16 +259,16 @@ function dappAuth(options = {}) {
       userRole = 'admin';
     }
 
-    // 2. dApp user JWT
-    if (!authenticated) {
+    // 2. dApp user JWT (email OTP session, or a SIWE-issued wallet session)
+    if (!authenticated && jwt) {
       const authHeader = req.headers['authorization'];
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7).trim();
         try {
           const decoded = jwt.verify(token, JWT_SECRET);
-          if (decoded.email && decoded.roles) {
+          if ((decoded.email || decoded.walletAddress) && decoded.roles) {
             req.user = decoded;
-            req.authMethod = 'dapp_user';
+            req.authMethod = decoded.authMethod === 'siwe' ? 'siwe_session' : 'dapp_user';
             authenticated = true;
             userRole = decoded.role || decoded.roles[0] || 'beneficiary';
           }
@@ -264,7 +278,47 @@ function dappAuth(options = {}) {
       }
     }
 
+    // 3. Raw SIWE message + signature (wallet-only login, no email)
+    if (!authenticated && SiweAuth) {
+      const authHeader = req.headers['authorization'] || '';
+      let message = req.headers['x-siwe-message'];
+      let signature = req.headers['x-siwe-signature'];
+      if ((!message || !signature) && authHeader.startsWith('SIWE ')) {
+        try {
+          const parsed = JSON.parse(Buffer.from(authHeader.slice(5).trim(), 'base64').toString('utf8'));
+          message = parsed.message;
+          signature = parsed.signature;
+        } catch (err) {
+          // malformed SIWE header — fall through to 401
+        }
+      }
+      if (message && signature) {
+        try {
+          const verified = await SiweAuth.verify({ message: decodeSiweMessage(message), signature });
+          const linked = await resolveWalletUser(verified.address);
+          req.user = {
+            userId: (linked && linked.id) || `wallet:${verified.address.toLowerCase()}`,
+            email: (linked && linked.email) || null,
+            walletAddress: verified.address,
+            authMethod: 'siwe',
+            role: (linked && linked.role) || 'beneficiary',
+            roles: (linked && linked.roles) || ['beneficiary'],
+            smartAccount: linked && SmartWalletProvisioner ? SmartWalletProvisioner.describe(linked) : null,
+          };
+          req.authMethod = 'siwe';
+          req.siwe = verified;
+          authenticated = true;
+          userRole = req.user.role;
+        } catch (err) {
+          req.siweError = err.message;
+        }
+      }
+    }
+
     if (!authenticated) {
+      // `optional` lets a route fall through to another auth strategy instead of
+      // rejecting (used by /auth/me, which serves portal, dApp and SIWE sessions).
+      if (optional) return next();
       return res.status(401).json({ error: 'Authentication required. Please log in.' });
     }
 
@@ -276,6 +330,32 @@ function dappAuth(options = {}) {
 
     next();
   };
+}
+
+// SIWE messages are multi-line, so clients may send them base64-encoded in a
+// header. Accept either form.
+function decodeSiweMessage(raw) {
+  const text = String(raw || '');
+  if (text.includes('wants you to sign in with your Ethereum account')) return text;
+  try {
+    const decoded = Buffer.from(text, 'base64').toString('utf8');
+    if (decoded.includes('wants you to sign in with your Ethereum account')) return decoded;
+  } catch (e) { /* not base64 */ }
+  return text;
+}
+
+// Look up the dApp user linked to a wallet address, if any. A wallet with no
+// portal record still authenticates, but with the lowest role level.
+async function resolveWalletUser(address) {
+  if (!DappEngine || !address) return null;
+  try {
+    const users = await DappEngine.listUsers();
+    const lower = String(address).toLowerCase();
+    return users.find((u) => [u.wallet_address, u.walletAddress, u.safe_owner_address, u.smart_account_address]
+      .some((a) => a && String(a).toLowerCase() === lower)) || null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function bindAuthenticatedTrustee(req, payload = {}, emailField = 'approverEmail') {
@@ -439,6 +519,7 @@ module.exports = {
   sanitizeInput,
   requireAuth,
   dappAuth,
+  resolveWalletUser,
   bindAuthenticatedTrustee,
   generateCsrfToken,
   verifyCsrf,
