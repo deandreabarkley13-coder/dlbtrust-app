@@ -217,4 +217,23 @@ describe('webhooks', () => {
     expect(sync).toHaveBeenCalledWith('SUB-1');
     expect(r.outcome.subscriptions[0].status).toBe('DELIVERED');
   });
+
+  it('routes Payments events to the treasury top-up that owns the paymentId so the ERP books the funding', async () => {
+    const { ThirdwebTreasuryFundingEngine } = require('../server/integrations/dapp/thirdwebTreasuryFundingEngine');
+    vi.spyOn(ThirdwebTreasuryFundingEngine, 'topUpsByPaymentId').mockImplementation(async (paymentId: string) => (paymentId === 'pay_top' ? [{ id: 'TWTOP-1' }] : []));
+    const sync = vi.spyOn(ThirdwebTreasuryFundingEngine, 'syncTopUp').mockResolvedValue({ id: 'TWTOP-1', status: 'COMPLETED', booked: true });
+    const evt = signed({ version: 2, type: 'pay.onchain-transaction', data: { paymentId: 'pay_top', status: 'COMPLETED' } });
+    const r = await ThirdwebSettlementEngine.handleWebhook(evt);
+    expect(sync).toHaveBeenCalledWith('TWTOP-1');
+    expect(r.outcome).toMatchObject({ handled: true, topUps: [{ id: 'TWTOP-1', booked: true }], subscriptions: [] });
+  });
+
+  it('reconcile also syncs open treasury top-ups', async () => {
+    const { ThirdwebTreasuryFundingEngine } = require('../server/integrations/dapp/thirdwebTreasuryFundingEngine');
+    const syncOpen = vi.spyOn(ThirdwebTreasuryFundingEngine, 'syncOpen').mockResolvedValue([{ id: 'TWTOP-2', status: 'PENDING', booked: false }]);
+    vi.spyOn(ThirdwebServerWalletEngine, 'openTransfers').mockResolvedValue([]);
+    const r = await ThirdwebSettlementEngine.reconcile();
+    expect(syncOpen).toHaveBeenCalled();
+    expect(r.topUps).toEqual([{ id: 'TWTOP-2', status: 'PENDING', booked: false }]);
+  });
 });

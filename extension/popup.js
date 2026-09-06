@@ -48,6 +48,57 @@ function renderOpen(target, transfers) {
   }
 }
 
+function renderTopUps(target, topUps) {
+  if (!topUps.length) { target.innerHTML = '<span class="muted">No treasury top-ups yet.</span>'; return; }
+  target.innerHTML = '';
+  for (const t of topUps) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const link = t.link && t.status === 'PENDING' ? `<a href="${t.link}" target="_blank" rel="noopener">complete payment</a>` : '';
+    row.innerHTML = `
+      <div>
+        <div><span class="amt">${usd(t.amountFiat)}</span> <span class="muted">→ ${t.symbol} · ${t.status}${t.booked ? ' · booked' : ''}</span></div>
+        <div class="meta">${t.sourceType}:${t.sourceAccountId} · ${t.id}${t.transactionHash ? ` · tx ${short(t.transactionHash)}` : ''}</div>
+      </div>
+      <span class="muted">${link}</span>`;
+    target.appendChild(row);
+  }
+}
+
+async function loadFunding() {
+  try {
+    const [ready, topUps] = await Promise.all([
+      api('/api/dapp/treasury-funding/readiness'),
+      api('/api/dapp/treasury-funding/topups?limit=10'),
+    ]);
+    el('c-fund').textContent = ready.holdSourceAccountId ? `(default ${ready.holdSourceType}:${ready.holdSourceAccountId})` : '';
+    if (!el('fund-source').value && ready.holdSourceAccountId) el('fund-source').value = `${ready.holdSourceType}:${ready.holdSourceAccountId}`;
+    renderTopUps(el('topups'), topUps);
+  } catch (e) {
+    el('topups').innerHTML = `<span class="muted">${e.message}</span>`;
+  }
+}
+
+async function fund() {
+  const amount = Number(el('fund-amount').value);
+  const source = el('fund-source').value.trim();
+  if (!(amount > 0)) { setStatus('Enter a positive USD amount to fund.', true); return; }
+  const [sourceType, sourceAccountId] = source ? source.split(':') : [undefined, undefined];
+  if (!confirm(`Create a thirdweb funding checkout for ${usd(amount)} from ${source || 'the default hold account'} to the treasury wallet?\nThe ledger entry posts only when thirdweb reports COMPLETED.`)) return;
+  el('fund').disabled = true;
+  setStatus('Creating funding checkout…');
+  try {
+    const t = await api('/api/dapp/treasury-funding/topups', { method: 'POST', body: { amountFiat: amount, sourceType, sourceAccountId } });
+    setStatus(`${t.id}: complete the payment to deliver ${t.symbol} to ${short(t.recipient)}.`);
+    if (t.link) chrome.tabs.create({ url: t.link });
+    await loadFunding();
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    el('fund').disabled = false;
+  }
+}
+
 async function settle(kind, item, btn) {
   const live = el('mode').classList.contains('live');
   const prompt = `${live ? 'LIVE: broadcast' : 'Shadow: record'} ${usd(item.amountUsd)} to ${item.destination} via thirdweb?`;
@@ -94,6 +145,7 @@ async function load() {
     renderPayables(el('dist'), queue.distributions, 'distribution');
     renderPayables(el('exp'), queue.expenses, 'expense');
     renderOpen(el('open'), queue.openTransfers);
+    loadFunding();
     setStatus(`Live as of ${new Date(queue.asOf).toLocaleTimeString()}`);
     chrome.runtime.sendMessage({ type: 'refresh' }, () => chrome.runtime.lastError);
   } catch (e) {
@@ -102,12 +154,13 @@ async function load() {
 }
 
 el('refresh').addEventListener('click', load);
+el('fund').addEventListener('click', fund);
 el('options').addEventListener('click', (ev) => { ev.preventDefault(); chrome.runtime.openOptionsPage(); });
 el('reconcile').addEventListener('click', async () => {
   setStatus('Reconciling with thirdweb…');
   try {
     const r = await api('/api/dapp/thirdweb/settlement/reconcile', { method: 'POST', body: {} });
-    setStatus(`Checked ${r.checked} transfer(s); ${r.results.filter((x) => x.applied).length} finalized.`);
+    setStatus(`Checked ${r.checked} transfer(s); ${r.results.filter((x) => x.applied).length} finalized; ${(r.topUps || []).length} top-up(s) synced.`);
     await load();
   } catch (e) { setStatus(e.message, true); }
 });

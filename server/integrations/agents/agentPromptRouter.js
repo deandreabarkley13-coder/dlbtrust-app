@@ -72,6 +72,22 @@ var TRUSTEE_INTENTS = [
     description: 'Show trustee dashboard with health indicators and summary',
     action: 'getDashboard',
   },
+  {
+    id: 'treasury_funding_status',
+    keywords: ['treasury wallet', 'wallet balance', 'top-up', 'top up', 'topups', 'funding status', 'server wallet', 'usdc balance', 'on-chain treasury', 'funding pipeline'],
+    phrases: ['treasury funding status', 'show treasury wallet', 'what is the treasury wallet balance', 'how much usdc is in the treasury', 'show top-ups', 'list top ups', 'is the treasury wallet funded', 'funding pipeline status', 'show wallet funding', 'check treasury wallet'],
+    description: 'Show treasury wallet balance, funding readiness and recent top-ups',
+    action: 'treasuryFundingStatus',
+  },
+  {
+    id: 'fund_treasury',
+    keywords: ['fund treasury', 'fund the treasury', 'fund wallet', 'fund the wallet', 'top up treasury', 'top up the wallet', 'top-up treasury', 'move to treasury wallet', 'fund server wallet', 'treasury top-up'],
+    phrases: ['fund the treasury wallet', 'fund treasury wallet with', 'top up the treasury wallet', 'fund the server wallet', 'move cash to the treasury wallet', 'fund treasury with', 'top up treasury by', 'send usd to the treasury wallet', 'fund the wallet from the operating account'],
+    description: 'Create a thirdweb funding checkout from a canonical ERP cash account to the treasury wallet',
+    action: 'fundTreasury',
+    requiresParam: 'amount',
+    paramPattern: /\$\s*([\d,]+(?:\.\d{1,2})?)|([\d,]+(?:\.\d{1,2})?)\s*(?:usd|dollars)/i,
+  },
 ];
 
 var BOOKKEEPING_INTENTS = [
@@ -310,13 +326,20 @@ function scoreIntent(input, intent) {
   return score;
 }
 
+function firstCapture(match) {
+  for (var i = 1; i < match.length; i++) {
+    if (match[i] !== undefined) return match[i];
+  }
+  return match[0];
+}
+
 function extractParam(input, intent) {
   if (!intent.requiresParam) return null;
   var match = input.match(intent.paramPattern);
-  if (match) return match[1];
+  if (match) return firstCapture(match);
   if (intent.altPattern) {
     match = input.match(intent.altPattern);
-    if (match) return match[1];
+    if (match) return firstCapture(match);
   }
   // Try to find any ID-like token
   var tokens = input.match(/\b[A-Z0-9]+-[A-Z0-9-]+\b/gi);
@@ -390,6 +413,12 @@ class AgentPromptRouter {
           break;
         case 'getDashboard':
           result = await TrusteeAgent.getDashboard();
+          break;
+        case 'treasuryFundingStatus':
+          result = await treasuryFundingStatus();
+          break;
+        case 'fundTreasury':
+          result = await fundTreasury(prompt, param);
           break;
         default:
           return { understood: false, message: 'Action not implemented: ' + bestIntent.action };
@@ -569,8 +598,48 @@ function formatCurrency(val) {
   return '$' + Number(val).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+// ─── Treasury funding (canonical ERP → thirdweb Payments → server wallet) ──
+
+function loadFundingEngine() {
+  var { ThirdwebTreasuryFundingEngine } = require(path.join(__dirname, '../dapp/thirdwebTreasuryFundingEngine'));
+  return ThirdwebTreasuryFundingEngine;
+}
+
+async function treasuryFundingStatus() {
+  var Engine = loadFundingEngine();
+  var readiness = Engine.readiness();
+  var topUps = await Engine.listTopUps({ limit: 10 });
+  var balances = null;
+  try { balances = await Engine.treasuryBalances({}); } catch (e) { balances = { error: e.message }; }
+  return { readiness: readiness, balances: balances, topUps: topUps };
+}
+
+/** "fund the treasury wallet with $250 from cash:CA-OPERATING" → PENDING checkout; nothing books until COMPLETED. */
+async function fundTreasury(prompt, amountParam) {
+  var Engine = loadFundingEngine();
+  var amount = Number(String(amountParam || '').replace(/,/g, ''));
+  if (!(amount > 0)) throw new Error('a positive USD amount is required (e.g. "fund the treasury wallet with $250")');
+  var source = /\bfrom\s+([a-z_]+):([A-Za-z0-9_-]+)/i.exec(prompt || '');
+  return Engine.createTopUp({
+    amountFiat: amount,
+    sourceType: source ? source[1].toLowerCase() : undefined,
+    sourceAccountId: source ? source[2] : undefined,
+    requestedBy: 'trustee-agent',
+    requesterRole: 'trustee',
+  });
+}
+
 function formatTrusteeResult(intent, result) {
   switch (intent.action) {
+    case 'treasuryFundingStatus': {
+      var r = result.readiness || {};
+      var open = (result.topUps || []).filter(function(t) { return t.status === 'PENDING'; }).length;
+      var bal = result.balances && Array.isArray(result.balances.balances) ? result.balances.balances : [];
+      var balText = bal.length ? bal.map(function(b) { return (b.displayValue != null ? b.displayValue : b.value) + ' ' + (b.symbol || ''); }).join(', ') : (result.balances && result.balances.error ? 'balance unavailable (' + result.balances.error + ')' : 'no balances');
+      return 'Treasury wallet ' + (r.treasuryAddress || '(unset)') + ' on chain ' + r.chainId + ': ' + balText + '. Funding ' + (r.ready ? 'ready' : 'not ready: ' + (r.issues || []).join('; ')) + '. ' + (result.topUps || []).length + ' recent top-up(s), ' + open + ' awaiting payment.';
+    }
+    case 'fundTreasury':
+      return 'Created top-up ' + result.id + ' for ' + formatCurrency(result.amountFiat) + ' from ' + result.sourceType + ':' + result.sourceAccountId + ' → ' + result.quantity + ' ' + result.symbol + ' to ' + result.recipient + '. Complete the thirdweb checkout to deliver funds: ' + (result.link || '(no link)') + '. The ERP entry posts only when thirdweb reports COMPLETED.';
     case 'runAssetReview':
       var findings = result.findings || [];
       var msg = 'Asset Review Complete (ID: ' + result.reviewId + '). ';

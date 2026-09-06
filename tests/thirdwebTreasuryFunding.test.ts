@@ -3,6 +3,9 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 
+// Must be set before the engine loads: it decides at require time whether to use Postgres.
+process.env.DAPP_MEMORY_MODE = 'true';
+
 const { ThirdwebTreasuryFundingEngine } = require('../server/integrations/dapp/thirdwebTreasuryFundingEngine');
 const { ThirdwebServerWalletEngine } = require('../server/integrations/dapp/thirdwebServerWalletEngine');
 const { ThirdwebPriceOracle } = require('../server/integrations/dapp/thirdwebPriceOracle');
@@ -162,6 +165,34 @@ describe('treasury top-up (fiat → on-chain)', () => {
     const synced = await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
     expect(synced).toMatchObject({ status: 'PENDING', booked: false });
     expect(SourceOfFundsAdapter._fundSourceToTreasury).not.toHaveBeenCalled();
+  });
+
+  it('syncOpen books only the top-ups the bridge has completed, and finds rows by payment id', async () => {
+    mockFetch([
+      { result: 51.5 },
+      { result: { id: 'pay_open_a', link: 'https://thirdweb.com/pay/pay_open_a' } },
+      { result: 76.25 },
+      { result: { id: 'pay_open_b', link: 'https://thirdweb.com/pay/pay_open_b' } },
+    ]);
+    const a = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 51.5 });
+    const b = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 76.25 });
+    expect(await ThirdwebTreasuryFundingEngine.topUpsByPaymentId('pay_open_b')).toEqual([expect.objectContaining({ id: b.id })]);
+    expect((await ThirdwebTreasuryFundingEngine.openTopUps()).map((t: any) => t.id)).toEqual(expect.arrayContaining([a.id, b.id]));
+
+    (globalThis.fetch as any).mockImplementation(async (url: string) => ({
+      ok: true, status: 200, statusText: 'ok',
+      json: async () => (String(url).includes('pay_open_a')
+        ? { data: [{ id: 'pay_open_a', status: 'COMPLETED', transactions: [{ transactionHash: '0xaaa' }] }] }
+        : { data: [{ id: 'pay_open_b', status: 'PENDING', transactions: [] }] }),
+    }));
+    const results = await ThirdwebTreasuryFundingEngine.syncOpen();
+    expect(results.find((r: any) => r.id === a.id)).toMatchObject({ status: 'COMPLETED', booked: true, transactionHash: '0xaaa' });
+    expect(results.find((r: any) => r.id === b.id)).toMatchObject({ status: 'PENDING', booked: false });
+    expect(SourceOfFundsAdapter._fundSourceToTreasury).toHaveBeenCalledTimes(1);
+    const stillOpen = (await ThirdwebTreasuryFundingEngine.openTopUps()).map((t: any) => t.id);
+    expect(stillOpen).toContain(b.id);
+    expect(stillOpen).not.toContain(a.id);
+    expect(await ThirdwebTreasuryFundingEngine.listTopUps({ status: 'COMPLETED' })).toEqual(expect.arrayContaining([expect.objectContaining({ id: a.id })]));
   });
 });
 
