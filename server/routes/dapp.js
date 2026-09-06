@@ -488,6 +488,29 @@ router.get('/bond-tokens/:id/holdings', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await BondTokenizationEngine.getHoldings(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/bond-tokens/:id/retire', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const user = req.user || {};
+    const data = await BondTokenizationEngine.retire({
+      tokenId: req.params.id,
+      reason: (req.body || {}).reason,
+      retiredBy: user.email || user.username || user.userId || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/bond-tokens/:id/sync-chain', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const user = req.user || {};
+    const data = await BondTokenizationEngine.syncSupplyFromChain({
+      tokenId: req.params.id,
+      syncedBy: user.email || user.username || user.userId || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/dex/readiness', async (req, res) => {
   try { res.json({ success: true, data: DexSwapEngine.readiness() }); } catch (err) { sendError(res, err); }
 });

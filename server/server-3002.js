@@ -944,6 +944,24 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
 
+  // Bond-token supply sync: raises a maker/checker burn whenever tokenized supply
+  // exceeds the amortized bond principal. OFF unless BOND_TOKEN_SUPPLY_SYNC_MS is set.
+  try {
+    var supplySyncMs = parseInt(process.env.BOND_TOKEN_SUPPLY_SYNC_MS || '0', 10);
+    if (supplySyncMs > 0) {
+      setInterval(function() {
+        var BondTokenizationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bondTokenizationEngine')).BondTokenizationEngine;
+        BondTokenizationEngine.syncSupplyToPrincipal().then(function(result) {
+          var raised = result.results.filter(function(r) { return r.action === 'raised'; }).length;
+          console.log('[bond-token-supply-sync] checked ' + result.checked + ' token(s), raised ' + raised + ' burn(s)');
+        }).catch(function(err) {
+          console.warn('[bond-token-supply-sync] tick failed:', err.message);
+        });
+      }, supplySyncMs);
+      console.log('[bond-token-supply-sync] scheduler started every ' + supplySyncMs + 'ms');
+    }
+  } catch(e) { console.warn('[bond-token-supply-sync] scheduler:', e.message); }
+
   // Melio vendor-payment sync scheduler (approves/exports pending melio invoices).
   // OFF unless MELIO_SYNC_SCHEDULE_MS is set. Set MELIO_SYNC_AUTO_APPROVE=true to auto-approve.
   try {

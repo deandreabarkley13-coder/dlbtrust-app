@@ -110,33 +110,50 @@ class FixedIncomeDataService {
     try {
       const res = await pool.query(
         `SELECT id, bond_id, token_name, token_symbol, token_address, total_supply,
-                tokenized_principal, tokenized_interest, status, updated_at
+                tokenized_principal, tokenized_interest, status, metadata, updated_at
            FROM bond_tokens
           ORDER BY created_at DESC`
       );
       rows = res.rows || [];
     } catch (e) {
-      return { available: false, reason: e.message, tokens: [], by_bond: {} };
+      return { available: false, reason: e.message, tokens: [], by_bond: {}, excluded: { module_tokens: [], inactive_tokens: [] } };
     }
+    let classify = () => 'on_chain';
+    try {
+      const { BondTokenizationEngine } = require('../dapp/bondTokenizationEngine');
+      classify = (t) => BondTokenizationEngine.classifyToken(t);
+    } catch (e) { /* tokenization engine unavailable: treat every address as on-chain */ }
+
     const byBond = {};
+    const excluded = { module_tokens: [], inactive_tokens: [] };
     for (const t of rows) {
-      const key = t.bond_id == null ? 'unbacked' : String(t.bond_id);
-      if (!byBond[key]) byBond[key] = { tokens: [], tokenized_principal: 0, tokenized_interest: 0, total_supply: 0 };
-      byBond[key].tokens.push({
+      const placement = classify(t);
+      const entry = {
         id: t.id,
+        bond_id: t.bond_id == null ? null : Number(t.bond_id),
         token_name: t.token_name,
         token_symbol: t.token_symbol,
         token_address: t.token_address || null,
-        on_chain: Boolean(t.token_address) && !String(t.token_address).startsWith('shadow-'),
+        on_chain: placement === 'on_chain',
+        placement,
         total_supply: Number(t.total_supply || 0),
         tokenized_principal: Number(t.tokenized_principal || 0),
         tokenized_interest: Number(t.tokenized_interest || 0),
         status: t.status,
         updated_at: t.updated_at || null,
-      });
-      byBond[key].tokenized_principal = round2(byBond[key].tokenized_principal + Number(t.tokenized_principal || 0));
-      byBond[key].tokenized_interest = round2(byBond[key].tokenized_interest + Number(t.tokenized_interest || 0));
-      byBond[key].total_supply += Number(t.total_supply || 0);
+      };
+      // Only live contracts on the deployed chain, still active and standing on
+      // a bond, are claims against that bond's principal. Module/stablecoin
+      // tokens with no bond and testnet or retired rows are reported, not counted.
+      if (t.status !== 'active' || placement !== 'on_chain') { excluded.inactive_tokens.push(entry); continue; }
+      if (t.bond_id == null) { excluded.module_tokens.push(entry); continue; }
+
+      const key = String(t.bond_id);
+      if (!byBond[key]) byBond[key] = { tokens: [], tokenized_principal: 0, tokenized_interest: 0, total_supply: 0 };
+      byBond[key].tokens.push(entry);
+      byBond[key].tokenized_principal = round2(byBond[key].tokenized_principal + entry.tokenized_principal);
+      byBond[key].tokenized_interest = round2(byBond[key].tokenized_interest + entry.tokenized_interest);
+      byBond[key].total_supply += entry.total_supply;
     }
     for (const p of positions || []) {
       const entry = byBond[String(p.id)];
@@ -144,7 +161,7 @@ class FixedIncomeDataService {
       entry.coverage_pct = p.principal_balance > 0 ? round2((entry.tokenized_principal / p.principal_balance) * 100) : 0;
       entry.untokenized_principal = round2(p.principal_balance - entry.tokenized_principal);
     }
-    return { available: true, tokens: rows.length, by_bond: byBond };
+    return { available: true, tokens: rows.length, by_bond: byBond, excluded };
   }
 
   static platformStatus() {
@@ -233,6 +250,10 @@ class FixedIncomeDataService {
         coverage_pct: totals.total_principal_balance > 0
           ? round2((Object.values(tokenization.by_bond).reduce((s, e) => s + e.tokenized_principal, 0) / totals.total_principal_balance) * 100)
           : 0,
+        module_tokens: (tokenization.excluded || { module_tokens: [] }).module_tokens.map((t) => ({
+          id: t.id, token_symbol: t.token_symbol, token_address: t.token_address, total_supply: t.total_supply,
+        })),
+        inactive_tokens: (tokenization.excluded || { inactive_tokens: [] }).inactive_tokens.length,
       },
       platforms: FixedIncomeDataService.platformStatus(),
       discrepancies,

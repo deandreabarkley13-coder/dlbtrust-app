@@ -34,6 +34,11 @@ const TOKEN_ROWS: Row[] = [
   { id: 'tok-1', bond_id: 1, token_name: 'DLB-PRB Token', token_symbol: 'DLBPRB', token_address: '0xabc', total_supply: '40000000', tokenized_principal: '40000000', tokenized_interest: '0', status: 'active' },
   { id: 'tok-2', bond_id: 1, token_name: 'Shadow', token_symbol: 'SHDW', token_address: 'shadow-1', total_supply: '1', tokenized_principal: '1', tokenized_interest: '0', status: 'shadow' },
   { id: 'tok-3', bond_id: null, token_name: 'Unbacked', token_symbol: 'UNB', token_address: null, total_supply: '0', tokenized_principal: '0', tokenized_interest: '0', status: 'draft' },
+  // A module/stablecoin token: live on the deployed chain but backed by no bond.
+  { id: 'tok-4', bond_id: null, token_name: 'DLB Treasury', token_symbol: 'DLB-TREASURY', token_address: '0xdef', total_supply: '100000000', tokenized_principal: '100000000', tokenized_interest: '0', status: 'active' },
+  // A testnet leftover pointing at bond 1 and a retired predecessor: neither counts.
+  { id: 'tok-5', bond_id: 1, token_name: 'Sepolia test', token_symbol: 'DLB1', token_address: '0x111', total_supply: '0.2', tokenized_principal: '0.2', tokenized_interest: '0', status: 'active', metadata: { chainId: 11155111 } },
+  { id: 'tok-6', bond_id: 1, token_name: 'Old', token_symbol: 'DLB-BOND', token_address: '0x222', total_supply: '0', tokenized_principal: '0', tokenized_interest: '0', status: 'retired' },
 ];
 
 function mockPool({ bondTokens = true }: { bondTokens?: boolean } = {}) {
@@ -113,19 +118,37 @@ describe('FixedIncomeDataService', () => {
     expect(snap.live.total_market_value).toBe(79000000);
     expect(snap.bonds[0].live.market_value).toBe(78750000);
     expect(snap.bonds[0].tokenization).toMatchObject({
-      tokenized_principal: 40000001,
-      untokenized_principal: 39999999,
+      tokenized_principal: 40000000,
+      untokenized_principal: 40000000,
       coverage_pct: 50,
     });
-    expect(snap.bonds[0].tokenization.tokens.map((t: Row) => t.on_chain)).toEqual([true, false]);
+    expect(snap.bonds[0].tokenization.tokens.map((t: Row) => t.id)).toEqual(['tok-1']);
     expect(snap.bonds[1].tokenization).toBeNull();
-    expect(snap.tokenization).toMatchObject({ available: true, tokens: 3, total_tokenized_principal: 40000001 });
+    expect(snap.tokenization).toMatchObject({ available: true, tokens: 6, total_tokenized_principal: 40000000, inactive_tokens: 4 });
+    expect(snap.tokenization.module_tokens).toEqual([
+      { id: 'tok-4', token_symbol: 'DLB-TREASURY', token_address: '0xdef', total_supply: 100000000 },
+    ]);
     expect(snap.tokenization.coverage_pct).toBeCloseTo(49.84, 2);
     expect(snap.discrepancies).toEqual([]);
     expect(snap.platforms.dlbtrust.ok).toBe(true);
     expect(snap.platforms.thirdweb).toHaveProperty('ready');
     expect(snap.platforms.tokenization).toHaveProperty('ready');
     expect(snap.platforms.northflank).toHaveProperty('deployed');
+  });
+
+  it('classifies tokens: only active bond-linked contracts on the deployed chain count toward coverage', async () => {
+    mockPool();
+    const positions = await FixedIncomeDataService.listPositions();
+    const tok = await FixedIncomeDataService.getTokenization(positions);
+    expect(Object.keys(tok.by_bond)).toEqual(['1']);
+    expect(tok.by_bond['1'].tokens.map((t: Row) => t.placement)).toEqual(['on_chain']);
+    expect(tok.excluded.module_tokens.map((t: Row) => t.id)).toEqual(['tok-4']);
+    expect(tok.excluded.inactive_tokens.map((t: Row) => [t.id, t.placement, t.status])).toEqual([
+      ['tok-2', 'shadow', 'shadow'],
+      ['tok-3', 'shadow', 'draft'],
+      ['tok-5', 'foreign_chain', 'active'],
+      ['tok-6', 'on_chain', 'retired'],
+    ]);
   });
 
   it('flags tokenized supply that exceeds ledger principal and live/ledger face drift', async () => {
