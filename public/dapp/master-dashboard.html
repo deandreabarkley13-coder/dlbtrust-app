@@ -257,13 +257,14 @@
       } catch (e) { el('overview-master-status').textContent = e.message; }
       try {
         const pf = await api('/bonds/portfolio');
-        const metrics = pf.metrics || [];
-        const currentValue = metrics.reduce((s, m) => s + (parseFloat(m.total_current_value) || 0), 0);
-        const accrued = metrics.reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
-        const interestPaid = metrics.reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0), 0);
-        const interestAccruedToDate = metrics.reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0) + (parseFloat(m.accrued_interest_total) || 0), 0);
-        const faceValue = metrics.reduce((s, m) => s + (parseFloat(m.face_value) || 0), 0);
-        el('overview-income').innerHTML = `<div class="big">$${esc(formatMoney(currentValue))}</div><div class="muted">total current value (principal + accrued)</div><div style="margin-top:10px;color:var(--muted);font-size:12px;">Total face value: <b>$${esc(formatMoney(faceValue))}</b><br/>Accrued interest outstanding: <b>$${esc(formatMoney(accrued))}</b><br/>Interest paid/distributed: <b>$${esc(formatMoney(interestPaid))}</b><br/>Total interest accrued to date: <b>$${esc(formatMoney(interestAccruedToDate))}</b></div>`;
+        const bonds = pf.bonds || [];
+        const totals = pf.totals || {};
+        const currentValue = parseFloat(totals.total_current_value) || 0;
+        const accrued = parseFloat(totals.total_accrued_interest) || 0;
+        const faceValue = parseFloat(totals.total_face_value) || 0;
+        const interestPaid = bonds.reduce((s, b) => s + (parseFloat(b.total_interest_paid) || 0), 0);
+        const interestAccruedToDate = interestPaid + accrued;
+        el('overview-income').innerHTML = `<div class="big">$${esc(formatMoney(currentValue))}</div><div class="muted">total current value (principal + accrued) &middot; ${esc(totals.count || 0)} active bond(s)</div><div style="margin-top:10px;color:var(--muted);font-size:12px;">Total face value: <b>$${esc(formatMoney(faceValue))}</b><br/>Accrued interest outstanding: <b>$${esc(formatMoney(accrued))}</b><br/>Interest paid/distributed: <b>$${esc(formatMoney(interestPaid))}</b><br/>Total interest accrued to date: <b>$${esc(formatMoney(interestAccruedToDate))}</b></div>`;
       } catch (e) { el('overview-income').textContent = e.message; }
       try {
         const reqs = await api('/distribution-requests?limit=50');
