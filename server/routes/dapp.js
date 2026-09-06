@@ -1029,12 +1029,12 @@ router.post('/thirdweb/webhooks', writeRateLimiter(), async (req, res) => {
   try {
     const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
     const result = await ThirdwebSettlementEngine.handleWebhook({ rawBody, headers: req.headers });
-    res.json({ success: true, data: { id: result.id, topic: result.topic, duplicate: result.duplicate } });
+    res.json({ success: true, data: { id: result.id, topic: result.topic, duplicate: result.duplicate, ignored: Boolean(result.ignored) } });
   } catch (err) {
     // External caller: never echo internal failure details; 5xx makes thirdweb redeliver.
     console.error('[dapp] thirdweb webhook rejected:', err && err.message);
     const status = Number(err && err.status);
-    res.status(status >= 400 && status <= 599 ? status : 500).json({ success: false, error: status === 401 ? 'unauthorized' : status === 503 ? 'webhook receiver not configured' : 'webhook processing failed' });
+    res.status(status >= 400 && status <= 599 ? status : 500).json({ success: false, error: status === 401 ? 'unauthorized' : 'webhook processing failed' });
   }
 });
 
