@@ -126,6 +126,44 @@ GetRecord(recordType, recordId) -> the value above (or its digest string)
 `verify` accepts either shape back from `GetRecord`: the JSON object, or a bare
 64-character hex digest.
 
+`chaincode/trustnotary` is a reference implementation of exactly that interface
+(Go, `fabric-contract-api-go`), and is the one the live run below was verified
+against. It keeps every superseded digest under a history key, so a mismatch can
+be walked back to the version the channel accepted.
+
+## What each node has to have
+
+Verified end to end against a Fabric network with fabconnect and a two-member
+FireFly stack (ERC-20 pool), which settled the flow above on-chain.
+
+Fabric, via fabconnect:
+
+- an enrolled signer registered with fabconnect — `FABRIC_SIGNER` is that
+  identity's name, not an MSP path
+- the notary chaincode below, committed on `FABRIC_CHANNEL`
+
+Fabconnect answers a `SendTransaction` with the receipt lookup id in
+`headers.requestId`, the committed hash in `transactionHash`, and `status:
+VALID`; `headers.id` is only a correlation id, so a record is `pending` until a
+hash exists, and `headers.type: TransactionFailure` marks it `failed`. Until the
+block commits, `GET /receipts/{requestId}` answers `404 Receipt not available` —
+that is in-flight, not failed, so `--receipt` can be run on a schedule.
+
+FireFly:
+
+- the counterparty registered as an org with a blockchain verifier.
+  `FIREFLY_COUNTERPARTY_ORG` takes the DID or org name; the engine resolves it
+  to that verifier's key, because a token transfer credits a key, not a DID
+- a token pool. `FIREFLY_TOKEN_POOL` takes the pool name or id, and
+  `FIREFLY_TOKEN_DECIMALS` must match the pool's own decimals (18 for a stock
+  ERC-20 pool, not the default 2) or every amount is off by orders of magnitude
+- nothing else: the `settlement_instruction` datatype is broadcast to the
+  namespace on first use
+
+A confirmed transfer references its blockchain event by id, so the chain hash is
+read from that event rather than from the transfer's `tx`, which is a FireFly
+operation reference.
+
 ## Webhook
 
 Point the FireFly subscription at `POST /api/hyperledger/firefly/webhook`

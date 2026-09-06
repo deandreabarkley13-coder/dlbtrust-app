@@ -34,6 +34,21 @@ function mockFetch(responses: any[]) {
 
 const WIRE = { id: 'WIRE-9001', amountUsd: 25000, beneficiary: 'Partner Bank', settledAt: '2026-09-06' };
 
+// What a FireFly node answers for the registrations the engine resolves before
+// it sends anything: the datatype, the counterparty's verifier, the pool id.
+const DATATYPES = [{ id: 'dt-1', name: 'settlement_instruction', version: '1.0.0' }];
+const IDENTITIES = [{
+  did: 'org.partnerbank',
+  name: 'partnerbank',
+  verifiers: [{ type: 'ethereum_address', value: '0xpartner' }],
+}];
+const POOLS = [{ id: 'pool-uuid-1', name: 'usd-deposit', symbol: 'USDD', decimals: 6 }];
+
+/** Preflight for a first instruction (datatype) or transfer (+ identity, pool). */
+function preflight(kind: 'instruction' | 'transfer') {
+  return kind === 'instruction' ? [DATATYPES] : [DATATYPES, IDENTITIES, POOLS];
+}
+
 beforeEach(() => {
   process.env.DAPP_MEMORY_MODE = 'true';
   process.env.FABRIC_CONNECT_URL = 'https://fabconnect.trust.internal';
@@ -145,6 +160,37 @@ describe('fabric notarize', () => {
   });
 });
 
+describe('fabric transaction responses', () => {
+  it('reads a real fabconnect success: request id in the headers, hash and block at the top', async () => {
+    process.env.FABRIC_LEDGER_LIVE = 'true';
+    mockFetch([{
+      headers: { type: 'TransactionSuccess', id: 'corr-1', requestId: 'req-9' },
+      transactionHash: 'abc123',
+      blockNumber: 10,
+      status: 'VALID',
+    }]);
+    const row = await FabricLedgerEngine.notarize({ recordType: 'wire', recordId: WIRE.id, payload: WIRE });
+    expect(row).toMatchObject({
+      status: 'anchored', requestId: 'req-9', transactionId: 'abc123', blockNumber: 10,
+    });
+  });
+
+  it('will not call a record anchored on a correlation id alone', async () => {
+    process.env.FABRIC_LEDGER_LIVE = 'true';
+    mockFetch([{ headers: { id: 'corr-1', requestId: 'req-9', type: 'TransactionUpdate' } }]);
+    const row = await FabricLedgerEngine.notarize({ recordType: 'wire', recordId: WIRE.id, payload: WIRE });
+    expect(row).toMatchObject({ status: 'pending', anchored: false, requestId: 'req-9' });
+  });
+
+  it('records a rejected transaction as failed', async () => {
+    process.env.FABRIC_LEDGER_LIVE = 'true';
+    mockFetch([{ headers: { type: 'TransactionFailure', requestId: 'req-9' }, errorMessage: 'chaincode error' }]);
+    await expect(FabricLedgerEngine.notarize({ recordType: 'wire', recordId: WIRE.id, payload: WIRE }))
+      .rejects.toThrow(/chaincode error/);
+    expect((await FabricLedgerEngine.history('wire', WIRE.id))[0]).toMatchObject({ status: 'failed', anchored: false });
+  });
+});
+
 describe('fabric verify', () => {
   it('reports an unnotarized record rather than a pass', async () => {
     const result = await FabricLedgerEngine.verify({ recordType: 'wire', recordId: 'WIRE-NONE', payload: WIRE });
@@ -200,6 +246,17 @@ describe('fabric receipts', () => {
     expect(synced).toMatchObject({ polled: true, status: 'anchored', transactionId: 'tx-9', blockNumber: 77 });
   });
 
+  it('treats an unavailable receipt as still in flight, not as a failure', async () => {
+    process.env.FABRIC_LEDGER_LIVE = 'true';
+    const spy = mockFetch([{ headers: { requestId: 'req-1' } }]);
+    const row = await FabricLedgerEngine.notarize({ recordType: 'wire', recordId: WIRE.id, payload: WIRE });
+    spy.mockResolvedValueOnce({ ok: false, status: 404, statusText: 'Not Found', text: async () => '{"error":"Receipt not available"}' } as any);
+
+    const synced = await FabricLedgerEngine.syncReceipt(row.id);
+    expect(synced).toMatchObject({ polled: true, status: 'pending' });
+    expect(synced.reason).toContain('in flight');
+  });
+
   it('has nothing to poll for a shadow notarization', async () => {
     const row = await FabricLedgerEngine.notarize({ recordType: 'wire', recordId: WIRE.id, payload: WIRE });
     const synced = await FabricLedgerEngine.syncReceipt(row.id);
@@ -228,24 +285,36 @@ describe('firefly readiness', () => {
 
 describe('firefly settlement instructions', () => {
   it('pins the hash, keeps the payload private to the counterparty, and notarizes it', async () => {
-    mockFetch([{ header: { id: 'msg-1' }, state: 'sent' }]);
+    mockFetch([...preflight('instruction'), { header: { id: 'msg-1' }, state: 'sent' }]);
     const instruction = { reference: 'SETTLE-1', amountUsd: 1000, beneficiary: 'Partner Bank' };
     const sent = await FireflyEngine.sendInstruction({ reference: 'SETTLE-1', instruction });
 
-    const posted = call(0);
+    const posted = call(1);
     expect(posted.url).toBe('https://firefly.trust.internal/api/v1/namespaces/trust/messages/private');
-    expect(posted.body.header.group.members).toEqual([{ identity: 'org.partnerbank' }]);
+    expect(posted.body.group.members).toEqual([{ identity: 'org.partnerbank' }]);
+    expect(posted.body.header.group).toBeUndefined();
     expect(posted.body.data[0].value.digest).toBe(FabricLedgerEngine.digest(instruction));
     expect(sent).toMatchObject({ messageId: 'msg-1', status: 'sent' });
     expect(await FabricLedgerEngine.history('settlement_instruction', 'SETTLE-1')).toHaveLength(1);
   });
 
   it('is idempotent on the reference', async () => {
-    mockFetch([{ header: { id: 'msg-1' } }]);
+    mockFetch([...preflight('instruction'), { header: { id: 'msg-1' } }]);
     await FireflyEngine.sendInstruction({ reference: 'SETTLE-1', instruction: { amountUsd: 1 } });
     const again = await FireflyEngine.sendInstruction({ reference: 'SETTLE-1', instruction: { amountUsd: 1 } });
     expect(again.idempotent).toBe(true);
-    expect((globalThis.fetch as any).mock.calls.length).toBe(1);
+    expect((globalThis.fetch as any).mock.calls.length).toBe(2);
+  });
+
+  it('defines the instruction datatype on a node that does not have it yet', async () => {
+    mockFetch([[], { id: 'dt-new', name: 'settlement_instruction', version: '1.0.0' }, { header: { id: 'msg-1' } }]);
+    await FireflyEngine.sendInstruction({ reference: 'SETTLE-2', instruction: { amountUsd: 1 } });
+
+    const definition = call(1);
+    expect(definition.method).toBe('POST');
+    expect(definition.url).toContain('/datatypes');
+    expect(definition.body).toMatchObject({ name: 'settlement_instruction', version: '1.0.0', validator: 'json' });
+    expect(definition.body.value.required).toEqual(['reference', 'digest']);
   });
 
   it('refuses without a counterparty', async () => {
@@ -276,6 +345,23 @@ describe('firefly transfers', () => {
     await expect(FireflyEngine.transfer({ amountUsd: 100, reference: 'T-3' })).rejects.toThrow(/cannot fund/i);
   });
 
+  it('refuses a counterparty the node has no verifier for', async () => {
+    process.env.FIREFLY_LIVE = 'true';
+    mockFetch([DATATYPES, [], POOLS]);
+    await expect(FireflyEngine.transfer({ amountUsd: 100, reference: 'T-4b' }))
+      .rejects.toThrow(/no registered blockchain verifier/);
+    const stored = await FireflyEngine.list({ limit: 5 });
+    expect(stored[0]).toMatchObject({ status: 'failed', booked: false });
+  });
+
+  it('checks the account it is about to debit when no source account is configured', async () => {
+    process.env.FIREFLY_LIVE = 'true';
+    delete process.env.FIREFLY_SOURCE_ACCOUNT_ID;
+    mockFetch([...preflight('transfer'), { localId: 'xfer-4', state: 'pending' }]);
+    await FireflyEngine.transfer({ amountUsd: 100, reference: 'T-4c' });
+    expect(SourceOfFundsAdapter.getPosition).toHaveBeenCalledWith(expect.objectContaining({ sourceAccountId: '1000' }));
+  });
+
   it('honours the per-transfer ceiling', async () => {
     process.env.FIREFLY_LIVE = 'true';
     process.env.FIREFLY_MAX_TRANSFER_USD = '50';
@@ -285,12 +371,14 @@ describe('firefly transfers', () => {
   it('submits in the pool base units with the advice attached, and books nothing yet', async () => {
     process.env.FIREFLY_LIVE = 'true';
     process.env.FIREFLY_TOKEN_DECIMALS = '6';
-    mockFetch([{ localId: 'xfer-1', message: 'msg-2', state: 'pending' }]);
+    mockFetch([...preflight('transfer'), { localId: 'xfer-1', message: 'msg-2', state: 'pending' }]);
     const row = await FireflyEngine.transfer({ amountUsd: 250.5, reference: 'T-5', memo: 'Q3 distribution' });
 
-    const posted = call(0);
+    const posted = call(3);
     expect(posted.url).toContain('/namespaces/trust/tokens/transfers');
-    expect(posted.body).toMatchObject({ pool: 'usd-deposit', amount: '250500000', to: 'org.partnerbank' });
+    // The pool is addressed by id and the counterparty by its verifier; FireFly
+    // rejects a pool name or an org DID in either field.
+    expect(posted.body).toMatchObject({ pool: 'pool-uuid-1', amount: '250500000', to: '0xpartner' });
     expect(posted.body.message.data[0].value.memo).toBe('Q3 distribution');
     expect(row).toMatchObject({ status: 'pending', transferId: 'xfer-1', booked: false });
     expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
@@ -299,9 +387,10 @@ describe('firefly transfers', () => {
   it('books once on confirmation and never twice', async () => {
     process.env.FIREFLY_LIVE = 'true';
     mockFetch([
+      ...preflight('transfer'),
       { localId: 'xfer-1', state: 'pending' },
-      { state: 'confirmed', blockchainEvent: { tx: '0xdead' } },
-      { state: 'confirmed', blockchainEvent: { tx: '0xdead' } },
+      { state: 'confirmed', blockchainEvent: { tx: { transactionHash: '0xdead' } } },
+      { state: 'confirmed', blockchainEvent: { tx: { transactionHash: '0xdead' } } },
     ]);
     const row = await FireflyEngine.transfer({ amountUsd: 400, reference: 'T-6' });
 
@@ -318,11 +407,25 @@ describe('firefly transfers', () => {
     expect(TrustAccountingEngine.postJournalEntry).toHaveBeenCalledTimes(1);
   });
 
+  it('follows the blockchain event reference to store a real chain hash', async () => {
+    process.env.FIREFLY_LIVE = 'true';
+    mockFetch([
+      ...preflight('transfer'),
+      { localId: 'xfer-hash', state: 'pending' },
+      { state: 'confirmed', blockchainEvent: 'evt-1', tx: { type: 'token_transfer', id: 'op-1' } },
+      { id: 'evt-1', info: { transactionHash: '0xchain' } },
+    ]);
+    const row = await FireflyEngine.transfer({ amountUsd: 20, reference: 'T-6b' });
+    const synced = await FireflyEngine.sync(row.id);
+    expect(synced).toMatchObject({ status: 'confirmed', txHash: '0xchain' });
+  });
+
   it('posts to both books when the source is the canonical ERP', async () => {
     process.env.FIREFLY_LIVE = 'true';
     vi.spyOn(CanonicalFundingSource, 'assertAvailable').mockResolvedValue({ availableBalanceCents: 900_000_00 } as any);
     const commit = vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({ committed: true, journalEntry: { id: 'je-canonical' } } as any);
     mockFetch([
+      ...preflight('transfer'),
       { localId: 'xfer-2', state: 'pending' },
       { state: 'confirmed' },
     ]);
@@ -338,6 +441,7 @@ describe('firefly transfers', () => {
     process.env.FIREFLY_LIVE = 'true';
     (TrustAccountingEngine.postJournalEntry as any).mockRejectedValue(new Error('GL closed'));
     mockFetch([
+      ...preflight('transfer'),
       { localId: 'xfer-3', state: 'pending' },
       { state: 'confirmed' },
     ]);
@@ -355,12 +459,12 @@ describe('firefly transfers', () => {
 describe('firefly webhook', () => {
   it('books a confirmation for a known transfer', async () => {
     process.env.FIREFLY_LIVE = 'true';
-    mockFetch([{ localId: 'xfer-9', state: 'pending' }]);
+    mockFetch([...preflight('transfer'), { localId: 'xfer-9', state: 'pending' }]);
     await FireflyEngine.transfer({ amountUsd: 60, reference: 'T-9' });
 
     const result = await FireflyEngine.handleEvent({
       type: 'token_transfer_confirmed',
-      tokenTransfer: { localId: 'xfer-9', blockchainEvent: { tx: '0xbeef' } },
+      tokenTransfer: { localId: 'xfer-9', blockchainEvent: { tx: { transactionHash: '0xbeef' } } },
     });
     expect(result).toMatchObject({ handled: true, booked: true });
     expect(result.settlement).toMatchObject({ status: 'confirmed', txHash: '0xbeef' });
@@ -368,7 +472,7 @@ describe('firefly webhook', () => {
 
   it('marks a failed transfer without booking it', async () => {
     process.env.FIREFLY_LIVE = 'true';
-    mockFetch([{ localId: 'xfer-10', state: 'pending' }]);
+    mockFetch([...preflight('transfer'), { localId: 'xfer-10', state: 'pending' }]);
     await FireflyEngine.transfer({ amountUsd: 60, reference: 'T-10' });
 
     const result = await FireflyEngine.handleEvent({

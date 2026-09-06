@@ -55,6 +55,11 @@ function fromCents(cents) { return (Number(cents) || 0) / 100; }
 function reject(message, code, status = 422) { return Object.assign(new Error(message), { code, status }); }
 function id(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 
+// Pool ids, counterparty verifiers and the instruction datatype are node
+// registrations, not state: resolve each once per node instead of adding three
+// lookups to every settlement.
+const resolved = Object.create(null);
+
 let tablesReady = null;
 async function ensureTables() {
   if (!pool || !pool.query) return;
@@ -216,11 +221,55 @@ class FireflyEngine {
 
   static async balances() {
     const cfg = this.getConfig();
-    const query = cfg.pool ? `?pool=${encodeURIComponent(cfg.pool)}` : '';
+    // FireFly filters balances by pool *id*; a configured pool name matches
+    // nothing and silently reads as a zero position, so resolve it first.
+    const poolId = cfg.pool ? await this._resolvePoolId(cfg.pool).catch(() => null) : null;
+    const query = poolId ? `?pool=${encodeURIComponent(poolId)}` : '';
     const raw = await this._call(this._ns(`/tokens/balances${query}`));
     return (Array.isArray(raw) ? raw : []).map((b) => ({
       pool: b.pool, key: b.key, tokenIndex: b.tokenIndex, balance: b.balance, updated: b.updated,
     }));
+  }
+
+  /**
+   * Accept a pool name or id everywhere and hand FireFly the id.
+   */
+  static async _resolvePoolId(nameOrId) {
+    const key = `pool:${this.getConfig().apiUrl}:${nameOrId}`;
+    if (resolved[key]) return resolved[key];
+    const pools = await this.pools();
+    const match = pools.find((p) => p.id === nameOrId) || pools.find((p) => p.name === nameOrId);
+    if (!match) throw reject(`token pool '${nameOrId}' does not exist on this FireFly node`, 'POOL_NOT_FOUND', 422);
+    resolved[key] = match.id;
+    return match.id;
+  }
+
+  /**
+   * A counterparty is configured as an org identity (a DID or org name) because
+   * that is what a trustee can recognise in a policy document. FireFly's
+   * messaging APIs take exactly that, but a token transfer credits a *blockchain
+   * key*, so resolve the identity to its registered verifier rather than
+   * handing FireFly a DID it will reject as an address.
+   */
+  static async _resolveCounterpartyKey(identity) {
+    const key = `identity:${this.getConfig().apiUrl}:${identity}`;
+    if (resolved[key]) return resolved[key];
+    const raw = await this._call(this._ns('/identities?fetchverifiers=true'));
+    const list = Array.isArray(raw) ? raw : [];
+    const wanted = String(identity);
+    const match = list.find((i) => i.did === wanted)
+      || list.find((i) => i.name === wanted)
+      || list.find((i) => (i.verifiers || []).some((v) => String(v.value).toLowerCase() === wanted.toLowerCase()));
+    const verifier = match && (match.verifiers || []).find((v) => v.value);
+    if (!verifier) {
+      throw reject(
+        `counterparty '${identity}' has no registered blockchain verifier on this FireFly node`,
+        'COUNTERPARTY_UNRESOLVED',
+        422,
+      );
+    }
+    resolved[key] = verifier.value;
+    return verifier.value;
   }
 
   /**
@@ -270,15 +319,14 @@ class FireflyEngine {
     };
 
     if (readiness.canMessage) {
+      await this.ensureDatatype();
       const response = await this._call(this._ns('/messages/private'), {
         method: 'POST',
         body: {
-          header: {
-            type: 'private',
-            topics: [topic || cfg.topic],
-            tag: 'settlement_instruction',
-            group: { members: [{ identity: target }] },
-          },
+          // `header.group` is the hash FireFly computes; the member list is a
+          // sibling of the header, not part of it.
+          header: { topics: [topic || cfg.topic], tag: 'settlement_instruction' },
+          group: { members: [{ identity: target }] },
           data: [{ datatype: { name: cfg.datatype, version: '1.0.0' }, value: { reference: String(reference), digest, ...instruction } }],
         },
       });
@@ -331,7 +379,10 @@ class FireflyEngine {
     if (existing) return { ...existing, idempotent: true };
 
     const effectiveSourceType = sourceType || cfg.sourceType;
-    const effectiveSourceAccount = sourceAccountId || cfg.sourceAccountId;
+    // The account that is debited is the account that must be checked, so fall
+    // back to the cash account this settlement books against rather than
+    // letting the adapter look up a "default" account that exists nowhere.
+    const effectiveSourceAccount = sourceAccountId || cfg.sourceAccountId || cfg.cashAccountCode;
     const amountCents = toCents(amount);
 
     // Does the money exist? The ERP answers when the source is canonical.
@@ -395,12 +446,25 @@ class FireflyEngine {
       return row;
     }
 
+    let recipientKey;
+    try {
+      await this.ensureDatatype();
+      recipientKey = await this._resolveCounterpartyKey(target);
+    } catch (err) {
+      row.status = 'failed';
+      row.failureReason = err.message;
+      await this._persist(row);
+      throw err;
+    }
+    row.detail.recipientKey = recipientKey;
+
     const body = {
-      pool: pool_,
+      pool: await this._resolvePoolId(pool_),
       amount: this._baseUnits(amount, cfg.tokenDecimals),
-      to: target,
+      to: recipientKey,
       message: {
-        header: { type: 'transfer_private', topics: [cfg.topic], tag: 'settlement_transfer', group: { members: [{ identity: target }] } },
+        header: { topics: [cfg.topic], tag: 'settlement_transfer' },
+        group: { members: [{ identity: target }] },
         data: [{ datatype: { name: cfg.datatype, version: '1.0.0' }, value: { digest, ...instruction } }],
       },
     };
@@ -419,7 +483,7 @@ class FireflyEngine {
     row.transferId = response.localId || response.id || null;
     row.fireflyId = row.transferId;
     row.messageId = response.message || null;
-    row.txHash = (response.blockchainEvent && response.blockchainEvent.tx) || response.tx || null;
+    row.txHash = this._txHash(response);
     row.status = String(response.state || 'pending').toLowerCase();
 
     if (cfg.notarize) {
@@ -453,7 +517,7 @@ class FireflyEngine {
 
     const patch = {
       status: confirmed ? 'confirmed' : (failed ? 'failed' : (state || record.status)),
-      txHash: (raw.blockchainEvent && raw.blockchainEvent.tx) || raw.tx || record.txHash,
+      txHash: await this._resolveTxHash(raw) || record.txHash,
       failureReason: failed ? (raw.message || 'FireFly rejected the transfer') : null,
     };
     let updated = await this._update(record.id, patch);
@@ -496,7 +560,7 @@ class FireflyEngine {
 
     let updated = await this._update(record.id, {
       status: 'confirmed',
-      txHash: (transfer.blockchainEvent && transfer.blockchainEvent.tx) || transfer.tx || record.txHash,
+      txHash: await this._resolveTxHash(transfer) || record.txHash,
       failureReason: null,
     });
     if (updated && !updated.booked) updated = await this._book(updated);
@@ -517,6 +581,38 @@ class FireflyEngine {
       throw reject(`$${amountUsd} cannot be represented in a pool with ${scale} decimals`, 'AMOUNT_PRECISION', 422);
     }
     return (cents / divisor).toString();
+  }
+
+  /**
+   * FireFly's `tx` on a transfer is a reference object ({ type, id }) until the
+   * blockchain event lands and carries the real chain hash. Store a hash or
+   * nothing, never a reference dressed up as one.
+   */
+  static _txHash(source) {
+    const event = source && source.blockchainEvent;
+    const raw = (event && typeof event === 'object' && (event.tx || event.info))
+      || (source && source.tx)
+      || null;
+    const candidate = raw && typeof raw === 'object'
+      ? (raw.transactionHash || raw.blockchainId || raw.hash || null)
+      : raw;
+    return candidate ? String(candidate) : null;
+  }
+
+  /**
+   * A transfer carries only the id of its blockchain event, and the chain hash
+   * lives on the event. Follow the reference so the settlement record holds
+   * something an auditor can look up on the chain, and keep it best-effort:
+   * booking must not depend on the hash being readable.
+   */
+  static async _resolveTxHash(source) {
+    const direct = this._txHash(source);
+    if (direct) return direct;
+    const eventId = source && typeof source.blockchainEvent === 'string' ? source.blockchainEvent : null;
+    if (!eventId) return null;
+    const event = await this._call(this._ns(`/blockchainevents/${encodeURIComponent(eventId)}`)).catch(() => null);
+    if (!event) return null;
+    return this._txHash({ blockchainEvent: event }) || (event.info && event.info.transactionHash) || null;
   }
 
   static verifySignature(rawBody, signature) {
@@ -575,6 +671,52 @@ class FireflyEngine {
     } catch (err) {
       return this._update(record.id, { status: 'confirmed', booked: false, failureReason: `booking failed: ${err.message}` });
     }
+  }
+
+  /**
+   * FireFly refuses a message whose datatype it does not know, and the datatype
+   * has to be broadcast to the network before either side can validate against
+   * it. Define it once, on first use, so a fresh namespace does not turn every
+   * settlement instruction into a 404 on the schema.
+   */
+  static async ensureDatatype() {
+    const cfg = this.getConfig();
+    if (!cfg.datatype) return { defined: false, reason: 'no datatype configured' };
+    const cacheKey = `datatype:${cfg.apiUrl}:${cfg.namespace}:${cfg.datatype}`;
+    if (resolved[cacheKey]) return { defined: false, cached: true, datatype: resolved[cacheKey] };
+    const query = `?name=${encodeURIComponent(cfg.datatype)}&version=1.0.0`;
+    const existing = await this._call(this._ns(`/datatypes${query}`)).catch(() => []);
+    const found = (Array.isArray(existing) ? existing : []).find((d) => d.name === cfg.datatype);
+    if (found) {
+      resolved[cacheKey] = { id: found.id, name: found.name, version: found.version };
+      return { defined: false, datatype: resolved[cacheKey] };
+    }
+
+    const created = await this._call(this._ns('/datatypes?confirm=true'), {
+      method: 'POST',
+      body: {
+        name: cfg.datatype,
+        version: '1.0.0',
+        validator: 'json',
+        value: {
+          $id: `https://dlbtrust.example/schemas/${cfg.datatype}.json`,
+          type: 'object',
+          // A settlement instruction always carries what it settles and the
+          // digest both sides check it against; the rest is remittance detail
+          // that differs per rail, so it is not constrained here.
+          required: ['reference', 'digest'],
+          properties: {
+            reference: { type: 'string' },
+            digest: { type: 'string' },
+            amountUsd: { type: 'number' },
+            currency: { type: 'string' },
+            memo: { type: 'string' },
+          },
+        },
+      },
+    });
+    resolved[cacheKey] = { id: created.id, name: created.name, version: created.version };
+    return { defined: true, datatype: resolved[cacheKey] };
   }
 
   /**
@@ -737,7 +879,10 @@ class FireflyEngine {
   }
 
   /** Test seam. */
-  static _resetMemory() { memorySettlements.length = 0; }
+  static _resetMemory() {
+    memorySettlements.length = 0;
+    for (const key of Object.keys(resolved)) delete resolved[key];
+  }
 }
 
 module.exports = { FireflyEngine };
