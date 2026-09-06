@@ -10,6 +10,7 @@
  */
 
 const pool = require('../bonds/pgPool');
+const { FixedIncomeDataService } = require('../bonds/fixedIncomeDataService');
 const journal = require('../backup/transactionJournal');
 
 const TABLES_SQL = `
@@ -110,14 +111,14 @@ class OperationalUtilitiesEngine {
   static async getHealthSnapshot() {
     const checks = { database: { ok: false }, bonds: {}, cashAccounts: {}, trustAccounts: {}, authUsers: {} };
     try {
-      const [bondRes, cashRes, trustRes, userRes] = await Promise.all([
-        pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'"),
+      const [bondTotals, cashRes, trustRes, userRes] = await Promise.all([
+        FixedIncomeDataService.getPortfolioTotals(),
         pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'"),
         pool.query('SELECT COUNT(*) as c FROM trust_accounts'),
         pool.query('SELECT COUNT(*) as c FROM auth_users'),
       ]);
       checks.database = { ok: true };
-      checks.bonds = { ok: parseInt(bondRes.rows[0].c) > 0, count: parseInt(bondRes.rows[0].c), totalValue: Number(bondRes.rows[0].total) };
+      checks.bonds = { ok: bondTotals.count > 0, count: bondTotals.count, totalValue: bondTotals.total_current_value, totalFaceValue: bondTotals.total_face_value };
       checks.cashAccounts = { ok: parseInt(cashRes.rows[0].c) > 0, count: parseInt(cashRes.rows[0].c) };
       checks.trustAccounts = { ok: parseInt(trustRes.rows[0].c) > 0, count: parseInt(trustRes.rows[0].c) };
       checks.authUsers = { ok: parseInt(userRes.rows[0].c) > 0, count: parseInt(userRes.rows[0].c) };

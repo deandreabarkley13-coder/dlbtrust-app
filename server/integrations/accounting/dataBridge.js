@@ -24,6 +24,7 @@
  */
 
 var pool = require('../bonds/pgPool');
+var { FixedIncomeDataService } = require('../bonds/fixedIncomeDataService');
 
 // Account code constants (matching trust chart of accounts)
 var ACCOUNTS = {
@@ -1664,7 +1665,7 @@ class DataBridge {
 
     try {
       // Bond status
-      var bondCount = await pool.query(`SELECT COUNT(*) AS c, COALESCE(SUM(face_value),0) AS total FROM bonds WHERE status = 'active'`);
+      var bondTotals = await FixedIncomeDataService.getPortfolioTotals();
       var bondTxnTableExists = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_transactions') AS exists`);
       var unsyncedAccruals = 0;
       if (bondTxnTableExists.rows[0].exists) {
@@ -1676,8 +1677,11 @@ class DataBridge {
         unsyncedAccruals = parseInt(accrualNoJE.rows[0].c);
       }
       status.modules.bonds = {
-        activeBonds: parseInt(bondCount.rows[0].c),
-        totalFaceValue: parseFloat(bondCount.rows[0].total),
+        activeBonds: bondTotals.count,
+        totalFaceValue: bondTotals.total_face_value,
+        totalPrincipalBalance: bondTotals.total_principal_balance,
+        totalAccruedInterest: bondTotals.total_accrued_interest,
+        totalCurrentValue: bondTotals.total_current_value,
         unsyncedAccruals: unsyncedAccruals,
       };
     } catch (e) { status.modules.bonds = { error: e.message }; }

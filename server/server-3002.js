@@ -242,13 +242,14 @@ app.get('/api/health', async function(req, res) {
     var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
     var checks = {};
 
-    var [bondRes, cashRes, trustRes, userRes] = await Promise.all([
-      pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'"),
+    var FixedIncomeDataService = require(path.join(HD, 'server', 'integrations', 'bonds', 'fixedIncomeDataService')).FixedIncomeDataService;
+    var [bondTotals, cashRes, trustRes, userRes] = await Promise.all([
+      FixedIncomeDataService.getPortfolioTotals(),
       pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'"),
       pool.query("SELECT COUNT(*) as c FROM trust_accounts"),
       pool.query("SELECT COUNT(*) as c FROM auth_users"),
     ]);
-    checks.bonds = { ok: bondRes.rows[0].c > 0, count: parseInt(bondRes.rows[0].c), totalValue: Number(bondRes.rows[0].total) };
+    checks.bonds = { ok: bondTotals.count > 0, count: bondTotals.count, totalValue: bondTotals.total_current_value, totalFaceValue: bondTotals.total_face_value };
     checks.cashAccounts = { ok: cashRes.rows[0].c > 0, count: parseInt(cashRes.rows[0].c) };
     checks.trustAccounts = { ok: trustRes.rows[0].c > 0, count: parseInt(trustRes.rows[0].c) };
     checks.authUsers = { ok: userRes.rows[0].c > 0, count: parseInt(userRes.rows[0].c) };
@@ -1085,9 +1086,10 @@ initializeDatabase().then(function() {
       var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
       var checks = { bonds: false, cashAccounts: false, trustAccounts: false, users: false };
 
-      var bondRes = await pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'");
-      checks.bonds = bondRes.rows[0].c > 0;
-      console.log('[data-check] Bonds: ' + bondRes.rows[0].c + ' active ($' + Number(bondRes.rows[0].total).toLocaleString() + ')');
+      var FixedIncomeDataService = require(path.join(HD, 'server', 'integrations', 'bonds', 'fixedIncomeDataService')).FixedIncomeDataService;
+      var bondTotals = await FixedIncomeDataService.getPortfolioTotals();
+      checks.bonds = bondTotals.count > 0;
+      console.log('[data-check] Bonds: ' + bondTotals.count + ' active (face $' + bondTotals.total_face_value.toLocaleString() + ', current $' + bondTotals.total_current_value.toLocaleString() + ')');
 
       var cashRes = await pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'");
       checks.cashAccounts = cashRes.rows[0].c > 0;
