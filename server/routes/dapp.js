@@ -41,6 +41,8 @@ const { getTrusteeByRole } = require('../integrations/dapp/trustees');
 const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProvisioner');
 const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
+const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
+const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -990,6 +992,63 @@ router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) =
 
 router.get('/thirdweb/server-wallet/transactions/:transactionId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ThirdwebServerWalletEngine.getTransaction(req.params.transactionId) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/price', operatorAuth, async (req, res) => {
+  try {
+    const { chainId, tokenAddress, quantity, amountUsd } = req.query;
+    const data = quantity !== undefined
+      ? await ThirdwebPriceOracle.quoteUsd({ chainId: chainId || ThirdwebServerWalletEngine.getConfig().chainId, tokenAddress, quantity })
+      : amountUsd !== undefined
+        ? await ThirdwebPriceOracle.quantityForUsd({ chainId: chainId || ThirdwebServerWalletEngine.getConfig().chainId, tokenAddress, amountUsd })
+        : await ThirdwebPriceOracle.getPrice({ chainId: chainId || ThirdwebServerWalletEngine.getConfig().chainId, tokenAddress });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Trust Ecosystem (browser extension + mobile app) ─────────────────────────
+// Thin clients hold a dApp/SIWE/portal session; all thirdweb access, pricing
+// and value movement stay server-side. Trustee-only steps are enforced in the
+// engine from the session's roles.
+
+router.get('/ecosystem/manifest', (req, res) => {
+  try { res.json({ success: true, data: TrustEcosystemEngine.manifest() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ecosystem/session', sessionAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.session(req.user) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ecosystem/portfolio', sessionAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.portfolio({ user: req.user, address: req.query.address, chainId: req.query.chainId }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ecosystem/quote', sessionAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.quote(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ecosystem/expenses', sessionAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.listExpenses({ user: req.user, status: req.query.status, limit: Number(req.query.limit) || 50 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ecosystem/expenses', sessionAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustEcosystemEngine.submitExpense({ ...(req.body || {}), user: req.user }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ecosystem/expenses/:id', sessionAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.getExpense({ user: req.user, requestId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ecosystem/expenses/:id/approve', sessionAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.approveExpense({ ...(req.body || {}), user: req.user, requestId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ecosystem/expenses/:id/reject', sessionAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TrustEcosystemEngine.rejectExpense({ ...(req.body || {}), user: req.user, requestId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ecosystem/expenses/:id/pay', sessionAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustEcosystemEngine.payExpense({ ...(req.body || {}), user: req.user, requestId: req.params.id }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/aa/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {

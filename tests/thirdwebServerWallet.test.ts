@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const POLICY = { amountUsd: 2500, purpose: 'medical' };
+const POLICY = { purpose: 'medical' };
 
 const { ThirdwebServerWalletEngine, DEFAULT_API_URL, DEFAULT_IDENTIFIER } = require('../server/integrations/dapp/thirdwebServerWalletEngine');
+const { ThirdwebPriceOracle } = require('../server/integrations/dapp/thirdwebPriceOracle');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -24,6 +25,11 @@ beforeEach(() => {
   delete process.env.THIRDWEB_SERVER_WALLET_LIVE;
   delete process.env.THIRDWEB_SERVER_WALLET_MAX_QUANTITY;
   delete process.env.THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS;
+  delete process.env.THIRDWEB_PRICE_FALLBACK_TO_CALLER;
+  // Test asset: 0 decimals at $1/unit so quantity == USD.
+  vi.spyOn(ThirdwebPriceOracle, 'getPrice').mockResolvedValue({
+    chainId: 1, tokenAddress: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', symbol: 'TST', decimals: 0, priceUsd: 1, source: 'thirdweb', fetchedAt: Date.now(),
+  } as any);
 });
 
 afterEach(() => {
@@ -135,8 +141,11 @@ describe('thirdweb server wallet send', () => {
   it('adds tokenAddress for ERC-20 transfers', async () => {
     process.env.THIRDWEB_SERVER_WALLET_LIVE = 'true';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ result: { transactionIds: ['tx-2'] } }));
+    (ThirdwebPriceOracle.getPrice as any).mockResolvedValue({ chainId: 8453, tokenAddress: USDC, symbol: 'USDC', decimals: 6, priceUsd: 1, source: 'thirdweb' });
     const record = await ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '5000000', tokenAddress: USDC.toLowerCase(), chainId: 8453 });
     expect(record.asset).toBe('erc20');
+    expect(record.amountUsd).toBe(5);
+    expect(ThirdwebPriceOracle.getPrice).toHaveBeenCalledWith({ chainId: 8453, tokenAddress: USDC.toLowerCase() });
     expect(JSON.parse(fetchSpy.mock.calls[0][1].body)).toMatchObject({ chainId: 8453, tokenAddress: USDC });
   });
 
@@ -162,22 +171,37 @@ describe('thirdweb server wallet send', () => {
   it('enforces the trust distribution policy: $100K beneficiary / $500K trustee, known purpose', async () => {
     process.env.THIRDWEB_SERVER_WALLET_LIVE = 'true';
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse({ result: { transactionIds: ['tx-p'] } }));
-    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', amountUsd: 100001, purpose: 'home' }))
+    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '100001', purpose: 'home' }))
       .rejects.toMatchObject({ code: 'DISTRIBUTION_LIMIT_EXCEEDED', status: 422 });
-    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', amountUsd: 500001, purpose: 'home', requesterRole: 'trustee_maker' }))
+    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '500001', purpose: 'home', requesterRole: 'trustee_maker' }))
       .rejects.toThrow(/\$500,000/);
-    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', amountUsd: 10, purpose: 'yacht' }))
+    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '10', purpose: 'yacht' }))
       .rejects.toThrow(/not permitted/);
-    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', purpose: 'home' }))
-      .rejects.toThrow(/amountUsd/);
-    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', amountUsd: 10 }))
+    await expect(ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '10' }))
       .rejects.toThrow(/purpose required/);
     expect(fetchSpy).not.toHaveBeenCalled();
 
-    const ok = await ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '1', amountUsd: 450000, purpose: 'Education', requesterRole: 'trustee' });
-    expect(ok).toMatchObject({ requesterRole: 'trustee', amountUsd: 450000, purpose: 'education', limitUsd: 500000, transactionId: 'tx-p' });
+    const ok = await ThirdwebServerWalletEngine.send({ to: RECIPIENT, quantity: '450000', purpose: 'Education', requesterRole: 'trustee' });
+    expect(ok).toMatchObject({ requesterRole: 'trustee', amountUsd: 450000, priceUsd: 1, priceSource: 'thirdweb', purpose: 'education', limitUsd: 500000, transactionId: 'tx-p' });
     const inserted = (pool.query as any).mock.calls.find(([sql]: [string]) => /INSERT INTO thirdweb_server_wallet_transfers/.test(sql));
     expect(inserted[1]).toEqual(expect.arrayContaining(['trustee', 450000, 'education']));
+  });
+
+  it('prices sends with the oracle: caller USD is cross-checked, and only trusted as an explicit fallback', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await expect(ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '1000', amountUsd: 500 }))
+      .rejects.toMatchObject({ code: 'PRICE_MISMATCH', status: 422 });
+    const close = await ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '1000', amountUsd: 1020 });
+    expect(close).toMatchObject({ amountUsd: 1000, priceSource: 'thirdweb' });
+
+    (ThirdwebPriceOracle.getPrice as any).mockRejectedValue(Object.assign(new Error('no USD price'), { code: 'PRICE_UNAVAILABLE' }));
+    await expect(ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '1000', amountUsd: 1000 }))
+      .rejects.toThrow(/no USD price/);
+    process.env.THIRDWEB_PRICE_FALLBACK_TO_CALLER = 'true';
+    await expect(ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '1000' })).rejects.toThrow(/no USD price/);
+    const fallback = await ThirdwebServerWalletEngine.send({ ...POLICY, to: RECIPIENT, quantity: '1000', amountUsd: 999 });
+    expect(fallback).toMatchObject({ amountUsd: 999, priceSource: 'caller', priceUsd: null });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('rejects bad recipients and non-integer quantities', async () => {

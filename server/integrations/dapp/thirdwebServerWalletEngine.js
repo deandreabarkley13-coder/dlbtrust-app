@@ -21,9 +21,11 @@
  *     and its thirdweb transaction id is recorded for reconciliation.
  *
  * Every send also passes the trust distribution policy (distributionPolicy.js):
- * the caller states the USD value, requester role and expense purpose, and
- * the per-transaction USD ceiling for that role is enforced before anything
- * is recorded or submitted.
+ * the quantity is priced in USD by ThirdwebPriceOracle (a caller-supplied
+ * `amountUsd` must agree within THIRDWEB_PRICE_TOLERANCE_PCT, and is only
+ * trusted on its own when THIRDWEB_PRICE_FALLBACK_TO_CALLER=true and the
+ * oracle is unavailable), and the per-transaction ceiling for the requester
+ * role is enforced before anything is recorded or submitted.
  *
  * Reads (readiness, list, balance, transaction status) are always allowed
  * when a secret key is present. Every send, shadow or live, is written to
@@ -36,6 +38,7 @@
 
 const { getConfig: getBaseConfig } = require('./config');
 const DistributionPolicy = require('./distributionPolicy');
+const { ThirdwebPriceOracle } = require('./thirdwebPriceOracle');
 
 let viem;
 try { viem = require('viem'); } catch (e) { /* address validation degrades to a regex */ }
@@ -127,7 +130,36 @@ class ThirdwebServerWalletEngine {
       allowedRecipients: str('THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS')
         .split(',').map((v) => lower(v.trim())).filter(Boolean),
       timeoutMs: num('THIRDWEB_API_TIMEOUT_MS', 20000),
+      priceTolerancePct: num('THIRDWEB_PRICE_TOLERANCE_PCT', 5),
+      priceFallbackToCaller: bool('THIRDWEB_PRICE_FALLBACK_TO_CALLER', false),
     };
+  }
+
+  /**
+   * USD valuation of a transfer. The oracle is authoritative; a caller value
+   * is cross-checked against it and only stands alone as a configured fallback.
+   */
+  static async _valueUsd({ chainId, tokenAddress, quantity, amountUsd }, cfg) {
+    const stated = amountUsd === undefined || amountUsd === null || amountUsd === '' ? null : Number(amountUsd);
+    let quote;
+    try {
+      quote = await ThirdwebPriceOracle.quoteUsd({ chainId, tokenAddress, quantity });
+    } catch (e) {
+      if (cfg.priceFallbackToCaller && stated !== null && Number.isFinite(stated) && stated > 0) {
+        return { amountUsd: stated, priceUsd: null, priceSource: 'caller', priceWarning: e.message };
+      }
+      throw e;
+    }
+    if (stated !== null && Number.isFinite(stated) && quote.amountUsd > 0) {
+      const driftPct = Math.abs(stated - quote.amountUsd) / quote.amountUsd * 100;
+      if (driftPct > cfg.priceTolerancePct) {
+        throw Object.assign(
+          new Error(`stated amountUsd ${stated} is ${driftPct.toFixed(1)}% off the oracle value $${quote.amountUsd} (${quote.symbol} @ $${quote.priceUsd})`),
+          { status: 422, code: 'PRICE_MISMATCH' }
+        );
+      }
+    }
+    return { amountUsd: quote.amountUsd, priceUsd: quote.priceUsd, priceSource: quote.source, symbol: quote.symbol, decimals: quote.decimals };
   }
 
   static readiness() {
@@ -149,6 +181,7 @@ class ThirdwebServerWalletEngine {
       maxQuantityPerSend: cfg.maxQuantityPerSend.toString(),
       allowedRecipients: cfg.allowedRecipients,
       distributionPolicy: DistributionPolicy.getPolicy(),
+      priceOracle: ThirdwebPriceOracle.readiness(),
       canSend: cfg.enabled && cfg.live && Boolean(cfg.secretKey) && Boolean(cfg.address),
       ready: issues.length === 0,
       issues,
@@ -274,9 +307,9 @@ class ThirdwebServerWalletEngine {
 
   /**
    * Transfer native or ERC-20 value from the server wallet. `quantity` is in
-   * smallest units (wei); `amountUsd` is its USD value, checked against the
-   * requester role's per-transaction limit. Shadow unless
-   * THIRDWEB_SERVER_WALLET_LIVE=true; both outcomes are recorded.
+   * smallest units (wei) and is priced in USD by the oracle for the requester
+   * role's per-transaction limit. Shadow unless THIRDWEB_SERVER_WALLET_LIVE=true;
+   * both outcomes are recorded.
    */
   static async send({
     to, quantity, tokenAddress = null, chainId, reference = null, memo = null,
@@ -285,17 +318,18 @@ class ThirdwebServerWalletEngine {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('THIRDWEB_SERVER_WALLET_ENABLED=false');
     if (!isAddress(to)) throw new Error('recipient address invalid');
-    const policy = DistributionPolicy.enforce({ requesterRole, amountUsd, purpose, purposeRequired: true });
     if (tokenAddress && !isAddress(tokenAddress)) throw new Error('tokenAddress invalid');
     const amount = toBigInt(quantity);
     if (amount <= 0n) throw new Error('quantity must be positive');
+    const chain = Number(chainId || cfg.chainId);
+    const valuation = await this._valueUsd({ chainId: chain, tokenAddress, quantity: amount, amountUsd }, cfg);
+    const policy = DistributionPolicy.enforce({ requesterRole, amountUsd: valuation.amountUsd, purpose, purposeRequired: true });
     if (cfg.maxQuantityPerSend > 0n && amount > cfg.maxQuantityPerSend) {
       throw new Error(`quantity ${amount} exceeds THIRDWEB_SERVER_WALLET_MAX_QUANTITY (${cfg.maxQuantityPerSend})`);
     }
     if (cfg.allowedRecipients.length && !cfg.allowedRecipients.includes(lower(to))) {
       throw new Error('recipient is not in THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS');
     }
-    const chain = Number(chainId || cfg.chainId);
     const from = cfg.address ? checksum(cfg.address) : (cfg.live ? await this.resolveAddress() : null);
 
     const record = {
@@ -315,6 +349,8 @@ class ThirdwebServerWalletEngine {
       memo,
       requesterRole: policy.requesterRole,
       amountUsd: policy.amountUsd,
+      priceUsd: valuation.priceUsd,
+      priceSource: valuation.priceSource,
       purpose: policy.purpose,
       limitUsd: policy.limitUsd,
       error: null,
