@@ -167,7 +167,10 @@ class FabricLedgerEngine {
       try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = { raw: text }; }
       if (!res.ok) {
         const detail = (parsed && (parsed.error || parsed.message)) || res.statusText;
-        throw reject(`fabconnect ${path} failed: ${detail}`, 'FABRIC_CALL_FAILED', res.status >= 500 ? 502 : 422);
+        throw Object.assign(
+          reject(`fabconnect ${path} failed: ${detail}`, 'FABRIC_CALL_FAILED', res.status >= 500 ? 502 : 422),
+          { httpStatus: res.status },
+        );
       }
       return parsed || {};
     } catch (err) {
@@ -239,13 +242,45 @@ class FabricLedgerEngine {
       throw err;
     }
 
-    row.requestId = (response.id || response.requestId || null);
-    row.transactionId = (response.transactionID || response.transactionId || null);
-    row.blockNumber = response.blockNumber != null ? Number(response.blockNumber) : null;
-    row.status = row.transactionId ? 'anchored' : 'pending';
+    const outcome = this._readTransaction(response);
+    if (outcome.failed) {
+      row.status = 'failed';
+      row.failureReason = outcome.failureReason || 'fabric rejected the transaction';
+      row.anchored = false;
+      await this._persist(row);
+      throw reject(`fabric rejected ${cfg.notarizeFunction}: ${row.failureReason}`, 'FABRIC_TX_REJECTED', 422);
+    }
+    row.requestId = outcome.requestId;
+    row.transactionId = outcome.transactionId;
+    row.blockNumber = outcome.blockNumber;
+    row.status = outcome.transactionId ? 'anchored' : 'pending';
     row.anchored = row.status === 'anchored';
     await this._persist(row);
     return row;
+  }
+
+  /**
+   * Fabconnect answers in one of two shapes depending on how it is deployed:
+   * synchronously with the committed transaction (`transactionHash`, block
+   * number and a `VALID` status) or asynchronously with only an id to poll,
+   * where the id that addresses `/receipts/{id}` is `headers.requestId` and
+   * not the `headers.id` correlating the request. Read both, and never call a
+   * transaction anchored on the strength of an id alone.
+   */
+  static _readTransaction(response) {
+    const headers = (response && response.headers) || {};
+    const status = String(response.status || headers.status || '').toUpperCase();
+    const type = String(headers.type || '').toLowerCase();
+    const failed = type.includes('failure') || status === 'INVALID' || status === 'FAILED';
+    return {
+      requestId: headers.requestId || headers.id || response.id || response.requestId || null,
+      transactionId: response.transactionHash || response.transactionID || response.transactionId || headers.transactionHash || null,
+      blockNumber: response.blockNumber != null ? Number(response.blockNumber) : null,
+      failed,
+      failureReason: failed
+        ? (response.errorMessage || response.error || headers.errorMessage || `fabconnect reported ${headers.type || status}`)
+        : null,
+    };
   }
 
   /**
@@ -259,14 +294,23 @@ class FabricLedgerEngine {
     if (record.status === 'shadow') return { ...record, polled: false, reason: 'shadow notarization has no receipt' };
     if (!record.requestId) return { ...record, polled: false, reason: 'no fabconnect request id to poll' };
 
-    const receipt = await this._call(`/receipts/${encodeURIComponent(record.requestId)}`, null, { method: 'GET' });
-    const txId = receipt.transactionID || receipt.transactionId || null;
-    const status = String(receipt.status || '').toLowerCase();
+    let receipt;
+    try {
+      receipt = await this._call(`/receipts/${encodeURIComponent(record.requestId)}`, null, { method: 'GET' });
+    } catch (err) {
+      // Fabconnect answers 404 "Receipt not available" until the block commits;
+      // that is the transaction still being in flight, not a failure.
+      if (err.httpStatus === 404 || /not available|not found/i.test(err.message)) {
+        return { ...record, polled: true, reason: 'receipt not available yet; transaction still in flight' };
+      }
+      throw err;
+    }
+    const outcome = this._readTransaction(receipt);
     const patch = {
-      transactionId: txId,
-      blockNumber: receipt.blockNumber != null ? Number(receipt.blockNumber) : null,
-      status: txId && status !== 'failed' ? 'anchored' : (status === 'failed' ? 'failed' : record.status),
-      failureReason: status === 'failed' ? (receipt.errorMessage || receipt.error || 'fabric rejected the transaction') : null,
+      transactionId: outcome.transactionId,
+      blockNumber: outcome.blockNumber,
+      status: outcome.failed ? 'failed' : (outcome.transactionId ? 'anchored' : record.status),
+      failureReason: outcome.failed ? outcome.failureReason : null,
     };
     const updated = await this._update(record.id, patch);
     return { ...updated, polled: true };
