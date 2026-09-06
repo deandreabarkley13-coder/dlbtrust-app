@@ -44,6 +44,7 @@ const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebSer
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
+const { CanonicalFundingSource } = require('../integrations/fineract/canonicalFundingSource');
 const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
@@ -1076,6 +1077,40 @@ router.post('/treasury-funding/topups/:id/sync', adminAuth, writeRateLimiter(), 
 
 router.post('/treasury-funding/swap', adminAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await ThirdwebTreasuryFundingEngine.swap(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Canonical funding source (core-banking ERP is the authority) ──────────
+
+router.get('/canonical-source/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CanonicalFundingSource.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/canonical-source/position', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalFundingSource.position(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/canonical-source/reconciliation', operatorAuth, async (req, res) => {
+  try {
+    const accountCodes = String(req.query.accountCodes || '').split(',').map((c) => c.trim()).filter(Boolean);
+    res.json({ success: true, data: await CanonicalFundingSource.reconcile({ accountCodes }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/canonical-source/gl-map', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalFundingSource.glMap() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-source/draw', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    res.status(201).json({
+      success: true,
+      data: await CanonicalFundingSource.commit({
+        ...body,
+        postedBy: body.postedBy || (req.user && req.user.email) || 'canonical-funding-source',
+      })
+    });
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Trust Ecosystem (browser extension + mobile app) ─────────────────────────
