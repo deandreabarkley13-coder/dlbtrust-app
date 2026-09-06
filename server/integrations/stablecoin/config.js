@@ -5,7 +5,7 @@
  */
 
 const MODES = new Set(['disabled', 'shadow', 'testnet', 'mainnet']);
-const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'fystack', 'circle', 'hedera-testnet', 'hedera-mainnet']);
+const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'fystack', 'circle', 'thirdweb', 'hedera-testnet', 'hedera-mainnet']);
 
 function isFyStackNetwork(network) {
   const n = String(network || '').toLowerCase();
@@ -15,6 +15,11 @@ function isFyStackNetwork(network) {
 function isCircleNetwork(network) {
   const n = String(network || '').toLowerCase();
   return n === 'circle' || n.startsWith('circle-');
+}
+
+function isThirdwebNetwork(network) {
+  const n = String(network || '').toLowerCase();
+  return n === 'thirdweb' || n.startsWith('thirdweb-');
 }
 
 function isHederaNetwork(network) {
@@ -89,6 +94,12 @@ function getConfig() {
     circleToken: str('CIRCLE_TOKEN', 'USDC'),
     circleExplorerTx: str('CIRCLE_EXPLORER_TX', ''),
     circleShadow: bool('CIRCLE_SHADOW', false),
+    // thirdweb server-wallet on-chain stablecoin rail (no fiat leg)
+    thirdwebRailEnabled: bool('THIRDWEB_RAIL_ENABLED', false),
+    thirdwebRailTokenAddress: str('THIRDWEB_RAIL_TOKEN_ADDRESS', ''),
+    thirdwebRailTokenDecimals: int('THIRDWEB_RAIL_TOKEN_DECIMALS', 6, 2, 18),
+    thirdwebRailWaitMs: int('THIRDWEB_RAIL_WAIT_MS', 0, 0, 600000),
+    thirdwebRailExplorerTx: str('THIRDWEB_RAIL_EXPLORER_TX', ''),
     // Circle Mint regulated fiat on-ramp
     circleMintApiKey: str('CIRCLE_MINT_API_KEY', ''),
     circleMintBaseUrl: str('CIRCLE_MINT_BASE_URL', 'https://api.circle.com'),
@@ -144,4 +155,4 @@ function redact(cfg) {
   return copy;
 }
 
-module.exports = { getConfig, isProduction, redact, isFyStackNetwork, isCircleNetwork, isHederaNetwork, MODES, NETWORKS };
+module.exports = { getConfig, isProduction, redact, isFyStackNetwork, isCircleNetwork, isThirdwebNetwork, isHederaNetwork, MODES, NETWORKS };
