@@ -168,10 +168,26 @@
     </div>
   </div>
 
+  <div id="tab-treasury" class="tab">
+    <div class="card">
+      <h2>Treasury settlement <span id="tw-mode" class="small"></span></h2>
+      <p>Approved distributions and expenses settle on-chain from the trust's thirdweb server wallet. Operator token is kept on this device only.</p>
+      <label>Operator / admin token</label>
+      <input type="password" id="tw-token" autocomplete="off" placeholder="x-admin-token" />
+      <button class="btn" onclick="saveOperatorToken()">Save &amp; load queue</button>
+      <div id="tw-status" class="status hidden"></div>
+    </div>
+    <div class="card"><h2>Distributions <span id="tw-c-dist" class="small"></span></h2><div id="tw-dist" class="small">—</div></div>
+    <div class="card"><h2>Expenses <span id="tw-c-exp" class="small"></span></h2><div id="tw-exp" class="small">—</div></div>
+    <div class="card"><h2>Open on-chain transfers <span id="tw-c-open" class="small"></span></h2><div id="tw-open" class="small">—</div>
+      <button class="btn" onclick="twReconcile()">Reconcile with thirdweb</button></div>
+  </div>
+
   <div class="nav">
     <button class="active" onclick="showTab('tab-home')">Wallet</button>
     <button onclick="showTab('tab-pay')">Pay</button>
     <button onclick="showTab('tab-receive')">Receive</button>
+    <button onclick="showTab('tab-treasury')">Treasury</button>
   </div>
 </div>
 
@@ -320,6 +336,92 @@ function showTab(id) {
   }
   if (id === 'tab-pay') startScanner();
   if (id !== 'tab-pay') stopScanner();
+  if (id === 'tab-treasury') loadTreasury();
+}
+
+// ─── Treasury settlement (operator) ─────────────────────────────────────────
+const OPERATOR_KEY = 'dlb-admin-token';
+const usd = n => Number(n || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+const shortAddr = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '—';
+
+function operatorToken() { try { return localStorage.getItem(OPERATOR_KEY) || ''; } catch (e) { return ''; } }
+
+function opApi(path, opts = {}) {
+  const token = operatorToken();
+  if (!token) return Promise.reject(new Error('Save an operator token first'));
+  opts.headers = Object.assign({ 'Content-Type': 'application/json', 'x-admin-token': token }, opts.headers || {});
+  opts.cache = 'no-store';
+  return fetch(path, opts).then(async r => {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || data.success === false) throw new Error(data.error || r.statusText);
+    return data.data;
+  });
+}
+
+function saveOperatorToken() {
+  const token = el('tw-token').value.trim();
+  try { if (token) localStorage.setItem(OPERATOR_KEY, token); } catch (e) {}
+  loadTreasury();
+}
+
+function twRows(target, items, kind) {
+  if (!items.length) { el(target).textContent = 'Nothing awaiting settlement.'; return; }
+  el(target).innerHTML = '';
+  for (const item of items) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)';
+    const who = kind === 'distribution' ? item.beneficiary : item.payee;
+    row.innerHTML = `<div><div style="color:var(--text);font-weight:600">${usd(item.amountUsd)} <span class="small">${item.status}</span></div><div class="small">${who || item.id} · ${shortAddr(item.destination)}</div></div>`;
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.style.cssText = 'width:auto;margin:0;padding:8px 12px;font-size:13px';
+    btn.textContent = item.thirdwebTransferId ? 'Sent' : 'Settle';
+    btn.disabled = !item.canSettle;
+    if (!item.canSettle) btn.style.opacity = '.4';
+    btn.onclick = () => twSettle(kind, item);
+    row.appendChild(btn);
+    el(target).appendChild(row);
+  }
+}
+
+async function loadTreasury() {
+  if (!operatorToken()) { show('Save an operator token to load the settlement queue.', false, 'tw-status'); return; }
+  show('Loading…', false, 'tw-status');
+  try {
+    const q = await opApi('/api/dapp/thirdweb/settlement/queue?limit=50');
+    el('tw-mode').textContent = q.readiness.live ? 'LIVE' : 'shadow';
+    el('tw-mode').style.color = q.readiness.live ? 'var(--accent-2)' : 'var(--gold)';
+    el('tw-c-dist').textContent = `(${q.counts.distributionsAwaiting})`;
+    el('tw-c-exp').textContent = `(${q.counts.expensesAwaiting})`;
+    el('tw-c-open').textContent = `(${q.counts.openTransfers})`;
+    twRows('tw-dist', q.distributions, 'distribution');
+    twRows('tw-exp', q.expenses, 'expense');
+    el('tw-open').innerHTML = q.openTransfers.length
+      ? q.openTransfers.map(t => `<div style="padding:6px 0;border-top:1px solid var(--border)">${t.amountUsd != null ? usd(t.amountUsd) : t.quantity} · ${t.status} → ${shortAddr(t.to)}<br>${t.reference || t.id}</div>`).join('')
+      : 'No transfers awaiting confirmation.';
+    show((q.readiness.issues.length ? q.readiness.issues.join(' · ') + ' · ' : '') + 'Live as of ' + new Date(q.asOf).toLocaleTimeString(), false, 'tw-status');
+  } catch (e) { show(e.message, true, 'tw-status'); }
+}
+
+async function twSettle(kind, item) {
+  const live = el('tw-mode').textContent === 'LIVE';
+  if (!confirm(`${live ? 'LIVE: broadcast' : 'Shadow: record'} ${usd(item.amountUsd)} to ${item.destination} via thirdweb?`)) return;
+  show(`Settling ${item.id}…`, false, 'tw-status');
+  try {
+    const path = kind === 'distribution' ? `/api/dapp/thirdweb/settlement/distributions/${item.id}` : `/api/dapp/thirdweb/settlement/expenses/${item.id}`;
+    const r = await opApi(path, { method: 'POST', body: '{}' });
+    show(`${item.id}: ${(r.transfer || {}).status || 'ok'}`, false, 'tw-status');
+    loadTreasury();
+  } catch (e) { show(e.message, true, 'tw-status'); }
+}
+
+async function twReconcile() {
+  show('Reconciling…', false, 'tw-status');
+  try {
+    const r = await opApi('/api/dapp/thirdweb/settlement/reconcile', { method: 'POST', body: '{}' });
+    show(`Checked ${r.checked}; ${r.results.filter(x => x.applied).length} finalized.`, false, 'tw-status');
+    loadTreasury();
+  } catch (e) { show(e.message, true, 'tw-status'); }
 }
 
 function copyAddress() {

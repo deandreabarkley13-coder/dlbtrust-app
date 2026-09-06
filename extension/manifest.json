@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "DLB Trust Treasury Console",
+  "version": "1.0.0",
+  "description": "Operator console for the DLB Trust core banking / treasury ERP: live balances, approvals queue and thirdweb on-chain settlement of distributions and expenses.",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DLB Trust Treasury"
+  },
+  "options_page": "options.html",
+  "background": { "service_worker": "background.js" },
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://*.code.run/*", "http://localhost:3002/*"],
+  "icons": { "128": "icons/icon.svg" }
+}

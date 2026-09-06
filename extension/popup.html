@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DLB Trust Treasury</title>
+  <style>
+    :root { --bg:#0b0f17; --card:#131925; --border:#2a3548; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --green:#10b981; --gold:#f59e0b; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    body { width:400px; margin:0; padding:12px; background:var(--bg); color:var(--text); font:13px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+    h1 { font-size:15px; margin:0; }
+    .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+    .top a, .top button { color:var(--muted); background:none; border:0; cursor:pointer; font-size:12px; text-decoration:none; }
+    .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+    .live { background:rgba(16,185,129,.15); color:var(--green); }
+    .shadow { background:rgba(245,158,11,.15); color:var(--gold); }
+    .err { background:rgba(239,68,68,.15); color:var(--danger); }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:10px 12px; margin-bottom:10px; }
+    .card h2 { margin:0 0 8px; font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .kpi .v { font-size:16px; font-weight:700; color:var(--green); overflow-wrap:anywhere; }
+    .kpi .l { color:var(--muted); font-size:11px; }
+    .row { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:7px 0; border-top:1px solid var(--border); }
+    .row:first-of-type { border-top:0; }
+    .row .meta { color:var(--muted); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:210px; }
+    .row .amt { font-weight:700; }
+    button.act { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:6px 10px; cursor:pointer; font-weight:600; }
+    button.act:disabled { opacity:.4; cursor:default; }
+    .muted { color:var(--muted); }
+    #status { min-height:16px; font-size:12px; color:var(--muted); margin-top:4px; white-space:pre-wrap; }
+    .issues { color:var(--gold); font-size:11px; margin-top:6px; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1>DLB Trust Treasury</h1>
+    <div>
+      <span id="mode" class="pill shadow">…</span>
+      <button id="refresh" title="Refresh">Refresh</button>
+      <a id="options" href="#">Options</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Trust overview</h2>
+    <div class="grid">
+      <div class="kpi"><div class="v" id="k-net">—</div><div class="l">Net worth</div></div>
+      <div class="kpi"><div class="v" id="k-cash">—</div><div class="l">Cash</div></div>
+      <div class="kpi"><div class="v" id="k-bonds">—</div><div class="l">Bonds</div></div>
+      <div class="kpi"><div class="v" id="k-wallet">—</div><div class="l">thirdweb treasury wallet</div></div>
+    </div>
+    <div class="issues" id="issues"></div>
+  </div>
+
+  <div class="card">
+    <h2>Distributions awaiting settlement <span id="c-dist" class="muted"></span></h2>
+    <div id="dist"><span class="muted">Loading…</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Expenses awaiting settlement <span id="c-exp" class="muted"></span></h2>
+    <div id="exp"><span class="muted">Loading…</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Open on-chain transfers <span id="c-open" class="muted"></span></h2>
+    <div id="open"><span class="muted">Loading…</span></div>
+    <div class="row" style="border-top:0;padding-top:8px"><span class="muted">Poll thirdweb for confirmations</span><button class="act" id="reconcile">Reconcile</button></div>
+  </div>
+
+  <div id="status"></div>
+  <script src="api.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

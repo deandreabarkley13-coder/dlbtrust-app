@@ -41,6 +41,7 @@ const { getTrusteeByRole } = require('../integrations/dapp/trustees');
 const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProvisioner');
 const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
+const { ThirdwebSettlementEngine } = require('../integrations/dapp/thirdwebSettlementEngine');
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
@@ -1020,6 +1021,45 @@ router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) =
 
 router.get('/thirdweb/server-wallet/transactions/:transactionId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ThirdwebServerWalletEngine.getTransaction(req.params.transactionId) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── thirdweb settlement: canonical distributions/expenses → on-chain, webhooks back ──
+
+router.post('/thirdweb/webhooks', writeRateLimiter(), async (req, res) => {
+  try {
+    const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
+    res.json({ success: true, data: await ThirdwebSettlementEngine.handleWebhook({ rawBody, headers: req.headers }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/webhooks/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.recentEvents(req.query.limit) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/settlement/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: ThirdwebSettlementEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/settlement/queue', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.queue({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/thirdweb/settlement/distributions/:id', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const requesterRole = isTrusteePortalUser(req) ? 'trustee' : ((req.body || {}).requesterRole || 'trustee');
+    res.status(201).json({ success: true, data: await ThirdwebSettlementEngine.settleDistribution(req.params.id, { requesterRole }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/thirdweb/settlement/expenses/:id', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const requesterRole = isTrusteePortalUser(req) ? 'trustee' : ((req.body || {}).requesterRole || 'trustee');
+    res.status(201).json({ success: true, data: await ThirdwebSettlementEngine.settleExpense(req.params.id, { requesterRole }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/thirdweb/settlement/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.reconcile({ limit: (req.body || {}).limit }) }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/thirdweb/price', operatorAuth, async (req, res) => {
