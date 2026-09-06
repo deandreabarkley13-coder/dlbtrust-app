@@ -15,6 +15,7 @@
 
 const { getConfig } = require('./config');
 const { TrustMarketEngine } = require('./trustMarketEngine');
+const { RampFeeEngine } = require('./rampFeeEngine');
 
 let CoinbaseTreasuryBridge, CoinbaseSpotEngine, MoonPayEngine, SpritzEngine, CircleMintClient;
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) { }
@@ -183,9 +184,14 @@ class OnOffRampEngine {
       }
     }
 
+    // Monetization: quote the configurable bps spread alongside the route. The
+    // fee is only *booked* when the approved proposal executes.
+    const fee = RampFeeEngine.quote({ amount, direction, asset: sourceAsset || 'USD' });
+    for (const route of routes) route.fee = fee;
+
     // Pick the best ready route
     const best = routes.find(r => r.status === 'ready' || r.status === 'awaiting_onramp') || routes[0] || null;
-    return { direction, sourceAsset, targetAsset, amount, routes, recommended: best };
+    return { direction, sourceAsset, targetAsset, amount, routes, recommended: best, fee };
   }
 
   static async propose({ direction, sourceAsset, targetAsset, amount, provider, sourceType, sourceAccountId, targetAddress, network = 'ethereum', payload = {}, createdBy } = {}) {
@@ -196,13 +202,43 @@ class OnOffRampEngine {
       category: 'ramp',
       title,
       description: `On/Off ramp request via ${provider || 'best provider'}`,
-      payload: { direction, sourceAsset, targetAsset, amount, provider, sourceType, sourceAccountId, targetAddress, network, ...payload },
+      payload: {
+        direction, sourceAsset, targetAsset, amount, provider, sourceType, sourceAccountId, targetAddress, network,
+        // Carry the quoted fee through approval so the booked amount is the one
+        // the approver saw.
+        fee: RampFeeEngine.quote({ amount, direction, asset: sourceAsset || 'USD' }),
+        ...payload,
+      },
       createdBy,
     });
-    return { proposalId: proposal.id, status: 'pending_approval', proposal };
+    return { proposalId: proposal.id, status: 'pending_approval', proposal, fee: proposal.payload ? proposal.payload.fee : undefined };
   }
 
+  /**
+   * Execute an approved ramp proposal and book the fee.
+   *
+   * The provider legs below stay bound by their own credentials/flags; nothing
+   * here enables live value movement. Fee booking is an internal GL journal and
+   * runs after the provider leg so a failed ramp is never charged.
+   */
   static async _execute(proposal) {
+    const outcome = await this._executeProvider(proposal);
+    const p = proposal.payload || {};
+    const fee = await RampFeeEngine.book({
+      referenceType: 'ramp_fee',
+      referenceId: proposal.id,
+      amount: p.amount,
+      feeBps: p.fee && p.fee.feeBps,
+      direction: p.direction,
+      asset: p.sourceAsset || 'USD',
+      provider: p.provider,
+      postedBy: proposal.created_by || proposal.createdBy || 'ramp-execution',
+    });
+    if (outcome && typeof outcome === 'object') return { ...outcome, fee };
+    return { result: outcome, fee };
+  }
+
+  static async _executeProvider(proposal) {
     const p = proposal.payload || {};
     const { provider, direction } = p;
 

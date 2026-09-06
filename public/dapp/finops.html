@@ -2397,7 +2397,14 @@
       const res = await api('/api/finops/ramps/quote', { method:'POST', body: JSON.stringify(body) });
       const q = res.data;
       currentRampQuote = q;
-      let html = '<div class="status ok"><strong>Direction:</strong> ' + q.direction + '<br/><strong>Recommended:</strong> ' + (q.recommended ? q.recommended.provider : 'none') + '<br/><strong>Routes:</strong><ul style="margin:4px 0;padding-left:16px;font-size:12px;">';
+      let html = '<div class="status ok"><strong>Direction:</strong> ' + q.direction + '<br/><strong>Recommended:</strong> ' + (q.recommended ? q.recommended.provider : 'none');
+      // Trust fee/spread: quoted here, booked to the revenue GL when the
+      // approved proposal executes.
+      if (q.fee) {
+        html += '<br/><strong>Trust fee:</strong> ' + q.fee.feeBps + ' bps = ' + Number(q.fee.feeAmount).toFixed(2) + ' ' + (q.fee.asset || '')
+          + ' &nbsp;<span style="opacity:0.8;">(net ' + Number(q.fee.netAmount).toFixed(2) + ')</span>';
+      }
+      html += '<br/><strong>Routes:</strong><ul style="margin:4px 0;padding-left:16px;font-size:12px;">';
       (q.routes || []).forEach(r => { html += '<li><strong>' + r.provider + '</strong> (' + r.status + '): ' + (r.instructions || '') + '</li>'; });
       html += '</ul></div>';
       if (q.recommended && q.recommended.onrampUrl) html += '<div style="margin-top:8px;"><a class="btn" href="' + q.recommended.onrampUrl + '" target="_blank">Open MoonPay</a></div>';

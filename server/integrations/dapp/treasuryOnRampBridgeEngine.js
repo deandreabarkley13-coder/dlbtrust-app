@@ -28,6 +28,8 @@ try { ({ SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter'))
 let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) {}
 
+const { RampFeeEngine } = require('./rampFeeEngine');
+
 let CashEngine;
 try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) {}
 
@@ -122,7 +124,9 @@ class TreasuryOnRampBridgeEngine {
       usdsAddress: cfg.usdsAddress,
       wethAddress: cfg.wethAddress,
       circleMintApiKey: process.env.CIRCLE_MINT_API_KEY || cfg.circleMintApiKey || '',
-      onRampFeeBps: Number(process.env.TREASURY_ON_RAMP_FEE_BPS || '0') || 0,
+      // Fee/spread in basis points. Defaults to RAMP_FEE_BPS so monetization is
+      // configured in one place; 0 means no fee is quoted or booked.
+      onRampFeeBps: Number(process.env.TREASURY_ON_RAMP_FEE_BPS || process.env.RAMP_FEE_BPS || '0') || 0,
       wireBeneficiary: {
         name: process.env.TREASURY_ON_RAMP_BANK_NAME || 'Circle Internet Financial',
         routing: process.env.TREASURY_ON_RAMP_BANK_ROUTING || '',
@@ -305,10 +309,34 @@ class TreasuryOnRampBridgeEngine {
       operatorInternalBalance: internalBal.formatted,
       sourceBalanceCents,
       feeBps,
+      // Monetization: the same bps spread the ledger will book once the operation
+      // completes (TREASURY_ON_RAMP_FEE_BPS, falling back to RAMP_FEE_BPS).
+      fee: RampFeeEngine.quote({ amount: amountNum, feeBps, direction: 'treasury_on_ramp', asset: 'USD' }),
       onRampReady,
       status,
       instructions,
     };
+  }
+
+  /**
+   * Book the configured bps fee once a redemption/on-ramp operation completes.
+   * Internal GL journal only — no external transfer, and it runs in shadow mode
+   * exactly as it does live so the accounting path is always exercised.
+   */
+  static async _bookFee(op, result) {
+    if (!result || result.status !== 'completed') return result;
+    const cfg = this.getConfig();
+    const fee = await RampFeeEngine.book({
+      referenceType: 'treasury_on_ramp_fee',
+      referenceId: op.id,
+      amount: op.amount,
+      feeBps: cfg.onRampFeeBps,
+      direction: 'treasury_on_ramp',
+      asset: 'USD',
+      provider: op.sourceMethod || op.source_method,
+      postedBy: 'treasury-on-ramp-bridge',
+    });
+    return { ...result, fee };
   }
 
   static _buildInstructions({ sourceMethod, targetAsset, amount, onRampAmount, onRampBankDetails, cfg }) {
@@ -455,7 +483,7 @@ class TreasuryOnRampBridgeEngine {
     if (!op) throw new Error('Operation not found');
 
     try {
-      const result = await this._continue(op, onRampBankDetails);
+      const result = await this._bookFee(op, await this._continue(op, onRampBankDetails));
       await queryFn(`UPDATE treasury_on_ramp_operations SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`, [result.status, safeJson(result), operationId]);
       return result;
     } catch (err) {
@@ -652,7 +680,7 @@ class TreasuryOnRampBridgeEngine {
     const op = await this.getOperation(operationId);
     if (!op) throw new Error('Operation not found');
     try {
-      const result = await this._continue(op, onRampBankDetails);
+      const result = await this._bookFee(op, await this._continue(op, onRampBankDetails));
       await queryFn(`UPDATE treasury_on_ramp_operations SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`, [result.status, safeJson(result), operationId]);
       return result;
     } catch (err) {

@@ -27,6 +27,9 @@ try { viem = require('viem'); } catch (e) { }
 let BondTokenizationEngine;
 try { BondTokenizationEngine = require('./bondTokenizationEngine').BondTokenizationEngine; } catch (e) { }
 
+let SmartWalletProvisioner;
+try { SmartWalletProvisioner = require('./smartWalletProvisioner').SmartWalletProvisioner; } catch (e) { }
+
 const https = require('https');
 const { URL } = require('url');
 let jwt;
@@ -920,7 +923,24 @@ class DappEngine {
     const secret = JWT_SECRET || process.env.JWT_SECRET;
     if (!secret) throw new Error('JWT_SECRET is not configured');
     const token = jwt ? jwt.sign({ userId: sanitized.id, email: sanitized.email, role: sanitized.role, roles: sanitized.roles, tokenId: identifier('DSE') }, secret, { expiresIn: '8h' }) : null;
-    return { ...sanitized, token, tokenExpiresAt: token ? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() : null };
+    // Unified wallet issuance: a verified portal user always has a deterministic
+    // ERC-4337 smart account whitelisted on the SovereignTrustPaymaster. This is
+    // address derivation plus a paymaster whitelist entry only — no value moves,
+    // and the whitelist call stays a shadow no-op until AA_SHADOW=false. Never
+    // fatal: a provisioning problem must not block a valid login.
+    const smartAccount = await this.provisionSmartAccount(sanitized).catch((e) => ({ error: e.message }));
+    return {
+      ...sanitized,
+      smartAccount,
+      token,
+      tokenExpiresAt: token ? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() : null,
+    };
+  }
+
+  /** Provision/link the user's counterfactual smart account (shadow by default). */
+  static async provisionSmartAccount(user) {
+    if (!SmartWalletProvisioner || !user) return null;
+    return SmartWalletProvisioner.provisionForUser(user);
   }
 
   static async linkWallet({ email, walletAddress, provider, safeOwnerAddress } = {}) {

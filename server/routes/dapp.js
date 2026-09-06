@@ -30,6 +30,7 @@ const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngin
 const { PaymentProcessorServerEngine } = require('../integrations/payments/paymentProcessorServerEngine');
 const { PDCflowEngine } = require('../integrations/payments/pdcflowEngine');
 const { KafkaEventBus } = require('../integrations/events/kafkaEventBus');
+const { ChainTransferReconciler } = require('../integrations/events/chainTransferReconciler');
 const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
@@ -37,6 +38,8 @@ const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngin
 const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
 const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
 const { getTrusteeByRole } = require('../integrations/dapp/trustees');
+const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProvisioner');
+const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
@@ -44,12 +47,18 @@ let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
 let CustomerIdentificationEngine;
 try { ({ CustomerIdentificationEngine } = require('../integrations/compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
-const { requireAuth, writeRateLimiter, authRateLimiter, bindAuthenticatedTrustee } = require('../integrations/auth/securityMiddleware');
+const { requireAuth, dappAuth, writeRateLimiter, authRateLimiter, bindAuthenticatedTrustee } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
 const portalAuth = requireAuth({ role: 'viewer' });
 const adminAuth = requireAuth({ role: 'admin' });
+// /auth/me serves platform sessions, dApp email sessions, and SIWE wallet
+// sessions: try the dApp/SIWE strategy first, then fall back to platform auth.
+const sessionAuth = [
+  dappAuth({ role: 'viewer', optional: true }),
+  (req, res, next) => (req.authMethod ? next() : portalAuth(req, res, next)),
+];
 
 function isTrusteePortalUser(req) {
   const user = req.user || {};
@@ -267,14 +276,69 @@ router.post('/auth/verify', authRateLimiter(), async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/auth/me', portalAuth, async (req, res) => {
+router.get('/auth/me', sessionAuth, async (req, res) => {
   try {
     const email = req.user && req.user.email;
     let dappUser = null;
     if (email) {
       dappUser = await DappEngine.getUserByEmail(email).then(u => DappEngine._sanitizeUser(u)).catch(() => null);
     }
-    res.json({ success: true, data: { user: req.user, dappUser } });
+    // Predicted ERC-4337 smart-account address for the session. Counterfactual
+    // and shadow-derived unless AA_SHADOW=false; nothing is deployed here.
+    let smartAccount = null;
+    if (dappUser) {
+      smartAccount = await SmartWalletProvisioner.provisionForUser(dappUser).catch(() => SmartWalletProvisioner.describe(dappUser));
+    } else if (req.user && req.user.walletAddress) {
+      const predicted = await SmartWalletProvisioner.predictAddress(req.user.walletAddress).catch(() => null);
+      if (predicted) smartAccount = { enabled: true, owner: req.user.walletAddress, ...predicted };
+    }
+    res.json({ success: true, data: { user: req.user, dappUser, smartAccount } });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── SIWE (wallet-only login, no email required) ───────────────────────────
+router.post('/auth/siwe/nonce', authRateLimiter(), async (req, res) => {
+  try {
+    const { address, domain } = req.body || {};
+    const host = domain || req.headers.host;
+    const nonce = SiweAuth.createNonce({ address, domain: host });
+    const message = address
+      ? SiweAuth.buildMessage({ domain: host, address, uri: `${req.protocol}://${host}`, nonce: nonce.nonce, issuedAt: nonce.issuedAt })
+      : null;
+    res.json({ success: true, data: { ...nonce, domain: host, message } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/auth/siwe/verify', authRateLimiter(), async (req, res) => {
+  try {
+    const { message, signature } = req.body || {};
+    const verified = await SiweAuth.verify({ message, signature });
+    const linked = await DappEngine.listUsers()
+      .then(users => users.find(u => [u.wallet_address, u.safe_owner_address, u.smart_account_address]
+        .some(a => a && String(a).toLowerCase() === verified.address.toLowerCase())) || null)
+      .catch(() => null);
+    const { token, payload } = SiweAuth.issueToken({
+      address: verified.address,
+      userId: linked && linked.id,
+      email: linked && linked.email,
+      role: linked && linked.role,
+      roles: (linked && linked.roles) || ['beneficiary'],
+    });
+    // Same unified wallet issuance as the email path — shadow by default.
+    const smartAccount = await SmartWalletProvisioner
+      .provisionForUser(linked || { id: payload.userId, email: payload.email, wallet_address: verified.address })
+      .catch((e) => ({ error: e.message }));
+    res.json({
+      success: true,
+      data: {
+        address: verified.address,
+        chainId: verified.chainId,
+        token,
+        tokenExpiresAt: new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString(),
+        dappUser: linked ? DappEngine._sanitizeUser(linked) : null,
+        smartAccount,
+      },
+    });
   } catch (err) { sendError(res, err); }
 });
 
@@ -1780,6 +1844,21 @@ router.get('/events/pending', operatorAuth, async (req, res) => {
 router.post('/events/retry', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     res.json({ success: true, data: await KafkaEventBus.retryFailed({ limit: Number(req.body.limit) || 50 }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── On-chain transfer reconciliation (observational, no value movement) ──────
+router.get('/events/chain-reconciler/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ChainTransferReconciler.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/events/chain-reconciler/run', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { address, addresses, transfers } = req.body || {};
+    const data = Array.isArray(addresses) && addresses.length
+      ? await ChainTransferReconciler.reconcileAddresses(addresses)
+      : await ChainTransferReconciler.reconcileAddress(address, { transfers: transfers || null });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
