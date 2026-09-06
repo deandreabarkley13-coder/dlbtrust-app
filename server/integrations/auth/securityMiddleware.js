@@ -250,17 +250,8 @@ function dappAuth(options = {}) {
     let authenticated = false;
     let userRole = null;
 
-    // 1. Admin token bypass
-    const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
-    if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
-      req.user = { userId: 0, username: 'legacy-admin', role: 'admin', roles: ['admin'] };
-      req.authMethod = 'admin_token';
-      authenticated = true;
-      userRole = 'admin';
-    }
-
-    // 2. dApp user JWT (email OTP session, or a SIWE-issued wallet session)
-    if (!authenticated && jwt) {
+    // 1. dApp user JWT (email OTP session, or a SIWE-issued wallet session)
+    if (jwt) {
       const authHeader = req.headers['authorization'];
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7).trim();
@@ -278,7 +269,7 @@ function dappAuth(options = {}) {
       }
     }
 
-    // 3. Raw SIWE message + signature (wallet-only login, no email)
+    // 2. Raw SIWE message + signature (wallet-only login, no email)
     if (!authenticated && SiweAuth) {
       const authHeader = req.headers['authorization'] || '';
       let message = req.headers['x-siwe-message'];
@@ -313,6 +304,19 @@ function dappAuth(options = {}) {
           req.siweError = err.message;
         }
       }
+    }
+
+    // 3. Admin token. It elevates to the admin role, but a user session sent
+    // alongside it stays the request identity so identity-scoped routes
+    // (/auth/me and friends) still resolve the actual signed-in user.
+    const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+    if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+      if (!authenticated) {
+        req.user = { userId: 0, username: 'legacy-admin', role: 'admin', roles: ['admin'] };
+        req.authMethod = 'admin_token';
+      }
+      authenticated = true;
+      userRole = 'admin';
     }
 
     if (!authenticated) {

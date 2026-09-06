@@ -312,7 +312,14 @@ router.post('/auth/siwe/nonce', authRateLimiter(), async (req, res) => {
 router.post('/auth/siwe/verify', authRateLimiter(), async (req, res) => {
   try {
     const { message, signature } = req.body || {};
-    const verified = await SiweAuth.verify({ message, signature });
+    let verified;
+    try {
+      verified = await SiweAuth.verify({ message, signature });
+    } catch (err) {
+      // A bad signature, a replayed nonce or an expired message is a rejected
+      // login, not a server fault.
+      return res.status(401).json({ success: false, error: err.message });
+    }
     const linked = await DappEngine.listUsers()
       .then(users => users.find(u => [u.wallet_address, u.safe_owner_address, u.smart_account_address]
         .some(a => a && String(a).toLowerCase() === verified.address.toLowerCase())) || null)
