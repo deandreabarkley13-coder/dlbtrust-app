@@ -506,9 +506,10 @@ class AccountAbstractionEngine {
     const cfg = this.getConfig();
     const paymaster = await this._loadPaymaster();
     const paymasterAddress = cfg.paymasterAddress || paymaster?.paymaster_address;
+    // Shadow whitelisting records intent off-chain: no signer, and no on-chain
+    // write even when a real paymaster address is configured.
+    if (cfg.aaShadow) return { shadow: true, paymaster: paymasterAddress, address, allowed };
     if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) {
-      // Shadow whitelisting records intent off-chain, so it needs no signer.
-      if (cfg.aaShadow) return { shadow: true, paymaster: paymasterAddress, address, allowed };
       throw new Error('paymaster not deployed');
     }
     this._checkDeps();

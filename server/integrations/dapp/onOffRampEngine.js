@@ -26,6 +26,25 @@ try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintCli
 
 function id(prefix = 'RMP') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 
+const SUPPORTED_DIRECTIONS = new Set([
+  'onramp',
+  'fiat_to_crypto',
+  'offramp',
+  'crypto_to_fiat',
+  'exchange',
+  'reserve_to_canonical',
+  'crypto_to_crypto',
+]);
+
+function assertRampRequest(direction, amount) {
+  if (!SUPPORTED_DIRECTIONS.has(String(direction))) {
+    throw new Error(`unsupported ramp direction: ${direction}`);
+  }
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) throw new Error('amount must be positive');
+  return amountNum;
+}
+
 class OnOffRampEngine {
   static get config() { return getConfig(); }
 
@@ -73,6 +92,7 @@ class OnOffRampEngine {
   static async quote({ direction = 'exchange', sourceAsset = '', targetAsset = '', amount = '0', sourceType = '', sourceAccountId = '', targetAddress = '', network = 'ethereum' } = {}) {
     const cfg = this.config;
     const routes = [];
+    assertRampRequest(direction, amount);
 
     // --- Fiat -> Crypto ---
     if (direction === 'onramp' || direction === 'fiat_to_crypto') {
@@ -262,6 +282,9 @@ class OnOffRampEngine {
     const { provider, direction } = p;
 
     if (provider === 'trust_shadow') {
+      // A proposal can be created without going through quote(), so the shadow
+      // rail validates its own request before recording anything.
+      assertRampRequest(direction, p.amount);
       return {
         status: 'shadow_recorded',
         provider,

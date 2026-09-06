@@ -33,6 +33,21 @@ describe('shadow paymaster whitelisting', () => {
     expect(result.shadow).toBe(true);
     expect(result.allowed).toBe(true);
   });
+
+  it('stays off-chain even when a real paymaster address is configured', async () => {
+    process.env.AA_SHADOW = 'true';
+    process.env.AA_PAYMASTER_ADDRESS = '0x1111111111111111111111111111111111111111';
+    process.env.DAPP_PRIVATE_KEY = `0x${'11'.repeat(32)}`;
+    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as any);
+    const wallet = vi.spyOn(AccountAbstractionEngine, '_walletClient');
+
+    const result = await AccountAbstractionEngine.whitelistSender(
+      '0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16',
+      true
+    );
+    expect(result.shadow).toBe(true);
+    expect(wallet).not.toHaveBeenCalled();
+  });
 });
 
 describe('dApp auth identity resolution', () => {
