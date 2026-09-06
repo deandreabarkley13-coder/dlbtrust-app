@@ -220,6 +220,27 @@ class ThirdwebServerWalletEngine {
     return json.result === undefined ? json : json.result;
   }
 
+  /**
+   * ERC-20 holders and their balances straight from chain indexing
+   * (GET /v1/tokens/{chainId}/{address}/owners). Pages until exhausted or
+   * `maxPages` is hit; amounts are returned in base units as strings.
+   */
+  static async tokenOwners({ tokenAddress, chainId, limit = 100, maxPages = 10 } = {}) {
+    const cfg = this.getConfig();
+    if (!isAddress(tokenAddress)) throw new Error('tokenAddress invalid');
+    const chain = Number(chainId || cfg.chainId);
+    const owners = [];
+    let page = 1;
+    let hasMore = true;
+    while (hasMore && page <= maxPages) {
+      const result = await this._request('GET', `/v1/tokens/${chain}/${checksum(tokenAddress)}/owners?limit=${Number(limit)}&page=${page}`);
+      for (const o of result.owners || []) owners.push({ address: checksum(o.address), amount: String(o.amount) });
+      hasMore = Boolean(result.pagination && result.pagination.hasMore);
+      page += 1;
+    }
+    return { chainId: chain, tokenAddress: checksum(tokenAddress), owners, complete: !hasMore };
+  }
+
   /** List the project's server wallets (EOA + smart account addresses). */
   static async listWallets({ limit = 20, page = 1 } = {}) {
     const result = await this._request('GET', `/v1/wallets/server?limit=${Number(limit)}&page=${Number(page)}`);

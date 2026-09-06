@@ -31,6 +31,11 @@ const POSITION_SELECT = `
     LEFT JOIN bond_balances bb ON bb.bond_id = b.id`;
 
 const round2 = (n) => Math.round(Number(n || 0) * 100) / 100;
+/** Base-unit string -> whole units at 2dp without going through a float first. */
+const fromBaseUnits = (amount, decimals) => {
+  const cents = BigInt(String(amount || '0')) * 100n / 10n ** BigInt(decimals);
+  return Number(cents) / 100;
+};
 
 function normalizePosition(row) {
   const face = Number(row.face_value || 0);
@@ -164,6 +169,62 @@ class FixedIncomeDataService {
     return { available: true, tokens: rows.length, by_bond: byBond, excluded };
   }
 
+  /**
+   * Ledger holders (bond_token_holders) against chain holders (thirdweb
+   * indexing) for every bond-backed on-chain token. Pseudo-holders such as
+   * 'treasury' have no address and are reported as unaddressed rather than
+   * compared. Returns `available: false` (never throws) when thirdweb cannot be
+   * asked, so the snapshot still renders without it.
+   */
+  static async getHolderReconciliation(tokenization) {
+    const tokens = Object.values((tokenization && tokenization.by_bond) || {}).flatMap((e) => e.tokens);
+    if (!tokens.length) return { available: true, tokens: [], discrepancies: [] };
+    let ThirdwebServerWalletEngine;
+    let BondTokenizationEngine;
+    try {
+      ({ ThirdwebServerWalletEngine } = require('../dapp/thirdwebServerWalletEngine'));
+      ({ BondTokenizationEngine } = require('../dapp/bondTokenizationEngine'));
+    } catch (e) {
+      return { available: false, reason: e.message, tokens: [], discrepancies: [] };
+    }
+    if (!ThirdwebServerWalletEngine.getConfig().secretKey) {
+      return { available: false, reason: 'THIRDWEB_SECRET_KEY not configured', tokens: [], discrepancies: [] };
+    }
+    const out = [];
+    const discrepancies = [];
+    for (const t of tokens) {
+      let chain;
+      try {
+        chain = await ThirdwebServerWalletEngine.tokenOwners({ tokenAddress: t.token_address });
+      } catch (e) {
+        out.push({ id: t.id, token_symbol: t.token_symbol, error: e.message });
+        continue;
+      }
+      const decimals = Number((await BondTokenizationEngine.getToken(t.id).catch(() => null) || {}).metadata?.decimals || 6);
+      const ledger = await BondTokenizationEngine.getHoldings(t.id).catch(() => []);
+      const ledgerByAddr = new Map();
+      const unaddressed = [];
+      for (const h of ledger) {
+        const addr = String(h.holder_address || '');
+        if (/^0x[0-9a-fA-F]{40}$/.test(addr)) ledgerByAddr.set(addr.toLowerCase(), round2(Number(h.balance || 0)));
+        else unaddressed.push({ holder: addr, balance: round2(Number(h.balance || 0)) });
+      }
+      const chainByAddr = new Map(chain.owners.map((o) => [o.address.toLowerCase(), fromBaseUnits(o.amount, decimals)]));
+      const holders = [];
+      for (const addr of new Set([...ledgerByAddr.keys(), ...chainByAddr.keys()])) {
+        const ledgerBal = ledgerByAddr.get(addr) || 0;
+        const chainBal = chainByAddr.get(addr) || 0;
+        const row = { address: addr, ledger_balance: ledgerBal, chain_balance: chainBal, delta: round2(chainBal - ledgerBal) };
+        holders.push(row);
+        if (Math.abs(row.delta) > 0.005) {
+          discrepancies.push({ bond_id: t.bond_id, token_id: t.id, type: 'holder_balance_mismatch', address: addr, ledger_balance: ledgerBal, chain_balance: chainBal });
+        }
+      }
+      out.push({ id: t.id, bond_id: t.bond_id, token_symbol: t.token_symbol, token_address: t.token_address, chain_holder_count: chain.owners.length, complete: chain.complete, holders, unaddressed });
+    }
+    return { available: true, tokens: out, discrepancies };
+  }
+
   static platformStatus() {
     const platforms = { dlbtrust: { source_of_truth: 'postgres:bonds+bond_balances', ok: true } };
     try {
@@ -194,10 +255,11 @@ class FixedIncomeDataService {
    * One payload for every dashboard and workflow: ledger positions and
    * totals, live market metrics, tokenization coverage and platform status.
    */
-  static async getUnifiedSnapshot({ includeLive = true } = {}) {
+  static async getUnifiedSnapshot({ includeLive = true, includeHolders = false } = {}) {
     const positions = await FixedIncomeDataService.listPositions();
     const totals = sumPositions(positions);
     const tokenization = await FixedIncomeDataService.getTokenization(positions);
+    const holders = includeHolders ? await FixedIncomeDataService.getHolderReconciliation(tokenization) : null;
 
     let live = null;
     if (includeLive) {
@@ -225,6 +287,7 @@ class FixedIncomeDataService {
         discrepancies.push({ bond_id: b.id, type: 'live_face_value_mismatch', live_face_value: Number(b.live.face_value), face_value: b.face_value });
       }
     }
+    if (holders) discrepancies.push(...holders.discrepancies);
 
     return {
       source_of_truth: 'postgres:bonds+bond_balances',
@@ -255,6 +318,7 @@ class FixedIncomeDataService {
         })),
         inactive_tokens: (tokenization.excluded || { inactive_tokens: [] }).inactive_tokens.length,
       },
+      holders,
       platforms: FixedIncomeDataService.platformStatus(),
       discrepancies,
       generated_at: new Date().toISOString(),
