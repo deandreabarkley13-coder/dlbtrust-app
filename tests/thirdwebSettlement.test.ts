@@ -23,12 +23,17 @@ function signed(body: object, secret = SECRET, ts = Math.floor(Date.now() / 1000
 
 let rows: Record<string, any[]>;
 let updates: any[][];
+let claimRowCount: number;
 
 beforeEach(() => {
   rows = {};
   updates = [];
+  claimRowCount = 1;
   vi.spyOn(pool, 'query').mockImplementation(async (sql: string, params: any[]) => {
-    if (/^\s*UPDATE/i.test(sql)) { updates.push([sql, params]); return { rows: [], rowCount: 1 }; }
+    if (/^\s*UPDATE/i.test(sql)) {
+      updates.push([sql, params]);
+      return { rows: [], rowCount: sql.includes("SET status = 'settling'") ? claimRowCount : 1 };
+    }
     for (const [needle, result] of Object.entries(rows)) if (sql.includes(needle)) return { rows: result, rowCount: result.length };
     return { rows: [], rowCount: 0 };
   });
@@ -77,8 +82,9 @@ describe('settleDistribution', () => {
     expect(result.transfer.tokenAddress).toBe(USDC);
     expect(result.transfer.quantity).toBe('2500000000');
     expect(result.transfer.reference).toBe('DR-1');
-    const distStatuses = updates.filter(([sql]) => sql.includes('dapp_distribution_requests')).map(([, p]) => p[1]);
-    expect(distStatuses).toEqual(['payout_created', 'executed']);
+    const distUpdates = updates.filter(([sql]) => sql.includes('dapp_distribution_requests'));
+    expect(distUpdates[0][0]).toContain("SET status = 'settling'");
+    expect(distUpdates.slice(1).map(([, p]) => p[1])).toEqual(['payout_created', 'executed']);
     const expStatuses = updates.filter(([sql]) => sql.includes('expense_records')).map(([, p]) => p[1]);
     expect(expStatuses[expStatuses.length - 1]).toBe('paid');
   });
@@ -94,9 +100,64 @@ describe('settleDistribution', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('rejects a non-EVM destination', async () => {
+  it('rejects a non-EVM destination and non-USD records', async () => {
     rows['FROM dapp_distribution_requests WHERE id'] = [{ ...approved, destination_address: 'acct-1000' }];
     await expect(ThirdwebSettlementEngine.settleDistribution('DR-1')).rejects.toThrow(/EVM address/);
+    const send = vi.spyOn(ThirdwebServerWalletEngine, 'send');
+    rows['FROM dapp_distribution_requests WHERE id'] = [{ ...approved, currency: 'EUR' }];
+    await expect(ThirdwebSettlementEngine.settleDistribution('DR-1')).rejects.toMatchObject({ status: 422 });
+    rows['FROM expense_records WHERE id'] = [{ id: 'EXP-1', status: 'approved', amount_cents: 100, currency: 'GBP', metadata: { walletAddress: RECIPIENT, purpose: 'home' } }];
+    await expect(ThirdwebSettlementEngine.settleExpense('EXP-1')).rejects.toMatchObject({ status: 422 });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('lets only one concurrent caller broadcast', async () => {
+    rows['FROM dapp_distribution_requests WHERE id'] = [approved];
+    const send = vi.spyOn(ThirdwebServerWalletEngine, 'send');
+    let claims = 0;
+    (pool.query as any).mockImplementation(async (sql: string, params: any[]) => {
+      if (sql.includes("SET status = 'settling'")) return { rows: [], rowCount: claims++ === 0 ? 1 : 0 };
+      if (/^\s*UPDATE/i.test(sql)) { updates.push([sql, params]); return { rows: [], rowCount: 1 }; }
+      for (const [needle, result] of Object.entries(rows)) if (sql.includes(needle)) return { rows: result, rowCount: result.length };
+      return { rows: [], rowCount: 0 };
+    });
+    const outcomes = await Promise.allSettled([
+      ThirdwebSettlementEngine.settleDistribution('DR-1'),
+      ThirdwebSettlementEngine.settleDistribution('DR-1'),
+    ]);
+    expect(outcomes.filter((o) => o.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find((o) => o.status === 'rejected')).toMatchObject({ reason: { status: 409 } });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the claim when the send fails so the payable stays retryable', async () => {
+    rows['FROM dapp_distribution_requests WHERE id'] = [approved];
+    vi.spyOn(ThirdwebServerWalletEngine, 'send').mockRejectedValue(new Error('thirdweb down'));
+    await expect(ThirdwebSettlementEngine.settleDistribution('DR-1')).rejects.toThrow('thirdweb down');
+    const release = updates.find(([sql]) => sql.includes("SET status = 'approved'") && sql.includes("status = 'settling'"));
+    expect(release?.[1]).toEqual(['DR-1']);
+  });
+
+  it('reconcile re-attaches a broadcast transfer to a payable stuck in settling instead of paying again', async () => {
+    rows["r.status = 'settling'"] = [{ id: 'DR-7', metadata: {}, transfer_id: 'TWSW-7', thirdweb_transaction_id: 'tx-7', transaction_hash: null, transfer_status: 'submitted', shadow: false }];
+    const send = vi.spyOn(ThirdwebServerWalletEngine, 'send');
+    vi.spyOn(ThirdwebServerWalletEngine, 'openTransfers').mockResolvedValue([]);
+    const r = await ThirdwebSettlementEngine.reconcile();
+    expect(send).not.toHaveBeenCalled();
+    expect(r.repaired).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'DR-7', action: 'reattached', transferId: 'TWSW-7' })]));
+    const upd = updates.find(([, p]) => p && p[0] === 'DR-7');
+    expect(upd[1][1]).toBe('payout_created');
+    expect(JSON.parse(upd[1][2]).thirdwebTransferId).toBe('TWSW-7');
+  });
+
+  it('reconcile walks every open transfer, not just a recent window', async () => {
+    const open = vi.spyOn(ThirdwebServerWalletEngine, 'openTransfers')
+      .mockResolvedValueOnce(Array.from({ length: 200 }, (_, i) => ({ id: `T${i}`, transactionId: `tx${i}`, status: 'submitted' })))
+      .mockResolvedValueOnce([{ id: 'OLD', transactionId: 'txold', status: 'submitted' }]);
+    vi.spyOn(ThirdwebServerWalletEngine, 'getTransaction').mockResolvedValue({ id: 'x', status: 'QUEUED' } as any);
+    const r = await ThirdwebSettlementEngine.reconcile();
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(r.checked).toBe(201);
   });
 });
 
@@ -111,6 +172,17 @@ describe('webhooks', () => {
   it('refuses every delivery when no secret is configured', async () => {
     delete process.env.THIRDWEB_WEBHOOK_SECRET;
     await expect(ThirdwebSettlementEngine.handleWebhook(signed({ id: 'e', type: 'x', data: {} }))).rejects.toMatchObject({ status: 503 });
+  });
+
+  it('does not mark a delivery as handled when dispatch fails, so redelivery is processed', async () => {
+    vi.spyOn(ThirdwebSettlementEngine, '_applyTransaction').mockRejectedValueOnce(new Error('db down'));
+    const evt = signed({ id: 'evt_x', type: 'engine.transaction.confirmed', data: { id: 'tx-x', status: 'CONFIRMED' } });
+    await expect(ThirdwebSettlementEngine.handleWebhook(evt)).rejects.toMatchObject({ status: 500 });
+    expect(updates.length).toBe(0);
+    const inserts = (pool.query as any).mock.calls.filter(([sql]: [string]) => /INSERT INTO thirdweb_webhook_events/.test(sql));
+    expect(inserts).toHaveLength(0);
+    const events = await ThirdwebSettlementEngine.recentEvents(10);
+    expect(events.find((e: any) => e.id === 'evt_x')).toBeUndefined();
   });
 
   it('finalizes the distribution referenced by a confirmed engine transaction, once', async () => {

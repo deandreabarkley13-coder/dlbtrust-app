@@ -452,27 +452,66 @@ class ThirdwebServerWalletEngine {
         LIMIT $1`,
       [n]
     );
-    return rows.map((r) => ({
-      id: r.id,
-      chainId: r.chain_id,
-      from: r.from_address,
-      to: r.to_address,
-      tokenAddress: r.token_address,
-      quantity: r.quantity,
-      shadow: r.shadow,
-      status: r.status,
-      transactionId: r.thirdweb_transaction_id,
-      transactionHash: r.transaction_hash,
-      reference: r.reference,
-      memo: r.memo,
-      requesterRole: r.requester_role,
-      amountUsd: r.amount_usd,
-      purpose: r.purpose,
-      error: r.error,
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
-    }));
+    return rows.map(mapTransferRow);
   }
+
+  /** Every non-terminal transfer (queued/submitted), oldest first, regardless of how many newer transfers exist. */
+  static async openTransfers({ limit = 500, offset = 0 } = {}) {
+    const n = Math.min(Math.max(Number(limit) || 500, 1), 1000);
+    const off = Math.max(Number(offset) || 0, 0);
+    const isOpen = (t) => OPEN_STATUSES.includes(String(t.status || '').toLowerCase());
+    if (!pool || !pool.query) return memoryTransfers.filter(isOpen).slice(off, off + n);
+    await ensureTables();
+    const { rows } = await pool.query(
+      `SELECT id, chain_id, from_address, to_address, token_address, quantity::text AS quantity, shadow, status,
+              thirdweb_transaction_id, transaction_hash, reference, memo, error,
+              requester_role, amount_usd::float8 AS amount_usd, purpose, created_at, updated_at
+         FROM thirdweb_server_wallet_transfers
+        WHERE status IN ('queued', 'submitted')
+        ORDER BY created_at ASC, id ASC
+        LIMIT $1 OFFSET $2`,
+      [n, off]
+    );
+    return rows.map(mapTransferRow);
+  }
+
+  static async transferById(id) {
+    if (!pool || !pool.query) return memoryTransfers.find((t) => t.id === id) || null;
+    await ensureTables();
+    const { rows } = await pool.query(
+      `SELECT id, chain_id, from_address, to_address, token_address, quantity::text AS quantity, shadow, status,
+              thirdweb_transaction_id, transaction_hash, reference, memo, error,
+              requester_role, amount_usd::float8 AS amount_usd, purpose, created_at, updated_at
+         FROM thirdweb_server_wallet_transfers WHERE id = $1`,
+      [id]
+    );
+    return rows[0] ? mapTransferRow(rows[0]) : null;
+  }
+}
+
+const OPEN_STATUSES = ['queued', 'submitted'];
+
+function mapTransferRow(r) {
+  return {
+  id: r.id,
+  chainId: r.chain_id,
+  from: r.from_address,
+  to: r.to_address,
+  tokenAddress: r.token_address,
+  quantity: r.quantity,
+  shadow: r.shadow,
+  status: r.status,
+  transactionId: r.thirdweb_transaction_id,
+  transactionHash: r.transaction_hash,
+  reference: r.reference,
+  memo: r.memo,
+  requesterRole: r.requester_role,
+  amountUsd: r.amount_usd,
+  purpose: r.purpose,
+  error: r.error,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+  };
 }
 
 module.exports = { ThirdwebServerWalletEngine, DEFAULT_API_URL, DEFAULT_IDENTIFIER, toBigInt };
