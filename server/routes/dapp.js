@@ -40,6 +40,7 @@ const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
 const { getTrusteeByRole } = require('../integrations/dapp/trustees');
 const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProvisioner');
 const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
+const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -955,6 +956,36 @@ router.get('/thirdweb/sponsorship/policy', operatorAuth, async (req, res) => {
       },
     });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── thirdweb server wallet (Vault-held key, value moves only when LIVE) ────
+
+router.get('/thirdweb/server-wallet/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: ThirdwebServerWalletEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/server-wallet/wallets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebServerWalletEngine.listWallets(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/thirdweb/server-wallet/ensure', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ThirdwebServerWalletEngine.ensureWallet((req.body || {}).identifier) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/server-wallet/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebServerWalletEngine.balance(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/thirdweb/server-wallet/send', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ThirdwebServerWalletEngine.send(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebServerWalletEngine.recentTransfers(req.query.limit) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/thirdweb/server-wallet/transactions/:transactionId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebServerWalletEngine.getTransaction(req.params.transactionId) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/aa/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
