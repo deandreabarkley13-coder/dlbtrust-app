@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, CoinbaseHbarEngine, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, ThirdwebRailEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, CoinbaseHbarEngine, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -238,6 +238,14 @@ router.post('/fystack/sweep-tasks', operatorAuth, writeRateLimiter(), async (req
 router.get('/circle/readiness', operatorAuth, async (req, res) => {
   try {
     const data = await new CircleKitEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// thirdweb server-wallet stablecoin rail (on-chain only)
+router.get('/thirdweb/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = new ThirdwebRailEngine().readiness();
     res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
   } catch (err) { sendError(res, err); }
 });

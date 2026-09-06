@@ -4,6 +4,7 @@ const { getConfig, isFyStackNetwork, isCircleNetwork, isHederaNetwork } = requir
 const { BlockchainEngine } = require('./blockchainEngine');
 const { FyStackEngine } = require('./fystackEngine');
 const { CircleKitEngine } = require('./circleKitEngine');
+const { ThirdwebRailEngine } = require('./thirdwebRailEngine');
 const { HederaEngine } = require('./hederaEngine');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { StablecoinGateway } = require('./stablecoinGateway');
@@ -23,6 +24,7 @@ module.exports = {
   HederaEngine,
   FyStackEngine,
   CircleKitEngine,
+  ThirdwebRailEngine,
   TreasuryEngine,
   DEFAULT_ACCOUNT,
   StablecoinGateway,
