@@ -11,6 +11,7 @@ const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngin
 const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
 const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
 const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
+const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 const { FinOpsCoordinationEngine } = require('../integrations/finops/finopsCoordinationEngine');
 const { HyperledgerBesuEngine } = require('../integrations/dapp/hyperledgerBesuEngine');
@@ -650,6 +651,22 @@ router.post('/liquidity-pool/swap', operatorAuth, writeRateLimiter(), async (req
 
 router.get('/account-abstraction', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await AccountAbstractionEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+// thirdweb gas-sponsorship policy for the ops UI: the effective rules, what is
+// still missing before sponsorship can be enabled, and the recent decisions the
+// verifier recorded while shadow keeps everything denied.
+router.get('/account-abstraction/sponsorship', operatorAuth, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: {
+        policy: ThirdwebSponsorshipPolicy.describe(),
+        checklist: await ThirdwebSponsorshipPolicy.goLiveChecklist(),
+        recentDecisions: await ThirdwebSponsorshipPolicy.recentDecisions(10),
+      },
+    });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/account-abstraction/balance', operatorAuth, async (req, res) => {

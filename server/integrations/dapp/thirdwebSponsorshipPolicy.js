@@ -117,6 +117,105 @@ class ThirdwebSponsorshipPolicy {
     };
   }
 
+  /**
+   * What is still missing before gas sponsorship can be enabled, evaluated
+   * against the environment this process is actually running with — so the
+   * answer comes from the deployment rather than from `.env.example`.
+   *
+   * `observedDecisions` is the evidence gate: the verifier records what it
+   * would have decided while shadow is on, so the policy can be reviewed
+   * against real traffic before it is allowed to spend anything.
+   */
+  static async goLiveChecklist() {
+    const cfg = this.getConfig();
+    const tw = ThirdwebWalletEngine.getConfig();
+    const observed = await this._observedDecisionCount();
+
+    const items = [
+      {
+        id: 'verifier_secret',
+        label: 'THIRDWEB_VERIFIER_SECRET set and mirrored in the thirdweb dashboard',
+        ok: Boolean(cfg.verifierSecret),
+        detail: 'project > account abstraction > settings > server verifier, as the x-thirdweb-verifier-secret header',
+      },
+      {
+        id: 'secret_key',
+        label: 'THIRDWEB_SECRET_KEY set (required to call pm_sponsorUserOperation)',
+        ok: Boolean(tw.secretKey),
+      },
+      {
+        id: 'client_id',
+        label: 'THIRDWEB_CLIENT_ID set so verifier calls can be attributed to this project',
+        ok: Boolean(cfg.clientId),
+      },
+      {
+        id: 'sender_restriction',
+        label: 'Sponsorship restricted to trust-provisioned smart accounts',
+        ok: cfg.requireProvisioned,
+        detail: 'THIRDWEB_POLICY_REQUIRE_PROVISIONED=true',
+      },
+      {
+        id: 'target_allowlist',
+        label: 'Contract allowlist configured (otherwise any target is sponsorable)',
+        ok: cfg.allowedTargets.length > 0,
+        detail: 'THIRDWEB_POLICY_ALLOWED_TARGETS',
+      },
+      {
+        id: 'per_op_ceiling',
+        label: 'Per-operation gas ceiling is bounded',
+        ok: cfg.maxGasWeiPerOp > 0n,
+        detail: `${cfg.maxGasWeiPerOp} wei`,
+      },
+      {
+        id: 'daily_budget',
+        label: 'Per-sender daily operation and gas budgets are bounded',
+        ok: cfg.dailyOpsPerSender > 0 && cfg.dailyGasWeiPerSender > 0n,
+        detail: `${cfg.dailyOpsPerSender} ops / ${cfg.dailyGasWeiPerSender} wei per 24h`,
+      },
+      {
+        id: 'observed_decisions',
+        label: 'Policy has been observed against real verifier traffic in shadow',
+        ok: observed.total > 0,
+        detail: `${observed.total} decisions recorded, ${observed.wouldAllow} would have been sponsored`,
+      },
+      {
+        id: 'live_flags',
+        label: 'THIRDWEB_SHADOW=false and THIRDWEB_GAS_SPONSORSHIP_LIVE=true',
+        ok: cfg.sponsorshipLive,
+        detail: 'Flip last: this is the gate that lets the trust spend gas',
+      },
+    ];
+
+    const blocking = items.filter((i) => !i.ok).map((i) => i.id);
+    return {
+      enforcing: cfg.sponsorshipLive,
+      ready: blocking.length === 0,
+      blocking,
+      items,
+    };
+  }
+
+  static async _observedDecisionCount() {
+    if (!pool || !pool.query) {
+      return {
+        total: memoryDecisions.length,
+        wouldAllow: memoryDecisions.filter((d) => d.wouldAllow).length,
+      };
+    }
+    try {
+      await ensureTables();
+      const { rows } = await pool.query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE would_allow)::int AS would_allow
+           FROM thirdweb_sponsorship_decisions`
+      );
+      const row = rows[0] || { total: 0, would_allow: 0 };
+      return { total: row.total, wouldAllow: row.would_allow };
+    } catch (e) {
+      return { total: 0, wouldAllow: 0, issue: e.message };
+    }
+  }
+
   /** Constant-time-ish check of the shared secret thirdweb sends back to us. */
   static authorize(headers = {}) {
     const cfg = this.getConfig();

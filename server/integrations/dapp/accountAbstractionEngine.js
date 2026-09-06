@@ -340,8 +340,10 @@ class AccountAbstractionEngine {
 
   static async getPaymasterBalance() {
     await ensureTables();
+    // In shadow there is no balance to read, so this must not require a signer:
+    // checking deps first made a read-only status view need DAPP_PRIVATE_KEY.
+    if (this.getConfig().aaShadow) return { shadow: true, message: 'AA_SHADOW is enabled; no real balance to read' };
     const cfg = this._checkDeps();
-    if (cfg.aaShadow) return { shadow: true, message: 'AA_SHADOW is enabled; no real balance to read' };
     const paymaster = await this._loadPaymaster();
     const address = cfg.paymasterAddress || paymaster?.paymaster_address;
     const publicClient = this._publicClient(cfg);
