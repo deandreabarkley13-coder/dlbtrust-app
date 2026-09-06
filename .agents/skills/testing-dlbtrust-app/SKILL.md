@@ -5,6 +5,33 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Portal OTP and Ramp Center (local shadow UI)
+
+- `/dapp/index.html` email/PIN login sends trustees to `/dashboard`; FinOps at
+  `/dapp/finops.html` maintains a separate session, so authenticate there too if
+  it asks for a PIN or reports an expired session.
+- For local OTP testing use `DAPP_OTP_ALWAYS_SHOW_CODE=true` in non-production.
+  The API may expose the PIN without the page displaying it; read the local
+  fixture's `dapp_users.otp_code` via PostgreSQL and enter it in the UI.
+- Start the server with `RAMP_FEE_BPS=50` to exercise a nonzero quote fee. Keep
+  all live rails disabled; do not set any `*_LIVE` flag for shadow testing.
+- Click **Ramp Center** in FinOps. The panel is near the page bottom (`Ctrl+End`).
+  Quote Fiat → Crypto, USD → USDC, amount 1000, blank source account.
+  Expect visible `Trust fee: 50 bps = 5.00 USD (net 995.00)` and `trust_shadow`
+  ready/recommended when external providers are unconfigured.
+- The route list is informational; **Propose** chooses the recommendation,
+  not a manual provider dropdown. Verify the created fixture's
+  `canonical_proposals.payload.provider` if proving provider selection.
+  Proposing alone does not execute; leave it pending for quote-only testing.
+- Do not equate an API smart-account response or a DB address with visible UI:
+  verify the requested page actually renders it, and distinguish an operator
+  Account Abstraction calculator from the signed-in user's provisioned address.
+
+### Devin Secrets Needed
+
+- Standard local PostgreSQL credentials and stable `JWT_SECRET`; no external
+  provider or wallet private key is needed for this shadow quote flow.
+
 ## Bond Redemption OS (backend and CLI)
 
 - Routes mount at `/api/bond-redemption-os`; the DataBridge module summary is
