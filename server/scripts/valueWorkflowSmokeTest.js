@@ -95,6 +95,10 @@ async function main() {
     state.smartAccount = data.smartAccount;
     assert(data.smartAccount && data.smartAccount.address, 'no smart account returned from verify');
     assert(/^0x[0-9a-fA-F]{40}$/.test(data.smartAccount.address), 'smart account address malformed');
+    assert(data.smartAccount.provider, 'smart account did not report its wallet provider');
+    // Shadow is the only acceptable mode here: a live mode would mean the
+    // provider was contacted and an account could be deployed.
+    assert(data.smartAccount.mode === 'shadow', `expected a shadow smart account, got ${data.smartAccount.mode}`);
     return data.smartAccount;
   });
 
@@ -105,7 +109,7 @@ async function main() {
     const sa = body.data && body.data.smartAccount;
     assert(sa && sa.address, '/auth/me did not expose a smart account');
     assert(sa.address === state.smartAccount.address, 'smart-account address is not deterministic across calls');
-    return { address: sa.address, mode: sa.mode, whitelisted: sa.whitelisted };
+    return { address: sa.address, provider: sa.provider, mode: sa.mode, whitelisted: sa.whitelisted };
   });
 
   // ── 2. SIWE wallet-only login ─────────────────────────────────────────────
