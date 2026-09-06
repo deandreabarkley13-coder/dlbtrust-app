@@ -187,6 +187,21 @@ class ThirdwebWalletEngine {
         entryPoint: cfg.entryPoint,
       };
     }
+    // Apply the trust's own policy before asking thirdweb to spend gas, so a
+    // sponsorship we initiate is held to the same rules as one thirdweb asks
+    // us about through the server verifier.
+    // Required here rather than at file scope: the policy engine reads this
+    // engine's config, so the two modules are mutually dependent.
+    const { ThirdwebSponsorshipPolicy } = require('./thirdwebSponsorshipPolicy');
+    const decision = await ThirdwebSponsorshipPolicy.evaluate({
+      clientId: cfg.clientId,
+      chainId: cfg.chainId,
+      userOp,
+    });
+    if (!decision.isAllowed) {
+      return { shadow: false, provider: 'thirdweb', sponsored: false, reason: decision.reason, entryPoint: cfg.entryPoint };
+    }
+
     const response = await fetch(cfg.bundlerUrl, {
       method: 'POST',
       headers: this._headers(cfg),
