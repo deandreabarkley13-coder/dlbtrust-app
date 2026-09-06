@@ -20,15 +20,24 @@
  *
  * Accounting follows reality, not intent: a top-up is only booked once
  * thirdweb reports COMPLETED, at which point the fiat leaves the trust hold
- * account (SourceOfFundsAdapter) and the journal moves value from trust cash
- * into the on-chain asset account. Until then the row sits PENDING and the
- * hold account is untouched.
+ * account and the journal moves value from trust cash into the on-chain asset
+ * account. Until then the row sits PENDING and the hold account is untouched.
+ *
+ * Funding source: `sourceType` decides who is authoritative for "does this
+ * money exist". `canonical` routes to CanonicalFundingSource, i.e. the
+ * treasury core-banking ERP (Fineract) GL — availability is capped by the ERP,
+ * drift against the sub-ledger blocks the draw, and the settlement entry posts
+ * to both books in one call. Any other value keeps the previous behaviour of
+ * asking SourceOfFundsAdapter (trust sub-ledger, cash, bonds, sub-ledgers).
  */
 
 const DistributionPolicy = require('./distributionPolicy');
 const { ThirdwebPriceOracle, NATIVE_TOKEN } = require('./thirdwebPriceOracle');
 const { ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
+const { CanonicalFundingSource } = require('../fineract/canonicalFundingSource');
+
+const CANONICAL_SOURCE_TYPES = new Set(['canonical', 'erp', 'core_banking_canonical']);
 
 let TrustAccountingEngine = null;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { /* optional */ }
@@ -91,6 +100,7 @@ class ThirdwebTreasuryFundingEngine {
       // Token the treasury is topped up in; native asset when unset.
       tokenAddress: str('TREASURY_TOPUP_TOKEN_ADDRESS') || str('DAPP_USDC_ADDRESS') || null,
       currency: str('TREASURY_TOPUP_CURRENCY', 'USD').toUpperCase(),
+      // 'canonical' = the core-banking ERP is the authority on availability.
       holdSourceType: str('TREASURY_TOPUP_HOLD_SOURCE_TYPE', 'trust'),
       holdSourceAccountId: str('TREASURY_TOPUP_HOLD_ACCOUNT_ID') || str('EXPENSE_WALLET_HOLD_ACCOUNT_ID') || null,
       cryptoAccountCode: str('TREASURY_TOPUP_CRYPTO_ACCOUNT_CODE', '1210'),
@@ -106,6 +116,8 @@ class ThirdwebTreasuryFundingEngine {
     if (!cfg.secretKey) issues.push('THIRDWEB_SECRET_KEY not configured');
     if (!FIAT_CURRENCIES.has(cfg.currency)) issues.push(`TREASURY_TOPUP_CURRENCY ${cfg.currency} is not supported by thirdweb bridge`);
     if (!cfg.holdSourceAccountId) issues.push('TREASURY_TOPUP_HOLD_ACCOUNT_ID not configured (pass sourceAccountId per request)');
+    const canonical = this._isCanonical(cfg.holdSourceType) ? CanonicalFundingSource.readiness() : null;
+    if (canonical && !canonical.ready) issues.push(...canonical.issues.map((i) => `canonical source: ${i}`));
     return {
       provider: 'thirdweb-bridge',
       apiUrl: cfg.apiUrl,
@@ -121,9 +133,14 @@ class ThirdwebTreasuryFundingEngine {
       // Inbound funding needs no live flag; rebalancing treasury assets does.
       canTopUp: Boolean(cfg.secretKey),
       canSwap: cfg.live && Boolean(cfg.secretKey),
+      canonicalSource: canonical,
       ready: issues.length === 0,
       issues,
     };
+  }
+
+  static _isCanonical(sourceType) {
+    return CANONICAL_SOURCE_TYPES.has(String(sourceType || '').toLowerCase());
   }
 
   /** Fiat → token amount straight from thirdweb (independent of the oracle). */
@@ -166,6 +183,12 @@ class ThirdwebTreasuryFundingEngine {
   }
 
   static async _holdPosition({ sourceType, sourceAccountId, amountUsd }) {
+    if (this._isCanonical(sourceType)) {
+      const position = await CanonicalFundingSource.assertAvailable({
+        amountUsd, accountCode: sourceAccountId, purpose: 'treasury top-up',
+      });
+      return { position, availableCents: position.availableBalanceCents, neededCents: toCents(amountUsd) };
+    }
     const position = await SourceOfFundsAdapter.getPosition({ sourceType, sourceAccountId, purpose: 'payment' });
     const availableCents = Number(position.availableBalanceCents || 0);
     const neededCents = toCents(amountUsd);
@@ -257,16 +280,40 @@ class ThirdwebTreasuryFundingEngine {
 
     let booked = record.booked;
     if (status === 'COMPLETED' && !booked) {
-      await SourceOfFundsAdapter._fundSourceToTreasury({
-        sourceType: record.sourceType,
-        sourceAccountId: record.sourceAccountId,
-        paymentId: record.id,
-        amountCents: toCents(record.amountFiat),
-      });
-      await this._postJournal(record);
-      booked = true;
+      booked = await this._book(record);
     }
     return this._updateTopUp(record.id, { status, transactionHash: hash, booked });
+  }
+
+  /**
+   * Settle a completed top-up against its funding source. The canonical path
+   * draws from the ERP and posts the entry to both books itself, so it does
+   * not also run the sub-ledger-only journal; a shadow commit moves nothing
+   * and therefore leaves the top-up unbooked.
+   */
+  static async _book(record) {
+    const cfg = this.getConfig();
+    if (this._isCanonical(record.sourceType)) {
+      const result = await CanonicalFundingSource.commit({
+        amountUsd: record.amountFiat,
+        reference: record.id,
+        referenceType: 'treasury_topup',
+        memo: `thirdweb bridge top-up ${record.quantity} ${record.symbol} to ${record.recipient}`,
+        cashAccountCode: record.sourceAccountId || cfg.cashAccountCode,
+        assetAccountCode: cfg.cryptoAccountCode,
+        postedBy: 'thirdweb-treasury-funding-engine',
+        purpose: 'treasury top-up',
+      });
+      return Boolean(result.committed);
+    }
+    await SourceOfFundsAdapter._fundSourceToTreasury({
+      sourceType: record.sourceType,
+      sourceAccountId: record.sourceAccountId,
+      paymentId: record.id,
+      amountCents: toCents(record.amountFiat),
+    });
+    await this._postJournal(record);
+    return true;
   }
 
   static async _postJournal(record) {
