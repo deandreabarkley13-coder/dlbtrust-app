@@ -131,6 +131,18 @@ GetRecord(recordType, recordId) -> the value above (or its digest string)
 against. It keeps every superseded digest under a history key, so a mismatch can
 be walked back to the version the channel accepted.
 
+## Standing the nodes up
+
+`scripts/hyperledger/bootstrap-stack.sh` builds both networks on one Linux
+host with Docker: installs the FireFly CLI and Go, packages and commits
+`chaincode/trustnotary`, brings up Fabric + fabconnect and a two-member FireFly
+stack with an ERC-20 settlement pool minted to the trust org, and writes the
+`FABRIC_*`/`FIREFLY_*` block to `~/.env.hyperledger`. It is idempotent, so it
+doubles as the health check for a host that already has the stacks. Point the
+app at that host (the URLs it prints are `localhost`; substitute the host name
+or put fabconnect and FireFly behind TLS) and set `FIREFLY_API_KEY` /
+`FABRIC_CONNECT_TOKEN` once those are fronted by auth.
+
 ## What each node has to have
 
 Verified end to end against a Fabric network with fabconnect and a two-member
