@@ -351,7 +351,7 @@ class TrustAccountingEngine {
   }
 
   static async listJournalEntries({
-    fromDate, toDate, status, bondId, referenceType,
+    fromDate, toDate, status, bondId, referenceType, referenceId,
     limit, offset,
   } = {}) {
     const conditions = [];
@@ -363,6 +363,7 @@ class TrustAccountingEngine {
     if (status) { conditions.push(`status = $${idx++}`); params.push(status); }
     if (bondId) { conditions.push(`bond_id = $${idx++}`); params.push(bondId); }
     if (referenceType) { conditions.push(`reference_type = $${idx++}`); params.push(referenceType); }
+    if (referenceId) { conditions.push(`reference_id = $${idx++}`); params.push(referenceId); }
 
     const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
     const lim = parseInt(limit) || 100;
