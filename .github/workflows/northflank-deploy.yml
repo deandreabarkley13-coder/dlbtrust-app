@@ -31,7 +31,14 @@ jobs:
         run: npm install -g @northflank/cli@0.12.2
 
       - name: Log in
-        run: northflank login -t "$NORTHFLANK_API_TOKEN" -n ci --override
+        run: |
+          if [ -z "$NORTHFLANK_API_TOKEN" ]; then
+            echo "::error::Repository secret NORTHFLANK_API_TOKEN is not set (Settings > Secrets and variables > Actions)." >&2
+            exit 1
+          fi
+          out=$(northflank login -t "$NORTHFLANK_API_TOKEN" -n ci --override 2>&1)
+          echo "$out"
+          case "$out" in *"Successfully logged in"*) ;; *) echo "::error::Northflank login failed" >&2; exit 1;; esac
         env:
           NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
 
