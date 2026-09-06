@@ -91,4 +91,25 @@ describe('internal shadow ramp rail', () => {
     expect(outcome.status).toBe('shadow_recorded');
     expect(outcome.fee).toMatchObject({ status: 'booked', referenceId: 'PROP-DEC', feeAmount: 5 });
   });
+
+  it('books the fee quoted with the selected route regardless of casing or later rate changes', async () => {
+    vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JRN-ROUTE' } as any);
+    // The rate moved after the proposal was quoted and approved at 50 bps.
+    process.env.RAMP_FEE_BPS = '200';
+
+    const outcome = await DecentralizedRampEngine._execute({
+      id: 'PROP-ROUTE',
+      payload: {
+        direction: 'onramp',
+        routeProvider: 'Trust_Shadow',
+        sourceAsset: 'USD',
+        targetAsset: 'USDC',
+        amount: '1000',
+        route: { provider: 'trust_shadow', fee: { feeBps: 50 } },
+      },
+    });
+
+    expect(outcome.status).toBe('shadow_recorded');
+    expect(outcome.fee).toMatchObject({ feeBps: 50, feeAmount: 5, status: 'booked' });
+  });
 });
