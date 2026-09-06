@@ -42,6 +42,35 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 - Dashboard login: `admin` / `dlb-admin-2026-trust`
 - Admin token header for API calls: `x-admin-token: dlb-admin-2026-trust`
 
+### Read-only deployed dashboard verification
+
+- Check the current routes before following older DeFi instructions below:
+  `/` may be the public landing with a Trust Snapshot, `/dapp` the email/PIN
+  and operator-token login, and `/dashboard` the Private Trust Command Center.
+  Operator login uses **Enter Command Center**, not a username/password form.
+- `/dapp/master-dashboard.html` supports **Save token**, **Refresh all**,
+  **Overview**, and **Bond / Fixed Income**. These reads do not require
+  clicking any one-click automation buttons; those buttons can move value.
+- `/dapp/trust-dashboard.html` shares `dlb-admin-token` with the login page.
+  **Refresh now** calls `GET /api/trust-ops/summary?refresh=1`. Correlate the
+  rendered balances with `asOf`, `ageSeconds`, and `syncErrors`, not just the
+  presence of nonzero numbers.
+- Master pending requests exclude executed/rejected/failed; trust Overview
+  counts requested/under_review only. Different counts are not by themselves
+  evidence of stale data.
+- The older DeFi dashboard is `/dapp/legacy.html`. Its operator token may
+  validate and load Safe/payout counts while the role badge remains Guest and
+  trustee-only tabs stay hidden. Bond Tokens in this legacy source contains
+  create/mint/swap forms, not an existing-token list; do not submit writes to
+  try to prove read-only data loading.
+- Readiness checks: `GET /api/bond-subscriptions/readiness` with
+  `x-admin-token` should expose `provider: thirdweb-payments`, `ready`, and
+  `issues`; `GET /api/dapp/bond-tokens/readiness` exposes `ready`, `mode`, and
+  `issues`. These prove configuration readiness, not payment delivery.
+- `/api/health` may report top-level healthy even when optional checks such
+  as `fineract` or `bill` are false. Report the distinction explicitly.
+- No additional secrets beyond the existing operator token are needed.
+
 ## Quick start (local)
 
 1. Verify PostgreSQL is running and the `dlbtrust` database/user exist (or create one).
