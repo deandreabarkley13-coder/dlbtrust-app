@@ -169,9 +169,15 @@ describe('webhooks', () => {
     await expect(ThirdwebSettlementEngine.handleWebhook(stale)).rejects.toMatchObject({ status: 401 });
   });
 
-  it('refuses every delivery when no secret is configured', async () => {
+  it('acknowledges but ignores deliveries when no secret is configured (so thirdweb can create the webhook)', async () => {
     delete process.env.THIRDWEB_WEBHOOK_SECRET;
-    await expect(ThirdwebSettlementEngine.handleWebhook(signed({ id: 'e', type: 'x', data: {} }))).rejects.toMatchObject({ status: 503 });
+    const apply = vi.spyOn(ThirdwebSettlementEngine, '_applyTransaction');
+    const r = await ThirdwebSettlementEngine.handleWebhook({ rawBody: Buffer.from('{"type":"engine.transaction.confirmed","data":{"id":"tx-1"}}'), headers: {} });
+    expect(r.ignored).toBe(true);
+    expect(apply).not.toHaveBeenCalled();
+    expect(updates).toHaveLength(0);
+    expect((pool.query as any).mock.calls.some(([sql]: [string]) => /thirdweb_webhook_events/.test(sql))).toBe(false);
+    expect(ThirdwebSettlementEngine.verifySignature.bind(ThirdwebSettlementEngine, signed({ id: 'e', type: 'x', data: {} }))).toThrow(/not configured/);
   });
 
   it('does not mark a delivery as handled when dispatch fails, so redelivery is processed', async () => {

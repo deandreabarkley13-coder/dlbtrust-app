@@ -89,7 +89,7 @@ class ThirdwebSettlementEngine {
     const cfg = this.getConfig();
     const wallet = ThirdwebServerWalletEngine.readiness();
     const issues = [...wallet.issues];
-    if (!cfg.webhookSecret) issues.push('THIRDWEB_WEBHOOK_SECRET not configured (webhook deliveries are rejected)');
+    if (!cfg.webhookSecret) issues.push('THIRDWEB_WEBHOOK_SECRET not configured (webhook deliveries are acknowledged but ignored)');
     if (!cfg.settlementToken) issues.push('THIRDWEB_SETTLEMENT_TOKEN (or DAPP_USDC_ADDRESS) not configured');
     else if (!isAddress(cfg.settlementToken)) issues.push('THIRDWEB_SETTLEMENT_TOKEN is not a valid address');
     return {
@@ -443,6 +443,13 @@ class ThirdwebSettlementEngine {
   }
 
   static async handleWebhook({ rawBody, headers }) {
+    // thirdweb only creates a webhook after its URL answers 200, and the secret
+    // only exists after creation. Until the secret is configured we acknowledge
+    // deliveries without reading or acting on them; nothing is persisted.
+    if (!this.getConfig().webhookSecret) {
+      console.warn('[ThirdwebSettlement] webhook delivery ignored: THIRDWEB_WEBHOOK_SECRET not configured');
+      return { id: null, topic: null, duplicate: false, ignored: true, reason: 'THIRDWEB_WEBHOOK_SECRET not configured' };
+    }
     this.verifySignature({ rawBody, headers });
     const body = Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : String(rawBody);
     const event = JSON.parse(body);
