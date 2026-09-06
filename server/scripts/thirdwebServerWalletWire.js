@@ -6,7 +6,8 @@
  *
  * Run from the repo root with THIRDWEB_SECRET_KEY in the environment:
  *   node server/scripts/thirdwebServerWalletWire.js [--identifier <id>] [--live]
- *       [--send <to> <quantityWei> [--token <erc20>]] [--wait]
+ *       [--send <to> <quantityWei> --usd <amount> --purpose <p> [--role beneficiary|trustee]
+ *        [--token <erc20>]] [--wait]
  *
  * What it does, in order:
  *   1. readiness   — config + which gates are open (nothing is sent yet)
@@ -18,9 +19,12 @@
  *   4. balance     — native balance of that wallet on the configured chain
  *   5. northflank  — the exact set-secrets.mjs command that pins the address
  *                    (and, with --live, flips THIRDWEB_SERVER_WALLET_LIVE)
- *   6. --send      — optional transfer. Shadow unless --live is passed; with
- *                    --wait the script polls the thirdweb transaction to a
- *                    terminal status.
+ *   6. --send      — optional transfer. --usd is the USD value checked against
+ *                    the requester role's per-transaction limit ($100K
+ *                    beneficiary / $500K trustee); --purpose is one of
+ *                    lifestyle|medical|travel|home|education. Shadow unless
+ *                    --live is passed; with --wait the script polls the
+ *                    thirdweb transaction to a terminal status.
  *
  * Secret values are never printed.
  */
@@ -30,13 +34,16 @@ require('dotenv').config();
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
 
 function parseArgs(argv) {
-  const out = { live: false, wait: false, send: null, token: null, identifier: null };
+  const out = { live: false, wait: false, send: null, token: null, identifier: null, usd: null, purpose: null, role: 'beneficiary' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--live') out.live = true;
     else if (arg === '--wait') out.wait = true;
     else if (arg === '--identifier') { out.identifier = argv[i + 1]; i += 1; }
     else if (arg === '--token') { out.token = argv[i + 1]; i += 1; }
+    else if (arg === '--usd') { out.usd = argv[i + 1]; i += 1; }
+    else if (arg === '--purpose') { out.purpose = argv[i + 1]; i += 1; }
+    else if (arg === '--role') { out.role = argv[i + 1]; i += 1; }
     else if (arg === '--send') { out.send = { to: argv[i + 1], quantity: argv[i + 2] }; i += 2; }
     else throw new Error(`unknown argument "${arg}"`);
   }
@@ -102,6 +109,9 @@ async function main() {
     to: args.send.to,
     quantity: args.send.quantity,
     tokenAddress: args.token,
+    amountUsd: args.usd,
+    purpose: args.purpose,
+    requesterRole: args.role,
     reference: 'thirdwebServerWalletWire',
   });
   print(transfer.shadow ? 'shadow transfer (nothing sent)' : 'live transfer submitted', transfer);
