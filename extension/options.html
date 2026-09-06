@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DLB Trust Treasury — Options</title>
+  <style>
+    body { max-width:520px; margin:24px auto; padding:0 16px; background:#0b0f17; color:#f8fafc; font:14px system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+    label { display:block; margin:14px 0 6px; color:#94a3b8; font-size:12px; }
+    input { width:100%; padding:10px; border-radius:8px; border:1px solid #2a3548; background:#131925; color:#f8fafc; }
+    button { margin-top:16px; background:#3b82f6; color:#fff; border:0; border-radius:8px; padding:10px 16px; font-weight:600; cursor:pointer; }
+    #status { margin-top:10px; color:#94a3b8; font-size:12px; }
+    p { color:#94a3b8; font-size:12px; }
+  </style>
+</head>
+<body>
+  <h2>DLB Trust Treasury Console</h2>
+  <p>The token is stored only in this browser profile (chrome.storage.local) and sent as <code>x-admin-token</code> to the DLB Trust API. Settlement is executed by the trust's thirdweb server wallet (key held in thirdweb Vault), never by this extension.</p>
+  <label for="baseUrl">DLB Trust API base URL</label>
+  <input id="baseUrl" placeholder="https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run" />
+  <label for="token">Operator / admin token</label>
+  <input id="token" type="password" autocomplete="off" />
+  <button id="save">Save</button>
+  <button id="test" style="background:#1e293b">Test connection</button>
+  <div id="status"></div>
+  <script src="api.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>
