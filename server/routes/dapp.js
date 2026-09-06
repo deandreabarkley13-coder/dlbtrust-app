@@ -42,6 +42,7 @@ const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProv
 const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
+const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
@@ -1004,6 +1005,36 @@ router.get('/thirdweb/price', operatorAuth, async (req, res) => {
         : await ThirdwebPriceOracle.getPrice({ chainId: chainId || ThirdwebServerWalletEngine.getConfig().chainId, tokenAddress });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── Beneficiary expense wallets (one server wallet per expense purpose) ─────
+
+router.get('/expense-wallets/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: BeneficiaryExpenseWalletEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/expense-wallets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BeneficiaryExpenseWalletEngine.listWallets(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/expense-wallets/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BeneficiaryExpenseWalletEngine.balances(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expense-wallets/ensure', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await BeneficiaryExpenseWalletEngine.ensureWallets(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expense-wallets/fund', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const requesterRole = body.requesterRole || (isTrusteePortalUser(req) ? 'trustee' : 'beneficiary');
+    res.status(201).json({ success: true, data: await BeneficiaryExpenseWalletEngine.fund({ ...body, requesterRole }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/expense-wallets/fundings', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BeneficiaryExpenseWalletEngine.recentFundings(req.query.limit) }); } catch (err) { sendError(res, err); }
 });
 
 // ─── Trust Ecosystem (browser extension + mobile app) ─────────────────────────
