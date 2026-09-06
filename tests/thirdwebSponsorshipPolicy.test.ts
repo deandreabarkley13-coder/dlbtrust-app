@@ -168,6 +168,32 @@ describe('policy description and audit trail', () => {
     expect(described.chainIds).toEqual([1]);
   });
 
+  it('lists what still blocks go-live, with the live flags last', async () => {
+    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ total: 0, would_allow: 0 }], rowCount: 1 } as any);
+    const checklist = await ThirdwebSponsorshipPolicy.goLiveChecklist();
+    expect(checklist.ready).toBe(false);
+    expect(checklist.blocking).toContain('secret_key');
+    expect(checklist.blocking).toContain('target_allowlist');
+    expect(checklist.blocking).toContain('observed_decisions');
+    expect(checklist.blocking).toContain('live_flags');
+    // The verifier secret is set in beforeEach, so it must not be blocking.
+    expect(checklist.blocking).not.toContain('verifier_secret');
+    expect(checklist.items[checklist.items.length - 1].id).toBe('live_flags');
+  });
+
+  it('clears the checklist only once every control is configured', async () => {
+    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ total: 4, would_allow: 3 }], rowCount: 1 } as any);
+    process.env.THIRDWEB_SECRET_KEY = 'sk-test';
+    process.env.THIRDWEB_CLIENT_ID = 'client-test';
+    process.env.THIRDWEB_POLICY_ALLOWED_TARGETS = TARGET;
+    process.env.THIRDWEB_SHADOW = 'false';
+    process.env.THIRDWEB_GAS_SPONSORSHIP_LIVE = 'true';
+    const checklist = await ThirdwebSponsorshipPolicy.goLiveChecklist();
+    expect(checklist.blocking).toEqual([]);
+    expect(checklist.ready).toBe(true);
+    expect(checklist.enforcing).toBe(true);
+  });
+
   it('records every decision even when nothing is sponsored', async () => {
     mockDirectory();
     const decision = await ThirdwebSponsorshipPolicy.evaluate({ chainId: 1, userOp: userOp() });

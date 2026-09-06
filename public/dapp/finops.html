@@ -1251,8 +1251,49 @@
       '<div id="aa-prepared" style="font-family:monospace; font-size:12px; margin-top:8px;"></div>' +
       '<div class="token-bar" style="margin-top:10px;"><input id="aa-operation-id" placeholder="operationId to submit" /></div>' +
       '<div class="approval-actions"><button class="btn btn-gold" onclick="aaSubmit()">Submit</button></div>' +
-      '</div>';
+      '</div>' +
+      renderSponsorshipPolicy(data.sponsorship);
     return html;
+  }
+
+  // thirdweb gas sponsorship: the trust's own server-verifier policy. Read-only
+  // on purpose — the live flags stay env-only so the UI cannot start spending.
+  function renderSponsorshipPolicy(sponsorship) {
+    if (!sponsorship) return '';
+    const p = sponsorship.policy || {};
+    const checklist = sponsorship.checklist || {};
+    const items = (checklist.items || []).map(function(i) {
+      return '<li style="margin-bottom:4px;">' +
+        (i.ok ? '<span style="color:#3fb950;">ready</span>' : '<span style="color:#d29922;">pending</span>') +
+        ' — ' + i.label +
+        (i.detail ? '<div class="muted" style="font-size:11px; margin-left:14px;">' + i.detail + '</div>' : '') +
+        '</li>';
+    }).join('');
+    const decisions = (sponsorship.recentDecisions || []).map(function(d) {
+      return '<tr><td style="font-family:monospace; font-size:11px;">' + (d.sender || '—') + '</td>' +
+        '<td>' + (d.would_allow || d.wouldAllow ? 'would sponsor' : 'denied') + '</td>' +
+        '<td>' + (d.gas_wei || d.gasWei || '0') + ' wei</td>' +
+        '<td class="muted" style="font-size:11px;">' + (d.reason || '') + '</td></tr>';
+    }).join('');
+
+    return '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Gas Sponsorship Policy (thirdweb)</h3>' +
+      '<div class="muted" style="margin-bottom:10px;">' + (p.note || '') + '</div>' +
+      '<div style="margin-bottom:10px;">' +
+      '<strong>Enforcing:</strong> ' + (p.enforcing ? 'yes — allowed operations are sponsored with trust funds' : 'no — every operation is denied') + '<br>' +
+      '<strong>Verifier endpoint:</strong> <code>' + (p.verifierPath || '') + '</code><br>' +
+      '<strong>Chains:</strong> ' + ((p.chainIds || []).join(', ') || '—') + '<br>' +
+      '<strong>Allowlisted contracts:</strong> ' + ((p.allowedTargets || []).join(', ') || 'none (no contract restriction)') + '<br>' +
+      '<strong>Per-op ceiling:</strong> ' + (p.maxGasWeiPerOp || '0') + ' wei<br>' +
+      '<strong>Per-sender daily budget:</strong> ' + (p.dailyOpsPerSender || 0) + ' ops / ' + (p.dailyGasWeiPerSender || '0') + ' wei' +
+      '</div>' +
+      '<div style="margin-bottom:10px;"><strong>Go-live checklist</strong> ' +
+      (checklist.ready ? '<span style="color:#3fb950;">all clear</span>' : '<span class="muted">' + ((checklist.blocking || []).length) + ' item(s) pending</span>') +
+      '<ul style="margin:8px 0 0; padding-left:18px; list-style:none;">' + items + '</ul></div>' +
+      (decisions
+        ? '<table class="table" style="width:100%; font-size:12px;"><thead><tr><th>Sender</th><th>Rules</th><th>Gas</th><th>Reason</th></tr></thead><tbody>' + decisions + '</tbody></table>'
+        : '<div class="muted">No sponsorship decisions recorded yet.</div>') +
+      '</div>';
   }
 
   function aaStatus(msg, isErr) {
@@ -1264,7 +1305,8 @@
     try {
       const info = await api('/api/finops/account-abstraction');
       const bal = await api('/api/finops/account-abstraction/balance');
-      body.innerHTML = renderAccountAbstractionPanel({ ...(info.data || {}), balances: bal.data || {} });
+      const sponsorship = await api('/api/finops/account-abstraction/sponsorship').catch(function() { return {}; });
+      body.innerHTML = renderAccountAbstractionPanel({ ...(info.data || {}), balances: bal.data || {}, sponsorship: sponsorship.data });
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderAccountAbstractionPanel({}); }
   }
 
