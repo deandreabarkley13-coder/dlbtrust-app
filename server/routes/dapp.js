@@ -45,6 +45,7 @@ const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracl
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
 const { CanonicalFundingSource } = require('../integrations/fineract/canonicalFundingSource');
+const { CanonicalGlMapBuilder } = require('../integrations/fineract/canonicalGlMapBuilder');
 const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
 let BondEngine, LiveBondEngine;
@@ -1081,6 +1082,18 @@ router.post('/treasury-funding/swap', adminAuth, writeRateLimiter(), async (req,
 
 // ─── Canonical funding source (core-banking ERP is the authority) ──────────
 
+// `all` opts in the generated per-client/holding codes; each becomes a GL account.
+function glMapOptions(input = {}) {
+  const raw = input.codes;
+  const codes = Array.isArray(raw)
+    ? raw.map(String)
+    : String(raw || '').split(',').map((c) => c.trim()).filter(Boolean);
+  return {
+    codes: codes.length ? codes : null,
+    includeDynamic: input.all === true || input.all === 'true' || input.includeDynamic === true,
+  };
+}
+
 router.get('/canonical-source/readiness', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: CanonicalFundingSource.readiness() }); } catch (err) { sendError(res, err); }
 });
@@ -1098,6 +1111,26 @@ router.get('/canonical-source/reconciliation', operatorAuth, async (req, res) =>
 
 router.get('/canonical-source/gl-map', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CanonicalFundingSource.glMap() }); } catch (err) { sendError(res, err); }
+});
+
+// Reconciles the trust chart, the stored mappings, and the ERP's own chart.
+router.get('/canonical-source/gl-map/plan', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await CanonicalGlMapBuilder.build(glMapOptions(req.query)) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-source/gl-map/apply', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    res.json({
+      success: true,
+      data: await CanonicalGlMapBuilder.apply({
+        ...glMapOptions(body),
+        createMissing: body.createMissing === true,
+      })
+    });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/canonical-source/draw', adminAuth, writeRateLimiter(), async (req, res) => {
