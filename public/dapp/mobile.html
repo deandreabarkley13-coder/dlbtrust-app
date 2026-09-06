@@ -171,7 +171,7 @@
   <div id="tab-treasury" class="tab">
     <div class="card">
       <h2>Treasury settlement <span id="tw-mode" class="small"></span></h2>
-      <p>Approved distributions and expenses settle on-chain from the trust's thirdweb server wallet. Operator token is kept on this device only.</p>
+      <p>Approved distributions and expenses settle on-chain from the trust's thirdweb server wallet. The operator token is held for this browser session only and cleared when the app closes.</p>
       <label>Operator / admin token</label>
       <input type="password" id="tw-token" autocomplete="off" placeholder="x-admin-token" />
       <button class="btn" onclick="saveOperatorToken()">Save &amp; load queue</button>
@@ -187,7 +187,7 @@
     <button class="active" onclick="showTab('tab-home')">Wallet</button>
     <button onclick="showTab('tab-pay')">Pay</button>
     <button onclick="showTab('tab-receive')">Receive</button>
-    <button onclick="showTab('tab-treasury')">Treasury</button>
+    <button id="nav-treasury" class="hidden" onclick="showTab('tab-treasury')">Treasury</button>
   </div>
 </div>
 
@@ -340,11 +340,18 @@ function showTab(id) {
 }
 
 // ─── Treasury settlement (operator) ─────────────────────────────────────────
-const OPERATOR_KEY = 'dlb-admin-token';
+// Operator-only surface: reachable via /dapp/mobile.html#treasury (or once a token is
+// held for this session). Beneficiaries never see it; the token lives in sessionStorage.
+const OPERATOR_KEY = 'dlb-operator-token';
 const usd = n => Number(n || 0).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
 const shortAddr = a => a ? a.slice(0, 6) + '…' + a.slice(-4) : '—';
 
-function operatorToken() { try { return localStorage.getItem(OPERATOR_KEY) || ''; } catch (e) { return ''; } }
+function operatorToken() { try { return sessionStorage.getItem(OPERATOR_KEY) || ''; } catch (e) { return ''; } }
+
+(function revealTreasuryForOperators() {
+  if (location.hash === '#treasury' || operatorToken()) el('nav-treasury').classList.remove('hidden');
+  window.addEventListener('hashchange', () => { if (location.hash === '#treasury') el('nav-treasury').classList.remove('hidden'); });
+})();
 
 function opApi(path, opts = {}) {
   const token = operatorToken();
@@ -360,7 +367,8 @@ function opApi(path, opts = {}) {
 
 function saveOperatorToken() {
   const token = el('tw-token').value.trim();
-  try { if (token) localStorage.setItem(OPERATOR_KEY, token); } catch (e) {}
+  try { if (token) sessionStorage.setItem(OPERATOR_KEY, token); } catch (e) {}
+  el('tw-token').value = '';
   loadTreasury();
 }
 
@@ -375,9 +383,9 @@ function twRows(target, items, kind) {
     const btn = document.createElement('button');
     btn.className = 'btn';
     btn.style.cssText = 'width:auto;margin:0;padding:8px 12px;font-size:13px';
-    btn.textContent = item.thirdwebTransferId ? 'Sent' : 'Settle';
+    btn.textContent = item.thirdwebTransferId ? 'Sent' : item.status === 'settling' ? 'Settling…' : 'Settle';
     btn.disabled = !item.canSettle;
-    if (!item.canSettle) btn.style.opacity = '.4';
+    if (!item.canSettle) { btn.style.opacity = '.4'; if (item.blockedReason) btn.title = item.blockedReason; }
     btn.onclick = () => twSettle(kind, item);
     row.appendChild(btn);
     el(target).appendChild(row);

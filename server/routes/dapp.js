@@ -1028,8 +1028,14 @@ router.get('/thirdweb/server-wallet/transactions/:transactionId', operatorAuth, 
 router.post('/thirdweb/webhooks', writeRateLimiter(), async (req, res) => {
   try {
     const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
-    res.json({ success: true, data: await ThirdwebSettlementEngine.handleWebhook({ rawBody, headers: req.headers }) });
-  } catch (err) { sendError(res, err); }
+    const result = await ThirdwebSettlementEngine.handleWebhook({ rawBody, headers: req.headers });
+    res.json({ success: true, data: { id: result.id, topic: result.topic, duplicate: result.duplicate } });
+  } catch (err) {
+    // External caller: never echo internal failure details; 5xx makes thirdweb redeliver.
+    console.error('[dapp] thirdweb webhook rejected:', err && err.message);
+    const status = Number(err && err.status);
+    res.status(status >= 400 && status <= 599 ? status : 500).json({ success: false, error: status === 401 ? 'unauthorized' : status === 503 ? 'webhook receiver not configured' : 'webhook processing failed' });
+  }
 });
 
 router.get('/thirdweb/webhooks/events', operatorAuth, async (req, res) => {
@@ -1041,7 +1047,7 @@ router.get('/thirdweb/settlement/readiness', operatorAuth, async (req, res) => {
 });
 
 router.get('/thirdweb/settlement/queue', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await ThirdwebSettlementEngine.queue({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.queue({ limit: req.query.limit, offset: req.query.offset }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/thirdweb/settlement/distributions/:id', adminAuth, writeRateLimiter(), async (req, res) => {
@@ -1059,7 +1065,7 @@ router.post('/thirdweb/settlement/expenses/:id', adminAuth, writeRateLimiter(), 
 });
 
 router.post('/thirdweb/settlement/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await ThirdwebSettlementEngine.reconcile({ limit: (req.body || {}).limit }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.reconcile() }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/thirdweb/price', operatorAuth, async (req, res) => {

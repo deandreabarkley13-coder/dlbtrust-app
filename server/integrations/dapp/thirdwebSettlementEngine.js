@@ -39,12 +39,13 @@ try { ({ BondSubscriptionEngine } = require('../bonds/bondSubscriptionEngine'));
 let MessagingEngine = null;
 try { ({ MessagingEngine } = require('../messaging/messagingEngine')); } catch (e) { /* optional */ }
 
-const OPEN_TRANSFER_STATUSES = new Set(['submitted', 'queued']);
 const DEFAULT_MAX_AGE_SECONDS = 10 * 60;
+const STUCK_CLAIM_MS = 15 * 60 * 1000;
 
 function str(name, def = '') { return (process.env[name] || def).toString().trim(); }
 function lower(v) { return String(v || '').toLowerCase(); }
 function isAddress(v) { return /^0x[0-9a-fA-F]{40}$/.test(String(v || '')); }
+function isUsd(currency) { return !currency || String(currency).toUpperCase() === 'USD'; }
 
 let tablesReady = null;
 async function ensureTables() {
@@ -108,33 +109,40 @@ class ThirdwebSettlementEngine {
 
   // ─── settlement queue ────────────────────────────────────────────────────
 
-  static async queue({ limit = 50 } = {}) {
+  static async queue({ limit = 50, offset = 0 } = {}) {
     const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
-    const [distributions, expenses, transfers] = await Promise.all([
-      query(`SELECT id, type, beneficiary_name, beneficiary_email, amount_cents, destination_address, memo, status, metadata, updated_at
-               FROM dapp_distribution_requests
-              WHERE status = 'approved' OR (status = 'payout_created' AND metadata ? 'thirdwebTransferId')
-              ORDER BY updated_at DESC LIMIT $1`, [n]).then((r) => r.rows).catch(() => []),
-      query(`SELECT id, expense_type, payee, amount_cents, description, status, metadata, updated_at
-               FROM expense_records
-              WHERE status = 'approved' OR (status = 'payment_pending' AND metadata ? 'thirdwebTransferId')
-              ORDER BY updated_at DESC LIMIT $1`, [n]).then((r) => r.rows).catch(() => []),
-      ThirdwebServerWalletEngine.recentTransfers(n).catch(() => []),
+    const off = Math.max(Number(offset) || 0, 0);
+    const DIST_WHERE = `status IN ('approved', 'settling') OR (status = 'payout_created' AND metadata ? 'thirdwebTransferId')`;
+    const EXP_WHERE = `status IN ('approved', 'settling') OR (status = 'payment_pending' AND metadata ? 'thirdwebTransferId')`;
+    const count = (sql) => query(sql).then((r) => Number(r.rows[0]?.n ?? 0)).catch(() => 0);
+    const [distributions, expenses, open, distributionsAwaiting, expensesAwaiting, openTransfers] = await Promise.all([
+      query(`SELECT id, type, beneficiary_name, beneficiary_email, amount_cents, currency, destination_address, memo, status, metadata, updated_at
+               FROM dapp_distribution_requests WHERE ${DIST_WHERE}
+              ORDER BY updated_at ASC, id ASC LIMIT $1 OFFSET $2`, [n, off]).then((r) => r.rows).catch(() => []),
+      query(`SELECT id, expense_type, payee, amount_cents, currency, description, status, metadata, updated_at
+               FROM expense_records WHERE ${EXP_WHERE}
+              ORDER BY updated_at ASC, id ASC LIMIT $1 OFFSET $2`, [n, off]).then((r) => r.rows).catch(() => []),
+      ThirdwebServerWalletEngine.openTransfers({ limit: n, offset: off }).catch(() => []),
+      count(`SELECT COUNT(*)::int AS n FROM dapp_distribution_requests WHERE status = 'approved'`),
+      count(`SELECT COUNT(*)::int AS n FROM expense_records WHERE status = 'approved'`),
+      count(`SELECT COUNT(*)::int AS n FROM thirdweb_server_wallet_transfers WHERE status IN ('queued', 'submitted')`),
     ]);
-    const open = transfers.filter((t) => OPEN_TRANSFER_STATUSES.has(lower(t.status)));
     return {
       asOf: new Date().toISOString(),
       readiness: this.readiness(),
+      page: { limit: n, offset: off },
       distributions: distributions.map((d) => ({
         id: d.id,
         type: d.type,
         beneficiary: d.beneficiary_name || d.beneficiary_email,
         amountUsd: Number(d.amount_cents) / 100,
+        currency: d.currency || 'USD',
         destination: d.destination_address,
         memo: d.memo,
         status: d.status,
         thirdwebTransferId: d.metadata?.thirdwebTransferId || null,
-        canSettle: d.status === 'approved' && isAddress(d.destination_address),
+        canSettle: d.status === 'approved' && isAddress(d.destination_address) && isUsd(d.currency),
+        blockedReason: this._eligibility(d.status, d.destination_address, d.currency),
         updatedAt: d.updated_at,
       })),
       expenses: expenses.map((e) => ({
@@ -142,20 +150,45 @@ class ThirdwebSettlementEngine {
         expenseType: e.expense_type,
         payee: e.payee,
         amountUsd: Number(e.amount_cents) / 100,
+        currency: e.currency || 'USD',
         description: e.description,
         status: e.status,
         destination: this._expenseDestination(e),
         thirdwebTransferId: e.metadata?.thirdwebTransferId || null,
-        canSettle: e.status === 'approved' && isAddress(this._expenseDestination(e)),
+        canSettle: e.status === 'approved' && isAddress(this._expenseDestination(e)) && isUsd(e.currency),
+        blockedReason: this._eligibility(e.status, this._expenseDestination(e), e.currency),
         updatedAt: e.updated_at,
       })),
       openTransfers: open,
-      counts: {
-        distributionsAwaiting: distributions.filter((d) => d.status === 'approved').length,
-        expensesAwaiting: expenses.filter((e) => e.status === 'approved').length,
-        openTransfers: open.length,
-      },
+      counts: { distributionsAwaiting, expensesAwaiting, openTransfers },
     };
+  }
+
+  static _eligibility(status, destination, currency) {
+    if (status !== 'approved') return null;
+    if (!isAddress(destination)) return 'no EVM destination address';
+    if (!isUsd(currency)) return `currency ${currency} is not USD`;
+    return null;
+  }
+
+  /**
+   * Atomically move an approved payable to `settling` so exactly one caller may
+   * broadcast. Returns false when another caller already claimed or settled it.
+   */
+  static async _claim(table, id) {
+    if (!pool || !pool.query) return true;
+    const res = await query(
+      `UPDATE ${table}
+          SET status = 'settling', metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+        WHERE id = $1 AND status = 'approved' AND NOT (COALESCE(metadata, '{}'::jsonb) ? 'thirdwebTransferId')`,
+      [id, JSON.stringify({ settlementClaimedAt: new Date().toISOString() })]
+    );
+    return Number(res.rowCount) === 1;
+  }
+
+  static async _release(table, id) {
+    await query(`UPDATE ${table} SET status = 'approved', updated_at = NOW() WHERE id = $1 AND status = 'settling'`, [id])
+      .catch((e) => console.error(`[ThirdwebSettlement] could not release ${table} ${id}:`, e.message));
   }
 
   static _expenseDestination(row) {
@@ -193,16 +226,26 @@ class ThirdwebSettlementEngine {
     }
     if (request.status !== 'approved') throw Object.assign(new Error(`request is ${request.status}; only approved requests settle`), { status: 409 });
     if (!isAddress(request.destination_address)) throw Object.assign(new Error('destination_address is not an EVM address'), { status: 422 });
+    if (!isUsd(request.currency)) throw Object.assign(new Error(`request currency ${request.currency} is not USD; thirdweb settlement only pays USD-denominated records`), { status: 422 });
+    if (!(await this._claim('dapp_distribution_requests', request.id))) {
+      throw Object.assign(new Error('request is already being settled by another operator'), { status: 409 });
+    }
 
     const amountUsd = Number(request.amount_cents) / 100;
-    const { transfer, quote } = await this._transfer({
-      to: request.destination_address,
-      amountUsd,
-      reference: request.id,
-      memo: request.memo || `${request.type} ${request.id}`,
-      purpose: request.metadata?.purpose,
-      requesterRole,
-    });
+    let transfer; let quote;
+    try {
+      ({ transfer, quote } = await this._transfer({
+        to: request.destination_address,
+        amountUsd,
+        reference: request.id,
+        memo: request.memo || `${request.type} ${request.id}`,
+        purpose: request.metadata?.purpose,
+        requesterRole,
+      }));
+    } catch (e) {
+      await this._release('dapp_distribution_requests', request.id);
+      throw e;
+    }
     const status = transfer.status === 'failed' ? 'failed' : 'payout_created';
     await query(
       `UPDATE dapp_distribution_requests
@@ -232,16 +275,26 @@ class ThirdwebSettlementEngine {
     if (expense.status !== 'approved') throw Object.assign(new Error(`expense is ${expense.status}; only approved expenses settle`), { status: 409 });
     const to = this._expenseDestination(expense);
     if (!to) throw Object.assign(new Error('expense has no payee wallet (metadata.walletAddress)'), { status: 422 });
+    if (!isUsd(expense.currency)) throw Object.assign(new Error(`expense currency ${expense.currency} is not USD; thirdweb settlement only pays USD-denominated records`), { status: 422 });
+    if (!(await this._claim('expense_records', expense.id))) {
+      throw Object.assign(new Error('expense is already being settled by another operator'), { status: 409 });
+    }
 
     const amountUsd = Number(expense.amount_cents) / 100;
-    const { transfer } = await this._transfer({
-      to,
-      amountUsd,
-      reference: expense.id,
-      memo: expense.description || `expense ${expense.id}`,
-      purpose: expense.metadata?.purpose || expense.expense_type,
-      requesterRole,
-    });
+    let transfer;
+    try {
+      ({ transfer } = await this._transfer({
+        to,
+        amountUsd,
+        reference: expense.id,
+        memo: expense.description || `expense ${expense.id}`,
+        purpose: expense.metadata?.purpose || expense.expense_type,
+        requesterRole,
+      }));
+    } catch (e) {
+      await this._release('expense_records', expense.id);
+      throw e;
+    }
     await this._markExpense(expense.id, transfer, transfer.status === 'failed' ? 'payment_failed' : (transfer.shadow ? 'paid' : 'payment_pending'));
     return { expense: (await query('SELECT * FROM expense_records WHERE id = $1', [expense.id])).rows[0], transfer };
   }
@@ -259,7 +312,7 @@ class ThirdwebSettlementEngine {
         settlementShadow: Boolean(transfer.shadow),
         settlementStatus: transfer.status,
       })]
-    ).catch((e) => console.warn('[ThirdwebSettlement] expense update failed:', e.message));
+    );
   }
 
   static async _finalizeDistribution(requestId, transfer, outcome) {
@@ -286,8 +339,41 @@ class ThirdwebSettlementEngine {
   }
 
   static async _transferById(id) {
-    const list = await ThirdwebServerWalletEngine.recentTransfers(200).catch(() => []);
-    return list.find((t) => t.id === id) || null;
+    return ThirdwebServerWalletEngine.transferById(id).catch(() => null);
+  }
+
+  /**
+   * Repair payables stuck in `settling`: a transfer was broadcast (persisted in
+   * thirdweb_server_wallet_transfers under reference = record id) but the
+   * canonical update after broadcast failed. Re-attach instead of re-paying.
+   */
+  static async _repairStuck() {
+    const repaired = [];
+    for (const [table, pendingStatus] of [['dapp_distribution_requests', 'payout_created'], ['expense_records', 'payment_pending']]) {
+      const { rows } = await query(
+        `SELECT r.id, r.metadata, t.id AS transfer_id, t.thirdweb_transaction_id, t.transaction_hash, t.status AS transfer_status, t.shadow
+           FROM ${table} r LEFT JOIN thirdweb_server_wallet_transfers t ON t.reference = r.id
+          WHERE r.status = 'settling' AND NOT (COALESCE(r.metadata, '{}'::jsonb) ? 'thirdwebTransferId')
+          ORDER BY r.updated_at ASC LIMIT 200`
+      ).catch(() => ({ rows: [] }));
+      for (const row of rows) {
+        if (!row.transfer_id) {
+          const ageMs = Date.now() - new Date(row.metadata?.settlementClaimedAt || 0).getTime();
+          if (ageMs > STUCK_CLAIM_MS) { await this._release(table, row.id); repaired.push({ table, id: row.id, action: 'released' }); }
+          continue;
+        }
+        const transfer = { id: row.transfer_id, transactionId: row.thirdweb_transaction_id, transactionHash: row.transaction_hash, status: row.transfer_status, shadow: row.shadow };
+        if (table === 'expense_records') await this._markExpense(row.id, transfer, pendingStatus);
+        else {
+          await query(
+            `UPDATE ${table} SET status = $2, metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = NOW() WHERE id = $1`,
+            [row.id, pendingStatus, JSON.stringify({ thirdwebTransferId: transfer.id, thirdwebTransactionId: transfer.transactionId, settlementRail: 'thirdweb-server-wallet', settlementShadow: Boolean(transfer.shadow), settlementRepaired: true })]
+          );
+        }
+        repaired.push({ table, id: row.id, action: 'reattached', transferId: transfer.id });
+      }
+    }
+    return repaired;
   }
 
   /** Apply a terminal thirdweb transaction state to whichever canonical record referenced it. */
@@ -309,23 +395,30 @@ class ThirdwebSettlementEngine {
   }
 
   /** Poll every open server-wallet transfer; the wire-script / cron path. */
-  static async reconcile({ limit = 100 } = {}) {
-    const transfers = await ThirdwebServerWalletEngine.recentTransfers(limit).catch(() => []);
-    const open = transfers.filter((t) => OPEN_TRANSFER_STATUSES.has(lower(t.status)) && t.transactionId);
+  static async reconcile({ pageSize = 200, maxTransfers = 5000 } = {}) {
+    const repaired = await this._repairStuck();
     const results = [];
-    for (const t of open) {
-      try {
-        const tx = await ThirdwebServerWalletEngine.getTransaction(t.transactionId);
-        results.push({ transferId: t.id, transactionId: t.transactionId, status: tx.status, ...(await this._applyTransaction(tx)) });
-      } catch (e) {
-        results.push({ transferId: t.id, transactionId: t.transactionId, error: e.message });
+    let checked = 0;
+    for (let offset = 0; offset < maxTransfers; offset += pageSize) {
+      const page = await ThirdwebServerWalletEngine.openTransfers({ limit: pageSize, offset }).catch(() => []);
+      if (!page.length) break;
+      for (const t of page) {
+        if (!t.transactionId) continue;
+        checked += 1;
+        try {
+          const tx = await ThirdwebServerWalletEngine.getTransaction(t.transactionId);
+          results.push({ transferId: t.id, transactionId: t.transactionId, status: tx.status, ...(await this._applyTransaction(tx)) });
+        } catch (e) {
+          results.push({ transferId: t.id, transactionId: t.transactionId, error: e.message });
+        }
       }
+      if (page.length < pageSize) break;
     }
     let subscriptions = [];
     if (BondSubscriptionEngine && BondSubscriptionEngine.syncOpen) {
       try { subscriptions = await BondSubscriptionEngine.syncOpen(); } catch (e) { subscriptions = [{ error: e.message }]; }
     }
-    return { asOf: new Date().toISOString(), checked: open.length, results, subscriptions };
+    return { asOf: new Date().toISOString(), checked, repaired, results, subscriptions };
   }
 
   // ─── webhooks ────────────────────────────────────────────────────────────
@@ -363,22 +456,25 @@ class ThirdwebSettlementEngine {
     if (existing.rows[0]) return { id, topic, duplicate: true, outcome: existing.rows[0].outcome };
     if (memoryEvents.some((e) => e.id === id)) return { id, topic, duplicate: true };
 
-    let outcome; let error = null;
+    // Dispatch first; only a successful dispatch is recorded as delivered. A
+    // failure is re-thrown as 5xx so thirdweb redelivers, and the redelivery is
+    // not treated as a duplicate.
+    let outcome;
     try {
       outcome = await this._dispatch(topic, data, event);
     } catch (e) {
-      error = e.message;
-      outcome = { handled: false };
+      console.error(`[ThirdwebSettlement] webhook ${id} (${topic}) dispatch failed:`, e.message);
+      throw Object.assign(new Error('webhook processing failed; retry'), { status: 500, expose: true });
     }
-    const row = { id, topic, object: event.object || null, triggeredAt: event.triggered_at ? new Date(Number(event.triggered_at) * 1000) : null, payload: event, outcome, error };
+    const row = { id, topic, object: event.object || null, triggeredAt: event.triggered_at ? new Date(Number(event.triggered_at) * 1000) : null, payload: event, outcome, error: null };
     memoryEvents.push(row);
     if (memoryEvents.length > 500) memoryEvents.splice(0, memoryEvents.length - 500);
     await query(
       `INSERT INTO thirdweb_webhook_events (id, topic, object, triggered_at, payload, outcome, error)
        VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`,
-      [id, topic, row.object, row.triggeredAt, JSON.stringify(event), JSON.stringify(outcome), error]
-    ).catch((e) => console.warn('[ThirdwebSettlement] webhook persist failed:', e.message));
-    return { id, topic, duplicate: false, outcome, error };
+      [id, topic, row.object, row.triggeredAt, JSON.stringify(event), JSON.stringify(outcome), null]
+    );
+    return { id, topic, duplicate: false, outcome };
   }
 
   static async _dispatch(topic, data) {

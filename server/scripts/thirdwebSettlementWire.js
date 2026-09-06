@@ -43,13 +43,23 @@ function print(label, value) {
   console.log(JSON.stringify(value, (k, v) => (typeof v === 'bigint' ? v.toString() : v), 2));
 }
 
-async function settleQueue(queue) {
+/** Walk every page of the queue; each id is attempted at most once per run. */
+async function settleQueue() {
   const results = [];
-  for (const d of queue.distributions.filter((x) => x.canSettle)) {
-    results.push(await ThirdwebSettlementEngine.settleDistribution(d.id).then((r) => ({ distribution: d.id, transfer: r.transfer })).catch((e) => ({ distribution: d.id, error: e.message })));
-  }
-  for (const e of queue.expenses.filter((x) => x.canSettle)) {
-    results.push(await ThirdwebSettlementEngine.settleExpense(e.id).then((r) => ({ expense: e.id, transfer: r.transfer })).catch((err) => ({ expense: e.id, error: err.message })));
+  const attempted = new Set();
+  const PAGE = 100;
+  for (let offset = 0; ; offset += PAGE) {
+    const page = await ThirdwebSettlementEngine.queue({ limit: PAGE, offset });
+    const todo = [
+      ...page.distributions.filter((x) => x.canSettle).map((x) => ({ kind: 'distribution', id: x.id })),
+      ...page.expenses.filter((x) => x.canSettle).map((x) => ({ kind: 'expense', id: x.id })),
+    ].filter((x) => !attempted.has(`${x.kind}:${x.id}`));
+    for (const item of todo) {
+      attempted.add(`${item.kind}:${item.id}`);
+      const settle = item.kind === 'distribution' ? ThirdwebSettlementEngine.settleDistribution(item.id) : ThirdwebSettlementEngine.settleExpense(item.id);
+      results.push(await settle.then((r) => ({ [item.kind]: item.id, transfer: r.transfer })).catch((e) => ({ [item.kind]: item.id, error: e.message })));
+    }
+    if (page.distributions.length < PAGE && page.expenses.length < PAGE) break;
   }
   return results;
 }
@@ -65,10 +75,10 @@ async function main() {
 
   for (const id of args.distributions) print(`settle distribution ${id}`, await ThirdwebSettlementEngine.settleDistribution(id));
   for (const id of args.expenses) print(`settle expense ${id}`, await ThirdwebSettlementEngine.settleExpense(id));
-  if (args.settleAll) print('settle-all', await settleQueue(queue));
+  if (args.settleAll) print('settle-all', await settleQueue());
 
   if (args.reconcile || args.settleAll || args.distributions.length || args.expenses.length) {
-    print('reconcile', await ThirdwebSettlementEngine.reconcile({ limit: 200 }));
+    print('reconcile', await ThirdwebSettlementEngine.reconcile());
   }
 
   if (args.watch) {
@@ -76,7 +86,7 @@ async function main() {
     console.log(`\n[watch] reconciling every ${seconds}s (Ctrl-C to stop)`);
     for (;;) {
       await new Promise((r) => setTimeout(r, seconds * 1000));
-      const result = await ThirdwebSettlementEngine.reconcile({ limit: 200 }).catch((e) => ({ error: e.message }));
+      const result = await ThirdwebSettlementEngine.reconcile().catch((e) => ({ error: e.message }));
       console.log(`[watch ${new Date().toISOString()}] checked=${result.checked ?? '-'} applied=${(result.results || []).filter((r) => r.applied).length}${result.error ? ` error=${result.error}` : ''}`);
     }
   }
