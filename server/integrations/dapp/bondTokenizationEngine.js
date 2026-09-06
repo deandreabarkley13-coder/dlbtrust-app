@@ -113,6 +113,11 @@ class BondTokenizationEngine {
     };
   }
 
+  /** The wallet that holds unsold units and signs live mints, burns and transfers. */
+  static operatorAddress() {
+    return getConfig().operatorAddress || null;
+  }
+
   static readiness() {
     const cfg = this.getConfig();
     const issues = [];
@@ -409,6 +414,71 @@ class BondTokenizationEngine {
     }
 
     return { token, burned: amount, principal: principalNum, interest: interestNum, holder: target, txHash };
+  }
+
+  /**
+   * Move existing units from the operator wallet to a holder. Supply does not
+   * change; the register moves the balance between the two holders in step
+   * with the ERC-20 transfer, so a subscription delivery never leaves the
+   * chain and the books disagreeing.
+   */
+  static async applyTransfer({ tokenId, amount, toAddress, fromAddress } = {}) {
+    await ensureTable();
+    const token = await this.getToken(tokenId);
+    if (token.status !== 'active') throw new Error('Token not active');
+    const units = Number(amount) || 0;
+    if (units <= 0) throw new Error('amount must be positive');
+    if (!toAddress || !/^0x[0-9a-fA-F]{40}$/.test(String(toAddress))) throw new Error('toAddress must be an EVM address');
+    const cfg = this.getConfig();
+    const from = fromAddress || getConfig().operatorAddress || 'treasury';
+    let txHash = null;
+
+    if (!cfg.shadow) {
+      if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
+      const operator = getConfig().operatorAddress || '';
+      if (!operator || String(from).toLowerCase() !== operator.toLowerCase()) {
+        throw new Error(`on-chain transfer is only possible from the operator wallet ${operator || '(unset)'}, not ${from}`);
+      }
+      const { wallet, publicClient, fees } = walletClient();
+      const abi = getBondTokenAbi();
+      const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
+      const raw = viem.parseUnits(String(units), decimals);
+      const hash = await wallet.writeContract({
+        address: token.token_address,
+        abi,
+        functionName: 'transfer',
+        args: [toAddress, raw],
+        ...fees,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+      if (receipt.status !== 'success') throw new Error(`transfer failed: ${receipt.transactionHash}`);
+      txHash = receipt.transactionHash;
+    }
+
+    if (pool) {
+      const debited = await pool.query(
+        `UPDATE bond_token_holders SET balance = balance - $3, updated_at = NOW()
+          WHERE token_id = $1 AND holder_address = $2 AND balance >= $3
+          RETURNING balance`,
+        [tokenId, from, units]
+      );
+      if (!debited.rows.length) throw new Error(`${from} does not hold ${units} of ${tokenId}`);
+      await pool.query(
+        `INSERT INTO bond_token_holders (id, token_id, holder_address, balance) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (token_id, holder_address) DO UPDATE SET balance = bond_token_holders.balance + $4, updated_at = NOW()`,
+        [id('BTH'), tokenId, toAddress, units]
+      );
+    } else {
+      const src = memory.holdings.get(`${tokenId}:${from}`);
+      if (!src || src.balance < units) throw new Error(`${from} does not hold ${units} of ${tokenId}`);
+      src.balance -= units;
+      const key = `${tokenId}:${toAddress}`;
+      const dst = memory.holdings.get(key) || { id: id('BTH'), token_id: tokenId, holder_address: toAddress, balance: 0 };
+      dst.balance += units;
+      memory.holdings.set(key, dst);
+    }
+
+    return { token, transferred: units, from, to: toAddress, txHash };
   }
 
   /**
