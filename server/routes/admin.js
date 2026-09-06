@@ -16,6 +16,7 @@ const { CashEngine } = require('../integrations/cash/cashEngine');
 const { CrmEngine } = require('../integrations/crm/crmEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
 const { BondEngine } = require('../integrations/bonds/bondEngine');
+const { FixedIncomeDataService } = require('../integrations/bonds/fixedIncomeDataService');
 
 // ─── Admin Auth Middleware ────────────────────────────────────────────────────
 const requireAdmin = async (req, res, next) => {
@@ -530,8 +531,7 @@ router.post('/fineract/resync-all', async (req, res) => {
           }
         }
 
-        const bonds = await pool.query("SELECT SUM(face_value) AS total FROM bonds WHERE status = 'active'");
-        const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
+        const expectedFaceValue = (await FixedIncomeDataService.getPortfolioTotals()).total_face_value;
         const diff = expectedFaceValue - bondInvBal;
 
         if (Math.abs(diff) > 1) {

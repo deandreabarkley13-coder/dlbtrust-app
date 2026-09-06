@@ -16,11 +16,32 @@ const { BondEngine } = require('../integrations/bonds/bondEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
 const { CouponService } = require('../integrations/bonds/couponService');
 const { BondStatementEngine } = require('../integrations/bonds/bondStatementEngine');
+const { FixedIncomeDataService } = require('../integrations/bonds/fixedIncomeDataService');
 const { requireAuth } = require('../integrations/auth/securityMiddleware');
 
 const operatorAuth = requireAuth({ role: 'operator' });
 const pool = require('../integrations/bonds/pgPool');
 const { FineractClient } = require('../integrations/fineract/fineractClient');
+
+// ─── GET /api/bonds/unified ────────────────────────────────────────────────────
+// Canonical fixed-income view: ledger positions + live metrics + tokenization + platform status.
+router.get('/unified', operatorAuth, async (req, res) => {
+  try {
+    const snapshot = await FixedIncomeDataService.getUnifiedSnapshot({ includeLive: req.query.live !== 'false' });
+    res.json({ success: true, data: snapshot });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/portfolio/totals ───────────────────────────────────────────
+router.get('/portfolio/totals', async (req, res) => {
+  try {
+    res.json({ success: true, data: await FixedIncomeDataService.getPortfolioTotals() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
 // ─── GET /api/bonds/portfolio/live ─────────────────────────────────────────────
 router.get('/portfolio/live', async (req, res) => {

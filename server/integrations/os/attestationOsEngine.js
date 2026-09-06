@@ -44,6 +44,7 @@
  */
 
 const pool = require('../bonds/pgPool');
+const { FixedIncomeDataService } = require('../bonds/fixedIncomeDataService');
 const { ReserveEngine } = require('../finops/reserveEngine');
 
 let StablecoinPayoutRail;
@@ -333,17 +334,13 @@ const AttestationOsEngine = {
 
   /** What the bond ledger says is outstanding — an obligation, not cash. */
   async _claimBondLedger() {
-    let rows;
+    let positions;
     try {
-      rows = await pool.query(
-        `SELECT id, bond_name, bond_identifier, principal_balance, accrued_interest
-           FROM bonds
-          WHERE COALESCE(status, 'active') = 'active'`
-      );
+      positions = await FixedIncomeDataService.listPositions();
     } catch (e) {
       return [];
     }
-    return (rows.rows || []).map((row) => ({
+    return positions.map((row) => ({
       domain: 'fixed_income',
       category: CLAIM,
       sourceType: 'securities_custodian',

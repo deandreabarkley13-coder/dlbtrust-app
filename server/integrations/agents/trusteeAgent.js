@@ -15,6 +15,7 @@
  */
 
 const pool = require('../bonds/pgPool');
+const { FixedIncomeDataService, sumPositions } = require('../bonds/fixedIncomeDataService');
 
 class TrusteeAgent {
 
@@ -70,17 +71,15 @@ class TrusteeAgent {
 
     // 1. Bond portfolio health
     try {
-      const bonds = await pool.query(
-        `SELECT b.*, bb.accrued_interest, bb.outstanding_principal
-         FROM bonds b
-         LEFT JOIN bond_balances bb ON b.id = bb.bond_id
-         WHERE b.status = 'active'`
-      );
+      const positions = await FixedIncomeDataService.listPositions();
+      const bonds = { rows: positions };
+      const totals = sumPositions(positions);
       summary.bonds = {
-        count: bonds.rows.length,
-        totalFaceValue: bonds.rows.reduce((s, b) => s + parseFloat(b.face_value || 0), 0),
-        totalAccrued: bonds.rows.reduce((s, b) => s + parseFloat(b.accrued_interest || 0), 0),
-        totalOutstanding: bonds.rows.reduce((s, b) => s + parseFloat(b.outstanding_principal || 0), 0),
+        count: totals.count,
+        totalFaceValue: totals.total_face_value,
+        totalAccrued: totals.total_accrued_interest,
+        totalOutstanding: totals.total_principal_balance,
+        totalCurrentValue: totals.total_current_value,
       };
 
       // Check for matured bonds still active
@@ -255,9 +254,9 @@ class TrusteeAgent {
     // 3. Corpus integrity — trust corpus account (3000) should be >= face value of active bonds
     try {
       var corpus = await pool.query(`SELECT balance FROM trust_accounts WHERE account_code = '3000'`);
-      var bondTotal = await pool.query(`SELECT COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'`);
+      var bondTotals = await FixedIncomeDataService.getPortfolioTotals();
       var corpusBalance = corpus.rows.length > 0 ? parseFloat(corpus.rows[0].balance) : 0;
-      var bondValue = parseFloat(bondTotal.rows[0].total);
+      var bondValue = bondTotals.total_current_value;
       checks.push({
         check: 'corpus_integrity',
         passed: corpusBalance >= bondValue * 0.9,
@@ -577,8 +576,7 @@ class TrusteeAgent {
     // Quick health indicators
     var health = { bonds: null, cash: null, accounting: null };
     try {
-      var bondRes = await pool.query(`SELECT COUNT(*) as c FROM bonds WHERE status = 'active'`);
-      health.bonds = parseInt(bondRes.rows[0].c);
+      health.bonds = (await FixedIncomeDataService.getPortfolioTotals()).count;
     } catch (e) {}
     try {
       var cashRes = await pool.query(`SELECT COUNT(*) as c, COALESCE(SUM(balance_cents),0) as total FROM cash_accounts WHERE status = 'active'`);
