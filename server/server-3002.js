@@ -157,6 +157,9 @@ try { app.use('/api/token-control', require(path.join(HD, 'server', 'routes', 't
 try { app.use('/api/bond-subscriptions', require(path.join(HD, 'server', 'routes', 'bondSubscriptions'))); console.log('[bond-subscriptions] loaded'); } catch(e) { console.warn('[bond-subscriptions]', e.message); }
 try { app.use('/api/attestation-os', require(path.join(HD, 'server', 'routes', 'attestationOs'))); console.log('[attestation-os] loaded'); } catch(e) { console.warn('[attestation-os]', e.message); }
 
+// Hyperledger — Fabric notarization of trust records + FireFly counterparty settlement
+try { app.use('/api/hyperledger', require(path.join(HD, 'server', 'routes', 'hyperledger'))); console.log('[hyperledger] loaded'); } catch(e) { console.warn('[hyperledger]', e.message); }
+
 // MFT OS — managed file transfer for bank payment files: direct deposit, vendor payments, clearing and settlement
 try { app.use('/api/mft-os', require(path.join(HD, 'server', 'routes', 'mftOs'))); console.log('[mft-os] loaded'); } catch(e) { console.warn('[mft-os]', e.message); }
 // M2M OS — machine identities, partner handshakes and the unattended delivery cycle for MFT channels
