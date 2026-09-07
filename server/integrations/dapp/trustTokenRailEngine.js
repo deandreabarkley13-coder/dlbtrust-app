@@ -409,7 +409,7 @@ class TrustTokenRailEngine {
     const bond = ctx.position;
     const tokenName = `${bond.bond_name} Token`;
     const tokenSymbol = `DLBFI${bond.id}`;
-    let token = await BondTokenizationEngine.getTokenByBondId(bond.id);
+    let token = await BondTokenizationEngine.getTokenByBondId(bond.id, { chainId: cfg.chainId });
     let created = false;
     if (!token && run.shadow) {
       // Shadow never writes a token row: a planned deploy is reported, not recorded.
