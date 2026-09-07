@@ -12,7 +12,7 @@
  *     [--verify <file.json>] \
  *     [--instruct <file.json>] [--counterparty org.partnerbank] \
  *     [--transfer <amountUsd>] [--source-type canonical --source-account 1000] \
- *     [--sync <settlementId>] [--receipt <notarizationId>] \
+ *     [--sync <settlementId>] [--retry <settlementId>] [--receipt <notarizationId>] \
  *     [--subscribe <webhookUrl>] [--reconcile] [--live]
  *
  * Steps:
@@ -26,7 +26,8 @@
  *   6. --transfer  — move tokenized value, checking the source of funds first;
  *                    nothing is booked until FireFly confirms it
  *   7. --sync      — poll one settlement and book it on confirmation (once)
- *   8. --reconcile — every confirmed transfer the books never recorded
+ *   8. --retry     — re-drive a failed transfer once under the same reference
+ *   9. --reconcile — every confirmed transfer the books never recorded
  *
  * Without --live nothing is anchored and no value moves: the script still
  * digests, plans, and prints exactly what it would have done. Credentials are
@@ -44,14 +45,14 @@ function parseArgs(argv) {
   const out = {
     reference: null, notarize: null, recordType: 'trust_record', verify: null, instruct: null,
     counterparty: null, transfer: null, sourceType: null, sourceAccount: null, memo: null,
-    sync: null, receipt: null, subscribe: null, reconcile: false, live: false,
+    sync: null, retry: null, receipt: null, subscribe: null, reconcile: false, live: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
     if (arg === '--live') out.live = true;
     else if (arg === '--reconcile') out.reconcile = true;
-    else if (arg === '--reference') { out.reference = next; i += 1; } else if (arg === '--notarize') { out.notarize = next; i += 1; } else if (arg === '--record-type') { out.recordType = next; i += 1; } else if (arg === '--verify') { out.verify = next; i += 1; } else if (arg === '--instruct') { out.instruct = next; i += 1; } else if (arg === '--counterparty') { out.counterparty = next; i += 1; } else if (arg === '--transfer') { out.transfer = next; i += 1; } else if (arg === '--source-type') { out.sourceType = next; i += 1; } else if (arg === '--source-account') { out.sourceAccount = next; i += 1; } else if (arg === '--memo') { out.memo = next; i += 1; } else if (arg === '--sync') { out.sync = next; i += 1; } else if (arg === '--receipt') { out.receipt = next; i += 1; } else if (arg === '--subscribe') { out.subscribe = next; i += 1; } else throw new Error(`unknown argument "${arg}"`);
+    else if (arg === '--reference') { out.reference = next; i += 1; } else if (arg === '--notarize') { out.notarize = next; i += 1; } else if (arg === '--record-type') { out.recordType = next; i += 1; } else if (arg === '--verify') { out.verify = next; i += 1; } else if (arg === '--instruct') { out.instruct = next; i += 1; } else if (arg === '--counterparty') { out.counterparty = next; i += 1; } else if (arg === '--transfer') { out.transfer = next; i += 1; } else if (arg === '--source-type') { out.sourceType = next; i += 1; } else if (arg === '--source-account') { out.sourceAccount = next; i += 1; } else if (arg === '--memo') { out.memo = next; i += 1; } else if (arg === '--sync') { out.sync = next; i += 1; } else if (arg === '--retry') { out.retry = next; i += 1; } else if (arg === '--receipt') { out.receipt = next; i += 1; } else if (arg === '--subscribe') { out.subscribe = next; i += 1; } else throw new Error(`unknown argument "${arg}"`);
   }
   return out;
 }
@@ -154,6 +155,14 @@ async function main() {
     print(`settlement ${synced.status}${synced.booked ? ' (booked)' : ''}`, synced);
   }
 
+  if (args.retry) {
+    const retried = await FireflyEngine.retry(args.retry, { requestedBy: 'wire-script' });
+    print(retried.retried === false ? `retry skipped: ${retried.reason}` : `retry attempt ${retried.detail.attempt} ${retried.status}`, retried);
+    if (retried.retried !== false && retried.status !== 'shadow') {
+      console.log(`\nsettle: node server/scripts/hyperledgerFabricFireflyWire.js --sync ${retried.id}`);
+    }
+  }
+
   if (args.subscribe) {
     print('event subscription', await FireflyEngine.ensureSubscription({ webhookUrl: args.subscribe }));
   }
@@ -162,7 +171,7 @@ async function main() {
     print('reconciliation', await FireflyEngine.reconcile());
   }
 
-  const acted = args.notarize || args.verify || args.instruct || args.transfer || args.sync || args.receipt || args.subscribe || args.reconcile;
+  const acted = args.notarize || args.verify || args.instruct || args.transfer || args.sync || args.retry || args.receipt || args.subscribe || args.reconcile;
   if (!acted) {
     print('recent notarizations', await FabricLedgerEngine.list({ limit: 10 }));
     print('recent settlements', await FireflyEngine.list({ limit: 10 }));

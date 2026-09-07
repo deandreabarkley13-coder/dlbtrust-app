@@ -175,9 +175,24 @@ router.post('/firefly/transfer', adminAuth, writeRateLimiter(), async (req, res)
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/firefly/settlements/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await FireflyEngine.get(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: `settlement ${req.params.id} not found` });
+    return res.json({ success: true, data });
+  } catch (err) { return sendError(res, err); }
+});
+
 router.post('/firefly/settlements/:id/sync', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
     res.json({ success: true, data: await FireflyEngine.sync(req.params.id) });
+  } catch (err) { sendError(res, err); }
+});
+
+/** Re-drive a failed transfer once, under the same reference. */
+router.post('/firefly/settlements/:id/retry', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await FireflyEngine.retry(req.params.id, { requestedBy: principal(req) }) });
   } catch (err) { sendError(res, err); }
 });
 
