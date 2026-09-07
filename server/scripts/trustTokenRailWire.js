@@ -12,6 +12,7 @@
  *   node server/scripts/trustTokenRailWire.js --run  --issue 25 --distribute 10 --beneficiary "wire check" \
  *       --purpose medical --role trustee --by trustee-a --approve trustee-b [--bond 1] [--json]
  *   node server/scripts/trustTokenRailWire.js --reconcile [--run-id TTR-...]
+ *   node server/scripts/trustTokenRailWire.js --notarize --run-id TTR-...   (evidence stage failed; value already moved)
  *
  * Stages of a run:
  *   position         the fixed-income position the value comes from (ledger)
@@ -26,12 +27,12 @@
  * Shadow unless DAPP_SIGNER=thirdweb, THIRDWEB_SERVER_WALLET_LIVE=true and
  * BOND_TOKEN_SHADOW=false: shadow runs plan every stage, notarize the plan and
  * reconcile, but deploy nothing, mint nothing and send nothing.
- * Exit code 2 when a run fails or reconciliation finds a discrepancy.
+ * Exit code 2 when a run fails, is left unnotarized, or reconciliation finds a discrepancy.
  */
 
 require('dotenv').config();
 
-const { TrustTokenRailEngine } = require('../integrations/dapp/trustTokenRailEngine');
+const { TrustTokenRailEngine, UNNOTARIZED } = require('../integrations/dapp/trustTokenRailEngine');
 
 function parseArgs(argv) {
   const out = {
@@ -42,7 +43,7 @@ function parseArgs(argv) {
     const arg = argv[i];
     const next = argv[i + 1];
     const take = (key) => { out[key] = next; i += 1; };
-    if (arg === '--status' || arg === '--plan' || arg === '--run' || arg === '--reconcile') out.mode = arg.slice(2);
+    if (['--status', '--plan', '--run', '--reconcile', '--notarize'].includes(arg)) out.mode = arg.slice(2);
     else if (arg === '--json') out.json = true;
     else if (arg === '--issue') take('issue');
     else if (arg === '--distribute') take('distribute');
@@ -112,7 +113,13 @@ async function main() {
     return result.clean ? 0 : 2;
   }
 
-  const run = await TrustTokenRailEngine.run(requestFrom(args));
+  let run;
+  if (args.mode === 'notarize') {
+    if (!args.runId) throw new Error('--notarize needs --run-id');
+    run = await TrustTokenRailEngine.notarize({ runId: args.runId });
+  } else {
+    run = await TrustTokenRailEngine.run(requestFrom(args));
+  }
   if (args.json) { console.log(JSON.stringify(run, null, 2)); } else {
     print(`run ${run.id}`, `status ${run.status} · chain ${run.chainId} · ${run.shadow ? 'SHADOW (nothing deployed, minted or sent)' : 'LIVE'}`);
     console.log(run.stages.map(stageLine).join('\n'));
@@ -121,7 +128,7 @@ async function main() {
     if (reconcile && reconcile.result) print('reconcile', { clean: reconcile.result.clean, discrepancies: reconcile.result.discrepancies });
   }
   const reconcile = run.stages.find((s) => s.name === 'reconcile');
-  return run.status === 'failed' || (reconcile && reconcile.result && !reconcile.result.clean) ? 2 : 0;
+  return run.status === 'failed' || run.status === UNNOTARIZED || (reconcile && reconcile.result && !reconcile.result.clean) ? 2 : 0;
 }
 
 main().then((code) => process.exit(code)).catch((err) => {

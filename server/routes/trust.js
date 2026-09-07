@@ -17,15 +17,17 @@
  *   POST /token-rail/run               run the pipeline (admin; live only when every gate is on)
  *   GET  /token-rail/runs              recent runs
  *   GET  /token-rail/runs/:id          one run, all stages
+ *   POST /token-rail/runs/:id/notarize record Fabric evidence for a run whose evidence stage failed (admin)
  *   POST /token-rail/reconcile         rail-wide reconciliation from state
  */
 
 const express = require('express');
 const { requireAuth } = require('../integrations/auth/securityMiddleware');
 const { TrustControlPlaneEngine } = require('../integrations/trust/trustControlPlaneEngine');
-const { TrustTokenRailEngine } = require('../integrations/dapp/trustTokenRailEngine');
+const { TrustTokenRailEngine, UNNOTARIZED } = require('../integrations/dapp/trustTokenRailEngine');
 
 const router = express.Router();
+const INCOMPLETE = new Set(['failed', UNNOTARIZED]);
 const operatorAuth = requireAuth({ role: 'operator' });
 const adminAuth = requireAuth({ role: 'admin' });
 
@@ -103,7 +105,16 @@ router.post('/token-rail/plan', operatorAuth, (req, res) => {
 router.post('/token-rail/run', adminAuth, async (req, res) => {
   try {
     const run = await TrustTokenRailEngine.run(req.body || {});
-    res.status(run.status === 'failed' ? 422 : 200).json({ success: run.status !== 'failed', data: run });
+    const ok = !INCOMPLETE.has(run.status);
+    res.status(ok ? 200 : 422).json({ success: ok, data: run });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/token-rail/runs/:id/notarize', adminAuth, async (req, res) => {
+  try {
+    const run = await TrustTokenRailEngine.notarize({ runId: req.params.id, force: Boolean(req.body && req.body.force) });
+    const ok = !INCOMPLETE.has(run.status);
+    res.status(ok ? 200 : 422).json({ success: ok, data: run });
   } catch (err) { sendError(res, err); }
 });
 

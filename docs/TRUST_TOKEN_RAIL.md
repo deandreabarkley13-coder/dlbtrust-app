@@ -69,6 +69,10 @@ anything is minted.
   obligation only after `waitForTransaction` reports `CONFIRMED`.
 * Every run — completed, shadow or failed — is notarized on Fabric under
   `trust_token_rail/<runId>` and the reconcile stage verifies that digest.
+* If value moved but Fabric rejected the evidence, the run is persisted as
+  `unnotarized` (never `completed`), reconcile reports a `fabric_evidence`
+  discrepancy, and `--notarize --run-id` / `POST /runs/:id/notarize` records
+  the evidence from the stored run and re-reconciles.
 
 ## Spending outside the trust
 
@@ -85,12 +89,13 @@ npm run trust:token-rail -- --plan --issue 25 --beneficiary "Jane Doe" --purpose
 npm run trust:token-rail -- --run  --issue 25 --distribute 10 --beneficiary "Jane Doe" --purpose medical \
                                    --role trustee --by trustee-a --approve trustee-b
 npm run trust:token-rail -- --reconcile --run-id TTR-...
+npm run trust:token-rail -- --notarize  --run-id TTR-...
 ```
 
 Routes (`/api/trust/token-rail...`, operator token; `run` requires admin):
 `GET /`, `GET /readiness`, `GET /off-ramp`, `POST /plan`, `POST /run`,
-`GET /runs`, `GET /runs/:id`, `POST /reconcile`. A failed run is persisted and
-returned with HTTP 422.
+`GET /runs`, `GET /runs/:id`, `POST /runs/:id/notarize` (admin), `POST /reconcile`.
+A failed or unnotarized run is persisted and returned with HTTP 422.
 
 Go-live order: Base Sepolia with every gate on → verify owners, reserve balance,
 supply, beneficiary balance, Fabric digest, journal and reconcile → only then

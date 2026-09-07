@@ -59,6 +59,8 @@ let FabricLedgerEngine = null;
 try { ({ FabricLedgerEngine } = require('../hyperledger/fabricLedgerEngine')); } catch (e) { /* optional */ }
 
 const RECORD_TYPE = 'trust_token_rail';
+// Business stages completed but Fabric evidence could not be recorded; POST runs/:id/notarize completes it.
+const UNNOTARIZED = 'unnotarized';
 const BOND_TOKEN_DECIMALS = 6;
 const TRUST_TOKEN_DECIMALS = 18;
 const ONE_USD_18 = '1000000000000000000';
@@ -92,7 +94,9 @@ async function ensureTables() {
       stages JSONB NOT NULL,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
+    );
+    ALTER TABLE trust_token_rail_runs ADD COLUMN IF NOT EXISTS request JSONB;
+    ALTER TABLE trust_token_rail_runs ADD COLUMN IF NOT EXISTS summary JSONB;
   `).catch((e) => { tablesReady = null; throw e; });
   return tablesReady;
 }
@@ -178,12 +182,12 @@ class TrustTokenRailEngine {
     if (!pool || !pool.query) { memoryRuns.set(run.id, run); return run; }
     await ensureTables();
     await pool.query(
-      `INSERT INTO trust_token_rail_runs (id, chain_id, shadow, status, bond_id, issue_usd, beneficiary, purpose, distribute_usd, stages)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
-       ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, stages = EXCLUDED.stages, updated_at = NOW()`,
+      `INSERT INTO trust_token_rail_runs (id, chain_id, shadow, status, bond_id, issue_usd, beneficiary, purpose, distribute_usd, stages, request, summary)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb)
+       ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, stages = EXCLUDED.stages, request = EXCLUDED.request, summary = EXCLUDED.summary, updated_at = NOW()`,
       [run.id, run.chainId, run.shadow, run.status, run.request.bondId || null, run.request.issueUsd,
         run.request.beneficiary || null, run.request.purpose || null, run.request.distributeUsd || null,
-        JSON.stringify(run.stages)]
+        JSON.stringify(run.stages), JSON.stringify(run.request), run.summary ? JSON.stringify(run.summary) : null]
     );
     return run;
   }
@@ -205,8 +209,11 @@ class TrustTokenRailEngine {
   static _rowToRun(r) {
     return {
       id: r.id, chainId: Number(r.chain_id), shadow: r.shadow, status: r.status,
-      request: { bondId: r.bond_id, issueUsd: Number(r.issue_usd), beneficiary: r.beneficiary, purpose: r.purpose, distributeUsd: r.distribute_usd === null ? null : Number(r.distribute_usd) },
-      stages: r.stages, createdAt: r.created_at, updatedAt: r.updated_at,
+      request: {
+        ...(r.request || {}),
+        bondId: r.bond_id, issueUsd: Number(r.issue_usd), beneficiary: r.beneficiary, purpose: r.purpose, distributeUsd: r.distribute_usd === null ? null : Number(r.distribute_usd),
+      },
+      stages: r.stages, summary: r.summary || null, createdAt: r.created_at, updatedAt: r.updated_at,
     };
   }
 
@@ -291,22 +298,65 @@ class TrustTokenRailEngine {
       await this._persist(run);
     }
 
+    await this._notarizeAndReconcile(run, ctx, failed);
+    return run;
+  }
+
+  static async _notarizeAndReconcile(run, ctx, failed) {
     const evidence = this._stage(run, 'evidence');
+    evidence.error = null;
     try {
       evidence.result = await this._evidence(run, ctx);
       evidence.status = evidence.result.skipped ? 'skipped' : evidence.result.status;
     } catch (err) { evidence.status = 'failed'; evidence.error = err.message; }
 
     const reconcile = this._stage(run, 'reconcile');
+    reconcile.error = null;
     try {
       reconcile.result = await this.reconcile({ run, ctx });
       reconcile.status = reconcile.result.clean ? (run.shadow ? 'shadow' : 'done') : 'discrepancies';
     } catch (err) { reconcile.status = 'failed'; reconcile.error = err.message; }
 
-    run.status = failed ? 'failed' : run.shadow ? 'shadow' : 'completed';
+    run.status = failed ? 'failed' : evidence.status === 'failed' ? UNNOTARIZED : run.shadow ? 'shadow' : 'completed';
     run.summary = this._summary(run, ctx);
     await this._persist(run);
     return run;
+  }
+
+  /**
+   * Notarize a persisted run whose evidence stage failed (Fabric down, wrong
+   * signer). The value already moved; this only records it and re-reconciles.
+   */
+  static async notarize({ runId, force = false } = {}) {
+    const run = await this.getRun(runId);
+    if (!run) throw reject(`run ${runId} not found`, 'RUN_NOT_FOUND', 404);
+    const evidence = this._stage(run, 'evidence');
+    if (evidence.status !== 'failed' && evidence.status !== 'pending' && !force) return run;
+    const ctx = await this._ctxFromRun(run);
+    delete ctx.evidence;
+    delete ctx.evidencePayload;
+    return this._notarizeAndReconcile(run, ctx, run.stages.some((s) => s.name !== 'evidence' && s.name !== 'reconcile' && s.status === 'failed'));
+  }
+
+  /** Rebuild the run context from what was persisted, so a stored run reconciles like a live one. */
+  static async _ctxFromRun(run) {
+    const s = run.summary || {};
+    const ctx = {};
+    if (s.position) ctx.position = { id: s.position.bondId, bond_name: s.position.name, principal_balance: s.position.principalUsd, accrued_interest: s.position.accruedInterestUsd };
+    if (s.bondToken) {
+      const token = s.bondToken.id ? await BondTokenizationEngine.getToken(s.bondToken.id).catch(() => null) : null;
+      ctx.bondToken = token || { id: s.bondToken.id, token_symbol: s.bondToken.symbol, token_address: s.bondToken.address, total_supply: null };
+    }
+    if (s.issuance) ctx.issuance = { issuanceId: s.issuance.issuanceId, txHash: s.issuance.mintTx, movementId: s.issuance.movementId, journalEntryId: s.issuance.journalEntryId };
+    if (s.trustToken) ctx.trustToken = { tokenSymbol: s.trustToken.symbol, tokenAddress: s.trustToken.tokenAddress, vaultAddress: s.trustToken.vaultAddress };
+    if (s.reserveDeposit) ctx.deposit = { amount: s.reserveDeposit.reserveUnits, mintedStablecoin: s.reserveDeposit.mintedTrustToken, mintedUsd: s.reserveDeposit.mintedUsd, txHash: s.reserveDeposit.txHash };
+    if (s.distribution) ctx.distribution = { fundingId: s.distribution.fundingId, walletAddress: s.distribution.wallet, amountUsd: s.distribution.amountUsd, transferId: s.distribution.transferId, txHash: s.distribution.txHash, journalEntryId: s.distribution.journalEntryId };
+    const evidence = run.stages.find((st) => st.name === 'evidence');
+    if (evidence && evidence.result && evidence.status !== 'failed' && !evidence.result.skipped) {
+      ctx.evidence = { id: evidence.result.id, digest: evidence.result.digest, status: evidence.result.status, transactionId: evidence.result.transactionId || null };
+      ctx.evidencePayload = evidence.result.payload || null;
+    }
+    return ctx;
   }
 
   static _summary(run, ctx) {
@@ -534,7 +584,7 @@ class TrustTokenRailEngine {
       notarizedBy: 'trust-token-rail',
     });
     ctx.evidence = { id: row.id, digest: row.digest, status: row.status, transactionId: row.transactionId || null };
-    return { ...ctx.evidence, blockNumber: row.blockNumber || null, payloadDigest: row.digest };
+    return { ...ctx.evidence, blockNumber: row.blockNumber || null, payloadDigest: row.digest, payload };
   }
 
   // ------------------------------------------------------------- reconcile
@@ -543,7 +593,8 @@ class TrustTokenRailEngine {
    * Compare every place the value is recorded. `run`/`ctx` scope the check to
    * one run; without them the whole rail is reconciled from state.
    */
-  static async reconcile({ run = null, ctx = {} } = {}) {
+  static async reconcile({ run = null, ctx = null } = {}) {
+    if (!ctx) ctx = run ? await this._ctxFromRun(run) : {};
     const cfg = this.getConfig();
     const discrepancies = [];
     const checks = [];
@@ -555,7 +606,7 @@ class TrustTokenRailEngine {
       try {
         const chain = await BondTokenizationEngine.chainSupply(bondToken.id);
         const ledger = Number(bondToken.total_supply || 0);
-        note('bond_token_supply', Math.abs(chain - ledger) < 0.000001, { token: bondToken.token_address, chainSupply: chain, ledgerSupply: ledger });
+        note('bond_token_supply', bondToken.total_supply !== null && Math.abs(chain - ledger) < 0.000001, { token: bondToken.token_address, chainSupply: chain, ledgerSupply: ledger });
       } catch (e) { note('bond_token_supply', false, { token: bondToken.token_address, error: e.message }); }
     } else if (bondToken) {
       note('bond_token_supply', true, { token: bondToken.token_address, ledgerSupply: Number(bondToken.total_supply || 0), shadow: true, detail: 'no chain read in shadow mode' });
@@ -596,12 +647,16 @@ class TrustTokenRailEngine {
     }
 
     // fabric: the run's notarized digest still matches what we hold
-    if (run && ctx.evidence && FabricLedgerEngine) {
-      try {
-        const payload = ctx.evidencePayload || this._evidencePayload(run, ctx);
-        const verification = await FabricLedgerEngine.verify({ recordType: RECORD_TYPE, recordId: run.id, payload });
-        note('fabric_evidence', verification.outcome === 'verified', { outcome: verification.outcome, digest: verification.currentDigest, chainMatch: verification.chainMatch === undefined ? null : verification.chainMatch, status: ctx.evidence.status });
-      } catch (e) { note('fabric_evidence', false, { error: e.message }); }
+    if (run && FabricLedgerEngine) {
+      if (!ctx.evidence) {
+        note('fabric_evidence', false, { error: `run ${run.id} is not notarized on Fabric` });
+      } else {
+        try {
+          const payload = ctx.evidencePayload || this._evidencePayload(run, ctx);
+          const verification = await FabricLedgerEngine.verify({ recordType: RECORD_TYPE, recordId: run.id, payload });
+          note('fabric_evidence', verification.outcome === 'verified', { outcome: verification.outcome, digest: verification.currentDigest, chainMatch: verification.chainMatch === undefined ? null : verification.chainMatch, status: ctx.evidence.status });
+        } catch (e) { note('fabric_evidence', false, { error: e.message }); }
+      }
     }
 
     return { clean: discrepancies.length === 0, shadow: cfg.shadow, chainId: cfg.chainId, checks, discrepancies, generatedAt: new Date().toISOString() };
@@ -620,4 +675,4 @@ class TrustTokenRailEngine {
   }
 }
 
-module.exports = { TrustTokenRailEngine, RECORD_TYPE, STAGES };
+module.exports = { TrustTokenRailEngine, RECORD_TYPE, STAGES, UNNOTARIZED };

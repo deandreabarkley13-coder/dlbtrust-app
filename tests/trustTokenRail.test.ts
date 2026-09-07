@@ -13,7 +13,7 @@ const { ThirdwebPriceOracle } = require('../server/integrations/dapp/thirdwebPri
 const { BondTokenizationEngine } = require('../server/integrations/dapp/bondTokenizationEngine');
 const { PtcStablecoinEngine } = require('../server/integrations/dapp/ptcStablecoinEngine');
 const { BeneficiaryExpenseWalletEngine, TRUST_TOKEN_SOURCE } = require('../server/integrations/dapp/beneficiaryExpenseWalletEngine');
-const { TrustTokenRailEngine, STAGES, RECORD_TYPE } = require('../server/integrations/dapp/trustTokenRailEngine');
+const { TrustTokenRailEngine, STAGES, RECORD_TYPE, UNNOTARIZED } = require('../server/integrations/dapp/trustTokenRailEngine');
 const { FixedIncomeDataService } = require('../server/integrations/bonds/fixedIncomeDataService');
 const { FabricLedgerEngine } = require('../server/integrations/hyperledger/fabricLedgerEngine');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
@@ -378,6 +378,44 @@ describe('TrustTokenRailEngine shadow run', () => {
     expect(ensure).not.toHaveBeenCalled();
     expect(run.stages.find((s: any) => s.name === 'distribution').result.wallet).toMatchObject({ address: EXPENSE, provisioned: true });
     expect(run.summary.distribution.wallet).toBe(EXPENSE);
+  });
+
+  it('leaves a run unnotarized when Fabric rejects the evidence, and completes it on notarize', async () => {
+    vi.spyOn(FabricLedgerEngine, 'notarize').mockRejectedValueOnce(new Error('fabconnect /transactions failed: Signer org_x does not exist'));
+    const run = await TrustTokenRailEngine.run(request);
+
+    expect(run.status).toBe(UNNOTARIZED);
+    expect(run.stages.find((s: any) => s.name === 'evidence')).toMatchObject({ status: 'failed', error: expect.stringMatching(/Signer org_x/) });
+    expect(run.stages.find((s: any) => s.name === 'distribution').status).toBe('shadow');
+    const reconcile = run.stages.find((s: any) => s.name === 'reconcile');
+    expect(reconcile.status).toBe('discrepancies');
+    expect(reconcile.result.discrepancies).toEqual([expect.objectContaining({ name: 'fabric_evidence', error: expect.stringMatching(/not notarized/) })]);
+    expect(run.summary.evidence).toBeNull();
+
+    const stored = await TrustTokenRailEngine.getRun(run.id);
+    expect(stored).toMatchObject({ status: UNNOTARIZED, summary: { reserveDeposit: { reserveUnits: '25000000' } }, request: { initiatedBy: 'trustee-a', approvedBy: 'trustee-b' } });
+
+    const fixed = await TrustTokenRailEngine.notarize({ runId: run.id });
+    expect(fixed.status).toBe('shadow');
+    expect(fixed.stages.find((s: any) => s.name === 'evidence')).toMatchObject({ status: 'shadow', error: null, result: { payload: expect.objectContaining({ runId: run.id, reserveDeposit: { reserveUnits: '25000000', mintedTrustToken: '25000000000000000000', mintedUsd: 25, txHash: null } }) } });
+    expect(fixed.stages.find((s: any) => s.name === 'reconcile').result).toMatchObject({ clean: true });
+    expect(fixed.summary.evidence).toMatchObject({ digest: expect.stringMatching(/^[0-9a-f]{64}$/) });
+    expect((await FabricLedgerEngine.history(RECORD_TYPE, run.id)).length).toBe(1);
+
+    // idempotent: an already-notarized run is returned untouched
+    const notarize = vi.spyOn(FabricLedgerEngine, 'notarize');
+    expect((await TrustTokenRailEngine.notarize({ runId: run.id })).status).toBe('shadow');
+    expect(notarize).not.toHaveBeenCalled();
+    await expect(TrustTokenRailEngine.notarize({ runId: 'TTR-nope' })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('reconciles a stored run from its persisted summary, including the Fabric digest', async () => {
+    const run = await TrustTokenRailEngine.run(request);
+    const stored = await TrustTokenRailEngine.getRun(run.id);
+    const result = await TrustTokenRailEngine.reconcile({ run: stored });
+    expect(result.clean).toBe(true);
+    expect(result.checks.map((c: any) => c.name)).toEqual(expect.arrayContaining(['run_issuance_matches_reserve', 'run_distribution_within_issuance', 'fabric_evidence']));
+    expect(result.checks.find((c: any) => c.name === 'fabric_evidence')).toMatchObject({ ok: true, outcome: 'verified' });
   });
 
   it('reports readiness, network and the off-ramp hooks', () => {
