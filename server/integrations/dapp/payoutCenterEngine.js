@@ -43,13 +43,23 @@ try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) 
 let StripeTreasuryEngine;
 try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
 
+let ACHEngine;
+try { ({ ACHEngine } = require('../ach/achEngine')); } catch (e) { ACHEngine = null; }
+
+let getMelioClient;
+try { ({ getClient: getMelioClient } = require('../melio/melioClient')); } catch (e) { getMelioClient = null; }
+
+// Rails that pay a bank account or a biller: the recipient is an external
+// party, not a wallet the dApp knows about.
+const FIAT_EXTERNAL_RAILS = new Set(['ach', 'bill_pay', 'melio']);
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 function maskRailOptions(opts) {
   if (!opts || typeof opts !== 'object') return opts;
   const clone = { ...opts };
-  ['account', 'accountNumber', 'bankAccount', 'cardNumber', 'destinationAccount'].forEach(k => {
+  ['account', 'accountNumber', 'bankAccount', 'cardNumber', 'destinationAccount', 'accountReference'].forEach(k => {
     if (clone[k]) clone[k] = `****${String(clone[k]).slice(-4)}`;
   });
   return clone;
@@ -142,7 +152,7 @@ class PayoutCenterEngine {
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
     const chosenRail = (rail || 'sit').toLowerCase();
-    const recipient = (chosenRail.startsWith('stripe_'))
+    const recipient = (chosenRail.startsWith('stripe_') || FIAT_EXTERNAL_RAILS.has(chosenRail))
       ? { address: recipientIdentifier, type: 'external' }
       : await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
     const recordId = id('PC');
@@ -315,14 +325,76 @@ class PayoutCenterEngine {
         base.status = result.status === 'completed' ? 'completed' : (result.status === 'failed' ? 'failed' : 'pending');
         break;
       }
+      case 'ach': {
+        if (!ACHEngine) throw new Error('ACHEngine not available');
+        const cents = Math.round(Number(amount) * 100);
+        const holderName = railOptions.recipientName || railOptions.fullName || railOptions.businessName;
+        const batch = await ACHEngine.createBatch({
+          effectiveDate: railOptions.effectiveDate,
+          secCode: railOptions.secCode || (railOptions.holderType === 'business' ? 'CCD' : 'PPD'),
+          description: (railOptions.entryDescription || paymentType || 'PAYMENT').slice(0, 10).toUpperCase(),
+          createdBy: railOptions.initiatedBy || 'payout-center',
+          partnerId: railOptions.partnerId,
+        }, [{
+          receivingRouting: railOptions.routingNumber || railOptions.routing,
+          accountNumber: railOptions.accountNumber || railOptions.account,
+          amountCents: cents,
+          // 22 credits a checking account, 32 a savings account.
+          transactionCode: railOptions.accountType === 'savings' ? '32' : '22',
+          individualId: railOptions.ptc_request_id || base.id,
+          individualName: holderName,
+          memo: description,
+        }]);
+        result = batch;
+        base.tx_hash = batch.batch_id;
+        // The NACHA file exists but no money moves until the batch is
+        // transmitted to the ODFI under its own approval.
+        base.status = 'awaiting_transmission';
+        break;
+      }
+      case 'bill_pay':
+      case 'melio': {
+        if (!getMelioClient) throw new Error('Melio client not available');
+        const melio = getMelioClient();
+        let vendorId = railOptions.billerId;
+        if (!vendorId) {
+          const vendor = await melio.createVendor({
+            name: railOptions.billerName || railOptions.businessName,
+            email: railOptions.email,
+            account_number: railOptions.accountReference,
+            address: railOptions.address,
+          });
+          vendorId = vendor.id;
+        }
+        const bill = await melio.createBill({
+          vendor_id: vendorId,
+          amount: String(amount),
+          currency: 'USD',
+          invoice_number: railOptions.invoiceNumber || base.id,
+          due_date: railOptions.dueDate,
+          note: description,
+        });
+        const payment = await melio.schedulePayment({
+          bill_id: bill.id,
+          vendor_id: vendorId,
+          amount: String(amount),
+          delivery_method: railOptions.deliveryMethod || 'ach',
+          scheduled_date: railOptions.dueDate,
+          note: description,
+        });
+        result = { shadow: melio.shadow, vendor_id: vendorId, bill, payment };
+        base.tx_hash = payment.id;
+        base.status = melio.shadow ? 'manual_pending' : (payment.status === 'completed' ? 'completed' : 'api_pending');
+        break;
+      }
       default:
         throw new Error(`Unsupported rail: ${rail}`);
     }
 
     base.tx_data = result || {};
-    if (chosenRail.startsWith('stripe_')) {
-      const acct = railOptions.accountNumber || railOptions.account || recipientIdentifier || '';
-      base.recipient_address = `****${String(acct).slice(-4)}`;
+    if (chosenRail.startsWith('stripe_') || FIAT_EXTERNAL_RAILS.has(chosenRail)) {
+      const acct = railOptions.accountNumber || railOptions.account || railOptions.accountReference || '';
+      base.recipient_address = acct ? `****${String(acct).slice(-4)}` : String(recipientIdentifier);
       base.metadata = { ...base.metadata, railOptions: maskRailOptions(railOptions) };
     }
     base.updated_at = new Date().toISOString();
