@@ -24,6 +24,9 @@
 #   APP_USER          system user the service runs as              ($USER)
 #   ENV_IN            bootstrap output to read FABRIC_*/FIREFLY_*   (~/.env.hyperledger)
 #   ENV_OUT           env file the service loads                   (/etc/dlbtrust/app.env)
+#                     regenerated on every run; operator-managed settings
+#                     (thirdweb, Fineract, live gates, ...) go in the sibling
+#                     app.local.env, which is loaded after it and never rewritten
 #   PG_DB / PG_USER   settlement database and role                  (dlbtrust / dlbtrust)
 #   NODE_MAJOR        Node release line                            (22)
 set -euo pipefail
@@ -33,6 +36,7 @@ APP_USER="${APP_USER:-$USER}"
 APP_DOMAIN="${APP_DOMAIN:-}"
 ENV_IN="${ENV_IN:-$HOME/.env.hyperledger}"
 ENV_OUT="${ENV_OUT:-/etc/dlbtrust/app.env}"
+ENV_LOCAL="$(dirname "$ENV_OUT")/app.local.env"
 PG_DB="${PG_DB:-dlbtrust}"
 PG_USER="${PG_USER:-dlbtrust}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
@@ -142,6 +146,11 @@ WEBHOOK_URL="http://${DOCKER_BRIDGE_IP:-172.17.0.1}:$APP_PORT/api/hyperledger/fi
   grep -E '^(FABRIC|FIREFLY)_[A-Z_]+=' "$ENV_IN"
 } | sudo tee "$ENV_OUT.tmp" >/dev/null
 sudo chown root:"$APP_USER" "$ENV_OUT.tmp" && sudo chmod 640 "$ENV_OUT.tmp" && sudo mv "$ENV_OUT.tmp" "$ENV_OUT"
+if ! sudo test -e "$ENV_LOCAL"; then
+  printf '# operator-managed settings; loaded after %s and never rewritten by deploy-app.sh\n' "$ENV_OUT" \
+    | sudo tee "$ENV_LOCAL" >/dev/null
+  sudo chown root:"$APP_USER" "$ENV_LOCAL" && sudo chmod 640 "$ENV_LOCAL"
+fi
 
 # ---------------------------------------------------------------- systemd
 log "systemd unit"
@@ -156,6 +165,7 @@ Type=simple
 User=$APP_USER
 WorkingDirectory=$REPO_ROOT
 EnvironmentFile=$ENV_OUT
+EnvironmentFile=-$ENV_LOCAL
 ExecStart=$(command -v node) server/server-3002.js
 Restart=always
 RestartSec=3
@@ -213,9 +223,10 @@ PUBLIC_IP="${PUBLIC_IP:-$LOCAL_IP}"
 cat <<EOF
 service     systemctl status $SERVICE   |  journalctl -u $SERVICE -f
 env         $ENV_OUT  (ADMIN_SECRET_TOKEN for x-admin-token lives here; never copy it into the repo)
+            $ENV_LOCAL  (operator settings, e.g. THIRDWEB_*; survives redeploys)
 url         https://${APP_DOMAIN:-$PUBLIC_IP}/api/hyperledger/readiness
 readiness   curl -sk https://${APP_DOMAIN:-$PUBLIC_IP}/api/hyperledger/readiness | jq .data.firefly.mode
-wire        set -a && . $ENV_OUT && set +a && npm run trust:hyperledger -- --live --reference <ref> --transfer <usd>
+wire        set -a && . $ENV_OUT && . $ENV_LOCAL && set +a && npm run trust:hyperledger -- --live --reference <ref> --transfer <usd>
 EOF
 [ -n "$APP_DOMAIN" ] || echo "TLS uses Caddy's internal CA — set APP_DOMAIN=<dns name> and rerun for a public certificate"
 echo "open tcp/443 to this host in the cloud firewall; keep $APP_PORT, 5xxx and 7xxx closed"
