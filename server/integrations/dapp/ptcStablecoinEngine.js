@@ -11,16 +11,25 @@
  * Designed for internal settlement within the private trust, not as a public
  * offering. All reserves remain in the custody of the PTC and are auditable
  * on-chain.
+ *
+ * Signing: DAPP_PRIVATE_KEY over DAPP_RPC_URL by default, or the Vault-held
+ * thirdweb server wallet when DAPP_SIGNER=thirdweb (ThirdwebChainSigner), in
+ * which case the wallet is the owner of both contracts and the operator that
+ * holds reserves and freshly minted stablecoin.
  */
 
 const fs = require('fs');
 const path = require('path');
 const { getConfig } = require('./config');
+const { ThirdwebChainSigner } = require('./thirdwebChainSigner');
+const { ThirdwebPriceOracle } = require('./thirdwebPriceOracle');
 
 let viem;
 try { viem = require('viem'); } catch (e) { /* optional */ }
-const { mainnet, sepolia } = require('viem/chains');
+const allChains = require('viem/chains');
 const { privateKeyToAccount } = require('viem/accounts');
+
+const STABLECOIN_DECIMALS = 18;
 
 let ModuleSmartAccountEngine;
 try { ModuleSmartAccountEngine = require('./moduleSmartAccountEngine').ModuleSmartAccountEngine; } catch (e) { ModuleSmartAccountEngine = null; }
@@ -67,14 +76,22 @@ function getArtifact(name) {
 }
 
 function chainById(id) {
-  switch (id) {
-    case 1: return mainnet;
-    case 11155111: return sepolia;
-    default: return mainnet;
-  }
+  return Object.values(allChains).find((c) => c && typeof c === 'object' && Number(c.id) === Number(id)) || allChains.mainnet;
+}
+
+function networkName(id) {
+  const chain = Object.values(allChains).find((c) => c && typeof c === 'object' && Number(c.id) === Number(id));
+  return chain ? chain.name : `chain-${id}`;
+}
+
+/** The wallet that owns the contracts and holds reserves / minted stablecoin. */
+function operatorAddress(cfg) {
+  if (ThirdwebChainSigner.active()) return ThirdwebChainSigner.address() || cfg.operatorAddress;
+  return cfg.operatorAddress;
 }
 
 function clients(cfg) {
+  if (ThirdwebChainSigner.active()) return ThirdwebChainSigner.clients({ chainId: cfg.chainId });
   if (!viem) throw new Error('viem not installed');
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey.startsWith('0x') ? cfg.privateKey : `0x${cfg.privateKey}`);
@@ -90,9 +107,55 @@ class PtcStablecoinEngine {
     return ['bond_portfolio', 'fixed_income', 'treasury', 'trust_accounting', 'core_banking'];
   }
 
-  static async deploy({ tokenName, tokenSymbol, force = false } = {}) {
+  /** Signer, chain, operator and deployment state without touching the chain. */
+  static readiness() {
+    const cfg = getConfig();
+    const state = this.state();
+    const issues = [];
+    const signer = ThirdwebChainSigner.active() ? 'thirdweb' : 'private-key';
+    if (signer === 'thirdweb') issues.push(...ThirdwebChainSigner.readiness().issues);
+    else if (!cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+    if (!operatorAddress(cfg)) issues.push('operator address unknown (DAPP_OPERATOR_ADDRESS or THIRDWEB_SERVER_WALLET_ADDRESS)');
+    return {
+      provider: 'ptc-stablecoin',
+      signer,
+      chainId: cfg.chainId,
+      operator: operatorAddress(cfg) || null,
+      deployed: Boolean(state.tokenAddress && state.vaultAddress),
+      tokenAddress: state.tokenAddress || null,
+      vaultAddress: state.vaultAddress || null,
+      tokenSymbol: state.tokenSymbol || null,
+      reserveTokens: (state.reserveTokens || []).length,
+      ready: issues.length === 0,
+      issues,
+    };
+  }
+
+  /**
+   * Deployment state for the configured chain. A state file left by a
+   * deployment on another chain is reported as not deployed here.
+   */
+  static state() {
     const cfg = getConfig();
     const state = loadState();
+    if (state.tokenAddress && state.chainId !== undefined && Number(state.chainId) !== Number(cfg.chainId)) return { staleChainId: state.chainId };
+    if (state.tokenAddress) this.pinPrice(state);
+    return state;
+  }
+
+  /** The stablecoin is $1.00 by construction (the vault mints at the reserve's USD price), so the oracle is told so. */
+  static pinPrice(state) {
+    const cfg = getConfig();
+    if (!state || !state.tokenAddress) return;
+    ThirdwebPriceOracle.pin({
+      chainId: cfg.chainId, tokenAddress: state.tokenAddress, symbol: state.tokenSymbol || 'DLB-PTCUSD',
+      decimals: STABLECOIN_DECIMALS, priceUsd: 1, source: 'ptc-issuer',
+    });
+  }
+
+  static async deploy({ tokenName, tokenSymbol, force = false } = {}) {
+    const cfg = getConfig();
+    const state = this.state();
     if (!force && state.tokenAddress && state.vaultAddress) return state;
 
     const { account, publicClient, walletClient, fees } = clients(cfg);
@@ -102,10 +165,12 @@ class PtcStablecoinEngine {
     // Deploy PtcBackedStablecoin
     const name = tokenName || 'DLB PTC Stablecoin';
     const symbol = tokenSymbol || 'DLB-PTCUSD';
+    const saltSuffix = force ? `:${Date.now()}` : '';
     const stablecoinHash = await walletClient.deployContract({
       abi: stablecoinArtifact.abi,
       bytecode: stablecoinArtifact.bytecode,
       args: [name, symbol, account.address],
+      salt: `ptc-stablecoin:${symbol}:${cfg.chainId}${saltSuffix}`,
       ...fees,
     });
     const stablecoinReceipt = await publicClient.waitForTransactionReceipt({ hash: stablecoinHash, timeout: 120000 });
@@ -117,6 +182,7 @@ class PtcStablecoinEngine {
       abi: vaultArtifact.abi,
       bytecode: vaultArtifact.bytecode,
       args: [account.address, tokenAddress],
+      salt: `ptc-vault:${tokenAddress}${saltSuffix}`,
       ...fees,
     });
     const vaultReceipt = await publicClient.waitForTransactionReceipt({ hash: vaultHash, timeout: 120000 });
@@ -140,17 +206,25 @@ class PtcStablecoinEngine {
     });
     await publicClient.waitForTransactionReceipt({ hash: ownerWhitelistHash, timeout: 120000 });
 
-    state.tokenAddress = tokenAddress;
-    state.vaultAddress = vaultAddress;
-    state.tokenName = name;
-    state.tokenSymbol = symbol;
-    state.owner = account.address;
-    state.network = cfg.chainId === 1 ? 'mainnet' : 'sepolia';
-    state.createdAt = new Date().toISOString();
-    state.reserveTokens = [];
-    saveState(state);
+    const fresh = {
+      tokenAddress,
+      vaultAddress,
+      tokenName: name,
+      tokenSymbol: symbol,
+      decimals: STABLECOIN_DECIMALS,
+      owner: account.address,
+      signer: ThirdwebChainSigner.active() ? 'thirdweb' : 'private-key',
+      chainId: cfg.chainId,
+      network: networkName(cfg.chainId),
+      createdAt: new Date().toISOString(),
+      deployTx: stablecoinReceipt.transactionHash || null,
+      vaultTx: vaultReceipt.transactionHash || null,
+      reserveTokens: [],
+    };
+    saveState(fresh);
+    this.pinPrice(fresh);
 
-    return { tokenAddress, vaultAddress, tokenName: name, tokenSymbol: symbol, deployTx: stablecoinHash, vaultTx: vaultHash };
+    return { ...fresh, deployTx: stablecoinReceipt.transactionHash || stablecoinHash, vaultTx: vaultReceipt.transactionHash || vaultHash };
   }
 
   static async _getModuleToken(moduleKey) {
@@ -160,11 +234,11 @@ class PtcStablecoinEngine {
     return { address: mod.token_address, decimals: mod.config?.decimals || 6, moduleKey, name: mod.config?.tokenSymbol || mod.module_key };
   }
 
-  static async addReserveToken({ token, decimals, price, moduleKey } = {}) {
+  static async addReserveToken({ token, decimals, price, moduleKey, name } = {}) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.vaultAddress || !state.tokenAddress) throw new Error('PTC stablecoin not deployed');
-    const { account, publicClient, walletClient, fees } = clients(cfg);
+    const { publicClient, walletClient, fees } = clients(cfg);
     const vaultArtifact = getArtifact('PtcReserveVault');
 
     let reserve;
@@ -173,9 +247,12 @@ class PtcStablecoinEngine {
     } else {
       if (!token) throw new Error('token address or moduleKey required');
       if (!decimals) throw new Error('decimals required');
-      reserve = { address: token, decimals: Number(decimals), moduleKey: 'custom' };
+      reserve = { address: token, decimals: Number(decimals), moduleKey: 'custom', name: name || null };
     }
     const priceWei = price || '1000000000000000000'; // $1.00 in 18 decimals
+
+    const existing = (state.reserveTokens || []).find(r => r.address.toLowerCase() === reserve.address.toLowerCase());
+    if (existing) return { reserve: existing, txHash: existing.txHash || null, alreadyAccepted: true };
 
     const hash = await walletClient.writeContract({
       address: state.vaultAddress,
@@ -186,13 +263,13 @@ class PtcStablecoinEngine {
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`addReserveToken failed: ${hash}`);
+    const txHash = receipt.transactionHash || hash;
 
-    if (!state.reserveTokens.find(r => r.address.toLowerCase() === reserve.address.toLowerCase())) {
-      state.reserveTokens.push({ address: reserve.address, decimals: reserve.decimals, moduleKey: reserve.moduleKey, name: reserve.name, price: priceWei, addedAt: new Date().toISOString() });
-      saveState(state);
-    }
+    state.reserveTokens = state.reserveTokens || [];
+    state.reserveTokens.push({ address: reserve.address, decimals: reserve.decimals, moduleKey: reserve.moduleKey, name: reserve.name, price: priceWei, txHash, addedAt: new Date().toISOString() });
+    saveState(state);
 
-    return { reserve, txHash: hash };
+    return { reserve, txHash };
   }
 
   static async addDefaultReserveTokens() {
@@ -213,18 +290,18 @@ class PtcStablecoinEngine {
     const { publicClient } = clients(cfg);
     const raw = await publicClient.readContract({
       address: tokenAddress,
-      abi: [{ type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' }],
+      abi: [{ type: 'function', name: 'balanceOf', inputs: [{ type: 'address', name: 'account' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' }],
       functionName: 'balanceOf',
-      args: [cfg.operatorAddress],
+      args: [operatorAddress(cfg)],
     });
-    return raw;
+    return BigInt(raw);
   }
 
   static async approveAndDeposit({ moduleKey, token, amount = 'all', recipient } = {}) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.vaultAddress) throw new Error('PTC reserve vault not deployed');
-    const { account, publicClient, walletClient, fees } = clients(cfg);
+    const { publicClient, walletClient, fees } = clients(cfg);
     const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
     const vaultArtifact = getArtifact('PtcReserveVault');
 
@@ -233,12 +310,12 @@ class PtcStablecoinEngine {
       reserve = await this._getModuleToken(moduleKey);
     } else {
       if (!token) throw new Error('token address or moduleKey required');
-      const meta = state.reserveTokens.find(r => r.address.toLowerCase() === token.toLowerCase());
+      const meta = (state.reserveTokens || []).find(r => r.address.toLowerCase() === token.toLowerCase());
       reserve = { address: token, decimals: meta ? meta.decimals : 6 };
     }
 
-    const operatorAddress = cfg.operatorAddress;
-    const to = recipient || operatorAddress;
+    const operator = operatorAddress(cfg);
+    const to = recipient || operator;
 
     // Determine amount
     let rawAmount;
@@ -252,14 +329,14 @@ class PtcStablecoinEngine {
     // Approve vault
     const existingAllowance = await publicClient.readContract({
       address: reserve.address,
-      abi: [{ type: 'function', name: 'allowance', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' }],
+      abi: [{ type: 'function', name: 'allowance', inputs: [{ type: 'address', name: 'owner' }, { type: 'address', name: 'spender' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' }],
       functionName: 'allowance',
-      args: [operatorAddress, state.vaultAddress],
+      args: [operator, state.vaultAddress],
     });
     if (BigInt(existingAllowance || 0) < BigInt(rawAmount)) {
       const approveHash = await walletClient.writeContract({
         address: reserve.address,
-        abi: [{ type: 'function', name: 'approve', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' }],
+        abi: [{ type: 'function', name: 'approve', inputs: [{ type: 'address', name: 'spender' }, { type: 'uint256', name: 'value' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' }],
         functionName: 'approve',
         args: [state.vaultAddress, rawAmount],
         ...fees,
@@ -291,8 +368,10 @@ class PtcStablecoinEngine {
     const receipt = await publicClient.waitForTransactionReceipt({ hash: depositHash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`depositReserve failed: ${depositHash}`);
 
-    const minted = (BigInt(rawAmount) * 10n ** 18n) / (10n ** BigInt(reserve.decimals));
-    return { moduleKey, token: reserve.address, amount: rawAmount.toString(), mintedStablecoin: minted.toString(), recipient: to, txHash: depositHash };
+    const meta = (state.reserveTokens || []).find(r => r.address.toLowerCase() === reserve.address.toLowerCase());
+    const priceWei = BigInt((meta && meta.price) || '1000000000000000000');
+    const minted = (BigInt(rawAmount) * priceWei) / (10n ** BigInt(reserve.decimals));
+    return { moduleKey, token: reserve.address, amount: rawAmount.toString(), mintedStablecoin: minted.toString(), recipient: to, txHash: receipt.transactionHash || depositHash };
   }
 
   static async depositAll({ recipient } = {}) {
@@ -310,9 +389,9 @@ class PtcStablecoinEngine {
 
   static async redeem({ moduleKey, token, amount, recipient } = {}) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.vaultAddress) throw new Error('PTC reserve vault not deployed');
-    const { account, publicClient, walletClient, fees } = clients(cfg);
+    const { publicClient, walletClient, fees } = clients(cfg);
     const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
     const vaultArtifact = getArtifact('PtcReserveVault');
 
@@ -320,11 +399,11 @@ class PtcStablecoinEngine {
     if (moduleKey) {
       reserve = await this._getModuleToken(moduleKey);
     } else {
-      const meta = state.reserveTokens.find(r => r.address.toLowerCase() === (token || '').toLowerCase());
+      const meta = (state.reserveTokens || []).find(r => r.address.toLowerCase() === (token || '').toLowerCase());
       reserve = { address: token, decimals: meta ? meta.decimals : 6 };
     }
 
-    const to = recipient || cfg.operatorAddress;
+    const to = recipient || operatorAddress(cfg);
     const rawStablecoin = viem.parseEther(String(amount));
 
     // Approve vault to burn stablecoin
@@ -332,7 +411,7 @@ class PtcStablecoinEngine {
       address: state.tokenAddress,
       abi: stablecoinArtifact.abi,
       functionName: 'allowance',
-      args: [cfg.operatorAddress, state.vaultAddress],
+      args: [operatorAddress(cfg), state.vaultAddress],
     });
     if (BigInt(existingAllowance || 0) < BigInt(rawStablecoin)) {
       const approveHash = await walletClient.writeContract({
@@ -356,15 +435,26 @@ class PtcStablecoinEngine {
     if (receipt.status !== 'success') throw new Error(`redeemReserve failed: ${redeemHash}`);
 
     const reserveAmount = (BigInt(rawStablecoin) * (10n ** BigInt(reserve.decimals))) / 10n ** 18n;
-    return { moduleKey, token: reserve.address, stablecoinAmount: rawStablecoin.toString(), reserveAmount: reserveAmount.toString(), recipient: to, txHash: redeemHash };
+    return { moduleKey, token: reserve.address, stablecoinAmount: rawStablecoin.toString(), reserveAmount: reserveAmount.toString(), recipient: to, txHash: receipt.transactionHash || redeemHash };
+  }
+
+  static async isWhitelisted(address) {
+    const cfg = getConfig();
+    const state = this.state();
+    if (!state.tokenAddress) throw new Error('PTC stablecoin not deployed');
+    const { publicClient } = clients(cfg);
+    const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
+    return Boolean(await publicClient.readContract({ address: state.tokenAddress, abi: stablecoinArtifact.abi, functionName: 'whitelisted', args: [address] }));
   }
 
   static async whitelist(address, allowed = true) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.tokenAddress) throw new Error('PTC stablecoin not deployed');
     const { publicClient, walletClient, fees } = clients(cfg);
     const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
+    const already = await this.isWhitelisted(address).catch(() => null);
+    if (already === allowed) return { address, allowed, txHash: null, unchanged: true };
     const hash = await walletClient.writeContract({
       address: state.tokenAddress,
       abi: stablecoinArtifact.abi,
@@ -374,12 +464,12 @@ class PtcStablecoinEngine {
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`whitelist failed: ${hash}`);
-    return { address, allowed, txHash: hash };
+    return { address, allowed, txHash: receipt.transactionHash || hash };
   }
 
   static async transfer({ to, amount } = {}) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.tokenAddress) throw new Error('PTC stablecoin not deployed');
     const { walletClient, publicClient, fees } = clients(cfg);
     const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
@@ -394,11 +484,11 @@ class PtcStablecoinEngine {
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`transfer failed: ${hash}`);
-    return { to, amount, txHash: hash };
+    return { to, amount, txHash: receipt.transactionHash || hash };
   }
 
   static async balanceOf(address) {
-    const state = loadState();
+    const state = this.state();
     if (!state.tokenAddress) return '0';
     const cfg = getConfig();
     const { publicClient } = clients(cfg);
@@ -413,7 +503,7 @@ class PtcStablecoinEngine {
   }
 
   static async totalSupply() {
-    const state = loadState();
+    const state = this.state();
     if (!state.tokenAddress) return '0';
     const cfg = getConfig();
     const { publicClient } = clients(cfg);
@@ -427,7 +517,7 @@ class PtcStablecoinEngine {
   }
 
   static async reserveBalances() {
-    const state = loadState();
+    const state = this.state();
     if (!state.vaultAddress) return [];
     const cfg = getConfig();
     const { publicClient } = clients(cfg);
@@ -441,22 +531,22 @@ class PtcStablecoinEngine {
           functionName: 'getReserveBalance',
           args: [r.address],
         });
-        out.push({ ...r, vaultBalance: raw.toString(), vaultBalanceFormatted: (Number(raw) / Math.pow(10, r.decimals)).toFixed(r.decimals) });
+        out.push({ ...r, vaultBalance: raw.toString(), vaultBalanceFormatted: viem.formatUnits(BigInt(raw), r.decimals) });
       } catch (e) { out.push({ ...r, error: e.message }); }
     }
     return out;
   }
 
   static async info() {
-    const state = loadState();
-    if (!state.tokenAddress) return { deployed: false };
+    const state = this.state();
+    if (!state.tokenAddress) return { deployed: false, chainId: getConfig().chainId, staleChainId: state.staleChainId || null };
     const [supply, reserves] = await Promise.all([this.totalSupply().catch(() => '0'), this.reserveBalances().catch(() => [])]);
     return { ...state, deployed: true, totalSupply: supply, reserves };
   }
 
   static async setPaused(paused) {
     const cfg = getConfig();
-    const state = loadState();
+    const state = this.state();
     if (!state.tokenAddress) throw new Error('PTC stablecoin not deployed');
     const { walletClient, publicClient, fees } = clients(cfg);
     const stablecoinArtifact = getArtifact('PtcBackedStablecoin');
@@ -469,7 +559,7 @@ class PtcStablecoinEngine {
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`${fn} failed: ${hash}`);
-    return { paused, txHash: hash };
+    return { paused, txHash: receipt.transactionHash || hash };
   }
 }
 

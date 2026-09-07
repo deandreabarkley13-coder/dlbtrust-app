@@ -27,6 +27,7 @@
     "trust:attest": "node server/scripts/attestationOs.js",
     "trust:hyperledger": "node server/scripts/hyperledgerFabricFireflyWire.js",
     "trust:control-plane": "node server/scripts/trustControlPlaneWire.js",
+    "trust:token-rail": "node server/scripts/trustTokenRailWire.js",
     "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
