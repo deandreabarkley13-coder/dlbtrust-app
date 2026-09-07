@@ -96,6 +96,22 @@ describe('trust sponsorship rules', () => {
     expect(decision.reason).toMatch(/not a trust-provisioned/);
   });
 
+  it('sponsors a trust-owned sender from THIRDWEB_POLICY_ALLOWED_SENDERS without a directory entry', async () => {
+    process.env.THIRDWEB_POLICY_ALLOWED_SENDERS = SENDER.toUpperCase();
+    mockDirectory({ provisioned: false });
+    const decision = await ThirdwebSponsorshipPolicy.evaluate({ chainId: 1, userOp: userOp() });
+    expect(decision.wouldAllow).toBe(true);
+    expect(pool.query).not.toHaveBeenCalledWith(expect.stringMatching(/FROM dapp_users/), expect.anything());
+  });
+
+  it('still denies senders outside THIRDWEB_POLICY_ALLOWED_SENDERS that are not provisioned', async () => {
+    process.env.THIRDWEB_POLICY_ALLOWED_SENDERS = TARGET;
+    mockDirectory({ provisioned: false });
+    const decision = await ThirdwebSponsorshipPolicy.evaluate({ chainId: 1, userOp: userOp() });
+    expect(decision.wouldAllow).toBe(false);
+    expect(decision.reason).toMatch(/not a trust-provisioned/);
+  });
+
   // An unreadable account directory must not widen the policy.
   it('denies when the provisioned-sender check cannot be answered', async () => {
     vi.spyOn(pool, 'query').mockRejectedValue(new Error('db down'));

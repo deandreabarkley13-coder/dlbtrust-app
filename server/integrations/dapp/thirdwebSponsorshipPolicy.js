@@ -10,7 +10,8 @@
  * repo; this engine is where the trust's own rules live, in code and under
  * review, so a sponsorship decision is auditable:
  *
- *   sender is a smart account this trust provisioned
+ *   sender is a smart account this trust provisioned, or one of the trust's
+ *     own treasury wallets (THIRDWEB_POLICY_ALLOWED_SENDERS)
  *   → chain is allowlisted
  *   → target contracts are allowlisted
  *   → per-operation gas ceiling
@@ -90,6 +91,9 @@ class ThirdwebSponsorshipPolicy {
       verifierSecret: str('THIRDWEB_VERIFIER_SECRET'),
       chainIds: chains.length ? chains : [tw.chainId],
       allowedTargets: list('THIRDWEB_POLICY_ALLOWED_TARGETS').map(lower),
+      // Trust-owned senders (e.g. the Vault-held treasury server wallet) that
+      // are not provisioned smart accounts but may still be sponsored.
+      allowedSenders: list('THIRDWEB_POLICY_ALLOWED_SENDERS').map(lower),
       requireProvisioned: bool('THIRDWEB_POLICY_REQUIRE_PROVISIONED', true),
       maxGasWeiPerOp: toBigInt(str('THIRDWEB_POLICY_MAX_GAS_WEI_PER_OP', '2000000000000000')), // 0.002 native
       dailyOpsPerSender: num('THIRDWEB_POLICY_DAILY_OPS_PER_SENDER', 25),
@@ -107,6 +111,7 @@ class ThirdwebSponsorshipPolicy {
       verifierSecretConfigured: Boolean(cfg.verifierSecret),
       chainIds: cfg.chainIds,
       allowedTargets: cfg.allowedTargets,
+      allowedSenders: cfg.allowedSenders,
       requireProvisioned: cfg.requireProvisioned,
       maxGasWeiPerOp: cfg.maxGasWeiPerOp.toString(),
       dailyOpsPerSender: cfg.dailyOpsPerSender,
@@ -183,7 +188,7 @@ class ThirdwebSponsorshipPolicy {
     if (chainId !== undefined && chainId !== null && !cfg.chainIds.includes(Number(chainId))) {
       return deny(`chain ${chainId} is not sponsored`);
     }
-    if (cfg.requireProvisioned) {
+    if (cfg.requireProvisioned && !cfg.allowedSenders.includes(lower(sender))) {
       const provisioned = await this._isProvisionedSender(sender);
       if (provisioned === null) return deny('cannot verify the sender is a trust-provisioned account');
       if (!provisioned) return deny('sender is not a trust-provisioned smart account');
