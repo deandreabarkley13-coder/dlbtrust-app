@@ -18,12 +18,16 @@ if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole, getTrusteeByRole } = require('./trustees');
 const DistributionPolicy = require('./distributionPolicy');
+const { PayoutRouteEngine } = require('./payoutRouteEngine');
 
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
 
 let PayoutCenterEngine;
 try { PayoutCenterEngine = require('./payoutCenterEngine').PayoutCenterEngine; } catch (e) { PayoutCenterEngine = null; }
+
+let ThirdwebSettlementEngine;
+try { ThirdwebSettlementEngine = require('./thirdwebSettlementEngine').ThirdwebSettlementEngine; } catch (e) { ThirdwebSettlementEngine = null; }
 
 let EmailEngine;
 try { EmailEngine = require('./emailEngine').EmailEngine; } catch (e) { EmailEngine = null; }
@@ -77,6 +81,7 @@ class DistributionRequestEngine {
           beneficiary_email TEXT,
           beneficiary_name  TEXT,
           beneficiary_address TEXT,
+          destination_type  TEXT NOT NULL DEFAULT 'wallet',
           amount_cents      BIGINT NOT NULL DEFAULT 0,
           currency          TEXT NOT NULL DEFAULT 'USD',
           destination_address TEXT,
@@ -101,6 +106,7 @@ class DistributionRequestEngine {
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_dist_requests_beneficiary ON dapp_distribution_requests(beneficiary_email)`);
       await query(`ALTER TABLE dapp_distribution_requests DROP CONSTRAINT IF EXISTS dapp_distribution_requests_status_check`);
       await query(`ALTER TABLE dapp_distribution_requests ADD CONSTRAINT dapp_distribution_requests_status_check CHECK (status IN ('requested','under_review','approved','rejected','payout_created','executed','failed'))`);
+      await query(`ALTER TABLE dapp_distribution_requests ADD COLUMN IF NOT EXISTS destination_type TEXT NOT NULL DEFAULT 'wallet'`);
     }, () => {});
   }
 
@@ -188,7 +194,11 @@ class DistributionRequestEngine {
     beneficiaryAddress,
     amountUsd,
     currency = 'USD',
+    destinationType,
     destinationAddress,
+    bank,
+    biller,
+    payoutRail,
     memo,
     purpose,
     proofId,
@@ -203,8 +213,19 @@ class DistributionRequestEngine {
     if (!['beneficiary', 'trustee'].includes(requesterRole)) throw new Error('requesterRole must be beneficiary or trustee');
     if (!beneficiaryEmail) throw new Error('beneficiaryEmail required');
     if (!amountUsd || Number(amountUsd) <= 0) throw new Error('amountUsd required');
-    if (!destinationAddress) throw new Error('destinationAddress required');
     const policy = DistributionPolicy.enforce({ requesterRole, amountUsd, purpose });
+
+    // A wallet destination stays on the crypto rail; a bank or biller
+    // destination is validated here so an approval can never reach a
+    // malformed ACH entry or an unnamed biller.
+    const route = PayoutRouteEngine.plan({
+      destinationType,
+      destinationAddress,
+      bank,
+      biller,
+      payoutRail: payoutRail || metadata.payoutRail,
+      currency,
+    });
 
     const amountCents = Math.round(Number(amountUsd) * 100);
 
@@ -226,9 +247,10 @@ class DistributionRequestEngine {
       beneficiary_email: beneficiaryEmail,
       beneficiary_name: beneficiaryName || null,
       beneficiary_address: beneficiaryAddress || destinationAddress || null,
+      destination_type: route.destinationType,
       amount_cents: amountCents,
       currency,
-      destination_address: destinationAddress,
+      destination_address: route.destinationLabel,
       memo: memo || null,
       proof_id: proofId || null,
       safe_id: safeId || null,
@@ -239,7 +261,16 @@ class DistributionRequestEngine {
       signatures: [],
       payout_id: null,
       tx_hash: null,
-      metadata: { ...metadata, requesterRole, createdBy, purpose: policy.purpose, limitUsd: policy.limitUsd },
+      metadata: {
+        ...metadata,
+        requesterRole,
+        createdBy,
+        purpose: policy.purpose,
+        limitUsd: policy.limitUsd,
+        payoutRail: payoutRail || metadata.payoutRail,
+        payoutDestination: { destinationType: route.destinationType, ...route.railOptions },
+        payoutRoute: { rail: route.rail, engine: route.engine, destination: route.redacted },
+      },
       created_by: createdBy || null,
     };
 
@@ -250,7 +281,7 @@ class DistributionRequestEngine {
       if (MessagingEngine) {
         await MessagingEngine.notify({
           subject: `New ${type} request ${request.id} from ${requesterRole}`,
-          body: `${beneficiaryName || beneficiaryEmail} requested $${(amountCents / 100).toFixed(2)} to ${destinationAddress}. Status: ${status}.`,
+          body: `${beneficiaryName || beneficiaryEmail} requested $${(amountCents / 100).toFixed(2)} to ${route.destinationLabel} over ${route.rail}. Status: ${status}.`,
           participants: [...TRUSTEES.map(t => t.email), beneficiaryEmail],
           referenceType: 'distribution_request',
           referenceId: request.id,
@@ -380,10 +411,14 @@ class DistributionRequestEngine {
         }
       } catch (e) { console.warn('[DistributionRequestEngine] beneficiary email failed:', e.message); }
 
-      // Auto-execute on checker approval through the payout center, unless the
-      // request is paid over another rail (e.g. the thirdweb server wallet).
-      const payoutRail = (request.metadata && request.metadata.payoutRail) || 'payout_center';
-      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false' && payoutRail === 'payout_center') {
+      // Auto-execute on checker approval over the rail this request routes to.
+      // Settlements the payout center does not own (the thirdweb server wallet)
+      // and explicit rail overrides are released deliberately instead.
+      let route = null;
+      try { route = PayoutRouteEngine.resolveFromRecord(request); } catch (e) {
+        console.warn('[DistributionRequestEngine] route resolution failed:', e.message);
+      }
+      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false' && route && route.autoExecutable) {
         try {
           const executed = await this.executeRequest(requestId);
           result = this._rowToObject(await this.getRequest(requestId));
@@ -450,6 +485,13 @@ class DistributionRequestEngine {
       }
     }
 
+    const route = PayoutRouteEngine.resolveFromRecord(request);
+    if (route.engine === 'thirdweb') {
+      if (!ThirdwebSettlementEngine) throw new Error('ThirdwebSettlementEngine not available');
+      const settlement = await ThirdwebSettlementEngine.settleDistribution(requestId, { requesterRole: 'trustee' });
+      return { request: await this.getRequest(requestId), payment: settlement };
+    }
+
     let payment;
     let executeStatus = 'payout_created';
     let executeError = null;
@@ -459,12 +501,13 @@ class DistributionRequestEngine {
         sourceType,
         sourceAccountId,
         recipientType: 'external',
-        recipientIdentifier: request.destination_address,
+        recipientIdentifier: route.destinationType === 'wallet' ? request.destination_address : (route.railOptions.accountNumber || route.railOptions.billerName || request.destination_address),
         amount: amountUsd,
-        asset: 'SIT',
+        asset: route.asset,
         description: request.memo || `${request.type} request ${request.id}`,
-        rail: 'sit',
+        rail: route.rail,
         railOptions: {
+          ...route.railOptions,
           ptc_request_id: request.id,
           expense_id: request.metadata?.expenseId,
           initiatedBy: request.created_by || 'distribution-request',
