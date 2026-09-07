@@ -854,6 +854,12 @@
     el('dist-rail-note').value = DEST_RAILS[type];
   }
 
+  function clearDestinationFields() {
+    ['dist-dest', 'dist-bank-routing', 'dist-bank-account', 'dist-bank-holder', 'dist-bank-name',
+      'dist-biller-name', 'dist-biller-account', 'dist-biller-invoice', 'dist-biller-due']
+      .forEach(id => { el(id).value = ''; });
+  }
+
   function destinationPayload() {
     const destinationType = el('dist-dest-type').value;
     if (destinationType === 'bank') {
@@ -899,6 +905,7 @@
     try {
       const res = await api('/api/dapp/distribution-requests', { method: 'POST', body: JSON.stringify(body) });
       showStatus('dist-status', 'Request created: ' + res.data.id + '. Maker trustee notified by email.', false);
+      clearDestinationFields();
       loadDistributions();
     } catch (e) { showStatus('dist-status', e.message, true); }
   }
