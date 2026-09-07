@@ -45,6 +45,23 @@ describe('thirdweb server verifier authorization', () => {
     expect(ThirdwebSponsorshipPolicy.authorize({ 'x-thirdweb-verifier-secret': 'nope' }).ok).toBe(false);
     expect(ThirdwebSponsorshipPolicy.authorize({ 'x-thirdweb-verifier-secret': 'verifier-secret' }).ok).toBe(true);
   });
+
+  it('tolerates surrounding whitespace/quotes and an Authorization: Bearer form', () => {
+    expect(ThirdwebSponsorshipPolicy.authorize({ 'x-thirdweb-verifier-secret': ' "verifier-secret"\n' }).ok).toBe(true);
+    expect(ThirdwebSponsorshipPolicy.authorize({ authorization: 'Bearer verifier-secret' }).ok).toBe(true);
+  });
+
+  it('reports which custom headers arrived (never values) when the secret is wrong', () => {
+    const auth = ThirdwebSponsorshipPolicy.authorize({
+      host: 'app', 'content-type': 'application/json', referer: 'https://api.thirdweb.com',
+      'x-thirdweb-secret': 'verifier-secret',
+    });
+    expect(auth.ok).toBe(false);
+    expect(auth.diagnostics).toEqual({
+      presented: false, presentedLength: 0, expectedLength: 'verifier-secret'.length, customHeaders: ['x-thirdweb-secret'],
+    });
+    expect(JSON.stringify(auth)).not.toContain('verifier-secret');
+  });
 });
 
 // The live flag is the last gate: rules may pass and sponsorship still be

@@ -967,7 +967,10 @@ router.get('/aa/readiness', operatorAuth, async (req, res) => {
 router.post('/thirdweb/sponsorship/verify', writeRateLimiter(), async (req, res) => {
   try {
     const auth = ThirdwebSponsorshipPolicy.authorize(req.headers || {});
-    if (!auth.ok) return res.status(401).json({ isAllowed: false, reason: auth.reason });
+    if (!auth.ok) {
+      console.warn('[thirdweb-verifier] denied:', auth.reason, JSON.stringify(auth.diagnostics || {}));
+      return res.status(401).json({ isAllowed: false, reason: auth.reason });
+    }
     const { clientId, chainId, userOp } = req.body || {};
     const decision = await ThirdwebSponsorshipPolicy.evaluate({ clientId, chainId, userOp });
     return res.json({ isAllowed: decision.isAllowed, reason: decision.reason });
