@@ -12,6 +12,7 @@
  */
 
 const express = require('express');
+const { getMandate } = require('../integrations/trust/trustMandate');
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────
@@ -134,7 +135,7 @@ router.get('/summary', (req, res) => {
 
     const summary = {
       generated_at: new Date().toISOString(),
-      trust_name: 'DeAndrea Lavar Barkley Trust',
+      trust_name: getMandate().legalName,
       inception_date: inceptionRow?.inception_date || null,
 
       portfolio: {

@@ -37,6 +37,9 @@ try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine;
 let CalendarEngine;
 try { CalendarEngine = require('../calendar/calendarEngine').CalendarEngine; } catch (e) { CalendarEngine = null; }
 
+let TrustControlPlaneEngine;
+try { TrustControlPlaneEngine = require('../trust/trustControlPlaneEngine').TrustControlPlaneEngine; } catch (e) { TrustControlPlaneEngine = null; }
+
 function id(prefix = 'REQ') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -424,6 +427,29 @@ class DistributionRequestEngine {
     const sourceType = request.source_type || 'trust';
     const sourceAccountId = request.source_account_id || '1000';
 
+    // Mandate guard: beneficiary support is paid from fixed-income income under
+    // policy ceilings and canonical funding. Report-only unless TRUST_MANDATE_ENFORCE.
+    let mandate = null;
+    if (TrustControlPlaneEngine) {
+      try {
+        mandate = await TrustControlPlaneEngine.evaluateDistribution({
+          amountUsd: Number(amountUsd),
+          requesterRole: request.requester_role || 'beneficiary',
+          purpose: request.metadata?.purpose || null,
+        });
+      } catch (e) {
+        mandate = { allowed: null, error: e.message, evaluatedAt: new Date().toISOString() };
+      }
+      if (mandate && mandate.allowed === false && mandate.enforced) {
+        await this._update(requestId, { metadata: { ...request.metadata, mandate } });
+        const err = new Error(`Distribution refused by trust mandate: ${mandate.blocking.join(', ')}`);
+        err.status = 422;
+        err.code = 'MANDATE_VIOLATION';
+        err.mandate = mandate;
+        throw err;
+      }
+    }
+
     let payment;
     let executeStatus = 'payout_created';
     let executeError = null;
@@ -453,11 +479,21 @@ class DistributionRequestEngine {
       payment = { error: payErr.message, requestedAt: new Date().toISOString() };
     }
 
+    let notarization = null;
+    if (TrustControlPlaneEngine && executeStatus !== 'failed') {
+      try {
+        notarization = await TrustControlPlaneEngine.notarizeDistribution(request, payment);
+      } catch (e) {
+        console.warn('[DistributionRequestEngine] notarization failed:', e.message);
+        notarization = { error: e.message };
+      }
+    }
+
     await this._update(requestId, {
       status: executeStatus,
       tx_hash: payment && payment.tx_hash ? payment.tx_hash : null,
       payout_id: payment && payment.id ? payment.id : null,
-      metadata: { ...request.metadata, payment, executeError },
+      metadata: { ...request.metadata, payment, executeError, mandate, notarization },
     });
     if (request.metadata?.expenseId && pool) {
       try {
