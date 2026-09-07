@@ -176,7 +176,37 @@
               <div class="form-group"><label>Source Type</label><select id="dist-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust_bank">Trust Bank</option></select></div>
               <div class="form-group"><label>Source Account ID</label><input id="dist-source-account" placeholder="CA-OPERATING or TBA-..." /></div>
             </div>
-            <div class="form-group"><label>Destination Address / Account</label><input id="dist-dest" placeholder="0x... or bank account" /></div>
+            <div class="form-row">
+              <div class="form-group"><label>Pay To</label><select id="dist-dest-type" onchange="syncDestinationFields()"><option value="wallet">Wallet (on-chain)</option><option value="bank">Bank Account (ACH)</option><option value="biller">Biller (Bill Pay)</option></select></div>
+              <div class="form-group"><label>Rail</label><input id="dist-rail-note" readonly /></div>
+            </div>
+            <div id="dist-dest-wallet">
+              <div class="form-group"><label>Destination Address</label><input id="dist-dest" placeholder="0x..." /></div>
+            </div>
+            <div id="dist-dest-bank" class="hidden">
+              <div class="form-row">
+                <div class="form-group"><label>Account Holder</label><input id="dist-bank-holder" placeholder="Name on the account" /></div>
+                <div class="form-group"><label>Bank Name</label><input id="dist-bank-name" placeholder="Optional" /></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label>Routing Number</label><input id="dist-bank-routing" inputmode="numeric" maxlength="9" placeholder="9 digits" /></div>
+                <div class="form-group"><label>Account Number</label><input id="dist-bank-account" placeholder="Account number" /></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label>Account Type</label><select id="dist-bank-account-type"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+                <div class="form-group"><label>Holder Type</label><select id="dist-bank-holder-type"><option value="individual">Individual (PPD)</option><option value="business">Business (CCD)</option></select></div>
+              </div>
+            </div>
+            <div id="dist-dest-biller" class="hidden">
+              <div class="form-row">
+                <div class="form-group"><label>Biller Name</label><input id="dist-biller-name" placeholder="Duke Energy" /></div>
+                <div class="form-group"><label>Account / Reference</label><input id="dist-biller-account" placeholder="Biller account number" /></div>
+              </div>
+              <div class="form-row">
+                <div class="form-group"><label>Invoice Number</label><input id="dist-biller-invoice" placeholder="Optional" /></div>
+                <div class="form-group"><label>Due Date</label><input id="dist-biller-due" type="date" /></div>
+              </div>
+            </div>
             <div class="form-group"><label>Memo</label><input id="dist-memo" placeholder="Purpose of request" /></div>
             <button class="btn btn-gold" onclick="createDistribution()">Submit for Trustee Approval</button>
             <div id="dist-status" class="status"></div>
@@ -702,6 +732,7 @@
       const name = u ? (u.name || u.email || roleLabel) : (isAdmin() ? 'Operator' : 'Trustee');
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
       loadOverview();
+      syncDestinationFields();
       startLiveRefresh();
       const requestedTab = tabFromLocation();
       if (requestedTab) switchTab(requestedTab);
@@ -786,6 +817,12 @@
 
   const state = { vendors: [], holds: [] };
 
+  function destinationLabel(r) {
+    const type = r.destination_type || 'wallet';
+    const rail = (r.metadata && r.metadata.payoutRoute && r.metadata.payoutRoute.rail) || DEST_RAILS[type].split(' ')[0];
+    return `${type} · ${rail} · ${r.destination_address || '—'}`;
+  }
+
   async function loadDistributions() {
     try {
       const res = await api('/api/dapp/distribution-requests?limit=100');
@@ -793,6 +830,7 @@
       const queue = pending.map(r => `<div class="panel" style="margin-bottom:10px;">
         <div style="display:flex;justify-content:space-between;"><strong>${r.beneficiary_name || r.beneficiary_email}</strong><span class="badge ${r.status === 'approved' ? 'approved' : 'pending'}">${r.status}</span></div>
         <div class="muted" style="margin:6px 0;">${fmtUsd(r.amount_cents / 100)} — ${r.memo || ''}</div>
+        <div class="muted" style="margin:6px 0;font-size:.78rem;">${destinationLabel(r)}</div>
         <div style="display:flex;gap:8px;">
           ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
@@ -800,8 +838,49 @@
         </div>
       </div>`).join('') || '<p class="muted">No pending approvals.</p>';
       el('approval-queue').innerHTML = queue;
-      el('all-requests').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Beneficiary</th><th>Amount</th><th>Status</th><th>Updated</th></tr></thead><tbody>${res.data.map(r => `<tr><td>${r.id}</td><td>${r.beneficiary_name || r.beneficiary_email}</td><td>${fmtUsd(r.amount_cents / 100)}</td><td><span class="badge ${r.status === 'approved' || r.status === 'executed' ? 'approved' : r.status === 'rejected' ? 'rejected' : 'pending'}">${r.status}</span></td><td>${new Date(r.updated_at).toLocaleString()}</td></tr>`).join('')}</tbody></table>`;
+      el('all-requests').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Beneficiary</th><th>Amount</th><th>Destination</th><th>Status</th><th>Updated</th></tr></thead><tbody>${res.data.map(r => `<tr><td>${r.id}</td><td>${r.beneficiary_name || r.beneficiary_email}</td><td>${fmtUsd(r.amount_cents / 100)}</td><td>${destinationLabel(r)}</td><td><span class="badge ${r.status === 'approved' || r.status === 'executed' ? 'approved' : r.status === 'rejected' ? 'rejected' : 'pending'}">${r.status}</span></td><td>${new Date(r.updated_at).toLocaleString()}</td></tr>`).join('')}</tbody></table>`;
     } catch (e) { el('approval-queue').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  const DEST_RAILS = {
+    wallet: 'sit — on-chain transfer to the wallet',
+    bank: 'ach — NACHA batch, held until transmission',
+    biller: 'bill_pay — Melio',
+  };
+
+  function syncDestinationFields() {
+    const type = el('dist-dest-type').value;
+    ['wallet', 'bank', 'biller'].forEach(k => el('dist-dest-' + k).classList.toggle('hidden', k !== type));
+    el('dist-rail-note').value = DEST_RAILS[type];
+  }
+
+  function destinationPayload() {
+    const destinationType = el('dist-dest-type').value;
+    if (destinationType === 'bank') {
+      return {
+        destinationType,
+        bank: {
+          routingNumber: el('dist-bank-routing').value.trim(),
+          accountNumber: el('dist-bank-account').value.trim(),
+          accountHolderName: el('dist-bank-holder').value.trim(),
+          accountType: el('dist-bank-account-type').value,
+          holderType: el('dist-bank-holder-type').value,
+          bankName: el('dist-bank-name').value.trim() || undefined,
+        },
+      };
+    }
+    if (destinationType === 'biller') {
+      return {
+        destinationType,
+        biller: {
+          billerName: el('dist-biller-name').value.trim(),
+          accountReference: el('dist-biller-account').value.trim(),
+          invoiceNumber: el('dist-biller-invoice').value.trim() || undefined,
+          dueDate: el('dist-biller-due').value || undefined,
+        },
+      };
+    }
+    return { destinationType, destinationAddress: el('dist-dest').value.trim() };
   }
 
   async function createDistribution() {
@@ -812,7 +891,7 @@
       beneficiaryEmail: el('dist-email').value.trim(),
       amountUsd: el('dist-amount').value,
       currency: 'USD',
-      destinationAddress: el('dist-dest').value.trim(),
+      ...destinationPayload(),
       sourceType: el('dist-source-type').value,
       sourceAccountId: el('dist-source-account').value.trim() || undefined,
       memo: el('dist-memo').value.trim(),

@@ -114,7 +114,8 @@ class ThirdwebSettlementEngine {
   static async queue({ limit = 50, offset = 0 } = {}) {
     const n = Math.min(Math.max(Number(limit) || 50, 1), 200);
     const off = Math.max(Number(offset) || 0, 0);
-    const DIST_WHERE = `status IN ('approved', 'settling') OR (status = 'payout_created' AND metadata ? 'thirdwebTransferId')`;
+    const WALLET_DEST = `COALESCE(destination_type, 'wallet') = 'wallet'`;
+    const DIST_WHERE = `${WALLET_DEST} AND (status IN ('approved', 'settling') OR (status = 'payout_created' AND metadata ? 'thirdwebTransferId'))`;
     const EXP_WHERE = `status IN ('approved', 'settling') OR (status = 'payment_pending' AND metadata ? 'thirdwebTransferId')`;
     const count = (sql) => query(sql).then((r) => Number(r.rows[0]?.n ?? 0)).catch(() => 0);
     const [distributions, expenses, open, distributionsAwaiting, expensesAwaiting, openTransfers] = await Promise.all([
@@ -125,7 +126,7 @@ class ThirdwebSettlementEngine {
                FROM expense_records WHERE ${EXP_WHERE}
               ORDER BY updated_at ASC, id ASC LIMIT $1 OFFSET $2`, [n, off]).then((r) => r.rows).catch(() => []),
       ThirdwebServerWalletEngine.openTransfers({ limit: n, offset: off }).catch(() => []),
-      count(`SELECT COUNT(*)::int AS n FROM dapp_distribution_requests WHERE status = 'approved'`),
+      count(`SELECT COUNT(*)::int AS n FROM dapp_distribution_requests WHERE ${WALLET_DEST} AND status = 'approved'`),
       count(`SELECT COUNT(*)::int AS n FROM expense_records WHERE status = 'approved'`),
       count(`SELECT COUNT(*)::int AS n FROM thirdweb_server_wallet_transfers WHERE status IN ('queued', 'submitted')`),
     ]);
