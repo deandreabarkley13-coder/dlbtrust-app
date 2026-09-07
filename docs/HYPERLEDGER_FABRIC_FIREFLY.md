@@ -103,9 +103,32 @@ node server/scripts/hyperledgerFabricFireflyWire.js --transfer 25000 --reference
 # book it once FireFly confirms, or sweep everything confirmed-but-unbooked
 node server/scripts/hyperledgerFabricFireflyWire.js --sync FFXFER-...
 node server/scripts/hyperledgerFabricFireflyWire.js --reconcile
+
+# re-drive a transfer that failed, once
+node server/scripts/hyperledgerFabricFireflyWire.js --retry FFXFER-...
 ```
 
 `--verify` exits `2` on a mismatch, so it can run as a scheduled audit check.
+
+## Failed transfers and the one retry
+
+A submission that errors is re-sent once inline under the same FireFly
+idempotency key (`FIREFLY_SUBMIT_RETRIES`, default 1). If both sends fail the
+settlement is stored `failed` with no transfer id and nothing is booked. A
+`failed` transfer can be re-driven exactly once — `POST
+/api/hyperledger/firefly/settlements/:id/retry`, or `--retry` above
+(`FIREFLY_TRANSFER_RETRIES`, default 1); a second request answers `retry limit
+reached`. The retry keeps the original key when FireFly never accepted anything,
+and takes a fresh `reference#2` key when FireFly accepted the transfer and later
+reported it failed, so no path can move value twice. Confirmed, booked, pending
+and shadow transfers are never retried.
+
+FireFly answers a resend under an existing key by re-driving its original
+transaction, and the transfer it then confirms can carry the *first* attempt's
+local id rather than the one the resend returned. The webhook and `sync`
+therefore fall back to the FireFly transaction — whose idempotency key is ours —
+when a transfer id is unknown, adopt the id FireFly settled on, and book from
+there.
 
 ## Required chaincode
 
@@ -142,6 +165,16 @@ doubles as the health check for a host that already has the stacks. Point the
 app at that host (the URLs it prints are `localhost`; substitute the host name
 or put fabconnect and FireFly behind TLS) and set `FIREFLY_API_KEY` /
 `FABRIC_CONNECT_TOKEN` once those are fronted by auth.
+
+`scripts/hyperledger/deploy-app.sh` runs the app on that same host so neither
+fabconnect nor FireFly has to leave it: Node 22, a local PostgreSQL role and
+database seeded with the repo migrations, a `dlbtrust-app` systemd service on
+port 3002 reading `/etc/dlbtrust/app.env` (generated admin/JWT/encryption
+secrets plus the `FABRIC_*`/`FIREFLY_*` block copied from `~/.env.hyperledger`),
+Caddy terminating HTTPS on 443, and the FireFly webhook subscription pointed at
+the app over the Docker bridge. Only 443 needs to be reachable. Without
+`APP_DOMAIN=<dns name>` Caddy serves its internal CA; re-run with it set for a
+publicly trusted certificate. Re-running is idempotent.
 
 ## What each node has to have
 

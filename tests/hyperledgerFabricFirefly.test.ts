@@ -384,6 +384,23 @@ describe('firefly transfers', () => {
     expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
   });
 
+  it('keeps a confirmation that lands while the transfer is still being notarized', async () => {
+    process.env.FIREFLY_LIVE = 'true';
+    process.env.FABRIC_LEDGER_LIVE = 'true';
+    mockFetch([...preflight('transfer'), { localId: 'xfer-race', state: 'pending' }]);
+    let webhook: any;
+    vi.spyOn(FabricLedgerEngine, 'notarize').mockImplementation(async () => {
+      // A fast chain confirms before the notarization round-trip completes.
+      webhook = await FireflyEngine.handleEvent({ type: 'token_transfer_confirmed', tokenTransfer: { localId: 'xfer-race' } });
+      return { id: 'notary-race' } as any;
+    });
+
+    const row = await FireflyEngine.transfer({ amountUsd: 25, reference: 'T-RACE' });
+    expect(webhook).toMatchObject({ handled: true, booked: true });
+    expect(row).toMatchObject({ status: 'confirmed', booked: true, journalEntryId: 'je-1', notarizationId: 'notary-race' });
+    expect(TrustAccountingEngine.postJournalEntry).toHaveBeenCalledTimes(1);
+  });
+
   it('books once on confirmation and never twice', async () => {
     process.env.FIREFLY_LIVE = 'true';
     mockFetch([
@@ -453,6 +470,146 @@ describe('firefly transfers', () => {
     (TrustAccountingEngine.postJournalEntry as any).mockResolvedValue({ id: 'je-2' });
     const report = await FireflyEngine.reconcile();
     expect(report).toMatchObject({ unbookedBefore: 1, booked: 1 });
+  });
+});
+
+describe('firefly transfer retries', () => {
+  const failure = (status: number, error: string) =>
+    ({ ok: false, status, statusText: 'error', text: async () => JSON.stringify({ error }) } as any);
+
+  beforeEach(() => {
+    process.env.FIREFLY_LIVE = 'true';
+    process.env.FIREFLY_SUBMIT_RETRY_DELAY_MS = '0';
+  });
+
+  it('resends a failed submission once under the same idempotency key', async () => {
+    const spy = mockFetch(preflight('transfer'));
+    spy.mockResolvedValueOnce(failure(503, 'connector unavailable'));
+    spy.mockResolvedValueOnce({ ok: true, status: 202, statusText: 'ok', text: async () => JSON.stringify({ localId: 'xfer-r1', state: 'pending' }) } as any);
+
+    const row = await FireflyEngine.transfer({ amountUsd: 100, reference: 'R-1' });
+    expect(row).toMatchObject({ status: 'pending', transferId: 'xfer-r1' });
+    expect(call(3).body.idempotencyKey).toBe('R-1');
+    expect(call(4).body.idempotencyKey).toBe('R-1');
+    expect(row.detail.submit).toMatchObject({ sent: 2 });
+    expect(row.detail.submit.errors[0].error).toContain('connector unavailable');
+  });
+
+  it('adopts the transfer FireFly already accepted when the resend hits the idempotency key', async () => {
+    const spy = mockFetch(preflight('transfer'));
+    spy.mockRejectedValueOnce(new Error('socket hang up'));
+    spy.mockResolvedValueOnce(failure(409, "FF10431: Idempotency key 'R-2' already used for transaction 'tx-77'"));
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify([{ localId: 'xfer-landed', tx: { id: 'tx-77' } }]) } as any);
+
+    const row = await FireflyEngine.transfer({ amountUsd: 100, reference: 'R-2' });
+    expect(call(5).url).toContain('/tokens/transfers?tx=tx-77');
+    expect(row).toMatchObject({ status: 'pending', transferId: 'xfer-landed' });
+    expect(row.detail.submit).toMatchObject({ sent: 2, adopted: true });
+  });
+
+  it('fails after the resend also fails, then re-drives once via retry() and no further', async () => {
+    const spy = mockFetch(preflight('transfer'));
+    spy.mockResolvedValueOnce(failure(503, 'down'));
+    spy.mockResolvedValueOnce(failure(503, 'still down'));
+    await expect(FireflyEngine.transfer({ amountUsd: 100, reference: 'R-3' })).rejects.toThrow(/still down/);
+    const [failed] = await FireflyEngine.list({ limit: 1 });
+    expect(failed).toMatchObject({ status: 'failed', transferId: null, reference: 'R-3' });
+    expect(failed.detail.attempt).toBe(1);
+
+    // Nothing was ever accepted, so the re-drive keeps the original key.
+    spy.mockResolvedValueOnce({ ok: true, status: 202, statusText: 'ok', text: async () => JSON.stringify({ localId: 'xfer-r3', state: 'pending' }) } as any);
+    const retried = await FireflyEngine.retry(failed.id);
+    expect(retried).toMatchObject({ id: failed.id, status: 'pending', transferId: 'xfer-r3', reference: 'R-3' });
+    expect(retried.detail.attempt).toBe(2);
+    expect(retried.detail.priorAttempts).toHaveLength(1);
+    expect(call(5).body.idempotencyKey).toBe('R-3');
+    expect(await FireflyEngine.list({ limit: 5 })).toHaveLength(1);
+
+    // A pending transfer is not retried, and a second failure is not re-driven.
+    expect(await FireflyEngine.retry(failed.id)).toMatchObject({ retried: false, reason: expect.stringContaining('pending') });
+    await FireflyEngine._update(failed.id, { status: 'failed', failureReason: 'reverted' });
+    const exhausted = await FireflyEngine.retry(failed.id);
+    expect(exhausted).toMatchObject({ retried: false, reason: expect.stringContaining('retry limit') });
+  });
+
+  it('treats a new transfer under a failed reference as the retry', async () => {
+    const spy = mockFetch(preflight('transfer'));
+    spy.mockResolvedValueOnce(failure(503, 'down'));
+    spy.mockResolvedValueOnce(failure(503, 'down'));
+    await expect(FireflyEngine.transfer({ amountUsd: 100, reference: 'R-4' })).rejects.toThrow();
+
+    spy.mockResolvedValueOnce({ ok: true, status: 202, statusText: 'ok', text: async () => JSON.stringify({ localId: 'xfer-r4', state: 'pending' }) } as any);
+    const again = await FireflyEngine.transfer({ amountUsd: 100, reference: 'R-4' });
+    expect(again).toMatchObject({ status: 'pending', transferId: 'xfer-r4' });
+    expect(again.idempotent).toBeUndefined();
+    expect(again.detail.attempt).toBe(2);
+
+    // Once it is in flight the reference is simply idempotent again.
+    expect(await FireflyEngine.transfer({ amountUsd: 100, reference: 'R-4' })).toMatchObject({ idempotent: true, transferId: 'xfer-r4' });
+  });
+
+  it('re-drives a transfer FireFly reported failed under a fresh idempotency key', async () => {
+    const spy = mockFetch([...preflight('transfer'), { localId: 'xfer-r5', state: 'pending' }]);
+    const row = await FireflyEngine.transfer({ amountUsd: 100, reference: 'R-5' });
+    await FireflyEngine.handleEvent({ type: 'token_transfer_op_failed', tokenTransfer: { localId: 'xfer-r5' }, error: 'execution reverted' });
+    expect(await FireflyEngine.get(row.id)).toMatchObject({ status: 'failed' });
+
+    spy.mockResolvedValueOnce({ ok: true, status: 202, statusText: 'ok', text: async () => JSON.stringify({ localId: 'xfer-r5b', state: 'pending' }) } as any);
+    const retried = await FireflyEngine.retry(row.id);
+    expect(retried).toMatchObject({ status: 'pending', transferId: 'xfer-r5b' });
+    expect(call(4).body.idempotencyKey).toBe('R-5#2');
+    expect(retried.detail.priorAttempts[0]).toMatchObject({ transferId: 'xfer-r5' });
+  });
+
+  it('books a re-driven transfer that confirms under the first attempt\'s local id', async () => {
+    const spy = mockFetch(preflight('transfer'));
+    spy.mockResolvedValueOnce(failure(500, 'FF10274: Error from tokens service'));
+    spy.mockResolvedValueOnce(failure(500, 'FF10274: Error from tokens service'));
+    await expect(FireflyEngine.transfer({ amountUsd: 40, reference: 'R-7' })).rejects.toThrow();
+    const [failed] = await FireflyEngine.list({ limit: 1 });
+
+    // The resend re-drives FireFly's original transaction tx-r7 ...
+    spy.mockResolvedValueOnce({ ok: true, status: 202, statusText: 'ok', text: async () => JSON.stringify({ localId: 'xfer-r7-resend', state: 'pending', tx: { type: 'token_transfer', id: 'tx-r7' } }) } as any);
+    const retried = await FireflyEngine.retry(failed.id);
+    expect(retried).toMatchObject({ status: 'pending', transferId: 'xfer-r7-resend' });
+    expect(retried.detail).toMatchObject({ idempotencyKey: 'R-7', fireflyTx: 'tx-r7' });
+
+    // ... and the confirmation names the transfer the first attempt created.
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify({ id: 'tx-r7', idempotencyKey: 'R-7' }) } as any);
+    const result = await FireflyEngine.handleEvent({ type: 'token_transfer_confirmed', tx: 'tx-r7', tokenTransfer: { localId: 'xfer-r7-first', tx: { id: 'tx-r7' } } });
+    expect(result).toMatchObject({ handled: true, booked: true });
+    expect(await FireflyEngine.get(failed.id)).toMatchObject({ status: 'confirmed', booked: true, transferId: 'xfer-r7-first' });
+    expect(TrustAccountingEngine.postJournalEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it('sync follows the idempotency key when FireFly no longer knows the stored transfer id', async () => {
+    const spy = mockFetch([...preflight('transfer'), { localId: 'xfer-r8-resend', state: 'pending', tx: { id: 'tx-r8' } }]);
+    const row = await FireflyEngine.transfer({ amountUsd: 40, reference: 'R-8' });
+
+    spy.mockResolvedValueOnce(failure(404, 'FF10109: Not found'));
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify([{ id: 'tx-r8', idempotencyKey: 'R-8' }]) } as any);
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify([{ localId: 'xfer-r8-first', state: 'confirmed', tx: { id: 'tx-r8' } }]) } as any);
+    const synced = await FireflyEngine.sync(row.id);
+    expect(call(5).url).toContain('/transactions?idempotencyKey=R-8');
+    expect(call(6).url).toContain('/tokens/transfers?tx=tx-r8');
+    expect(synced).toMatchObject({ polled: true, status: 'confirmed', booked: true, transferId: 'xfer-r8-first' });
+  });
+
+  it('sync reports, rather than fails, a re-driven transfer FireFly has not produced yet', async () => {
+    const spy = mockFetch([...preflight('transfer'), { localId: 'xfer-r9', state: 'pending', tx: { id: 'tx-r9' } }]);
+    const row = await FireflyEngine.transfer({ amountUsd: 40, reference: 'R-9' });
+    spy.mockResolvedValueOnce(failure(404, 'FF10109: Not found'));
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify([{ id: 'tx-r9', idempotencyKey: 'R-9' }]) } as any);
+    spy.mockResolvedValueOnce({ ok: true, status: 200, statusText: 'ok', text: async () => JSON.stringify([]) } as any);
+    expect(await FireflyEngine.sync(row.id)).toMatchObject({ polled: true, status: 'pending', booked: false, reason: expect.stringContaining('no transfer') });
+    expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a shadow, confirmed or booked transfer', async () => {
+    delete process.env.FIREFLY_LIVE;
+    const shadow = await FireflyEngine.transfer({ amountUsd: 5, reference: 'R-6' });
+    expect(await FireflyEngine.retry(shadow.id)).toMatchObject({ retried: false });
+    await expect(FireflyEngine.retry('nope')).rejects.toThrow(/not found/);
   });
 });
 

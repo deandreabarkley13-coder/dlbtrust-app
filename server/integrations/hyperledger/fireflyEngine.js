@@ -29,6 +29,18 @@
  * Gating: FIREFLY_LIVE must be true to move tokens. Messages are informational
  * (they move no value) so they follow the node's reachability, not the money
  * gate; a transfer without the gate returns a plan.
+ *
+ * Retries: every submission carries a FireFly idempotency key, so a POST that
+ * errored can be re-sent without risking a double move — FireFly answers 409
+ * with the transaction it already accepted and we adopt it. A submit failure
+ * is retried once inline; a transfer FireFly itself reported failed (e.g. an
+ * EVM revert) can be re-driven once via `retry()`, under a new key.
+ *
+ * A resend under an existing key re-drives FireFly's *original* transaction,
+ * and the transfer it eventually confirms can carry that first attempt's local
+ * id rather than the one the resend answered with. The transaction id — which
+ * maps 1:1 to our idempotency key — is therefore the durable correlation, and
+ * both the webhook and `sync` fall back to it when a local id does not match.
  */
 
 const crypto = require('crypto');
@@ -54,6 +66,7 @@ function toCents(usd) { return Math.round((Number(usd) || 0) * 100); }
 function fromCents(cents) { return (Number(cents) || 0) / 100; }
 function reject(message, code, status = 422) { return Object.assign(new Error(message), { code, status }); }
 function id(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 // Pool ids, counterparty verifiers and the instruction datatype are node
 // registrations, not state: resolve each once per node instead of adding three
@@ -126,6 +139,11 @@ class FireflyEngine {
       sourceAccountId: str('FIREFLY_SOURCE_ACCOUNT_ID') || null,
       maxTransferUsd: num('FIREFLY_MAX_TRANSFER_USD', 0),
       timeoutMs: num('FIREFLY_TIMEOUT_MS', 20000),
+      // Extra POST attempts when the submission itself errors (same idempotency key).
+      submitRetries: Math.max(0, num('FIREFLY_SUBMIT_RETRIES', 1)),
+      submitRetryDelayMs: Math.max(0, num('FIREFLY_SUBMIT_RETRY_DELAY_MS', 1500)),
+      // How many times a transfer FireFly reported failed may be re-driven.
+      transferRetries: Math.max(0, num('FIREFLY_TRANSFER_RETRIES', 1)),
       // Notarize each instruction on the Fabric channel as well as pinning it.
       notarize: str('FIREFLY_NOTARIZE_INSTRUCTIONS', 'true') !== 'false',
       live: str('FIREFLY_LIVE') === 'true',
@@ -181,7 +199,10 @@ class FireflyEngine {
       try { parsed = text ? JSON.parse(text) : null; } catch (e) { parsed = { raw: text }; }
       if (!res.ok) {
         const detail = (parsed && (parsed.error || parsed.message)) || res.statusText;
-        throw reject(`firefly ${path} failed: ${detail}`, 'FIREFLY_CALL_FAILED', res.status >= 500 ? 502 : 422);
+        throw Object.assign(
+          reject(`firefly ${path} failed: ${detail}`, 'FIREFLY_CALL_FAILED', res.status >= 500 ? 502 : 422),
+          { upstreamStatus: res.status },
+        );
       }
       return parsed || {};
     } catch (err) {
@@ -364,6 +385,48 @@ class FireflyEngine {
     sourceType = null, sourceAccountId = null, requestedBy = null,
   } = {}) {
     const cfg = this.getConfig();
+    return this._transfer(cfg, { amountUsd, reference, counterparty, poolId, memo, sourceType, sourceAccountId, requestedBy }, null);
+  }
+
+  /**
+   * Re-drive a transfer that failed. Nothing moved the first time — either the
+   * POST never got an accepted transfer back, or FireFly reported the transfer
+   * failed — so the same instruction is resubmitted under the same reference,
+   * up to FIREFLY_TRANSFER_RETRIES times. Anything else is returned untouched.
+   */
+  static async retry(settlementId, { requestedBy = null } = {}) {
+    const record = await this.get(settlementId);
+    if (!record) throw reject(`settlement ${settlementId} not found`, 'SETTLEMENT_NOT_FOUND', 404);
+    if (record.kind !== 'transfer') return { ...record, retried: false, reason: 'only transfers can be retried' };
+    const cfg = this.getConfig();
+    const eligibility = this._retryEligibility(cfg, record);
+    if (!eligibility.ok) return { ...record, retried: false, reason: eligibility.reason };
+    const instruction = (record.detail && record.detail.instruction) || {};
+    return this._transfer(cfg, {
+      amountUsd: fromCents(record.amountCents),
+      reference: record.reference,
+      counterparty: record.counterparty,
+      poolId: record.pool,
+      memo: instruction.memo || null,
+      sourceType: record.sourceType,
+      sourceAccountId: record.sourceAccountId,
+      requestedBy: requestedBy || record.requestedBy,
+    }, record);
+  }
+
+  static _retryEligibility(cfg, record) {
+    if (record.status !== 'failed') return { ok: false, reason: `transfer is ${record.status}, only failed transfers are retried` };
+    if (record.booked) return { ok: false, reason: 'transfer is already booked' };
+    const attempt = Number((record.detail && record.detail.attempt) || 1);
+    if (attempt > cfg.transferRetries) {
+      return { ok: false, reason: `retry limit reached (${attempt - 1} of ${cfg.transferRetries} retries used)` };
+    }
+    return { ok: true, attempt: attempt + 1 };
+  }
+
+  static async _transfer(cfg, {
+    amountUsd, reference, counterparty, poolId, memo, sourceType, sourceAccountId, requestedBy,
+  }, previous) {
     const amount = Number(amountUsd);
     if (!Number.isFinite(amount) || amount <= 0) throw reject('amountUsd must be a positive number', 'AMOUNT_INVALID');
     if (cfg.maxTransferUsd > 0 && amount > cfg.maxTransferUsd) {
@@ -375,8 +438,13 @@ class FireflyEngine {
     if (!target) throw reject('no counterparty org (set FIREFLY_COUNTERPARTY_ORG or pass counterparty)', 'COUNTERPARTY_REQUIRED');
     if (!pool_) throw reject('no token pool (set FIREFLY_TOKEN_POOL or pass poolId)', 'POOL_REQUIRED');
 
-    const existing = await this._find('transfer', ref);
-    if (existing) return { ...existing, idempotent: true };
+    const existing = previous || await this._find('transfer', ref);
+    if (existing && !previous) {
+      // Same reference, failed last time: this call *is* the retry.
+      if (!this._retryEligibility(cfg, existing).ok) return { ...existing, idempotent: true };
+      previous = existing;
+    }
+    const attempt = previous ? this._retryEligibility(cfg, previous).attempt : 1;
 
     const effectiveSourceType = sourceType || cfg.sourceType;
     // The account that is debited is the account that must be checked, so fall
@@ -413,7 +481,7 @@ class FireflyEngine {
     const readiness = this.readiness();
 
     const row = {
-      id: id('FFXFER'),
+      id: previous ? previous.id : id('FFXFER'),
       kind: 'transfer',
       reference: ref,
       namespace: cfg.namespace,
@@ -433,10 +501,23 @@ class FireflyEngine {
       notarizationId: null,
       journalEntryId: null,
       failureReason: null,
-      detail: { instruction, availability },
+      detail: { instruction, availability, attempt },
       requestedBy,
-      createdAt: new Date().toISOString(),
+      createdAt: previous ? previous.createdAt : new Date().toISOString(),
     };
+    if (previous) {
+      row.detail.priorAttempts = ((previous.detail && previous.detail.priorAttempts) || []).concat([{
+        attempt: attempt - 1,
+        transferId: previous.transferId || null,
+        txHash: previous.txHash || null,
+        failureReason: previous.failureReason || null,
+        retriedAt: new Date().toISOString(),
+      }]);
+    }
+    // A submission that never came back with a transfer may still have landed,
+    // so it is resent under the *same* key; only an attempt FireFly accepted and
+    // then reported failed gets a fresh one.
+    const keyIndex = 1 + (row.detail.priorAttempts || []).filter((a) => a.transferId).length;
 
     if (!readiness.canTransfer) {
       row.detail.reason = readiness.live
@@ -458,10 +539,14 @@ class FireflyEngine {
     }
     row.detail.recipientKey = recipientKey;
 
+    // One key per (reference, attempt): a resend of the same attempt can never
+    // move value twice, and a re-drive after a reported failure is a new one.
+    row.detail.idempotencyKey = this._idempotencyKey(ref, keyIndex);
     const body = {
       pool: await this._resolvePoolId(pool_),
       amount: this._baseUnits(amount, cfg.tokenDecimals),
       to: recipientKey,
+      idempotencyKey: row.detail.idempotencyKey,
       message: {
         header: { topics: [cfg.topic], tag: 'settlement_transfer' },
         group: { members: [{ identity: target }] },
@@ -472,7 +557,7 @@ class FireflyEngine {
 
     let response;
     try {
-      response = await this._call(this._ns('/tokens/transfers'), { method: 'POST', body });
+      response = await this._submit(cfg, row, body);
     } catch (err) {
       row.status = 'failed';
       row.failureReason = err.message;
@@ -485,6 +570,10 @@ class FireflyEngine {
     row.messageId = response.message || null;
     row.txHash = this._txHash(response);
     row.status = String(response.state || 'pending').toLowerCase();
+    row.detail.fireflyTx = this._txId(response);
+    // The confirmation webhook can arrive before notarization finishes; the
+    // transfer id has to be on disk by then or the event finds no settlement.
+    await this._persist(row);
 
     if (cfg.notarize) {
       const notarization = await FabricLedgerEngine.notarize({
@@ -496,10 +585,97 @@ class FireflyEngine {
       }).catch((err) => ({ id: null, error: err.message }));
       row.notarizationId = notarization.id || null;
       row.detail.notarization = notarization;
+      await this._attachNotarization(row);
     }
 
-    await this._persist(row);
-    return row;
+    // Re-read rather than return the local copy: the webhook may already have
+    // confirmed and booked this settlement while notarization was in flight.
+    return (await this.get(row.id)) || row;
+  }
+
+  static _idempotencyKey(reference, keyIndex) {
+    return keyIndex > 1 ? `${reference}#${keyIndex}` : String(reference);
+  }
+
+  /** The FireFly transaction id a transfer or event belongs to, if it names one. */
+  static _txId(source) {
+    const tx = source && source.tx;
+    if (!tx) return null;
+    if (typeof tx === 'string') return tx;
+    return typeof tx === 'object' && tx.id ? String(tx.id) : null;
+  }
+
+  /**
+   * Find the settlement a FireFly transaction belongs to when its transfer id
+   * is unknown to us: the transaction's idempotency key is ours, and its
+   * reference names the row. A hit adopts the transfer id so later events match
+   * directly; an already-booked row is left alone.
+   */
+  static async _adoptByTransaction(txId, transferId) {
+    if (!txId) return null;
+    const tx = await this._call(this._ns(`/transactions/${encodeURIComponent(txId)}`)).catch(() => null);
+    const key = tx && tx.idempotencyKey ? String(tx.idempotencyKey) : null;
+    if (!key) return null;
+    const record = await this._find('transfer', key.split('#')[0]);
+    if (!record || record.status === 'shadow') return null;
+    const ownKey = record.detail && record.detail.idempotencyKey;
+    if (ownKey && ownKey !== key) return null;
+    if (record.transferId === String(transferId)) return record;
+    return this._update(record.id, { transferId: String(transferId) });
+  }
+
+  /**
+   * The confirmed transfer for a settlement whose stored transfer id FireFly no
+   * longer answers for: look the transaction up by our idempotency key and take
+   * whichever transfer it produced.
+   */
+  static async _locateByKey(record) {
+    const key = (record.detail && record.detail.idempotencyKey) || String(record.reference);
+    const txs = await this._call(this._ns(`/transactions?idempotencyKey=${encodeURIComponent(key)}&limit=1`)).catch(() => null);
+    const txId = Array.isArray(txs) && txs[0] ? txs[0].id : (record.detail && record.detail.fireflyTx);
+    if (!txId) return null;
+    const transfers = await this._call(this._ns(`/tokens/transfers?tx=${encodeURIComponent(txId)}&limit=1`)).catch(() => null);
+    return Array.isArray(transfers) && transfers[0] ? transfers[0] : null;
+  }
+
+  /**
+   * POST the transfer, retrying a failed submission FIREFLY_SUBMIT_RETRIES
+   * times under the same idempotency key. If FireFly reports the key already
+   * used, the earlier attempt landed after all and that transfer is adopted.
+   */
+  static async _submit(cfg, row, body) {
+    const errors = [];
+    for (let sent = 1; sent <= 1 + cfg.submitRetries; sent += 1) {
+      try {
+        const response = await this._call(this._ns('/tokens/transfers'), { method: 'POST', body });
+        row.detail.submit = { sent, errors };
+        return response;
+      } catch (err) {
+        const adopted = await this._adoptIdempotent(err, body.idempotencyKey);
+        if (adopted) {
+          row.detail.submit = { sent, errors, adopted: true };
+          return adopted;
+        }
+        errors.push({ sent, error: err.message, at: new Date().toISOString() });
+        if (sent > cfg.submitRetries) {
+          row.detail.submit = { sent, errors };
+          throw err;
+        }
+        if (cfg.submitRetryDelayMs) await sleep(cfg.submitRetryDelayMs);
+      }
+    }
+    throw reject('transfer submission exhausted its attempts', 'FIREFLY_SUBMIT_FAILED', 502);
+  }
+
+  static async _adoptIdempotent(err, idempotencyKey) {
+    const match = /FF10431.*transaction '([^']+)'/.exec(err && err.message ? err.message : '');
+    if (!match || !idempotencyKey) return null;
+    try {
+      const transfers = await this._call(this._ns(`/tokens/transfers?tx=${encodeURIComponent(match[1])}&limit=1`));
+      return Array.isArray(transfers) && transfers[0] ? transfers[0] : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /** Poll one transfer and book it if FireFly now calls it confirmed. */
@@ -510,7 +686,14 @@ class FireflyEngine {
     if (record.status === 'shadow') return { ...record, polled: false, reason: 'shadow transfer never reached FireFly' };
     if (!record.transferId) return { ...record, polled: false, reason: 'no FireFly transfer id to poll' };
 
-    const raw = await this._call(this._ns(`/tokens/transfers/${encodeURIComponent(record.transferId)}`));
+    let raw = await this._call(this._ns(`/tokens/transfers/${encodeURIComponent(record.transferId)}`))
+      .catch((err) => { if (err.upstreamStatus === 404) return null; throw err; });
+    if (!raw) {
+      raw = await this._locateByKey(record);
+      if (!raw) return { ...record, polled: true, reason: `FireFly has no transfer ${record.transferId} yet` };
+      const adopted = raw.localId || raw.id;
+      if (adopted && adopted !== record.transferId) await this._update(record.id, { transferId: String(adopted) });
+    }
     const state = String(raw.state || raw.status || '').toLowerCase();
     const confirmed = state === 'confirmed' || Boolean(raw.created && raw.blockchainEvent);
     const failed = state === 'rejected' || state === 'failed';
@@ -546,7 +729,8 @@ class FireflyEngine {
     }
     if (!transferId) return { handled: false, type, reason: 'event carries no transfer id' };
 
-    const record = await this._findByTransferId(transferId);
+    const record = await this._findByTransferId(transferId)
+      || await this._adoptByTransaction(this._txId(body) || this._txId(transfer), transferId);
     if (!record) return { handled: false, type, transferId, reason: 'no settlement matches this transfer' };
 
     if (FAILED_EVENTS.has(type)) {
@@ -762,7 +946,11 @@ class FireflyEngine {
   // ─── persistence ──────────────────────────────────────────────────────────
 
   static async _persist(row) {
-    if (!pool || !pool.query) { memorySettlements.unshift(row); return row; }
+    if (!pool || !pool.query) {
+      const at = memorySettlements.findIndex((r) => r.id === row.id);
+      if (at >= 0) memorySettlements[at] = row; else memorySettlements.unshift(row);
+      return row;
+    }
     await ensureTables();
     await pool.query(
       `INSERT INTO firefly_settlements
@@ -772,9 +960,10 @@ class FireflyEngine {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::jsonb,$22)
        ON CONFLICT (kind, reference) DO UPDATE SET
          status = EXCLUDED.status,
-         transfer_id = COALESCE(EXCLUDED.transfer_id, firefly_settlements.transfer_id),
-         message_id = COALESCE(EXCLUDED.message_id, firefly_settlements.message_id),
-         tx_hash = COALESCE(EXCLUDED.tx_hash, firefly_settlements.tx_hash),
+         transfer_id = EXCLUDED.transfer_id,
+         message_id = EXCLUDED.message_id,
+         tx_hash = EXCLUDED.tx_hash,
+         notarization_id = COALESCE(EXCLUDED.notarization_id, firefly_settlements.notarization_id),
          failure_reason = EXCLUDED.failure_reason,
          detail = EXCLUDED.detail,
          updated_at = NOW()`,
@@ -784,6 +973,26 @@ class FireflyEngine {
         row.journalEntryId, row.failureReason, JSON.stringify(row.detail || {}), row.requestedBy],
     );
     return row;
+  }
+
+  static async _attachNotarization(row) {
+    if (!pool || !pool.query) {
+      const stored = memorySettlements.find((r) => r.id === row.id);
+      if (stored && stored !== row) {
+        stored.notarizationId = row.notarizationId;
+        stored.detail = { ...(stored.detail || {}), notarization: row.detail.notarization };
+      }
+      return;
+    }
+    await ensureTables();
+    await pool.query(
+      `UPDATE firefly_settlements
+          SET notarization_id = COALESCE($2, notarization_id),
+              detail = COALESCE(detail, '{}'::jsonb) || $3::jsonb,
+              updated_at = NOW()
+        WHERE id = $1`,
+      [row.id, row.notarizationId, JSON.stringify({ notarization: row.detail.notarization })],
+    );
   }
 
   static async _update(settlementId, patch) {
@@ -801,11 +1010,13 @@ class FireflyEngine {
               tx_hash = COALESCE($4, tx_hash),
               journal_entry_id = COALESCE($5, journal_entry_id),
               failure_reason = $6,
+              transfer_id = COALESCE($7, transfer_id),
+              firefly_id = COALESCE($7, firefly_id),
               updated_at = NOW()
         WHERE id = $1
         RETURNING *`,
       [settlementId, patch.status ?? null, patch.booked ?? null, patch.txHash ?? null,
-        patch.journalEntryId ?? null, patch.failureReason ?? null],
+        patch.journalEntryId ?? null, patch.failureReason ?? null, patch.transferId ?? null],
     );
     return res.rows[0] ? this._fromRow(res.rows[0]) : null;
   }
