@@ -55,7 +55,7 @@ function testBankRoute() {
   assert.throws(() => PayoutRouteEngine.plan({
     destinationType: 'bank',
     bank: { routingNumber: '021000022', accountNumber: '1234567890', accountHolderName: 'Jane' },
-  }), /ABA checksum/);
+  }), err => /ABA checksum/.test(err.message) && err.status === 400);
   assert.throws(() => PayoutRouteEngine.plan({
     destinationType: 'bank',
     bank: { routingNumber: GOOD_ROUTING, accountHolderName: 'Jane' },

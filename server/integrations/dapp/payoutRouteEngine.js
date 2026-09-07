@@ -47,6 +47,14 @@ function mask(v) {
   return d ? `****${d.slice(-4)}` : null;
 }
 
+// Bad destination details are the caller's input, so they answer 4xx rather
+// than reading as a server fault.
+function badRequest(message) {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+}
+
 function pick(...values) {
   for (const v of values) {
     if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
@@ -65,7 +73,7 @@ class PayoutRouteEngine {
     if (destinationType) {
       const normalized = String(destinationType).toLowerCase();
       if (!DESTINATION_TYPES.includes(normalized)) {
-        throw new Error(`destinationType must be one of ${DESTINATION_TYPES.join(', ')}`);
+        throw badRequest(`destinationType must be one of ${DESTINATION_TYPES.join(', ')}`);
       }
       return normalized;
     }
@@ -84,13 +92,13 @@ class PayoutRouteEngine {
     const accountType = String(pick(bank.accountType, 'checking')).toLowerCase();
     const holderType = String(pick(bank.holderType, bank.accountHolderType, 'individual')).toLowerCase();
 
-    if (!routingNumber) throw new Error('bank.routingNumber required for a bank destination');
-    if (routingNumber.length !== 9) throw new Error('bank.routingNumber must be 9 digits');
-    if (validateRouting && !validateRouting(routingNumber)) throw new Error(`bank.routingNumber ${routingNumber} failed the ABA checksum`);
-    if (!accountNumber) throw new Error('bank.accountNumber required for a bank destination');
-    if (!accountHolderName) throw new Error('bank.accountHolderName required for a bank destination');
-    if (!ACCOUNT_TYPES.includes(accountType)) throw new Error(`bank.accountType must be one of ${ACCOUNT_TYPES.join(', ')}`);
-    if (!HOLDER_TYPES.includes(holderType)) throw new Error(`bank.holderType must be one of ${HOLDER_TYPES.join(', ')}`);
+    if (!routingNumber) throw badRequest('bank.routingNumber required for a bank destination');
+    if (routingNumber.length !== 9) throw badRequest('bank.routingNumber must be 9 digits');
+    if (validateRouting && !validateRouting(routingNumber)) throw badRequest(`bank.routingNumber ${routingNumber} failed the ABA checksum`);
+    if (!accountNumber) throw badRequest('bank.accountNumber required for a bank destination');
+    if (!accountHolderName) throw badRequest('bank.accountHolderName required for a bank destination');
+    if (!ACCOUNT_TYPES.includes(accountType)) throw badRequest(`bank.accountType must be one of ${ACCOUNT_TYPES.join(', ')}`);
+    if (!HOLDER_TYPES.includes(holderType)) throw badRequest(`bank.holderType must be one of ${HOLDER_TYPES.join(', ')}`);
 
     return {
       routingNumber,
@@ -113,7 +121,7 @@ class PayoutRouteEngine {
   static normalizeBiller(biller = {}) {
     const billerName = pick(biller.billerName, biller.vendorName, biller.name, biller.businessName);
     const billerId = pick(biller.billerId, biller.vendorId);
-    if (!billerName && !billerId) throw new Error('biller.billerName or biller.billerId required for a biller destination');
+    if (!billerName && !billerId) throw badRequest('biller.billerName or biller.billerId required for a biller destination');
     return {
       billerId,
       billerName,
@@ -136,7 +144,7 @@ class PayoutRouteEngine {
     const override = payoutRail ? String(payoutRail).toLowerCase() : null;
 
     if (type === 'wallet') {
-      if (!destinationAddress) throw new Error('destinationAddress required for a wallet destination');
+      if (!destinationAddress) throw badRequest('destinationAddress required for a wallet destination');
       const rail = override || 'sit';
       const engine = rail === 'thirdweb' || rail === 'thirdweb_server_wallet' ? 'thirdweb' : 'payout_center';
       return {
@@ -152,7 +160,7 @@ class PayoutRouteEngine {
     }
 
     if (String(currency).toUpperCase() !== 'USD') {
-      throw new Error(`${type} destinations settle in USD, not ${currency}`);
+      throw badRequest(`${type} destinations settle in USD, not ${currency}`);
     }
 
     if (type === 'bank') {
