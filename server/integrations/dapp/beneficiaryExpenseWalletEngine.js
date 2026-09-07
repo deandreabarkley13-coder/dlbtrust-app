@@ -12,9 +12,12 @@
  *
  * Funding is two legs that must agree:
  *
- *   fiat leg   the hold account is checked through SourceOfFundsAdapter and
+ *   source leg the hold account is checked through SourceOfFundsAdapter and
  *              swept into the stablecoin treasury, then a double-entry journal
- *              records the beneficiary obligation.
+ *              records the beneficiary obligation; or, with source type
+ *              `trust_token`, the treasury wallet's on-chain balance of the
+ *              trust's own reserve-backed token is checked instead and nothing
+ *              is swept (the token already is the trust's value).
  *   value leg  ThirdwebServerWalletEngine.send moves the token quantity the
  *              oracle prices at the requested USD amount from the trust's
  *              treasury server wallet to the expense wallet.
@@ -42,6 +45,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 const DEFAULT_IDENTIFIER_PREFIX = 'dlbt-exp';
+const TRUST_TOKEN_SOURCE = 'trust_token';
 const WALLET_FUNDS_CODE = 'WALLET-FUNDS';
 const WALLET_ALLOCATIONS_CODE = 'WALLET-ALLOCATIONS';
 
@@ -107,7 +111,9 @@ class BeneficiaryExpenseWalletEngine {
       purposes: DistributionPolicy.getPolicy().purposes,
       chainId: wallet.chainId,
       tokenAddress: str('EXPENSE_WALLET_TOKEN_ADDRESS') || null,
-      // Hold account the distributions are funded from.
+      // Where distributions are funded from: a hold account in the sub-ledger
+      // ('trust', 'fineract', ...) or 'trust_token' — the trust's own
+      // reserve-backed token already sitting in the treasury wallet.
       holdSourceType: str('EXPENSE_WALLET_HOLD_SOURCE_TYPE', 'trust'),
       holdSourceAccountId: str('EXPENSE_WALLET_HOLD_ACCOUNT_ID') || null,
       live: wallet.live,
@@ -124,7 +130,11 @@ class BeneficiaryExpenseWalletEngine {
     const cfg = this.getConfig();
     const wallet = ThirdwebServerWalletEngine.readiness();
     const issues = [...wallet.issues];
-    if (!cfg.holdSourceAccountId) issues.push('EXPENSE_WALLET_HOLD_ACCOUNT_ID not configured (pass sourceAccountId per request)');
+    if (cfg.holdSourceType === TRUST_TOKEN_SOURCE) {
+      if (!cfg.tokenAddress) issues.push('EXPENSE_WALLET_TOKEN_ADDRESS must be the trust token when EXPENSE_WALLET_HOLD_SOURCE_TYPE=trust_token');
+    } else if (!cfg.holdSourceAccountId) {
+      issues.push('EXPENSE_WALLET_HOLD_ACCOUNT_ID not configured (pass sourceAccountId per request)');
+    }
     return {
       provider: 'beneficiary-expense-wallets',
       identifierPrefix: cfg.identifierPrefix,
@@ -235,6 +245,29 @@ class BeneficiaryExpenseWalletEngine {
     return out;
   }
 
+  /**
+   * Treasury wallet's on-chain balance of the trust token backing a
+   * distribution. Nothing is swept: the token already is the trust's value,
+   * minted against reserves in the vault, so the check is that enough of it
+   * sits in the treasury wallet to cover the quantity being sent.
+   */
+  static async _trustTokenPosition({ tokenAddress, chainId, quantity, amountUsd }) {
+    if (!tokenAddress) throw Object.assign(new Error('trust_token source needs the trust token address (EXPENSE_WALLET_TOKEN_ADDRESS)'), { status: 422 });
+    const treasury = ThirdwebServerWalletEngine.getConfig().address;
+    if (!treasury) throw Object.assign(new Error('THIRDWEB_SERVER_WALLET_ADDRESS not configured'), { status: 422 });
+    const balances = await ThirdwebServerWalletEngine.balance({ address: treasury, chainId, tokenAddress });
+    const row = (balances || []).find((b) => String(b.tokenAddress || '').toLowerCase() === String(tokenAddress).toLowerCase()) || (balances || [])[0];
+    const available = BigInt((row && row.value) || 0);
+    const needed = BigInt(quantity);
+    if (available < needed) {
+      throw Object.assign(
+        new Error(`treasury wallet ${treasury} holds ${available} of ${tokenAddress}, needs ${needed} for $${amountUsd}`),
+        { status: 422, code: 'INSUFFICIENT_SOURCE_FUNDS' }
+      );
+    }
+    return { position: { treasury, tokenAddress, available: available.toString() }, availableCents: null, neededCents: toCents(amountUsd) };
+  }
+
   /** Hold-account position backing a distribution, with the USD shortfall check. */
   static async _holdPosition({ sourceType, sourceAccountId, amountUsd }) {
     const position = await SourceOfFundsAdapter.getPosition({ sourceType, sourceAccountId, purpose: 'payment' });
@@ -273,13 +306,14 @@ class BeneficiaryExpenseWalletEngine {
     return record;
   }
 
-  static async _postJournal({ identifier, amountUsd, purpose, fundingId }) {
+  static async _postJournal({ identifier, amountUsd, purpose, fundingId, sourceType }) {
     if (!TrustAccountingEngine) return null;
     const walletFunding = getWalletFundingEngine();
     if (walletFunding) await walletFunding.ensureAccounts();
+    const from = sourceType === TRUST_TOKEN_SOURCE ? 'trust token (reserve-backed)' : 'trust hold account';
     return TrustAccountingEngine.postJournalEntry({
       entryDate: new Date(),
-      description: `Fund ${purpose} expense wallet ${identifier} from trust hold account`,
+      description: `Fund ${purpose} expense wallet ${identifier} from ${from}`,
       referenceType: 'expense_wallet_funding',
       referenceId: fundingId,
       postedBy: 'beneficiary-expense-wallet-engine',
@@ -307,19 +341,23 @@ class BeneficiaryExpenseWalletEngine {
       sourceType: sourceType || cfg.holdSourceType,
       sourceAccountId: sourceAccountId || cfg.holdSourceAccountId,
     };
-    if (!source.sourceAccountId) {
+    const fromTrustToken = source.sourceType === TRUST_TOKEN_SOURCE;
+    if (fromTrustToken) source.sourceAccountId = source.sourceAccountId || ThirdwebServerWalletEngine.getConfig().address || null;
+    if (!fromTrustToken && !source.sourceAccountId) {
       throw Object.assign(new Error('sourceAccountId required (or set EXPENSE_WALLET_HOLD_ACCOUNT_ID)'), { status: 422 });
     }
 
     const wallet = await this.ensureWallet({ beneficiary, purpose: policy.purpose });
     const chain = Number(chainId || wallet.chainId || cfg.chainId);
     const token = tokenAddress === undefined ? cfg.tokenAddress : tokenAddress;
-    const hold = await this._holdPosition({ ...source, amountUsd: policy.amountUsd });
     const quote = await ThirdwebPriceOracle.quantityForUsd({ chainId: chain, tokenAddress: token, amountUsd: policy.amountUsd });
+    const hold = fromTrustToken
+      ? await this._trustTokenPosition({ tokenAddress: token, chainId: chain, quantity: quote.quantity, amountUsd: policy.amountUsd })
+      : await this._holdPosition({ ...source, amountUsd: policy.amountUsd });
 
     const fundingId = id();
     let sweptCents = 0;
-    if (cfg.live) {
+    if (cfg.live && !fromTrustToken) {
       await SourceOfFundsAdapter._fundSourceToTreasury({
         ...source,
         paymentId: fundingId,
@@ -350,6 +388,21 @@ class BeneficiaryExpenseWalletEngine {
       throw err;
     }
 
+    // Trust-token distributions book only once the chain confirms: the token is
+    // the trust's own value, so a failed send must leave no obligation behind.
+    let confirmation = null;
+    if (fromTrustToken && !transfer.shadow && transfer.transactionId) {
+      confirmation = await ThirdwebServerWalletEngine.waitForTransaction(transfer.transactionId);
+      transfer.status = confirmation.status;
+      transfer.transactionHash = confirmation.transactionHash || null;
+      if (confirmation.status !== 'CONFIRMED') {
+        throw Object.assign(
+          new Error(`trust token transfer ${transfer.transactionId} ${confirmation.status}${confirmation.error ? `: ${confirmation.error}` : ''}`),
+          { status: 502, code: 'TRANSFER_NOT_CONFIRMED', fundingId, transferId: transfer.id, transactionId: transfer.transactionId }
+        );
+      }
+    }
+
     const record = {
       id: fundingId,
       identifier: wallet.identifier,
@@ -361,7 +414,8 @@ class BeneficiaryExpenseWalletEngine {
       amountUsd: policy.amountUsd,
       sourceType: source.sourceType,
       sourceAccountId: source.sourceAccountId,
-      sourceAvailableUsd: fromCents(hold.availableCents),
+      sourceAvailableUsd: hold.availableCents === null ? null : fromCents(hold.availableCents),
+      sourceAvailableQuantity: hold.position && hold.position.available ? hold.position.available : null,
       chainId: chain,
       tokenAddress: token,
       asset: token ? 'erc20' : 'native',
@@ -372,14 +426,18 @@ class BeneficiaryExpenseWalletEngine {
       shadow: transfer.shadow,
       transferId: transfer.id,
       transactionId: transfer.transactionId,
+      transactionHash: transfer.transactionHash || null,
+      transferStatus: transfer.status,
       sweptCents,
       reason: transfer.reason || null,
+      journalEntryId: null,
     };
     await this._recordFunding(record);
     if (!transfer.shadow) {
-      await this._postJournal({
-        identifier: wallet.identifier, amountUsd: policy.amountUsd, purpose: policy.purpose, fundingId,
-      }).catch((e) => console.warn('[BeneficiaryExpenseWalletEngine] journal entry failed:', e.message));
+      const journal = await this._postJournal({
+        identifier: wallet.identifier, amountUsd: policy.amountUsd, purpose: policy.purpose, fundingId, sourceType: source.sourceType,
+      }).catch((e) => { console.warn('[BeneficiaryExpenseWalletEngine] journal entry failed:', e.message); return null; });
+      record.journalEntryId = journal && journal.entry_id ? journal.entry_id : null;
     }
     return record;
   }
@@ -415,4 +473,4 @@ class BeneficiaryExpenseWalletEngine {
   }
 }
 
-module.exports = { BeneficiaryExpenseWalletEngine, DEFAULT_IDENTIFIER_PREFIX };
+module.exports = { BeneficiaryExpenseWalletEngine, DEFAULT_IDENTIFIER_PREFIX, TRUST_TOKEN_SOURCE };

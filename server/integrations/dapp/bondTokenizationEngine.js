@@ -6,10 +6,14 @@
  * Wraps the internal fixed-income/bond ledger and produces ERC-20 tokens
  * representing bond principal and accrued interest. In shadow mode it records
  * token mints in the local database; in live mode it deploys/mints via an
- * ERC-20 factory or direct BondToken contract using the dapp hot wallet.
+ * ERC-20 factory or direct BondToken contract, signed either by the dapp hot
+ * wallet (DAPP_PRIVATE_KEY) or, with DAPP_SIGNER=thirdweb, by the Vault-held
+ * thirdweb server wallet (ThirdwebChainSigner: no key on the host, gas
+ * sponsored by the project).
  */
 
 const { getConfig } = require('./config');
+const { ThirdwebChainSigner } = require('./thirdwebChainSigner');
 const fs = require('fs');
 const path = require('path');
 
@@ -67,12 +71,18 @@ async function ensureTable() {
   `);
 }
 
+function viemChain(chainId) {
+  if (!chains) return undefined;
+  return Object.values(chains).find((c) => c && typeof c === 'object' && Number(c.id) === Number(chainId)) || chains.sepolia;
+}
+
 function walletClient() {
-  if (!viem) throw new Error('viem not installed');
   const cfg = getConfig();
+  if (ThirdwebChainSigner.active()) return ThirdwebChainSigner.clients({ chainId: cfg.chainId });
+  if (!viem) throw new Error('viem not installed');
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
-  const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const chain = viemChain(cfg.chainId);
   const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
@@ -115,19 +125,25 @@ class BondTokenizationEngine {
 
   /** The wallet that holds unsold units and signs live mints, burns and transfers. */
   static operatorAddress() {
+    if (ThirdwebChainSigner.active()) return ThirdwebChainSigner.address() || getConfig().operatorAddress || null;
     return getConfig().operatorAddress || null;
   }
 
   static readiness() {
     const cfg = this.getConfig();
     const issues = [];
+    const signer = ThirdwebChainSigner.active() ? 'thirdweb' : 'private-key';
     if (!cfg.enabled) issues.push('BOND_TOKENIZATION_ENABLED is not true');
     if (!cfg.shadow) {
-      if (!cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
-      if (!cfg.rpcUrl) issues.push('DAPP_RPC_URL not configured');
+      if (signer === 'thirdweb') {
+        issues.push(...ThirdwebChainSigner.readiness().issues);
+      } else {
+        if (!cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+        if (!cfg.rpcUrl) issues.push('DAPP_RPC_URL not configured');
+      }
       if (!cfg.factoryAddress && !fs.existsSync(cfg.bytecodePath)) issues.push('BOND_TOKEN_FACTORY or BOND_TOKEN_BYTECODE_PATH missing');
     }
-    return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
+    return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', signer, operator: this.operatorAddress(), chainId: cfg.chainId, issues };
   }
 
   /**
@@ -170,7 +186,15 @@ class BondTokenizationEngine {
       metadata: JSON.stringify({ shadow: cfg.shadow, chainId: cfg.chainId, decimals }),
     };
 
-    if (!cfg.shadow && !tokenAddress) {
+    if (!cfg.shadow && !tokenAddress && ThirdwebChainSigner.active()) {
+      const deployed = await ThirdwebChainSigner.deployBondToken({ name: record.token_name, symbol: record.token_symbol, chainId: cfg.chainId });
+      record.token_address = deployed.address;
+      record.metadata = JSON.stringify({
+        shadow: false, chainId: cfg.chainId, decimals, signer: 'thirdweb',
+        factory: deployed.factory, deployTx: deployed.transactionHash, deployTransactionId: deployed.transactionId,
+        owner: ThirdwebChainSigner.address(),
+      });
+    } else if (!cfg.shadow && !tokenAddress) {
       const { wallet, publicClient, fees } = walletClient();
       const abi = getBondTokenAbi();
       const bytecode = getBondTokenBytecode();
@@ -309,6 +333,9 @@ class BondTokenizationEngine {
 
     if (!cfg.shadow) {
       if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
+      // A pseudo-holder such as 'treasury' has no address; the units land in the operator wallet.
+      const onChainHolder = /^0x[0-9a-fA-F]{40}$/.test(String(target)) ? target : this.operatorAddress();
+      if (!onChainHolder) throw new Error(`holder ${target} has no on-chain address and no operator wallet is configured`);
       const { wallet, publicClient, fees } = walletClient();
       const abi = getBondTokenAbi();
       const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
@@ -317,7 +344,7 @@ class BondTokenizationEngine {
         address: token.token_address,
         abi,
         functionName: 'mint',
-        args: [target, raw],
+        args: [onChainHolder, raw],
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
@@ -368,7 +395,7 @@ class BondTokenizationEngine {
       // retire token the operator wallet holds. Anyone else has to transfer it
       // back first; burning their balance in the ledger alone would leave the
       // chain and the books disagreeing, which is the thing this exists to stop.
-      const operator = getConfig().operatorAddress || '';
+      const operator = this.operatorAddress() || '';
       if (!operator || String(target).toLowerCase() !== String(operator).toLowerCase()) {
         throw new Error(`on-chain burn is only possible from the operator wallet ${operator || '(unset)'}, not ${target}`);
       }
@@ -430,12 +457,12 @@ class BondTokenizationEngine {
     if (units <= 0) throw new Error('amount must be positive');
     if (!toAddress || !/^0x[0-9a-fA-F]{40}$/.test(String(toAddress))) throw new Error('toAddress must be an EVM address');
     const cfg = this.getConfig();
-    const from = fromAddress || getConfig().operatorAddress || 'treasury';
+    const from = fromAddress || this.operatorAddress() || 'treasury';
     let txHash = null;
 
     if (!cfg.shadow) {
       if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
-      const operator = getConfig().operatorAddress || '';
+      const operator = this.operatorAddress() || '';
       if (!operator || String(from).toLowerCase() !== operator.toLowerCase()) {
         throw new Error(`on-chain transfer is only possible from the operator wallet ${operator || '(unset)'}, not ${from}`);
       }
@@ -645,7 +672,7 @@ class BondTokenizationEngine {
       } else if (delta > 0) {
         await pool.query(
           'INSERT INTO bond_token_holders (id, token_id, holder_address, balance) VALUES ($1, $2, $3, $4)',
-          [id('BTH'), tokenId, getConfig().operatorAddress || 'treasury', delta]
+          [id('BTH'), tokenId, this.operatorAddress() || 'treasury', delta]
         );
       }
     } else {

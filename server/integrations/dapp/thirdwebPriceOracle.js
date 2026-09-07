@@ -9,6 +9,10 @@
  * Native assets use the 0xEeee…EEeE sentinel. Quotes are cached for
  * THIRDWEB_PRICE_CACHE_MS (default 60s) and rejected when the upstream price
  * is older than THIRDWEB_PRICE_MAX_AGE_MS (default 15 min).
+ *
+ * Tokens the trust itself issues have no market and are priced by construction
+ * instead: `pin()` at runtime (PtcStablecoinEngine pins DLB-PTCUSD at $1.00) or
+ * THIRDWEB_PINNED_PRICES="chainId:address:priceUsd:decimals:symbol,...".
  */
 
 const NATIVE_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
@@ -18,6 +22,21 @@ function str(name, def = '') { return (process.env[name] || def).toString().trim
 function num(name, def) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : def; }
 
 const cache = new Map();
+const pinned = new Map();
+
+function pinnedFromEnv() {
+  const out = new Map();
+  for (const entry of str('THIRDWEB_PINNED_PRICES').split(',').map((s) => s.trim()).filter(Boolean)) {
+    const [chainId, tokenAddress, priceUsd, decimals, symbol] = entry.split(':');
+    const price = Number(priceUsd);
+    const dec = Number(decimals);
+    if (!chainId || !tokenAddress || !Number.isFinite(price) || price <= 0 || !Number.isInteger(dec)) continue;
+    out.set(`${Number(chainId)}:${tokenAddress.toLowerCase()}`, {
+      chainId: Number(chainId), tokenAddress, symbol: symbol || 'PINNED', decimals: dec, priceUsd: price, priceTimestamp: null, source: 'pinned:env', fetchedAt: Date.now(),
+    });
+  }
+  return out;
+}
 
 class ThirdwebPriceOracle {
   static getConfig() {
@@ -43,14 +62,39 @@ class ThirdwebPriceOracle {
 
   static _key(chainId, tokenAddress) { return `${chainId}:${String(tokenAddress || NATIVE_TOKEN).toLowerCase()}`; }
 
+  /** Fix a token's USD price by construction (an issuer's own token). Overrides the market lookup. */
+  static pin({ chainId, tokenAddress, priceUsd, decimals, symbol, source = 'pinned' } = {}) {
+    const chain = Number(chainId);
+    const price = Number(priceUsd);
+    const dec = Number(decimals);
+    if (!Number.isInteger(chain) || chain <= 0) throw new Error('chainId required');
+    if (!tokenAddress) throw new Error('tokenAddress required');
+    if (!Number.isFinite(price) || price <= 0) throw new Error('priceUsd must be positive');
+    if (!Number.isInteger(dec) || dec < 0) throw new Error('decimals must be a non-negative integer');
+    const quote = { chainId: chain, tokenAddress, symbol: symbol || 'PINNED', decimals: dec, priceUsd: price, priceTimestamp: null, source, fetchedAt: Date.now() };
+    pinned.set(this._key(chain, tokenAddress), quote);
+    return quote;
+  }
+
+  static unpin({ chainId, tokenAddress } = {}) { pinned.delete(this._key(Number(chainId), tokenAddress)); }
+
+  static pinnedPrice(chainId, tokenAddress) {
+    const key = this._key(Number(chainId), tokenAddress);
+    return pinned.get(key) || pinnedFromEnv().get(key) || null;
+  }
+
+  static listPinned() { return [...pinnedFromEnv().values(), ...pinned.values()]; }
+
   /** Spot price and decimals for a token; native when tokenAddress is omitted. */
   static async getPrice({ chainId, tokenAddress } = {}) {
     const cfg = this.getConfig();
-    if (!cfg.enabled) throw Object.assign(new Error('price oracle disabled'), { status: 503 });
-    if (!cfg.secretKey) throw Object.assign(new Error('THIRDWEB_SECRET_KEY is required for price lookups'), { status: 503 });
     const chain = Number(chainId);
     if (!Number.isInteger(chain) || chain <= 0) throw new Error('chainId required');
     const token = tokenAddress || NATIVE_TOKEN;
+    const pin = this.pinnedPrice(chain, token);
+    if (pin) return { ...pin, fetchedAt: Date.now() };
+    if (!cfg.enabled) throw Object.assign(new Error('price oracle disabled'), { status: 503 });
+    if (!cfg.secretKey) throw Object.assign(new Error('THIRDWEB_SECRET_KEY is required for price lookups'), { status: 503 });
     const key = this._key(chain, token);
     const hit = cache.get(key);
     if (hit && Date.now() - hit.fetchedAt < cfg.cacheMs) return hit;
