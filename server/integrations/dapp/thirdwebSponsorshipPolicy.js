@@ -41,6 +41,14 @@ function list(name) {
 
 function lower(value) { return String(value || '').toLowerCase(); }
 
+/** Hop-by-hop / platform headers; anything else is one the caller set deliberately. */
+const STANDARD_HEADERS = new Set([
+  'host', 'connection', 'content-type', 'content-length', 'accept', 'accept-encoding', 'accept-language',
+  'user-agent', 'referer', 'origin', 'cache-control', 'pragma', 'via', 'date', 'transfer-encoding',
+  'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host', 'x-forwarded-port', 'x-real-ip', 'x-request-id',
+  'traceparent', 'tracestate', 'cf-connecting-ip', 'cf-ray', 'cf-ipcountry', 'cf-visitor', 'cdn-loop',
+]);
+
 /** Accepts decimal or 0x-prefixed quantities, as they appear in user ops. */
 function toBigInt(value) {
   if (value === undefined || value === null || value === '') return 0n;
@@ -126,8 +134,23 @@ class ThirdwebSponsorshipPolicy {
   static authorize(headers = {}) {
     const cfg = this.getConfig();
     if (!cfg.verifierSecret) return { ok: false, reason: 'THIRDWEB_VERIFIER_SECRET not configured' };
-    const presented = headers['x-thirdweb-verifier-secret'] || headers['X-Thirdweb-Verifier-Secret'];
-    if (!presented || String(presented) !== cfg.verifierSecret) return { ok: false, reason: 'invalid verifier secret' };
+    const raw = headers['x-thirdweb-verifier-secret']
+      || headers['X-Thirdweb-Verifier-Secret']
+      || String(headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const presented = String(raw || '').trim().replace(/^["']|["']$/g, '');
+    if (!presented || presented !== cfg.verifierSecret) {
+      const customHeaders = Object.keys(headers).filter((h) => !STANDARD_HEADERS.has(h.toLowerCase()));
+      return {
+        ok: false,
+        reason: 'invalid verifier secret',
+        diagnostics: {
+          presented: Boolean(presented),
+          presentedLength: presented.length,
+          expectedLength: cfg.verifierSecret.length,
+          customHeaders,
+        },
+      };
+    }
     return { ok: true };
   }
 
