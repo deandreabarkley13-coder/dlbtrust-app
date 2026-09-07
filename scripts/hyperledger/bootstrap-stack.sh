@@ -153,12 +153,17 @@ if [ -z "$POOL_ID" ]; then
 fi
 POOL_DECIMALS="$(api "$ETH_PORT" GET "/namespaces/default/tokens/pools/$POOL_ID" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("decimals",18))')"
 
+# FireFly amounts are in base units, so the mint has to be scaled by the pool's decimals.
 TRUST_BALANCE="$(api "$ETH_PORT" GET "/namespaces/default/tokens/balances?pool=$POOL_ID" | python3 -c 'import json,sys;b=json.load(sys.stdin);print(sum(int(x["balance"]) for x in b))')"
-if [ "$TRUST_BALANCE" = "0" ]; then
-  log "mint $POOL_MINT $POOL_SYMBOL to the trust org"
+MINT_SHORTFALL="$(python3 -c "print(max(0, $POOL_MINT * 10**$POOL_DECIMALS - $TRUST_BALANCE))")"
+if [ "$MINT_SHORTFALL" != "0" ]; then
+  log "mint $POOL_MINT $POOL_SYMBOL ($MINT_SHORTFALL base units) to the trust org"
   api "$ETH_PORT" POST '/namespaces/default/tokens/mint?confirm=true' \
-    "{\"pool\":\"$POOL_ID\",\"amount\":\"$POOL_MINT\"}" >/dev/null
+    "{\"pool\":\"$POOL_ID\",\"amount\":\"$MINT_SHORTFALL\"}" >/dev/null
 fi
+
+# ff-managed containers default to no restart policy; make both stacks survive a host reboot.
+docker ps -q --filter "name=${FAB_STACK}_" --filter "name=${ETH_STACK}_" | xargs -r docker update --restart unless-stopped >/dev/null
 
 # ---------------------------------------------------------------- output
 log "writing $ENV_OUT"
