@@ -305,6 +305,26 @@ describe('TrustTokenRailEngine.plan', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('bond token lookup is scoped to the chain', () => {
+  it('never returns a token deployed on another chain for the same bond', async () => {
+    thirdweb();
+    process.env.BOND_TOKEN_SHADOW = 'false';
+    const sepolia = await BondTokenizationEngine.createToken({ bondId: 7, tokenName: 'Bond 7 Token', tokenSymbol: 'DLBFI7', tokenAddress: BOND_TOKEN });
+    expect(JSON.parse(sepolia.metadata)).toMatchObject({ chainId: 84532 });
+
+    expect((await BondTokenizationEngine.getTokenByBondId(7))?.id).toBe(sepolia.id);
+    expect((await BondTokenizationEngine.getTokenByBondId(7, { chainId: 84532 }))?.id).toBe(sepolia.id);
+    expect(await BondTokenizationEngine.getTokenByBondId(7, { chainId: 8453 })).toBeNull();
+  });
+
+  it('asks for the run chain when resolving the bond token', async () => {
+    shadowRail();
+    const lookup = BondTokenizationEngine.getTokenByBondId as any;
+    await TrustTokenRailEngine.run({ issueUsd: 25, initiatedBy: 'trustee-a', approvedBy: 'trustee-b' });
+    expect(lookup).toHaveBeenCalledWith(7, { chainId: 84532 });
+  });
+});
+
 describe('TrustTokenRailEngine shadow run', () => {
   beforeEach(shadowRail);
 

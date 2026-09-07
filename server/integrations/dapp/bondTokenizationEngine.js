@@ -538,14 +538,29 @@ class BondTokenizationEngine {
     return Array.from(memory.holdings.values()).filter(h => h.token_id === tokenId);
   }
 
-  static async getTokenByBondId(bondId) {
+  /**
+   * Deployed (non-shadow) token backing a bond. Pass `chainId` to get the
+   * token deployed on that chain only: a contract address is meaningless on
+   * any other chain, so a Sepolia token must never be reused for a mainnet run.
+   */
+  static async getTokenByBondId(bondId, { chainId = null } = {}) {
     await ensureTable();
+    const chain = chainId === null ? null : Number(chainId);
     if (pool) {
-      const res = await pool.query("SELECT * FROM bond_tokens WHERE bond_id = $1 AND token_address IS NOT NULL AND token_address <> '' AND token_address NOT LIKE 'shadow-%' ORDER BY created_at DESC LIMIT 1", [bondId]);
+      const res = await pool.query(
+        "SELECT * FROM bond_tokens WHERE bond_id = $1 AND token_address IS NOT NULL AND token_address <> '' AND token_address NOT LIKE 'shadow-%' " +
+        "AND ($2::integer IS NULL OR (metadata->>'chainId')::integer = $2) ORDER BY created_at DESC LIMIT 1",
+        [bondId, chain]
+      );
       if (res.rows.length) return res.rows[0];
       return null;
     }
-    return Array.from(memory.tokens.values()).find(t => t.bond_id === bondId && t.token_address && !t.token_address.startsWith('shadow-')) || null;
+    return Array.from(memory.tokens.values()).find((t) => {
+      if (t.bond_id !== bondId || !t.token_address || t.token_address.startsWith('shadow-')) return false;
+      if (chain === null) return true;
+      const meta = typeof t.metadata === 'string' ? JSON.parse(t.metadata) : (t.metadata || {});
+      return Number(meta.chainId) === chain;
+    }) || null;
   }
 
   static async getTokenBySymbol(tokenSymbol) {
