@@ -29,6 +29,11 @@ const HOLDER_TYPES = ['individual', 'business'];
 // has to be executed deliberately, so an override cannot auto-release funds.
 const ROUTED_RAILS = ['sit', 'ach', 'bill_pay'];
 
+// A payout receipt is stored on the request, which beneficiaries can read. The
+// NACHA file and raw account fields belong in the ACH tables, not there.
+const DROPPED_RECEIPT_KEYS = new Set(['nacha_content', 'nachaContent', 'file_content', 'fileContent']);
+const MASKED_RECEIPT_KEYS = new Set(['accountNumber', 'account_number', 'bankAccount', 'accountReference']);
+
 function isAddress(v) {
   return Boolean(viem && viem.isAddress && viem.isAddress(String(v || '')));
 }
@@ -233,6 +238,23 @@ class PayoutRouteEngine {
       payoutRail: metadata.payoutRail,
       currency: record.currency || 'USD',
     });
+  }
+
+  /**
+   * Strip the NACHA file and mask account fields out of a payout receipt
+   * before it is persisted on the distribution request.
+   */
+  static scrubReceipt(value, seen = new WeakSet()) {
+    if (Array.isArray(value)) return value.map(v => this.scrubReceipt(v, seen));
+    if (!value || typeof value !== 'object') return value;
+    if (seen.has(value)) return undefined;
+    seen.add(value);
+    const out = {};
+    for (const [key, v] of Object.entries(value)) {
+      if (DROPPED_RECEIPT_KEYS.has(key)) continue;
+      out[key] = MASKED_RECEIPT_KEYS.has(key) ? (mask(v) || null) : this.scrubReceipt(v, seen);
+    }
+    return out;
   }
 
   static mask(v) { return mask(v); }

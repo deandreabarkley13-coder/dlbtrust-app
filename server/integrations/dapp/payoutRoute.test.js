@@ -109,11 +109,42 @@ function testResolveFromRecord() {
   assert.strictEqual(legacy.rail, 'sit');
 }
 
+function testScrubReceipt() {
+  const receipt = {
+    id: 'PAY-1',
+    status: 'awaiting_transmission',
+    accountNumber: '1234567890',
+    nacha_content: '101 021000021...1234567890...',
+    tx_data: {
+      batch_id: 'ACH-1',
+      nacha_content: '101 021000021...1234567890...',
+      entries: [{ accountNumber: '1234567890', amountCents: 1234 }],
+    },
+  };
+  const scrubbed = PayoutRouteEngine.scrubReceipt(receipt);
+
+  assert.strictEqual(scrubbed.id, 'PAY-1');
+  assert.strictEqual(scrubbed.status, 'awaiting_transmission');
+  assert.strictEqual(scrubbed.tx_data.batch_id, 'ACH-1');
+  assert.strictEqual(scrubbed.accountNumber, '****7890');
+  assert.strictEqual(scrubbed.tx_data.entries[0].accountNumber, '****7890');
+  assert.strictEqual(scrubbed.tx_data.entries[0].amountCents, 1234);
+  assert.ok(!('nacha_content' in scrubbed));
+  assert.ok(!('nacha_content' in scrubbed.tx_data));
+  assert.ok(!JSON.stringify(scrubbed).includes('1234567890'));
+
+  // A self-referencing receipt must not hang the scrubber.
+  const cyclic = { id: 'PAY-2' };
+  cyclic.self = cyclic;
+  assert.strictEqual(PayoutRouteEngine.scrubReceipt(cyclic).id, 'PAY-2');
+}
+
 function main() {
   testWalletRoute();
   testBankRoute();
   testBillerRoute();
   testResolveFromRecord();
+  testScrubReceipt();
   console.log('Payout routing validation passed');
 }
 

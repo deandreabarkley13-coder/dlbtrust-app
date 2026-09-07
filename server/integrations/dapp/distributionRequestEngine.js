@@ -536,7 +536,7 @@ class DistributionRequestEngine {
       status: executeStatus,
       tx_hash: payment && payment.tx_hash ? payment.tx_hash : null,
       payout_id: payment && payment.id ? payment.id : null,
-      metadata: { ...request.metadata, payment, executeError, mandate, notarization },
+      metadata: { ...request.metadata, payment: PayoutRouteEngine.scrubReceipt(payment), executeError, mandate, notarization },
     });
     if (request.metadata?.expenseId && pool) {
       try {
