@@ -243,6 +243,47 @@ app.get('/treasury', function(req, res) {
 app.get('/trust-portal', serveTrustPortal);
 app.get('/trust-portal/dashboard.html', serveTrustPortalDashboard);
 app.get('/trust-portal/index.html', serveTrustPortal);
+// Caps how long a third-party check may hold the health response open.
+function withHealthTimeout(promise, label) {
+  var timeoutMs = parseInt(process.env.HEALTH_UPSTREAM_TIMEOUT_MS || '5000', 10);
+  var timer = null;
+  return Promise.race([
+    promise,
+    new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error(label + ' check timed out after ' + timeoutMs + 'ms')); }, timeoutMs);
+    }),
+  ]).finally(function() { if (timer) clearTimeout(timer); });
+}
+
+// ─── Probe Endpoints ───────────────────────────────────────────────────────
+// Liveness: process is up and the event loop is responsive. No I/O, so a slow
+// database or a stalled upstream can never fail it.
+app.get('/api/health/live', function(req, res) {
+  res.json({ status: 'live', uptime: process.uptime() });
+});
+
+// Readiness: the process can serve requests, which means the database answers.
+// Deliberately excludes Fineract, BILL and every other third party — those are
+// reported by /api/health and must not remove this instance from routing.
+app.get('/api/health/ready', async function(req, res) {
+  var timeoutMs = parseInt(process.env.READINESS_TIMEOUT_MS || '3000', 10);
+  var timer = null;
+  try {
+    var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+    await Promise.race([
+      pool.query('SELECT 1'),
+      new Promise(function(_, reject) {
+        timer = setTimeout(function() { reject(new Error('database did not answer in ' + timeoutMs + 'ms')); }, timeoutMs);
+      }),
+    ]);
+    res.json({ status: 'ready', uptime: process.uptime() });
+  } catch (e) {
+    res.status(503).json({ status: 'not-ready', error: e.message });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+});
+
 // ─── Health / Data Integrity Endpoint ──────────────────────────────────────
 app.get('/api/health', async function(req, res) {
   try {
@@ -265,7 +306,7 @@ app.get('/api/health', async function(req, res) {
     var fineractOk = false;
     try {
       var FineractClient = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractClient')).FineractClient;
-      await FineractClient.healthCheck();
+      await withHealthTimeout(FineractClient.healthCheck(), 'fineract');
       fineractOk = true;
     } catch(e) {}
     checks.fineract = { ok: fineractOk };
@@ -274,7 +315,7 @@ app.get('/api/health', async function(req, res) {
     try {
       var billClient = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
       if (billClient.isConfigured()) {
-        var billStatus = await billClient.getStatus();
+        var billStatus = await withHealthTimeout(billClient.getStatus(), 'bill');
         billOk = billStatus.connected;
         checks.bill = { ok: billOk, configured: true };
       } else {
