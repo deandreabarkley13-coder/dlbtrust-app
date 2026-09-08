@@ -53,7 +53,7 @@ router.get('/status', requireAdmin, function(req, res) {
       retention_policy: '7 daily + 4 weekly',
       backups_available: {
         postgres: backups.postgres.length,
-        sqlite: backups.sqlite.length,
+        fineract: backups.fineract.length,
         exports: backups.exports.length,
       },
       latest_backup: backups.postgres.length > 0 ? backups.postgres[0] : null,
@@ -73,7 +73,7 @@ router.get('/status', requireAdmin, function(req, res) {
 router.post('/run', requireAdmin, async function(req, res) {
   try {
     var result = await backupEngine.runFullBackup();
-    journal.record('backup_manual', { postgres: result.postgres.success, sqlite: result.sqlite.success }, req.user || 'admin');
+    journal.record('backup_manual', { postgres: result.postgres.success, fineract: result.fineract.success }, req.user || 'admin');
     res.json({ success: true, data: result });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });

@@ -1,9 +1,8 @@
 /**
- * Backup Engine — Automated PostgreSQL & SQLite backups with retention
+ * Backup Engine — Automated PostgreSQL backups with retention
  *
  * Features:
  * - Scheduled PostgreSQL pg_dump backups (every 6 hours by default)
- * - SQLite WAL checkpoint + file copy
  * - Retention policy: keep last 7 daily + 4 weekly backups
  * - Manual backup trigger via API
  * - Restore from any backup point
@@ -14,7 +13,7 @@
 
 var fs = require('fs');
 var path = require('path');
-var { execSync, execFileSync, exec } = require('child_process');
+var { execFileSync } = require('child_process');
 
 var { parse: parseConnectionString } = require('pg-connection-string');
 
@@ -41,7 +40,7 @@ var PG = pgFromEnv();
 
 // Ensure backup directory exists
 function ensureBackupDir() {
-  var dirs = [BACKUP_DIR, path.join(BACKUP_DIR, 'pg'), path.join(BACKUP_DIR, 'sqlite'), path.join(BACKUP_DIR, 'exports')];
+  var dirs = [BACKUP_DIR, path.join(BACKUP_DIR, 'pg'), path.join(BACKUP_DIR, 'exports')];
   dirs.forEach(function(d) {
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
   });
@@ -120,39 +119,6 @@ function backupFineractDB() {
 }
 
 /**
- * Backup SQLite databases (trust accounting, etc.)
- */
-function backupSQLite() {
-  ensureBackupDir();
-  var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  var sqliteDir = path.resolve(__dirname, '../../../data');
-  var results = [];
-
-  if (!fs.existsSync(sqliteDir)) {
-    return { success: true, message: 'No SQLite databases found', files: [] };
-  }
-
-  var files = fs.readdirSync(sqliteDir).filter(function(f) { return f.endsWith('.db') || f.endsWith('.sqlite'); });
-
-  files.forEach(function(dbFile) {
-    var src = path.join(sqliteDir, dbFile);
-    var dest = path.join(BACKUP_DIR, 'sqlite', dbFile.replace(/\.(db|sqlite)$/, '') + '-' + timestamp + '.db');
-    try {
-      // WAL checkpoint before copy
-      try { execFileSync('sqlite3', [src, 'PRAGMA wal_checkpoint(TRUNCATE);'], { timeout: 10000 }); } catch(e) {}
-      fs.copyFileSync(src, dest);
-      var stats = fs.statSync(dest);
-      results.push({ file: dbFile, backup: path.basename(dest), size: stats.size });
-    } catch (err) {
-      results.push({ file: dbFile, error: err.message });
-    }
-  });
-
-  console.log('[backup] SQLite backup complete: ' + results.length + ' file(s)');
-  return { success: true, files: results, timestamp: new Date().toISOString() };
-}
-
-/**
  * Export full system state as JSON
  */
 async function exportSystemState() {
@@ -221,11 +187,10 @@ function restorePostgres(backupFile) {
     return { success: false, error: 'Backup file not found: ' + backupFile };
   }
 
-  var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
-  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', PG_DB, '-f', filepath];
+  var args = ['-h', PG.host, '-p', PG.port, '-U', PG.user, '-d', PG.db, '-f', filepath];
 
   try {
-    execFileSync('psql', args, { env: env, timeout: 120000 });
+    execFileSync('psql', args, { env: pgEnv(), timeout: 120000 });
     console.log('[backup] PostgreSQL restore complete from: ' + backupFile);
     return { success: true, restored_from: backupFile, timestamp: new Date().toISOString() };
   } catch (err) {
@@ -241,7 +206,6 @@ function listBackups() {
   ensureBackupDir();
   var pgDir = path.join(BACKUP_DIR, 'pg');
   var fineractDir = path.join(BACKUP_DIR, 'pg-fineract');
-  var sqliteDir = path.join(BACKUP_DIR, 'sqlite');
   var exportsDir = path.join(BACKUP_DIR, 'exports');
 
   var pgFiles = fs.existsSync(pgDir) ? fs.readdirSync(pgDir).filter(function(f) { return f.endsWith('.sql'); }).map(function(f) {
@@ -254,17 +218,12 @@ function listBackups() {
     return { file: f, size: s.size, created: s.mtime.toISOString() };
   }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
 
-  var sqliteFiles = fs.existsSync(sqliteDir) ? fs.readdirSync(sqliteDir).filter(function(f) { return f.endsWith('.db'); }).map(function(f) {
-    var s = fs.statSync(path.join(sqliteDir, f));
-    return { file: f, size: s.size, created: s.mtime.toISOString() };
-  }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
-
   var exportFiles = fs.existsSync(exportsDir) ? fs.readdirSync(exportsDir).filter(function(f) { return f.endsWith('.json'); }).map(function(f) {
     var s = fs.statSync(path.join(exportsDir, f));
     return { file: f, size: s.size, created: s.mtime.toISOString() };
   }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
 
-  return { postgres: pgFiles, fineract: fineractFiles, sqlite: sqliteFiles, exports: exportFiles };
+  return { postgres: pgFiles, fineract: fineractFiles, exports: exportFiles };
 }
 
 /**
@@ -300,14 +259,13 @@ function applyRetention() {
 }
 
 /**
- * Run full backup (PostgreSQL + SQLite + retention)
+ * Run full backup (PostgreSQL + retention)
  */
 async function runFullBackup() {
   var pg = backupPostgres();
   var fineract = backupFineractDB();
-  var sqlite = backupSQLite();
   var retention = applyRetention();
-  return { postgres: pg, fineract: fineract, sqlite: sqlite, retention: retention, timestamp: new Date().toISOString() };
+  return { postgres: pg, fineract: fineract, retention: retention, timestamp: new Date().toISOString() };
 }
 
 // Scheduled backup interval (default: every 6 hours)
@@ -328,7 +286,6 @@ function stopScheduledBackups() {
 module.exports = {
   backupPostgres: backupPostgres,
   backupFineractDB: backupFineractDB,
-  backupSQLite: backupSQLite,
   exportSystemState: exportSystemState,
   restorePostgres: restorePostgres,
   listBackups: listBackups,
