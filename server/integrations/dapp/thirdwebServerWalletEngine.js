@@ -129,6 +129,9 @@ class ThirdwebServerWalletEngine {
       maxQuantityPerSend: BigInt(str('THIRDWEB_SERVER_WALLET_MAX_QUANTITY', '0') || '0'),
       allowedRecipients: str('THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS')
         .split(',').map((v) => lower(v.trim())).filter(Boolean),
+      // Gas the wallet must still hold after a transfer for the next one to broadcast.
+      minGasWei: BigInt(str('THIRDWEB_SERVER_WALLET_MIN_GAS_WEI', '0') || '0'),
+      fundingPreflight: bool('THIRDWEB_SERVER_WALLET_FUNDING_PREFLIGHT', true),
       timeoutMs: num('THIRDWEB_API_TIMEOUT_MS', 20000),
       priceTolerancePct: num('THIRDWEB_PRICE_TOLERANCE_PCT', 5),
       priceFallbackToCaller: bool('THIRDWEB_PRICE_FALLBACK_TO_CALLER', false),
@@ -179,6 +182,8 @@ class ThirdwebServerWalletEngine {
       address: cfg.address ? checksum(cfg.address) : null,
       vaultAccessTokenConfigured: Boolean(cfg.vaultAccessToken),
       maxQuantityPerSend: cfg.maxQuantityPerSend.toString(),
+      minGasWei: cfg.minGasWei.toString(),
+      fundingPreflight: cfg.fundingPreflight,
       allowedRecipients: cfg.allowedRecipients,
       distributionPolicy: DistributionPolicy.getPolicy(),
       priceOracle: ThirdwebPriceOracle.readiness(),
@@ -298,6 +303,57 @@ class ThirdwebServerWalletEngine {
     }));
   }
 
+  /**
+   * What the wallet holds versus what a live transfer needs: the settlement
+   * token (or native asset) plus the gas floor. Read-only.
+   */
+  static async fundingStatus({ chainId, tokenAddress = null, quantity = null } = {}) {
+    const cfg = this.getConfig();
+    const chain = Number(chainId || cfg.chainId);
+    const address = await this.resolveAddress();
+    const native = pickBalance(await this.balance({ address, chainId: chain }), null);
+    const token = tokenAddress
+      ? pickBalance(await this.balance({ address, chainId: chain, tokenAddress }), tokenAddress)
+      : null;
+    const want = quantity === null || quantity === undefined ? 0n : toBigInt(quantity);
+    const gasHeld = BigInt(native ? native.value || '0' : '0');
+    const assetHeld = token ? BigInt(token.value || '0') : gasHeld;
+    const assetWant = tokenAddress ? want : want + cfg.minGasWei;
+    return {
+      address,
+      chainId: chain,
+      tokenAddress: tokenAddress ? checksum(tokenAddress) : null,
+      gas: { symbol: native ? native.symbol : null, held: gasHeld.toString(), required: cfg.minGasWei.toString(), sufficient: gasHeld >= cfg.minGasWei },
+      asset: {
+        symbol: token ? token.symbol : (native ? native.symbol : null),
+        decimals: token ? token.decimals : (native ? native.decimals : null),
+        held: assetHeld.toString(),
+        required: assetWant.toString(),
+        sufficient: assetHeld >= assetWant,
+      },
+      funded: gasHeld >= cfg.minGasWei && assetHeld >= assetWant,
+    };
+  }
+
+  /** Refuse a live transfer the wallet cannot pay for, instead of letting it revert on-chain. */
+  static async assertFunded({ chainId, tokenAddress = null, quantity } = {}) {
+    const status = await this.fundingStatus({ chainId, tokenAddress, quantity });
+    const short = [];
+    if (!status.asset.sufficient) {
+      short.push(`${status.asset.symbol || 'asset'}: holds ${status.asset.held}, needs ${status.asset.required}`);
+    }
+    if (!status.gas.sufficient) {
+      short.push(`gas ${status.gas.symbol || 'native'}: holds ${status.gas.held}, needs ${status.gas.required}`);
+    }
+    if (short.length) {
+      throw Object.assign(
+        new Error(`treasury wallet ${status.address} on chain ${status.chainId} is underfunded (${short.join('; ')}); fund it before settling`),
+        { status: 409, code: 'TREASURY_UNDERFUNDED', funding: status }
+      );
+    }
+    return status;
+  }
+
   static async getTransaction(transactionId) {
     if (!transactionId) throw new Error('transactionId required');
     const tx = await this._request('GET', `/v1/transactions/${encodeURIComponent(transactionId)}`);
@@ -352,6 +408,9 @@ class ThirdwebServerWalletEngine {
       throw new Error('recipient is not in THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS');
     }
     const from = cfg.address ? checksum(cfg.address) : (cfg.live ? await this.resolveAddress() : null);
+    if (cfg.live && cfg.fundingPreflight) {
+      await this.assertFunded({ chainId: chain, tokenAddress, quantity: amount });
+    }
 
     const record = {
       id: identifier(),
@@ -490,6 +549,18 @@ class ThirdwebServerWalletEngine {
 }
 
 const OPEN_STATUSES = ['queued', 'submitted'];
+
+const NATIVE_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+
+/** thirdweb returns one row per asset; native rows carry no token address (or the native sentinel). */
+function pickBalance(rows, tokenAddress) {
+  const list = Array.isArray(rows) ? rows : [rows];
+  const isNative = (r) => !r.tokenAddress || lower(r.tokenAddress) === lower(NATIVE_TOKEN);
+  const match = tokenAddress
+    ? list.find((r) => lower(r.tokenAddress) === lower(tokenAddress))
+    : list.find(isNative);
+  return match || null;
+}
 
 function mapTransferRow(r) {
   return {

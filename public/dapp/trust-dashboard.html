@@ -97,6 +97,7 @@
       <button data-tab="vendors">Vendor Payments</button>
       <button data-tab="payouts">Payouts</button>
       <button data-tab="holds">Hold Accounts</button>
+      <button data-tab="treasury">Treasury Funding</button>
       <button data-tab="ramps">On/Off Ramps</button>
       <button data-tab="agent">AI Agent</button>
       <button data-tab="settlement">Settlement Gateway</button>
@@ -343,6 +344,31 @@
           <div class="card">
             <h2>Hold Accounts</h2>
             <div id="hold-list" class="muted">Loading…</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-treasury" class="tabs">
+        <div class="workflow">
+          <div class="card">
+            <h2>Fund the Treasury Wallet</h2>
+            <p class="muted">Declare a deposit you are sending in from the trust's own wallet or exchange, then send the exact amount to the address below. The deposit is credited only when it lands on chain.</p>
+            <div id="treasury-instructions" class="panel">Loading…</div>
+            <div class="form-row">
+              <div class="form-group"><label>Asset</label><select id="dep-asset"><option value="settlement">Settlement token (USDC)</option><option value="native">Gas (native ETH)</option></select></div>
+              <div class="form-group"><label>Amount</label><input id="dep-amount" placeholder="250" /></div>
+            </div>
+            <div class="form-row">
+              <div class="form-group"><label>Sending Wallet (optional)</label><input id="dep-from" placeholder="0x…" /></div>
+              <div class="form-group"><label>Memo</label><input id="dep-memo" placeholder="Q3 treasury funding" /></div>
+            </div>
+            <button class="btn btn-gold" onclick="declareDeposit()">Declare Deposit</button>
+            <button class="btn btn-sec" onclick="syncDeposits()">Check for Arrivals</button>
+            <div id="treasury-status" class="status"></div>
+          </div>
+          <div class="card">
+            <h2>Deposits</h2>
+            <div id="treasury-deposits" class="muted">Loading…</div>
           </div>
         </div>
       </div>
@@ -673,6 +699,7 @@
     if (key === 'vendors') loadVendors();
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
+    if (key === 'treasury') loadTreasury();
     if (key === 'settlement') loadSettlement();
     if (key === 'rally') loadRally();
   }
@@ -1184,6 +1211,46 @@
       showStatus('hold-status', 'Hold account created: ' + account.data.account_id, false);
       loadHolds(); loadOverview();
     } catch (e) { showStatus('hold-status', e.message, true); }
+  }
+
+  async function loadTreasury() {
+    try {
+      const res = await api('/api/dapp/treasury-deposits/instructions');
+      const d = res.data;
+      el('treasury-instructions').innerHTML = `<p><strong>${d.chain}</strong> · chain ${d.chainId} · wallet <code>${d.depositAddress}</code></p>`
+        + `<p class="muted">Holds ${d.settlementAsset.held} ${d.settlementAsset.symbol || ''} (settlement) and ${d.gasAsset.held} ${d.gasAsset.symbol || ''} (gas). ${d.warning}.</p>`;
+    } catch (e) { el('treasury-instructions').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+    try {
+      const res = await api('/api/dapp/treasury-deposits?limit=50');
+      const rows = res.data || [];
+      el('treasury-deposits').innerHTML = rows.length
+        ? `<table class="table"><thead><tr><th>ID</th><th>Asset</th><th>Expected</th><th>Credited</th><th>Status</th></tr></thead><tbody>${rows.map(d => `<tr><td>${d.id}</td><td>${d.symbol || ''}</td><td>${d.expectedAmount || d.expectedQuantity}</td><td>${d.creditedAmount || '0'}</td><td><span class="badge ${d.status === 'credited' ? 'approved' : 'pending'}">${d.status}</span></td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">No deposits declared yet.</p>';
+    } catch (e) { el('treasury-deposits').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function declareDeposit() {
+    const body = {
+      amount: el('dep-amount').value.trim(),
+      fromAddress: el('dep-from').value.trim() || undefined,
+      memo: el('dep-memo').value.trim() || undefined,
+    };
+    // The settlement token is the server-side default; native needs an explicit null.
+    if (el('dep-asset').value === 'native') body.tokenAddress = null;
+    try {
+      const res = await api('/api/dapp/treasury-deposits', { method: 'POST', body: JSON.stringify(body) });
+      const i = res.data.instructions;
+      showStatus('treasury-status', `Deposit ${res.data.id} declared — send ${i.amount} ${i.symbol} to ${i.depositAddress} on chain ${i.chainId}`, false);
+      loadTreasury();
+    } catch (e) { showStatus('treasury-status', e.message, true); }
+  }
+
+  async function syncDeposits() {
+    try {
+      const res = await api('/api/dapp/treasury-deposits/sync', { method: 'POST', body: JSON.stringify({}) });
+      showStatus('treasury-status', `Checked ${res.data.checked} open deposit(s), ${res.data.credited} credited`, false);
+      loadTreasury();
+    } catch (e) { showStatus('treasury-status', e.message, true); }
   }
 
   async function loadRamp(type) {
