@@ -226,6 +226,75 @@ class ThirdwebServerWalletEngine {
   }
 
   /**
+   * Refuse direct value movement while the on-chain distribution policy is the
+   * mandated route. Env is read here rather than through TrustPolicyEngine to
+   * keep the two modules free of a require cycle.
+   */
+  static _assertPolicyNotEnforced() {
+    if (String(process.env.TRUST_POLICY_ENFORCED || '').toLowerCase() !== 'true') return;
+    const contract = str('TRUST_POLICY_ADDRESS');
+    if (!contract) return;
+    throw Object.assign(
+      new Error(`TRUST_POLICY_ENFORCED=true: distributions must go through the policy contract ${contract}, not a direct server-wallet transfer`),
+      { status: 409, code: 'TRUST_POLICY_ENFORCED' }
+    );
+  }
+
+  /**
+   * Contract views through thirdweb (POST /v1/contracts/read). `calls` are
+   * `{ contractAddress, method, params }`; `method` is a human-readable
+   * signature ("function available(address) view returns (uint256)").
+   */
+  static async readContract({ calls, chainId } = {}) {
+    if (!Array.isArray(calls) || !calls.length) throw new Error('calls required');
+    const result = await this._request('POST', '/v1/contracts/read', {
+      calls,
+      chainId: Number(chainId || this.getConfig().chainId),
+    });
+    return (result.results || result || []).map((r) => (r && Object.prototype.hasOwnProperty.call(r, 'data') ? r.data : r));
+  }
+
+  /**
+   * Contract calls sent from the server wallet (POST /v1/contracts/write).
+   * `idempotencyKey` makes a retried call return the original transaction
+   * instead of submitting a second one.
+   */
+  static async writeContract({ calls, chainId, from, idempotencyKey } = {}) {
+    if (!Array.isArray(calls) || !calls.length) throw new Error('calls required');
+    const cfg = this.getConfig();
+    const body = {
+      calls,
+      chainId: Number(chainId || cfg.chainId),
+      from: from || (cfg.address ? checksum(cfg.address) : await this.resolveAddress()),
+    };
+    if (idempotencyKey) body.idempotencyKey = idempotencyKey;
+    const result = await this._request('POST', '/v1/contracts/write', body);
+    return { transactionIds: result.transactionIds || [], from: body.from, chainId: body.chainId };
+  }
+
+  /** Deploy a contract from the server wallet (POST /v1/contracts). */
+  static async deployContract({ abi, bytecode, constructorParams = {}, chainId, from, salt } = {}) {
+    if (!Array.isArray(abi) || !abi.length) throw new Error('abi required');
+    if (!bytecode) throw new Error('bytecode required');
+    const cfg = this.getConfig();
+    const body = {
+      abi,
+      bytecode: bytecode.startsWith('0x') ? bytecode : `0x${bytecode}`,
+      constructorParams,
+      chainId: Number(chainId || cfg.chainId),
+      from: from || (cfg.address ? checksum(cfg.address) : await this.resolveAddress()),
+    };
+    if (salt) body.salt = salt;
+    const result = await this._request('POST', '/v1/contracts', body);
+    return {
+      address: result.address ? checksum(result.address) : null,
+      transactionId: (result.transactionIds || [])[0] || result.transactionId || null,
+      chainId: body.chainId,
+      from: body.from,
+    };
+  }
+
+  /**
    * ERC-20 holders and their balances straight from chain indexing
    * (GET /v1/tokens/{chainId}/{address}/owners). Pages until exhausted or
    * `maxPages` is hit; amounts are returned in base units as strings.
@@ -387,6 +456,10 @@ class ThirdwebServerWalletEngine {
    * smallest units (wei) and is priced in USD by the oracle for the requester
    * role's per-transaction limit. Shadow unless THIRDWEB_SERVER_WALLET_LIVE=true;
    * both outcomes are recorded.
+   *
+   * With the on-chain policy enforced, a direct transfer would sidestep the
+   * contract's ceilings, checker approvals and clawback window, so it is
+   * refused: value leaves through TrustDistributionPolicy instead.
    */
   static async send({
     to, quantity, tokenAddress = null, chainId, reference = null, memo = null,
@@ -394,6 +467,7 @@ class ThirdwebServerWalletEngine {
   } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('THIRDWEB_SERVER_WALLET_ENABLED=false');
+    this._assertPolicyNotEnforced();
     if (!isAddress(to)) throw new Error('recipient address invalid');
     if (tokenAddress && !isAddress(tokenAddress)) throw new Error('tokenAddress invalid');
     const amount = toBigInt(quantity);
