@@ -26,8 +26,14 @@
  *   "beneficiaries": [
  *     { "beneficiary": "0xBeneficiary", "token": "0x8335...2913", "maxPerDistribution": "500000000", "periodCap": "2000000000", "periodSeconds": 2592000 }
  *   ],
- *   "governance": { "approvalThreshold": 2, "releaseDelaySeconds": 86400, "clawbackWindowSeconds": 86400, "claimWindowSeconds": 0 }
+ *   "governance": { "approvalThreshold": 2, "releaseDelaySeconds": 86400, "clawbackWindowSeconds": 86400, "claimWindowSeconds": 0 },
+ *   "transferOwnershipTo": "0xTrusteeGovernance"
  * }
+ *
+ * Every setter is onlyOwner, so the contract is deployed with the server wallet
+ * as owner, configured here, and handed to trustee governance by
+ * `transferOwnershipTo` as the final call. After that the server wallet holds
+ * only the maker/executor roles and this script can no longer change policy.
  *
  * Usage: node scripts/configureTrustDistributionPolicy.cjs --file=policy.config.json [--confirm]
  */
@@ -61,6 +67,7 @@ async function main() {
     if (b.maxPerDistribution || b.periodCap) plan.push(['setBeneficiaryLimits', () => TrustPolicyEngine.setBeneficiaryLimits(b)]);
   }
   if (config.governance) plan.push(['setGovernance', () => TrustPolicyEngine.setGovernance(config.governance)]);
+  if (config.transferOwnershipTo) plan.push(['transferOwnership', () => TrustPolicyEngine.transferOwnership({ newOwner: config.transferOwnershipTo })]);
 
   console.log(`${plan.length} call(s) planned:`);
   for (const [name] of plan) console.log(`  - ${name}`);

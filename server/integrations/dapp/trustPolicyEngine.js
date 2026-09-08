@@ -57,6 +57,7 @@ const SIG = {
   setClaimWindow: 'function setClaimWindow(uint64 seconds_)',
   pause: 'function pause()',
   unpause: 'function unpause()',
+  transferOwnership: 'function transferOwnership(address newOwner)',
   owner: 'function owner() view returns (address)',
   paused: 'function paused() view returns (bool)',
   approvalThreshold: 'function approvalThreshold() view returns (uint8)',
@@ -335,6 +336,18 @@ class TrustPolicyEngine {
 
   static async pause() { return this._write('pause', SIG.pause, []); }
   static async unpause() { return this._write('unpause', SIG.unpause, []); }
+
+  /**
+   * Hand governance to trustee governance. Deploying with the server wallet as
+   * owner, configuring, then transferring is the only way the app can bootstrap
+   * roles and limits: every setter is onlyOwner and the app cannot sign for a
+   * trustee's wallet. After this call the server wallet can only propose/execute.
+   */
+  static async transferOwnership({ newOwner } = {}) {
+    if (!isAddress(newOwner)) throw badRequest('newOwner must be a valid address');
+    if (/^0x0{40}$/.test(newOwner)) throw badRequest('newOwner must not be the zero address');
+    return this._write('transferOwnership', SIG.transferOwnership, [newOwner]);
+  }
 
   // ─── distribution lifecycle ────────────────────────────────────────────────
 

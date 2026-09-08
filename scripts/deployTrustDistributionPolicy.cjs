@@ -20,6 +20,11 @@
  *   node scripts/deployTrustDistributionPolicy.cjs \
  *     --owner=0xTrusteeGovernanceMultisig --threshold=2 \
  *     --release-delay=86400 --clawback=86400 --chain=8453 [--confirm]
+ *
+ * Every setter is onlyOwner and the app cannot sign for a trustee's wallet, so
+ * to configure from the app pass --owner=<server wallet>, run
+ * configureTrustDistributionPolicy.cjs with "transferOwnershipTo" set to
+ * trustee governance, and the handover is the last call of that run.
  */
 
 const fs = require('fs');
