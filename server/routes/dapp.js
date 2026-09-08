@@ -1310,6 +1310,7 @@ router.post('/asset-debt-proofs/:id/reject', operatorAuth, writeRateLimiter(), a
 // Distribution / Disbursement Requests with 2-trustee approval
 // ═════════════════════════════════════════════════════════════════════════════
 const { DistributionRequestEngine } = require('../integrations/dapp/distributionRequestEngine');
+const { PayoutRouteEngine } = require('../integrations/dapp/payoutRouteEngine');
 
 function optionalAuth(req, res, next) {
   // Beneficiary view may be public or admin-gated depending on deployment.
@@ -1323,11 +1324,11 @@ router.get('/distribution-requests', portalAuth, async (req, res) => {
     if (!trustee && !email) throw new Error('Not authenticated');
     res.json({
       success: true,
-      data: await DistributionRequestEngine.listRequests({
+      data: DistributionRequestEngine.toPublic(await DistributionRequestEngine.listRequests({
         status: req.query.status,
         beneficiaryEmail: trustee ? req.query.beneficiaryEmail : email,
         limit: Number(req.query.limit) || 50,
-      }),
+      })),
     });
   } catch (err) { sendError(res, err); }
 });
@@ -1339,34 +1340,40 @@ router.get('/distribution-requests/:id', portalAuth, async (req, res) => {
     if (!isTrusteePortalUser(req) && String(request.beneficiary_email || '').toLowerCase() !== String(req.user?.email || '').toLowerCase()) {
       return res.status(403).json({ success: false, error: 'Access denied' });
     }
-    res.json({ success: true, data: request });
+    res.json({ success: true, data: DistributionRequestEngine.toPublic(request) });
   } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests', portalAuth, writeRateLimiter(), async (req, res) => {
-  try { res.status(201).json({ success: true, data: await DistributionRequestEngine.createRequest(req.body) }); } catch (err) { sendError(res, err); }
+  try { res.status(201).json({ success: true, data: DistributionRequestEngine.toPublic(await DistributionRequestEngine.createRequest(req.body)) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const approval = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
-    res.json({ success: true, data: await DistributionRequestEngine.approveRequest({ requestId: req.params.id, ...approval }) });
+    res.json({ success: true, data: DistributionRequestEngine.toPublic(await DistributionRequestEngine.approveRequest({ requestId: req.params.id, ...approval })) });
   } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const rejection = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
-    res.json({ success: true, data: await DistributionRequestEngine.rejectRequest({ requestId: req.params.id, ...rejection }) });
+    res.json({ success: true, data: DistributionRequestEngine.toPublic(await DistributionRequestEngine.rejectRequest({ requestId: req.params.id, ...rejection })) });
   } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+  try {
+    const { request, payment } = await DistributionRequestEngine.executeRequest(req.params.id);
+    res.json({ success: true, data: { request: DistributionRequestEngine.toPublic(request), payment: PayoutRouteEngine.scrubReceipt(payment) } });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/beneficiary/activity', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.getBeneficiaryActivity(req.query.email) }); } catch (err) { sendError(res, err); }
+  try {
+    const activity = await DistributionRequestEngine.getBeneficiaryActivity(req.query.email);
+    res.json({ success: true, data: { ...activity, requests: DistributionRequestEngine.toPublic(activity.requests) } });
+  } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

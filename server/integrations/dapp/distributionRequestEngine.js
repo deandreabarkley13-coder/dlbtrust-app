@@ -155,6 +155,18 @@ class DistributionRequestEngine {
     };
   }
 
+  /**
+   * Redact a request (or list of them) for an API response. The stored bank
+   * details are needed to build the NACHA entry at execution time, so they stay
+   * in the row and are masked on the way out instead.
+   */
+  static toPublic(record) {
+    if (Array.isArray(record)) return record.map(r => this.toPublic(r));
+    if (!record || typeof record !== 'object') return record;
+    if (!record.metadata) return record;
+    return { ...record, metadata: PayoutRouteEngine.scrubReceipt(record.metadata) };
+  }
+
   static async getRequest(id) {
     await this.ensureTables();
     return withFallback(async () => {
@@ -536,7 +548,7 @@ class DistributionRequestEngine {
       status: executeStatus,
       tx_hash: payment && payment.tx_hash ? payment.tx_hash : null,
       payout_id: payment && payment.id ? payment.id : null,
-      metadata: { ...request.metadata, payment, executeError, mandate, notarization },
+      metadata: { ...request.metadata, payment: PayoutRouteEngine.scrubReceipt(payment), executeError, mandate, notarization },
     });
     if (request.metadata?.expenseId && pool) {
       try {
