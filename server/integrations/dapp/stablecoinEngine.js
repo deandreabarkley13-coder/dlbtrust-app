@@ -10,8 +10,6 @@
  *   - beneficiary-address resolution for trust settlement
  */
 
-const fs = require('fs');
-const path = require('path');
 const { PtcStablecoinEngine } = require('./ptcStablecoinEngine');
 
 let CanonicalConsensusEngine;
@@ -20,26 +18,18 @@ try { CanonicalConsensusEngine = require('./canonicalConsensusEngine').Canonical
 let ModuleSmartAccountEngine;
 try { ModuleSmartAccountEngine = require('./moduleSmartAccountEngine').ModuleSmartAccountEngine; } catch (e) { /* optional */ }
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const AUDIT_FILE = 'stablecoin-audit.json';
 
-function auditPath() { return path.join(dataDir(), 'stablecoin-audit.json'); }
-function ensureDir() { const d = dataDir(); if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true }); }
+function loadAudit() { return stateStore.read(AUDIT_FILE, () => []); }
 
-function loadAudit() {
-  ensureDir();
-  try { if (fs.existsSync(auditPath())) return JSON.parse(fs.readFileSync(auditPath(), 'utf8')); } catch (e) { console.warn('[StablecoinEngine] audit load failed', e.message); }
-  return [];
-}
-
+// Appended under a lock: the audit log is the one document written on every
+// mint/redeem, so an entry from another instance must not be overwritten.
 function appendAudit(entry) {
-  ensureDir();
-  const log = loadAudit();
-  log.unshift({ ...entry, timestamp: new Date().toISOString(), id: `AUDIT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
-  try { fs.writeFileSync(auditPath(), JSON.stringify(log.slice(0, 1000), null, 2)); } catch (e) { console.warn('[StablecoinEngine] audit save failed', e.message); }
+  stateStore.update(AUDIT_FILE, () => [], (log) => {
+    log.unshift({ ...entry, timestamp: new Date().toISOString(), id: `AUDIT-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` });
+    return log.slice(0, 1000);
+  });
 }
 
 function safeNum(n) { const v = Number(n); return Number.isFinite(v) ? v : 0; }

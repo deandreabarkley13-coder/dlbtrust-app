@@ -1,33 +1,14 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 const { CanonicalMoneyEngine } = require('./canonicalMoneyEngine');
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'holding-management-state.json';
 
-function statePath() { return path.join(dataDir(), 'holding-management-state.json'); }
+function loadState() { return stateStore.read(STATE_FILE, () => ({ holdings: [] })); }
 
-function ensureDir() {
-  const dir = dataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadState() {
-  ensureDir();
-  try { if (fs.existsSync(statePath())) return JSON.parse(fs.readFileSync(statePath(), 'utf8')); } catch (e) { console.warn('[HoldingManagementEngine] load state failed:', e.message); }
-  return { holdings: [] };
-}
-
-function saveState(state) {
-  ensureDir();
-  try { fs.writeFileSync(statePath(), JSON.stringify(state, null, 2)); } catch (e) { console.warn('[HoldingManagementEngine] save state failed:', e.message); }
-}
+function saveState(state) { stateStore.write(STATE_FILE, state); }
 
 function generateId(prefix = 'HL') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;

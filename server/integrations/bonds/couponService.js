@@ -378,6 +378,7 @@ class CouponService {
    * Runs every 6 hours to catch coupon dates.
    */
   static scheduleCouponJob() {
+    CouponService.stopCouponJob();
     const runCheck = async () => {
       try {
         const result = await CouponService.checkAndPayDueCoupons();
@@ -391,10 +392,18 @@ class CouponService {
     };
 
     // Run 10s after startup, then every 6 hours
-    setTimeout(runCheck, 10000);
-    setInterval(runCheck, 6 * 60 * 60 * 1000);
+    CouponService._firstCheck = setTimeout(runCheck, 10000);
+    CouponService._checkInterval = setInterval(runCheck, 6 * 60 * 60 * 1000);
     console.log('[CouponService] Coupon payment check job scheduled (startup + 6h interval)');
   }
+
+  static stopCouponJob() {
+    if (CouponService._firstCheck) { clearTimeout(CouponService._firstCheck); CouponService._firstCheck = null; }
+    if (CouponService._checkInterval) { clearInterval(CouponService._checkInterval); CouponService._checkInterval = null; }
+  }
 }
+
+CouponService._firstCheck = null;
+CouponService._checkInterval = null;
 
 module.exports = { CouponService };

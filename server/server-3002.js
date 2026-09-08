@@ -8,6 +8,10 @@ var HD = path.resolve(__dirname, '..');
 // Patch viem chain resolution for Base mainnet before any DApp modules load
 require(path.join(HD, 'server', 'integrations', 'dapp', 'viemChainPatch'));
 
+// Background loops that post to the ledger run on the leader instance only, so
+// the service can be scaled past one replica without double-posting.
+var leader = require(path.join(HD, 'server', 'integrations', 'cluster', 'leaderElection'));
+
 // Use local express (installed via npm install in HD)
 var express = require('express');
 var app = express();
@@ -262,6 +266,15 @@ app.get('/api/health/live', function(req, res) {
   res.json({ status: 'live', uptime: process.uptime() });
 });
 
+// Which instance is running the background loops, which loops those are, and
+// whether any shared state document has been overwritten by a concurrent write.
+app.get('/api/health/leader', function(req, res) {
+  var stateStore = require(path.join(HD, 'server', 'integrations', 'cluster', 'jsonStateStore'));
+  var status = leader.status();
+  status.sharedState = stateStore.stats();
+  res.json(status);
+});
+
 // Readiness: the process can serve requests, which means the database answers.
 // Deliberately excludes Fineract, BILL and every other third party — those are
 // reported by /api/health and must not remove this instance from routing.
@@ -334,6 +347,7 @@ app.get('/api/health', async function(req, res) {
       uptime: process.uptime(),
       startedAt: global.__dlb_startup || new Date().toISOString(),
       checks: checks,
+      leader: leader.status(),
     });
   } catch (e) {
     var pool2 = null;
@@ -408,8 +422,12 @@ async function initializeDatabase() {
   try {
     var M2mOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'm2mOsEngine')).M2mOsEngine;
     await M2mOsEngine.ensureTables();
-    var m2mEvery = M2mOsEngine.startScheduler();
-    console.log('[m2m-os] tables ensured' + (m2mEvery ? ', cycle every ' + m2mEvery + 'ms' : ', scheduler off (M2M_CYCLE_INTERVAL_MS=0)'));
+    var m2mEvery = null;
+    leader.register('m2m-os-cycle', function() {
+      m2mEvery = M2mOsEngine.startScheduler();
+      console.log('[m2m-os] ' + (m2mEvery ? 'cycle every ' + m2mEvery + 'ms' : 'scheduler off (M2M_CYCLE_INTERVAL_MS=0)'));
+    }, function() { M2mOsEngine.stopScheduler(); });
+    console.log('[m2m-os] tables ensured');
   } catch(e) { console.warn('[m2m-os] table init:', e.message); }
 
   try {
@@ -785,7 +803,8 @@ async function initializeDatabase() {
     console.log('[bill-sync] tables ensured');
     var billClientCheck = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
     if (billClientCheck.isConfigured()) {
-      BillSyncEngine.startAutoSync(5 * 60 * 1000);
+      leader.register('bill-auto-sync', function() { BillSyncEngine.startAutoSync(5 * 60 * 1000); },
+        function() { BillSyncEngine.stopAutoSync(); });
     }
   } catch(e) { console.warn('[bill-sync] init:', e.message); }
 
@@ -803,8 +822,8 @@ async function initializeDatabase() {
   // Step 4: Schedulers (bond accrual, coupon service)
   try {
     var LiveBondEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'liveEngine')).LiveBondEngine;
-    LiveBondEngine.scheduleAccrualJob();
-    console.log('[liveEngine] daily accrual scheduler started');
+    leader.register('bond-accrual', function() { LiveBondEngine.scheduleAccrualJob(); },
+      function() { LiveBondEngine.stopAccrualJob(); });
   } catch(e) { console.warn('[liveEngine]', e.message); }
 
   try {
@@ -813,7 +832,8 @@ async function initializeDatabase() {
     console.log('[couponService] coupon_payments table ensured');
     var seedResult = await CouponService.seedBondholders();
     if (seedResult.seeded) console.log('[couponService] Seeded ' + seedResult.count + ' bondholder(s)');
-    CouponService.scheduleCouponJob();
+    leader.register('coupon-payments', function() { CouponService.scheduleCouponJob(); },
+      function() { CouponService.stopCouponJob(); });
   } catch(e) { console.warn('[couponService] init:', e.message); }
 
   try {
@@ -872,18 +892,22 @@ async function initializeDatabase() {
   try {
     var WireDispatchLink = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireDispatchLink')).WireDispatchLink;
     await WireDispatchLink.ensureTables();
-    var linkStart = WireDispatchLink.start();
-    console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
+    leader.register('wire-dispatch-link', function() {
+      var linkStart = WireDispatchLink.start();
+      console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
+    }, function() { WireDispatchLink.stop(); });
   } catch(e) { console.warn('[wire-link] init:', e.message); }
 
   // Payment data a workflow drops in the clearing intake inbox is detected and
   // formatted into the spec its rail clears in, without anyone converting it.
   try {
     var ClearingAutoFormatEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'clearing', 'clearingAutoFormatEngine')).ClearingAutoFormatEngine;
-    var intakeStart = ClearingAutoFormatEngine.startAutoIntake();
-    console.log('[clearing-intake] ' + (intakeStart.started
-      ? 'watching ' + intakeStart.inbox + ' every ' + intakeStart.intervalSeconds + 's'
-      : 'idle: ' + intakeStart.reason));
+    leader.register('clearing-auto-intake', function() {
+      var intakeStart = ClearingAutoFormatEngine.startAutoIntake();
+      console.log('[clearing-intake] ' + (intakeStart.started
+        ? 'watching ' + intakeStart.inbox + ' every ' + intakeStart.intervalSeconds + 's'
+        : 'idle: ' + intakeStart.reason));
+    }, function() { ClearingAutoFormatEngine.stopAutoIntake(); });
   } catch(e) { console.warn('[clearing-intake] init:', e.message); }
 
   // The Camel context is the one place the family bank's channels converge, and
@@ -896,10 +920,12 @@ async function initializeDatabase() {
     await CamelRouteEngine.ensureTables();
     await OpenAchRailEngine.ensureTables();
     installFamilyBankFlow();
-    var camelStart = CamelRouteEngine.start();
-    console.log('[camel] ' + (camelStart.started
-      ? 'context driving every ' + camelStart.intervalSeconds + 's'
-      : 'context idle: ' + camelStart.reason));
+    leader.register('camel-context', function() {
+      var camelStart = CamelRouteEngine.start();
+      console.log('[camel] ' + (camelStart.started
+        ? 'context driving every ' + camelStart.intervalSeconds + 's'
+        : 'context idle: ' + camelStart.reason));
+    }, function() { CamelRouteEngine.stop(); });
   } catch(e) { console.warn('[camel] init:', e.message); }
 
   console.log('[startup] All database migrations complete');
@@ -921,20 +947,23 @@ initializeDatabase().then(function() {
   // Start scheduled backups (every 6 hours)
   try {
     var backupEngine = require(path.join(HD, 'server', 'integrations', 'backup', 'backupEngine'));
-    backupEngine.startScheduledBackups();
+    leader.register('scheduled-backups', function() { backupEngine.startScheduledBackups(); },
+      function() { backupEngine.stopScheduledBackups(); });
   } catch(e) { console.warn('[backup-scheduler]', e.message); }
 
   // Start banking-aggregator auto-sync (hands-off pull + GL posting)
   try {
     var aggregatorScheduler = require(path.join(HD, 'server', 'integrations', 'aggregator', 'aggregatorScheduler'));
-    aggregatorScheduler.start();
+    leader.register('aggregator-auto-sync', function() { aggregatorScheduler.start(); },
+      function() { aggregatorScheduler.stop(); });
   } catch(e) { console.warn('[aggregator-scheduler]', e.message); }
 
   // Start operational utilities scheduler (live status + safe utilities)
   try {
     var OperationalUtilitiesEngine = require(path.join(HD, 'server', 'integrations', 'utilities', 'operationalUtilitiesEngine')).OperationalUtilitiesEngine;
     if (String(process.env.OPERATIONAL_UTILITIES_AUTO_RUN).toLowerCase() !== 'false') {
-      OperationalUtilitiesEngine.startScheduler();
+      leader.register('operational-utilities', function() { OperationalUtilitiesEngine.startScheduler(); },
+        function() { OperationalUtilitiesEngine.stopScheduler(); });
     } else {
       console.log('[operational-utilities] auto-start disabled');
     }
@@ -944,7 +973,8 @@ initializeDatabase().then(function() {
   // OFF unless TRUST_SWEEP_ENABLED=true, since it moves money without a human.
   try {
     var trustSweepScheduler = require(path.join(HD, 'server', 'integrations', 'payments', 'trustSweepScheduler'));
-    trustSweepScheduler.start();
+    leader.register('trust-cash-sweep', function() { trustSweepScheduler.start(); },
+      function() { trustSweepScheduler.stop(); });
   } catch(e) { console.warn('[trust-sweep]', e.message); }
 
   // Master wallet gas seeding — runs in the background so it cannot block the HTTP port binding.
@@ -981,14 +1011,17 @@ initializeDatabase().then(function() {
     if (process.env.OPERATOR_GAS_TANK_AUTO_CHECK === 'true') {
       var OperatorGasTank = require(path.join(HD, 'server', 'integrations', 'dapp', 'operatorGasTank')).OperatorGasTank;
       var checkIntervalMs = parseInt(process.env.OPERATOR_GAS_TANK_CHECK_INTERVAL_MS || '300000', 10);
-      setInterval(function() {
-        OperatorGasTank.checkAndTopUp().then(function(result) {
-          console.log('[operator-gas-tank] auto-check:', result.status);
-        }).catch(function(err) {
-          console.warn('[operator-gas-tank] auto-check failed:', err.message);
-        });
-      }, checkIntervalMs);
-      console.log('[operator-gas-tank] auto-check scheduled every ' + checkIntervalMs + 'ms');
+      var gasTankTimer = null;
+      leader.register('operator-gas-tank', function() {
+        gasTankTimer = setInterval(function() {
+          OperatorGasTank.checkAndTopUp().then(function(result) {
+            console.log('[operator-gas-tank] auto-check:', result.status);
+          }).catch(function(err) {
+            console.warn('[operator-gas-tank] auto-check failed:', err.message);
+          });
+        }, checkIntervalMs);
+        console.log('[operator-gas-tank] auto-check scheduled every ' + checkIntervalMs + 'ms');
+      }, function() { if (gasTankTimer) { clearInterval(gasTankTimer); gasTankTimer = null; } });
     }
   } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
 
@@ -997,30 +1030,36 @@ initializeDatabase().then(function() {
   try {
     var supplySyncMs = parseInt(process.env.BOND_TOKEN_SUPPLY_SYNC_MS || '0', 10);
     if (supplySyncMs > 0) {
-      setInterval(function() {
-        var BondTokenizationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bondTokenizationEngine')).BondTokenizationEngine;
-        BondTokenizationEngine.syncSupplyToPrincipal().then(function(result) {
-          var raised = result.results.filter(function(r) { return r.action === 'raised'; }).length;
-          console.log('[bond-token-supply-sync] checked ' + result.checked + ' token(s), raised ' + raised + ' burn(s)');
-        }).catch(function(err) {
-          console.warn('[bond-token-supply-sync] tick failed:', err.message);
-        });
-      }, supplySyncMs);
-      console.log('[bond-token-supply-sync] scheduler started every ' + supplySyncMs + 'ms');
+      var supplySyncTimer = null;
+      leader.register('bond-token-supply-sync', function() {
+        supplySyncTimer = setInterval(function() {
+          var BondTokenizationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bondTokenizationEngine')).BondTokenizationEngine;
+          BondTokenizationEngine.syncSupplyToPrincipal().then(function(result) {
+            var raised = result.results.filter(function(r) { return r.action === 'raised'; }).length;
+            console.log('[bond-token-supply-sync] checked ' + result.checked + ' token(s), raised ' + raised + ' burn(s)');
+          }).catch(function(err) {
+            console.warn('[bond-token-supply-sync] tick failed:', err.message);
+          });
+        }, supplySyncMs);
+        console.log('[bond-token-supply-sync] scheduler started every ' + supplySyncMs + 'ms');
+      }, function() { if (supplySyncTimer) { clearInterval(supplySyncTimer); supplySyncTimer = null; } });
     }
     // Bond subscriptions: settle paid thirdweb payments by delivering units. OFF unless BOND_SUBSCRIPTION_SYNC_MS is set.
     var subscriptionSyncMs = parseInt(process.env.BOND_SUBSCRIPTION_SYNC_MS || '0', 10);
     if (subscriptionSyncMs > 0) {
-      setInterval(function() {
-        var BondSubscriptionEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondSubscriptionEngine')).BondSubscriptionEngine;
-        BondSubscriptionEngine.syncOpen().then(function(results) {
-          var delivered = results.filter(function(r) { return r.status === 'DELIVERED'; }).length;
-          if (results.length) console.log('[bond-subscriptions] synced ' + results.length + ', delivered ' + delivered);
-        }).catch(function(err) {
-          console.warn('[bond-subscriptions] tick failed:', err.message);
-        });
-      }, subscriptionSyncMs);
-      console.log('[bond-subscriptions] scheduler started every ' + subscriptionSyncMs + 'ms');
+      var subscriptionTimer = null;
+      leader.register('bond-subscriptions', function() {
+        subscriptionTimer = setInterval(function() {
+          var BondSubscriptionEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondSubscriptionEngine')).BondSubscriptionEngine;
+          BondSubscriptionEngine.syncOpen().then(function(results) {
+            var delivered = results.filter(function(r) { return r.status === 'DELIVERED'; }).length;
+            if (results.length) console.log('[bond-subscriptions] synced ' + results.length + ', delivered ' + delivered);
+          }).catch(function(err) {
+            console.warn('[bond-subscriptions] tick failed:', err.message);
+          });
+        }, subscriptionSyncMs);
+        console.log('[bond-subscriptions] scheduler started every ' + subscriptionSyncMs + 'ms');
+      }, function() { if (subscriptionTimer) { clearInterval(subscriptionTimer); subscriptionTimer = null; } });
     }
   } catch(e) { console.warn('[bond-token-supply-sync] scheduler:', e.message); }
 
@@ -1029,15 +1068,18 @@ initializeDatabase().then(function() {
   try {
     var melioSyncMs = parseInt(process.env.MELIO_SYNC_SCHEDULE_MS || '0', 10);
     if (melioSyncMs > 0) {
-      setInterval(function() {
-        var MelioVendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
-        MelioVendorEngine.syncMelioPayments().then(function(result) {
-          console.log('[melio-sync] tick completed:', result.length, 'payment(s)');
-        }).catch(function(err) {
-          console.warn('[melio-sync] tick failed:', err.message);
-        });
-      }, melioSyncMs);
-      console.log('[melio-sync] scheduler started every ' + melioSyncMs + 'ms');
+      var melioTimer = null;
+      leader.register('melio-sync', function() {
+        melioTimer = setInterval(function() {
+          var MelioVendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
+          MelioVendorEngine.syncMelioPayments().then(function(result) {
+            console.log('[melio-sync] tick completed:', result.length, 'payment(s)');
+          }).catch(function(err) {
+            console.warn('[melio-sync] tick failed:', err.message);
+          });
+        }, melioSyncMs);
+        console.log('[melio-sync] scheduler started every ' + melioSyncMs + 'ms');
+      }, function() { if (melioTimer) { clearInterval(melioTimer); melioTimer = null; } });
     }
   } catch(e) { console.warn('[melio-sync] scheduler:', e.message); }
 
@@ -1145,19 +1187,26 @@ initializeDatabase().then(function() {
       }
     }
   }
-  setTimeout(function() { initFineract(1); }, 5000);
+  // Seeding GL accounts and posting the opening balance are writes to Fineract,
+  // so they belong to the leader.
+  leader.register('fineract-init', function() {
+    setTimeout(function() { initFineract(1); }, 5000);
+  });
 
   // ─── Fineract Resilience Monitoring ─────────────────────────────────────────
   try {
     var fineractResilience = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractResilience'));
     fineractResilience.startMonitoring();
-    // Clear any stale Liquibase locks on startup
-    fineractResilience.cleanLiquibaseLocks().then(function(result) {
-      if (result && result.results) {
-        var cleared = result.results.filter(function(r) { return r.action === 'cleared'; });
-        if (cleared.length > 0) console.log('[fineract-resilience] Cleared stale Liquibase locks on startup');
-      }
-    }).catch(function(e) { /* non-critical */ });
+    // Liquibase lock cleanup mutates Fineract's schema lock table, so only the
+    // leader may run it — two instances clearing at once can unlock a live migration.
+    leader.register('fineract-liquibase-cleanup', function() {
+      fineractResilience.cleanLiquibaseLocks().then(function(result) {
+        if (result && result.results) {
+          var cleared = result.results.filter(function(r) { return r.action === 'cleared'; });
+          if (cleared.length > 0) console.log('[fineract-resilience] Cleared stale Liquibase locks on startup');
+        }
+      }).catch(function(e) { /* non-critical */ });
+    });
   } catch(e) { console.warn('[fineract-resilience]', e.message); }
 
   // ─── Data Integrity Check on Startup ────────────────────────────────────────
@@ -1193,6 +1242,16 @@ initializeDatabase().then(function() {
       console.warn('[data-check] Error:', e.message);
     }
   }, 3000);
+
+  // ─── Leader Election ────────────────────────────────────────────────────────
+  // Last, so every background loop has registered before the lock is contested.
+  // Serving traffic never depends on winning: followers answer requests, they
+  // just don't run the loops.
+  leader.start().then(function(won) {
+    console.log('[leader] this instance is the ' + (won ? 'leader' : 'follower') + ' for background loops');
+  }).catch(function(e) {
+    console.warn('[leader] start failed:', e.message);
+  });
   });
 }).catch(function(e) {
   console.error('[startup] Fatal init error:', e.message);

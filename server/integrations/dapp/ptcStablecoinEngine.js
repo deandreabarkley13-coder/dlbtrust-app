@@ -37,34 +37,12 @@ try { ModuleSmartAccountEngine = require('./moduleSmartAccountEngine').ModuleSma
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function num(name, def = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : def; }
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'ptc-stablecoin-state.json';
 
-function statePath() { return path.join(dataDir(), 'ptc-stablecoin-state.json'); }
+function loadState() { return stateStore.read(STATE_FILE, () => ({})); }
 
-function ensureDir() {
-  const dir = dataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadState() {
-  ensureDir();
-  try {
-    const p = statePath();
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch (e) { console.warn('[PtcStablecoinEngine] load state failed:', e.message); }
-  return {};
-}
-
-function saveState(state) {
-  ensureDir();
-  try {
-    fs.writeFileSync(statePath(), JSON.stringify(state, null, 2));
-  } catch (e) { console.warn('[PtcStablecoinEngine] save state failed:', e.message); }
-}
+function saveState(state) { stateStore.write(STATE_FILE, state); }
 
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 

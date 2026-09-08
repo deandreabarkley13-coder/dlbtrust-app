@@ -18,8 +18,6 @@
  * (same embedded-wallet / gasless-transaction model) so it works without an API key.
  */
 
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const QRCode = require('qrcode');
 
@@ -49,28 +47,14 @@ function str(name, fallback = '') { return String(process.env[name] || fallback 
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
 function num(name, fallback = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : fallback; }
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
-
-const STATE_PATH = path.join(dataDir(), 'rally-protocol-state.json');
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'rally-protocol-state.json';
 
 function loadState() {
-  try {
-    if (fs.existsSync(STATE_PATH)) return JSON.parse(fs.readFileSync(STATE_PATH, 'utf8'));
-  } catch (e) { console.warn('[RallyProtocolEngine] loadState failed:', e.message); }
-  return { wallets: [], requests: [], payouts: [], lastIndex: 0, whitelisted: {} };
+  return stateStore.read(STATE_FILE, () => ({ wallets: [], requests: [], payouts: [], lastIndex: 0, whitelisted: {} }));
 }
 
-function saveState(state) {
-  try {
-    const dir = path.dirname(STATE_PATH);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
-  } catch (e) { console.warn('[RallyProtocolEngine] saveState failed:', e.message); }
-}
+function saveState(state) { stateStore.write(STATE_FILE, state); }
 
 function getChain(id) {
   switch (Number(id)) {

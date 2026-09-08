@@ -36,10 +36,20 @@
   "healthChecks": [
     {
       "protocol": "HTTP",
+      "type": "livenessProbe",
+      "path": "/api/health/live",
+      "port": 3002,
+      "initialDelaySeconds": 30,
+      "periodSeconds": 20,
+      "timeoutSeconds": 5,
+      "failureThreshold": 5
+    },
+    {
+      "protocol": "HTTP",
       "type": "readinessProbe",
       "path": "/api/health/ready",
       "port": 3002,
-      "initialDelaySeconds": 10,
+      "initialDelaySeconds": 5,
       "periodSeconds": 10,
       "timeoutSeconds": 5,
       "failureThreshold": 6,

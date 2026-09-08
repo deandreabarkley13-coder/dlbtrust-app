@@ -1,7 +1,5 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { getConfig } = require('./config');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 
@@ -16,29 +14,12 @@ try { ({ ModuleP2PSwapEngine } = require('./moduleP2PSwapEngine')); } catch (e) 
 let viem, privateKeyToAccount;
 try { viem = require('viem'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { }
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'capital-fund-state.json';
 
-function statePath() { return path.join(dataDir(), 'capital-fund-state.json'); }
+function loadState() { return stateStore.read(STATE_FILE, () => ({ funds: [] })); }
 
-function ensureDir() {
-  const dir = dataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadState() {
-  ensureDir();
-  try { if (fs.existsSync(statePath())) return JSON.parse(fs.readFileSync(statePath(), 'utf8')); } catch (e) { console.warn('[CapitalFundEngine] load state failed:', e.message); }
-  return { funds: [] };
-}
-
-function saveState(state) {
-  ensureDir();
-  try { fs.writeFileSync(statePath(), JSON.stringify(state, null, 2)); } catch (e) { console.warn('[CapitalFundEngine] save state failed:', e.message); }
-}
+function saveState(state) { stateStore.write(STATE_FILE, state); }
 
 function generateId(prefix = 'CF') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;

@@ -61,18 +61,11 @@ let pool = null;
 try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
-const stateFilePath = path.join(process.env.DATA_DIR || '/data', 'aa-paymaster-state.json');
-function loadStateFile() {
-  try {
-    if (fs.existsSync(stateFilePath)) return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
-  } catch (e) { console.warn('[AccountAbstractionEngine] loadStateFile failed:', e.message); }
-  return null;
-}
-function saveStateFile(record) {
-  try {
-    fs.writeFileSync(stateFilePath, JSON.stringify(record, null, 2));
-  } catch (e) { console.warn('[AccountAbstractionEngine] saveStateFile failed:', e.message); }
-}
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'aa-paymaster-state.json';
+const stateFilePath = stateStore.resolve(STATE_FILE);
+function loadStateFile() { return stateStore.read(STATE_FILE, () => null); }
+function saveStateFile(record) { stateStore.write(STATE_FILE, record); }
 
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
