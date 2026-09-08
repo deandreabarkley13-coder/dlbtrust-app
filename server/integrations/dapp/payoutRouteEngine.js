@@ -55,6 +55,16 @@ function badRequest(message) {
   return err;
 }
 
+// Which rail a wallet destination takes when the request does not name one.
+// `sit` mints from the trust supply; `thirdweb_server_wallet` sends existing
+// tokens from the Vault-held treasury wallet, which is released deliberately.
+const WALLET_RAILS = ['sit', 'thirdweb', 'thirdweb_server_wallet'];
+
+function defaultWalletRail() {
+  const configured = String(process.env.DAPP_WALLET_PAYOUT_RAIL || '').toLowerCase().trim();
+  return WALLET_RAILS.includes(configured) ? configured : 'sit';
+}
+
 function pick(...values) {
   for (const v of values) {
     if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
@@ -145,7 +155,10 @@ class PayoutRouteEngine {
 
     if (type === 'wallet') {
       if (!destinationAddress) throw badRequest('destinationAddress required for a wallet destination');
-      const rail = override || 'sit';
+      if (override && !WALLET_RAILS.includes(override)) {
+        throw badRequest(`payoutRail for a wallet destination must be one of ${WALLET_RAILS.join(', ')}`);
+      }
+      const rail = override || defaultWalletRail();
       const engine = rail === 'thirdweb' || rail === 'thirdweb_server_wallet' ? 'thirdweb' : 'payout_center';
       return {
         destinationType: type,

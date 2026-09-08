@@ -27,6 +27,28 @@ function testWalletRoute() {
 
   assert.throws(() => PayoutRouteEngine.plan({ destinationType: 'wallet' }), /destinationAddress required/);
   assert.throws(() => PayoutRouteEngine.plan({ destinationType: 'card', destinationAddress: WALLET }), /destinationType must be one of/);
+  assert.throws(() => PayoutRouteEngine.plan({ destinationAddress: WALLET, payoutRail: 'wire' }), /payoutRail for a wallet destination/);
+}
+
+function testWalletRailDefault() {
+  const previous = process.env.DAPP_WALLET_PAYOUT_RAIL;
+  try {
+    process.env.DAPP_WALLET_PAYOUT_RAIL = 'thirdweb_server_wallet';
+    const route = PayoutRouteEngine.plan({ destinationAddress: WALLET });
+    assert.strictEqual(route.rail, 'thirdweb_server_wallet');
+    assert.strictEqual(route.engine, 'thirdweb');
+    assert.strictEqual(route.autoExecutable, false);
+
+    // A request naming its own rail still wins over the configured default.
+    assert.strictEqual(PayoutRouteEngine.plan({ destinationAddress: WALLET, payoutRail: 'sit' }).rail, 'sit');
+
+    // An unusable value falls back to the mint rather than failing every request.
+    process.env.DAPP_WALLET_PAYOUT_RAIL = 'ach';
+    assert.strictEqual(PayoutRouteEngine.plan({ destinationAddress: WALLET }).rail, 'sit');
+  } finally {
+    if (previous === undefined) delete process.env.DAPP_WALLET_PAYOUT_RAIL;
+    else process.env.DAPP_WALLET_PAYOUT_RAIL = previous;
+  }
 }
 
 function testBankRoute() {
@@ -141,6 +163,7 @@ function testScrubReceipt() {
 
 function main() {
   testWalletRoute();
+  testWalletRailDefault();
   testBankRoute();
   testBillerRoute();
   testResolveFromRecord();
