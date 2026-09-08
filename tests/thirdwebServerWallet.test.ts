@@ -26,6 +26,9 @@ beforeEach(() => {
   delete process.env.THIRDWEB_SERVER_WALLET_MAX_QUANTITY;
   delete process.env.THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS;
   delete process.env.THIRDWEB_PRICE_FALLBACK_TO_CALLER;
+  // Funding is asserted against chain balances, which these tests never mock —
+  // the underfunded guard has its own coverage in serverWalletFunding.test.ts.
+  vi.spyOn(ThirdwebServerWalletEngine, 'assertFunded').mockResolvedValue({ funded: true } as any);
   // Test asset: 0 decimals at $1/unit so quantity == USD.
   vi.spyOn(ThirdwebPriceOracle, 'getPrice').mockResolvedValue({
     chainId: 1, tokenAddress: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', symbol: 'TST', decimals: 0, priceUsd: 1, source: 'thirdweb', fetchedAt: Date.now(),
