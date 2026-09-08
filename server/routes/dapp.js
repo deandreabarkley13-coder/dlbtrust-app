@@ -45,6 +45,7 @@ const { ThirdwebSettlementEngine } = require('../integrations/dapp/thirdwebSettl
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
+const { TreasuryDepositEngine } = require('../integrations/dapp/treasuryDepositEngine');
 const { CanonicalFundingSource } = require('../integrations/fineract/canonicalFundingSource');
 const { TrustEcosystemEngine } = require('../integrations/dapp/trustEcosystemEngine');
 const { SiweAuth } = require('../integrations/auth/siweAuth');
@@ -1018,6 +1019,10 @@ router.post('/thirdweb/server-wallet/send', adminAuth, writeRateLimiter(), async
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/thirdweb/server-wallet/funding', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebServerWalletEngine.fundingStatus(req.query) }); } catch (err) { sendError(res, err); }
+});
+
 router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ThirdwebServerWalletEngine.recentTransfers(req.query.limit) }); } catch (err) { sendError(res, err); }
 });
@@ -1151,6 +1156,45 @@ router.post('/treasury-funding/topups/:id/sync', adminAuth, writeRateLimiter(), 
 
 router.post('/treasury-funding/swap', adminAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await ThirdwebTreasuryFundingEngine.swap(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Treasury deposits (the trust funds its own wallet, no provider) ────────
+
+router.get('/treasury-deposits/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: TreasuryDepositEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-deposits/instructions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryDepositEngine.instructions(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-deposits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryDepositEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-deposits', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    res.status(201).json({
+      success: true,
+      data: await TreasuryDepositEngine.declare({
+        ...body,
+        requestedBy: body.requestedBy || (req.user && req.user.email) || null,
+      })
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-deposits/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryDepositEngine.syncOpen(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-deposits/:id/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryDepositEngine.sync(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-deposits/:id/cancel', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryDepositEngine.cancel(req.params.id, req.body || {}) }); } catch (err) { sendError(res, err); }
 });
 
 // ─── Canonical funding source (core-banking ERP is the authority) ──────────
