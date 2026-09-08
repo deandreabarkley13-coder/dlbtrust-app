@@ -98,6 +98,7 @@
       <button data-tab="payouts">Payouts</button>
       <button data-tab="holds">Hold Accounts</button>
       <button data-tab="treasury">Treasury Funding</button>
+      <button data-tab="policy">On-Chain Policy</button>
       <button data-tab="ramps">On/Off Ramps</button>
       <button data-tab="agent">AI Agent</button>
       <button data-tab="settlement">Settlement Gateway</button>
@@ -369,6 +370,38 @@
           <div class="card">
             <h2>Deposits</h2>
             <div id="treasury-deposits" class="muted">Loading…</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-policy" class="tabs">
+        <div class="workflow">
+          <div class="card">
+            <h2>Distribution Policy Contract</h2>
+            <p class="muted">The rules the trust's settlement asset is governed by on chain: beneficiary allow-list, purpose codes, ceilings, maker/checker approval, timelock, escrow and clawback. While enforcement is on, no distribution can leave the treasury except through this contract.</p>
+            <div id="policy-readiness" class="panel">Loading…</div>
+            <div style="margin-top:12px;">
+              <button class="btn btn-sec" onclick="loadPolicy()">Refresh</button>
+              <button class="btn btn-sec" onclick="policyPause(true)">Pause</button>
+              <button class="btn btn-sec" onclick="policyPause(false)">Unpause</button>
+            </div>
+            <h3 style="margin-top:18px;">Beneficiary Check</h3>
+            <div class="form-row">
+              <div class="form-group"><label>Beneficiary Wallet</label><input id="policy-check-address" placeholder="0x…" /></div>
+              <div class="form-group"><label>&nbsp;</label><button class="btn btn-sec" onclick="checkPolicyBeneficiary()">Check Eligibility</button></div>
+            </div>
+            <div id="policy-status" class="status"></div>
+          </div>
+          <div class="card">
+            <h2>On-Chain Distribution Queue</h2>
+            <p class="muted">Proposals raised on the contract. A checker other than the proposer approves; once the timelock has run, execution moves the value into escrow for the beneficiary to claim.</p>
+            <div id="policy-distributions" class="muted">Loading…</div>
+            <h3 style="margin-top:18px;">Escrow</h3>
+            <div class="form-row">
+              <div class="form-group"><label>Escrow ID</label><input id="policy-escrow-id" placeholder="1" /></div>
+              <div class="form-group"><label>&nbsp;</label><button class="btn btn-sec" onclick="loadPolicyEscrow()">Load Escrow</button></div>
+            </div>
+            <div id="policy-escrow" class="panel hidden"></div>
           </div>
         </div>
       </div>
@@ -700,6 +733,7 @@
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
     if (key === 'treasury') loadTreasury();
+    if (key === 'policy') loadPolicy();
     if (key === 'settlement') loadSettlement();
     if (key === 'rally') loadRally();
   }
@@ -865,6 +899,7 @@
           ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
           <button class="btn btn-sec btn-sm" onclick="executeRequest('${r.id}')">Execute</button>
+          ${r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet' ? `<button class="btn btn-sec btn-sm" onclick="proposeOnChain('${r.id}')">Propose On-Chain</button>` : ''}
         </div>
       </div>`).join('') || '<p class="muted">No pending approvals.</p>';
       el('approval-queue').innerHTML = queue;
@@ -972,6 +1007,15 @@
     try {
       await api(`/api/dapp/distribution-requests/${id}/execute`, { method: 'POST', body: JSON.stringify({}) });
       loadDistributions(); loadOverview();
+    } catch (e) { showStatus('dist-status', e.message, true); }
+  }
+
+  async function proposeOnChain(id) {
+    try {
+      const res = await api(`/api/dapp/trust-policy/requests/${id}/propose`, { method: 'POST', body: JSON.stringify({ requesterRole: 'trustee' }) });
+      const p = res.data.proposal || res.data;
+      showStatus('dist-status', `Proposed on the policy contract${p.shadow ? ' (shadow — nothing submitted)' : ''}: ${p.quantity || ''} to ${p.beneficiary || ''}`, false);
+      loadDistributions();
     } catch (e) { showStatus('dist-status', e.message, true); }
   }
 
@@ -1211,6 +1255,93 @@
       showStatus('hold-status', 'Hold account created: ' + account.data.account_id, false);
       loadHolds(); loadOverview();
     } catch (e) { showStatus('hold-status', e.message, true); }
+  }
+
+  async function loadPolicy() {
+    try {
+      const [readiness, distributions] = await Promise.all([
+        api('/api/dapp/trust-policy/readiness'),
+        api('/api/dapp/trust-policy/distributions?limit=25').catch(() => ({ data: [] })),
+      ]);
+      const r = readiness.data;
+      let onChain = null;
+      if (r.ready) { try { onChain = (await api('/api/dapp/trust-policy/status')).data; } catch { onChain = null; } }
+      const rows = [
+        ['Contract', r.contract || 'not deployed'],
+        ['Chain', r.chainId],
+        ['Mode', r.live ? 'live' : 'shadow (calls encoded, nothing submitted)'],
+        ['Enforced', r.enforced ? 'yes — direct wallet transfers refused' : 'no — direct wallet transfers still allowed'],
+        ['Settlement token', r.settlementToken || 'not configured'],
+        ['Server wallet', r.serverWallet || 'not configured'],
+      ];
+      if (onChain) rows.push(
+        ['Owner', onChain.owner],
+        ['Paused', onChain.paused ? 'yes' : 'no'],
+        ['Approvals required', onChain.approvalThreshold],
+        ['Timelock', onChain.releaseDelaySeconds + 's'],
+        ['Treasury balance', onChain.treasury.balance],
+        ['Reserved in escrow', onChain.treasury.reserved],
+        ['Available', onChain.treasury.available],
+      );
+      el('policy-readiness').innerHTML = `<table class="table"><tbody>${rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>`
+        + (r.issues && r.issues.length ? `<p class="muted">${r.issues.map(escapeHtml).join('<br>')}</p>` : '');
+      const list = distributions.data || [];
+      el('policy-distributions').innerHTML = list.length ? `<table class="table"><thead><tr><th>#</th><th>Beneficiary</th><th>Amount</th><th>Purpose</th><th>Approvals</th><th>Status</th><th></th></tr></thead><tbody>${list.map(d => `<tr><td>${escapeHtml(d.distributionId)}</td><td>${escapeHtml(String(d.beneficiary || ''))}</td><td>${escapeHtml(String(d.quantity || ''))}</td><td>${escapeHtml(String(d.purpose || ''))}</td><td>${escapeHtml(String(d.approvals))}</td><td><span class="badge">${escapeHtml(d.status)}</span></td><td>${policyActions(d)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No proposals on the contract yet.</p>';
+    } catch (e) {
+      el('policy-readiness').innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>';
+      el('policy-distributions').innerHTML = '';
+    }
+  }
+
+  function policyActions(d) {
+    const id = escapeHtml(d.distributionId);
+    if (d.status === 'proposed') return `<button class="btn btn-sm" onclick="policyAction('${id}','approve')">Approve</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
+    if (d.status === 'approved') return `<button class="btn btn-sm" onclick="policyAction('${id}','execute')">Execute</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
+    if (d.escrowId) return `<button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','claim')">Claim</button> <button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','revoke')">Revoke</button>`;
+    return '';
+  }
+
+  async function policyAction(distributionId, action) {
+    try {
+      const res = await api(`/api/dapp/trust-policy/distributions/${distributionId}/${action}`, { method: 'POST', body: JSON.stringify({}) });
+      showStatus('policy-status', `${action} #${distributionId}: ${res.data.status}${res.data.transactionId ? ' tx ' + res.data.transactionId : ''}`, false);
+      loadPolicy();
+    } catch (e) { showStatus('policy-status', e.message, true); }
+  }
+
+  async function policyEscrowAction(escrowId, action) {
+    try {
+      const res = await api(`/api/dapp/trust-policy/escrows/${escrowId}/${action}`, { method: 'POST', body: JSON.stringify({}) });
+      showStatus('policy-status', `${action} escrow ${escrowId}: ${res.data.status}`, false);
+      loadPolicy();
+    } catch (e) { showStatus('policy-status', e.message, true); }
+  }
+
+  async function policyPause(paused) {
+    try {
+      const res = await api('/api/dapp/trust-policy/' + (paused ? 'pause' : 'unpause'), { method: 'POST', body: JSON.stringify({}) });
+      showStatus('policy-status', (paused ? 'Pause' : 'Unpause') + ': ' + res.data.status, false);
+      loadPolicy();
+    } catch (e) { showStatus('policy-status', e.message, true); }
+  }
+
+  async function checkPolicyBeneficiary() {
+    const address = el('policy-check-address').value.trim();
+    try {
+      const res = await api('/api/dapp/trust-policy/beneficiaries/' + encodeURIComponent(address));
+      const d = res.data;
+      showStatus('policy-status', `${d.beneficiary}: ${d.allowed ? 'allow-listed' : 'NOT allow-listed'}${d.frozen ? ', frozen' : ''} — remaining this period ${d.remainingPeriodAllowance.beneficiary}`, !d.allowed || d.frozen);
+    } catch (e) { showStatus('policy-status', e.message, true); }
+  }
+
+  async function loadPolicyEscrow() {
+    const id = el('policy-escrow-id').value.trim();
+    try {
+      const res = await api('/api/dapp/trust-policy/escrows/' + encodeURIComponent(id));
+      const e2 = res.data;
+      el('policy-escrow').classList.remove('hidden');
+      el('policy-escrow').innerHTML = e2 ? `<table class="table"><tbody>${Object.entries(e2).map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No such escrow.</p>';
+    } catch (e) { showStatus('policy-status', e.message, true); }
   }
 
   async function loadTreasury() {

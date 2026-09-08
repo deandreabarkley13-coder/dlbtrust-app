@@ -42,6 +42,7 @@ const { SmartWalletProvisioner } = require('../integrations/dapp/smartWalletProv
 const { ThirdwebSponsorshipPolicy } = require('../integrations/dapp/thirdwebSponsorshipPolicy');
 const { ThirdwebServerWalletEngine } = require('../integrations/dapp/thirdwebServerWalletEngine');
 const { ThirdwebSettlementEngine } = require('../integrations/dapp/thirdwebSettlementEngine');
+const { TrustPolicyEngine } = require('../integrations/dapp/trustPolicyEngine');
 const { ThirdwebPriceOracle } = require('../integrations/dapp/thirdwebPriceOracle');
 const { BeneficiaryExpenseWalletEngine } = require('../integrations/dapp/beneficiaryExpenseWalletEngine');
 const { ThirdwebTreasuryFundingEngine } = require('../integrations/dapp/thirdwebTreasuryFundingEngine');
@@ -1029,6 +1030,112 @@ router.get('/thirdweb/server-wallet/transfers', operatorAuth, async (req, res) =
 
 router.get('/thirdweb/server-wallet/transactions/:transactionId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ThirdwebServerWalletEngine.getTransaction(req.params.transactionId) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── on-chain distribution policy (TrustDistributionPolicy) ────────────────
+// Governance setters are owner-only on chain, so a call here still fails
+// unless the server wallet holds the role the contract requires.
+
+router.get('/trust-policy/readiness', operatorAuth, (req, res) => {
+  try { res.json({ success: true, data: TrustPolicyEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-policy/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustPolicyEngine.status(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-policy/distributions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustPolicyEngine.distributions(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-policy/distributions/:distributionId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustPolicyEngine.distribution(req.params.distributionId) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-policy/escrows/:escrowId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustPolicyEngine.escrow(req.params.escrowId) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-policy/beneficiaries/:address', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await TrustPolicyEngine.beneficiaryStatus({ beneficiary: req.params.address, token: req.query.token }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/roles', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setRole(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/purposes', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setPurpose(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/tokens', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setTokenLimits(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/beneficiaries', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setBeneficiary(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/beneficiary-limits', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setBeneficiaryLimits(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/freeze', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setFrozen(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/governance', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.setGovernance(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/pause', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.pause() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/unpause', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.unpause() }); } catch (err) { sendError(res, err); }
+});
+
+// Propose an approved distribution request on chain, then drive it there.
+router.post('/trust-policy/requests/:requestId/propose', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const requesterRole = (req.body || {}).requesterRole || (isTrusteePortalUser(req) ? 'trustee' : 'beneficiary');
+    res.status(201).json({ success: true, data: await ThirdwebSettlementEngine.proposeViaPolicy(req.params.requestId, { ...(req.body || {}), requesterRole }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/requests/:requestId/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebSettlementEngine.syncPolicyDistribution(req.params.requestId) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/distributions/:distributionId/approve', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.approve({ distributionId: req.params.distributionId }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/distributions/:distributionId/execute', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.execute({ distributionId: req.params.distributionId }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/distributions/:distributionId/cancel', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.status(201).json({ success: true, data: await TrustPolicyEngine.cancel({ distributionId: req.params.distributionId, reason: (req.body || {}).reason }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/escrows/:escrowId/claim', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.claim({ escrowId: req.params.escrowId }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/escrows/:escrowId/revoke', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.status(201).json({ success: true, data: await TrustPolicyEngine.revoke({ escrowId: req.params.escrowId, reason: (req.body || {}).reason }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-policy/escrows/:escrowId/reclaim', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.reclaimExpired({ escrowId: req.params.escrowId }) }); } catch (err) { sendError(res, err); }
 });
 
 // ─── thirdweb settlement: canonical distributions/expenses → on-chain, webhooks back ──

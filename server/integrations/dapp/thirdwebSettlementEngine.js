@@ -29,6 +29,7 @@
 const crypto = require('crypto');
 const { ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine');
 const { ThirdwebPriceOracle } = require('./thirdwebPriceOracle');
+const { TrustPolicyEngine } = require('./trustPolicyEngine');
 
 let pool = null;
 try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
@@ -102,6 +103,7 @@ class ThirdwebSettlementEngine {
       webhookPath: '/api/dapp/thirdweb/webhooks',
       topics: ['engine.transaction.sent', 'engine.transaction.confirmed', 'engine.transaction.failed', 'pay.onchain-transaction', 'insight.event'],
       serverWallet: wallet,
+      policy: TrustPolicyEngine.readiness(),
       live: wallet.live,
       shadow: wallet.shadow,
       ready: issues.length === 0,
@@ -266,6 +268,110 @@ class ThirdwebSettlementEngine {
     if (request.metadata?.expenseId) await this._markExpense(request.metadata.expenseId, transfer, 'payment_pending');
     if (transfer.shadow) await this._finalizeDistribution(request.id, transfer, 'shadow');
     return { request: (await query('SELECT * FROM dapp_distribution_requests WHERE id = $1', [request.id])).rows[0], transfer };
+  }
+
+  // ─── on-chain policy route ───────────────────────────────────────────────
+
+  /**
+   * Raise the distribution as a proposal on TrustDistributionPolicy instead of
+   * transferring straight out of the server wallet. Value stays in the
+   * contract until the checker threshold, the timelock and the ceilings are
+   * satisfied on chain, so the canonical record stays `approved` and only
+   * `syncPolicyDistribution` moves it on.
+   */
+  static async proposeViaPolicy(requestId, { requesterRole = 'trustee', purpose, installments, intervalSeconds, expiresAt } = {}) {
+    const cfg = this.getConfig();
+    const { rows } = await query('SELECT * FROM dapp_distribution_requests WHERE id = $1', [requestId]);
+    const request = rows[0];
+    if (!request) throw Object.assign(new Error(`distribution request ${requestId} not found`), { status: 404 });
+    if (request.metadata?.thirdwebTransferId) {
+      throw Object.assign(new Error('request already settled by a direct transfer'), { status: 409 });
+    }
+    if (request.metadata?.policyDistributionRef) {
+      return { request, proposal: null, alreadyProposed: true, onChain: await TrustPolicyEngine.findByReference(request.id).catch(() => null) };
+    }
+    if (request.status !== 'approved') throw Object.assign(new Error(`request is ${request.status}; only approved requests are proposed on chain`), { status: 409 });
+    if (!isAddress(request.destination_address)) throw Object.assign(new Error('destination_address is not an EVM address'), { status: 422 });
+    if (!isUsd(request.currency)) throw Object.assign(new Error(`request currency ${request.currency} is not USD`), { status: 422 });
+
+    const amountUsd = Number(request.amount_cents) / 100;
+    const quote = await ThirdwebPriceOracle.quantityForUsd({ chainId: cfg.chainId, tokenAddress: cfg.settlementToken, amountUsd });
+    const proposal = await TrustPolicyEngine.propose({
+      beneficiary: request.destination_address,
+      quantity: quote.quantity,
+      tokenAddress: cfg.settlementToken,
+      purpose: purpose || request.metadata?.purpose,
+      reference: request.id,
+      installments,
+      intervalSeconds,
+      expiresAt,
+    });
+    await query(
+      `UPDATE dapp_distribution_requests
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+        WHERE id = $1`,
+      [request.id, JSON.stringify({
+        settlementRail: 'trust-distribution-policy',
+        policyContract: proposal.contract,
+        policyChainId: proposal.chainId,
+        policyDistributionRef: proposal.ref,
+        policyProposedAt: new Date().toISOString(),
+        policyProposedBy: requesterRole,
+        policyShadow: Boolean(proposal.shadow),
+        policyTransactionId: proposal.transactionId,
+        policyQuote: { token: quote.tokenAddress || cfg.settlementToken, quantity: quote.quantity, priceUsd: quote.priceUsd },
+      })]
+    );
+    return {
+      request: (await query('SELECT * FROM dapp_distribution_requests WHERE id = $1', [request.id])).rows[0],
+      proposal,
+      quote,
+    };
+  }
+
+  /**
+   * Reconcile a proposed request against the contract: reports the on-chain
+   * status and escrow, and closes the record once the beneficiary has actually
+   * claimed the whole escrow (or the proposal was cancelled/revoked).
+   */
+  static async syncPolicyDistribution(requestId) {
+    const { rows } = await query('SELECT * FROM dapp_distribution_requests WHERE id = $1', [requestId]);
+    const request = rows[0];
+    if (!request) throw Object.assign(new Error(`distribution request ${requestId} not found`), { status: 404 });
+    if (!request.metadata?.policyDistributionRef) throw Object.assign(new Error('request was not proposed on chain'), { status: 409 });
+
+    const onChain = await TrustPolicyEngine.findByReference(request.id);
+    if (!onChain) return { request, onChain: null, escrow: null, changed: false, reason: 'no matching proposal on chain yet' };
+    const escrow = onChain.escrowId ? await TrustPolicyEngine.escrow(onChain.escrowId) : null;
+
+    const patch = {
+      policyDistributionId: onChain.distributionId,
+      policyStatus: onChain.status,
+      policyApprovals: onChain.approvals,
+      policyReleasableAt: onChain.releasableAt,
+      policyEscrowId: onChain.escrowId,
+      policyClaimed: escrow?.claimed || null,
+      policySyncedAt: new Date().toISOString(),
+    };
+    let changed = false;
+    const fullyClaimed = escrow && !escrow.revoked && BigInt(escrow.claimed || '0') >= BigInt(escrow.quantity || '0');
+    if (fullyClaimed && request.status !== 'executed') {
+      await this._finalizeDistribution(request.id, { id: `TDP-${onChain.distributionId}`, transactionHash: null, transactionId: request.metadata.policyTransactionId || null }, 'confirmed');
+      changed = true;
+    } else if (onChain.status === 'cancelled' && request.status === 'approved') {
+      patch.policyCancelled = true;
+      changed = true;
+    }
+    await query(
+      `UPDATE dapp_distribution_requests SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW() WHERE id = $1`,
+      [request.id, JSON.stringify(patch)]
+    );
+    return {
+      request: (await query('SELECT * FROM dapp_distribution_requests WHERE id = $1', [request.id])).rows[0],
+      onChain,
+      escrow,
+      changed,
+    };
   }
 
   static async settleExpense(expenseId, { requesterRole = 'trustee' } = {}) {
