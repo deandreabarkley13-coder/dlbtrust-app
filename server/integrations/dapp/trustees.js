@@ -107,18 +107,30 @@ function validateTrustee(role, email) {
   return trustee;
 }
 
-function signatureDocumentPath() {
+/**
+ * Where the executed signature page lives. `TRUST_SIGNATURE_DOCUMENT_URI` is
+ * the shared form (an encrypted envelope in document storage, readable from any
+ * instance); a local path is only used when one is configured explicitly or
+ * outside production, since an instance-local file is not the document of
+ * record once the service runs replicas.
+ */
+function signatureDocumentLocation() {
+  const uri = process.env.TRUST_SIGNATURE_DOCUMENT_URI;
+  if (uri) return { storageUri: uri, path: null };
   const configuredPath = process.env.TRUST_SIGNATURE_DOCUMENT_PATH;
-  return configuredPath
-    ? path.resolve(configuredPath)
-    : (process.env.NODE_ENV === 'production'
-      ? '/data/governance/Trustees_Signature_Page.pdf'
-      : path.join(process.cwd(), 'data', 'governance', 'Trustees_Signature_Page.pdf'));
+  if (configuredPath) return { storageUri: null, path: path.resolve(configuredPath) };
+  if (process.env.NODE_ENV === 'production') return { storageUri: null, path: null };
+  return { storageUri: null, path: path.join(process.cwd(), 'data', 'governance', 'Trustees_Signature_Page.pdf') };
+}
+
+function signatureDocumentPath() {
+  return signatureDocumentLocation().path;
 }
 
 function getTrusteeSignatureOfRecord(role) {
   const trustee = getTrusteeByRole(role);
   if (!trustee || !trustee.signatureOfRecordLegalName) return null;
+  const location = signatureDocumentLocation();
   return {
     role: trustee.role,
     legalName: trustee.signatureOfRecordLegalName,
@@ -127,7 +139,8 @@ function getTrusteeSignatureOfRecord(role) {
       fileName: 'Trustees_Signature_Page.pdf',
       sha256: '461ccddfb9f29fadae824d4905f74c18b24484f82877b8115cd871c1152ce4b4',
       pageCount: 1,
-      path: signatureDocumentPath(),
+      path: location.path,
+      storageUri: location.storageUri,
       executionStatus: 'executed',
     },
   };
@@ -148,6 +161,7 @@ module.exports = {
   trusteeOwnsEmail,
   validateTrustee,
   signatureDocumentPath,
+  signatureDocumentLocation,
   getTrusteeSignatureOfRecord,
   getSignatureOfRecord,
 };

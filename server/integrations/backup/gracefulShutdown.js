@@ -12,15 +12,33 @@
 
 'use strict';
 
-var fs = require('fs');
+var os = require('os');
 var path = require('path');
 
-var SHUTDOWN_MARKER = path.resolve(__dirname, '../../../data/shutdown-state.json');
+var stateStore = require('../cluster/jsonStateStore');
+
+var SHUTDOWN_DOC = 'shutdown-state.json';
+var INSTANCE = (process.env.HOSTNAME || os.hostname()) + ':' + process.pid;
+var MARKER_HISTORY = 20;
 var _server = null;
 var _shutdownInProgress = false;
 
 function registerServer(server) {
   _server = server;
+}
+
+/**
+ * Markers are a shared list rather than one document per instance: with
+ * replicas, whichever instance starts next reports the shutdowns nobody has
+ * seen yet, instead of a marker being lost with the container that wrote it.
+ */
+function writeMarker(state) {
+  stateStore.update(SHUTDOWN_DOC, function() { return { markers: [] }; }, function(doc) {
+    if (!doc || !Array.isArray(doc.markers)) doc = { markers: [] };
+    doc.markers.push(Object.assign({ instance: INSTANCE, consumed: false }, state));
+    if (doc.markers.length > MARKER_HISTORY) doc.markers = doc.markers.slice(-MARKER_HISTORY);
+    return doc;
+  });
 }
 
 async function performGracefulShutdown(signal) {
@@ -79,9 +97,7 @@ async function performGracefulShutdown(signal) {
 
   // 5. Write shutdown marker
   try {
-    var dataDir = path.dirname(SHUTDOWN_MARKER);
-    if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(SHUTDOWN_MARKER, JSON.stringify(state, null, 2));
+    writeMarker(state);
     console.log('[shutdown] State marker written');
   } catch(e) {
     console.warn('[shutdown] Failed to write state marker:', e.message);
@@ -98,24 +114,34 @@ async function performGracefulShutdown(signal) {
  * Check for pending operations from previous shutdown (called on startup)
  */
 function checkRecoveryState() {
-  if (!fs.existsSync(SHUTDOWN_MARKER)) return null;
-
   try {
-    var state = JSON.parse(fs.readFileSync(SHUTDOWN_MARKER, 'utf8'));
-    console.log('[recovery] Previous shutdown detected at ' + state.shutdown_at + ' (signal: ' + state.signal + ')');
-
-    if (state.pending_operations && state.pending_operations.length > 0) {
-      console.log('[recovery] ' + state.pending_operations.length + ' pending operation(s) found from previous session:');
-      state.pending_operations.forEach(function(op) {
-        console.log('[recovery]   - ' + op.type + ' ' + op.id + ' (was: ' + op.status + ')');
+    var unseen = [];
+    stateStore.update(SHUTDOWN_DOC, function() { return { markers: [] }; }, function(doc) {
+      if (!doc || !Array.isArray(doc.markers)) return { markers: [] };
+      doc.markers.forEach(function(marker) {
+        if (marker.consumed) return;
+        unseen.push(marker);
+        marker.consumed = true;
+        marker.consumed_by = INSTANCE;
       });
-    } else {
-      console.log('[recovery] No pending operations — clean shutdown');
-    }
+      return doc;
+    });
+    if (!unseen.length) return null;
 
-    // Remove marker after reading
-    fs.unlinkSync(SHUTDOWN_MARKER);
-    return state;
+    unseen.forEach(function(state) {
+      console.log('[recovery] Previous shutdown detected at ' + state.shutdown_at + ' (signal: ' + state.signal
+        + ', instance: ' + state.instance + ')');
+      if (state.pending_operations && state.pending_operations.length > 0) {
+        console.log('[recovery] ' + state.pending_operations.length + ' pending operation(s) found from previous session:');
+        state.pending_operations.forEach(function(op) {
+          console.log('[recovery]   - ' + op.type + ' ' + op.id + ' (was: ' + op.status + ')');
+        });
+      } else {
+        console.log('[recovery] No pending operations — clean shutdown');
+      }
+    });
+
+    return unseen[unseen.length - 1];
   } catch(e) {
     console.warn('[recovery] Failed to read shutdown state:', e.message);
     return null;
@@ -133,10 +159,7 @@ function install() {
     console.error(err.stack);
     // Write marker synchronously (event loop may be corrupted) and exit with error code
     try {
-      var state = { shutdown_at: new Date().toISOString(), signal: 'uncaughtException', uptime_seconds: Math.floor(process.uptime()), error: err.message, pending_operations: [] };
-      var dataDir = path.dirname(SHUTDOWN_MARKER);
-      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-      fs.writeFileSync(SHUTDOWN_MARKER, JSON.stringify(state, null, 2));
+      writeMarker({ shutdown_at: new Date().toISOString(), signal: 'uncaughtException', uptime_seconds: Math.floor(process.uptime()), error: err.message, pending_operations: [] });
     } catch(e) {}
     process.exit(1);
   });
