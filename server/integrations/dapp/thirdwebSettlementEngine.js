@@ -293,6 +293,14 @@ class ThirdwebSettlementEngine {
     if (request.status !== 'approved') throw Object.assign(new Error(`request is ${request.status}; only approved requests are proposed on chain`), { status: 409 });
     if (!isAddress(request.destination_address)) throw Object.assign(new Error('destination_address is not an EVM address'), { status: 422 });
     if (!isUsd(request.currency)) throw Object.assign(new Error(`request currency ${request.currency} is not USD`), { status: 422 });
+    // Before pricing: an unconfigured policy is the more actionable failure, and
+    // a price lookup error would otherwise mask it.
+    const readiness = TrustPolicyEngine.readiness();
+    if (!readiness.ready) {
+      throw Object.assign(new Error(`policy contract is not ready: ${readiness.issues.join('; ')}`), {
+        status: 409, code: 'TRUST_POLICY_NOT_CONFIGURED',
+      });
+    }
 
     const amountUsd = Number(request.amount_cents) / 100;
     const quote = await ThirdwebPriceOracle.quantityForUsd({ chainId: cfg.chainId, tokenAddress: cfg.settlementToken, amountUsd });

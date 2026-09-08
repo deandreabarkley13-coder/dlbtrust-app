@@ -895,7 +895,7 @@
         <div style="display:flex;justify-content:space-between;"><strong>${r.beneficiary_name || r.beneficiary_email}</strong><span class="badge ${r.status === 'approved' ? 'approved' : 'pending'}">${r.status}</span></div>
         <div class="muted" style="margin:6px 0;">${fmtUsd(r.amount_cents / 100)} — ${r.memo || ''}</div>
         <div class="muted" style="margin:6px 0;font-size:.78rem;">${destinationLabel(r)}</div>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
           ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
           <button class="btn btn-sec btn-sm" onclick="executeRequest('${r.id}')">Execute</button>
@@ -1261,7 +1261,7 @@
     try {
       const [readiness, distributions] = await Promise.all([
         api('/api/dapp/trust-policy/readiness'),
-        api('/api/dapp/trust-policy/distributions?limit=25').catch(() => ({ data: [] })),
+        api('/api/dapp/trust-policy/distributions?limit=25').catch(e => ({ error: e.message })),
       ]);
       const r = readiness.data;
       let onChain = null;
@@ -1285,6 +1285,10 @@
       );
       el('policy-readiness').innerHTML = `<table class="table"><tbody>${rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>`
         + (r.issues && r.issues.length ? `<p class="muted">${r.issues.map(escapeHtml).join('<br>')}</p>` : '');
+      if (distributions.error) {
+        el('policy-distributions').innerHTML = '<p class="muted">Queue unavailable: ' + escapeHtml(distributions.error) + '</p>';
+        return;
+      }
       const list = distributions.data || [];
       el('policy-distributions').innerHTML = list.length ? `<table class="table"><thead><tr><th>#</th><th>Beneficiary</th><th>Amount</th><th>Purpose</th><th>Approvals</th><th>Status</th><th></th></tr></thead><tbody>${list.map(d => `<tr><td>${escapeHtml(d.distributionId)}</td><td>${escapeHtml(String(d.beneficiary || ''))}</td><td>${escapeHtml(String(d.quantity || ''))}</td><td>${escapeHtml(String(d.purpose || ''))}</td><td>${escapeHtml(String(d.approvals))}</td><td><span class="badge">${escapeHtml(d.status)}</span></td><td>${policyActions(d)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No proposals on the contract yet.</p>';
     } catch (e) {
