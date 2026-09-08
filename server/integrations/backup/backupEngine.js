@@ -76,13 +76,17 @@ function backupPostgres() {
 }
 
 /**
- * Backup Fineract GL database (fineract_default). Uses FINERACT_DATABASE_URL if set,
- * otherwise falls back to FINERACT_DEFAULT_DB on the same host as the app DB.
+ * Backup Fineract GL database. Uses FINERACT_DATABASE_URL if set, otherwise
+ * FINERACT_DEFAULT_DB on the same host as the app DB. Skipped when neither is
+ * configured: the Fineract tenant database does not live on the app addon.
  */
 function backupFineractDB() {
-  ensureBackupDir();
   var fineractUrl = process.env.FINERACT_DATABASE_URL || process.env.FINERACT_DB_URL || '';
-  var fineractDB = process.env.FINERACT_DEFAULT_DB || 'fineract_default';
+  var fineractDB = process.env.FINERACT_DEFAULT_DB || '';
+  if (!fineractUrl && !fineractDB) {
+    return { success: true, skipped: true, reason: 'FINERACT_DATABASE_URL / FINERACT_DEFAULT_DB not configured' };
+  }
+  ensureBackupDir();
   var host = PG.host, port = PG.port, user = PG.user, pass = PG.pass, ssl = PG.ssl;
 
   if (fineractUrl) {
