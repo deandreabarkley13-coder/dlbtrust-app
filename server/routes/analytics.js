@@ -1,142 +1,159 @@
 /**
  * DLB Trust Analytics API Routes
- * File: analytics-api-routes.js
  *
- * Add these routes to your main Express server (e.g., server.js or app.js):
+ * Mounted by server/server-3002.js as:
+ *   app.use('/api/analytics', require('./routes/analytics'));
  *
- *   const analyticsRoutes = require('./analytics-api-routes');
- *   app.use('/api/analytics', analyticsRoutes);
- *
- * Requires: better-sqlite3 (already used by the main app)
- * Generated: 2026-04-08
+ * Reads the legacy trust ledger out of PostgreSQL, in the schema that
+ * server/scripts/migrateSqliteToPostgres.js copies the old SQLite file into.
+ * Timestamps are stored as ISO text there, so date grouping slices the string
+ * instead of casting, which keeps rows with odd values queryable.
  */
 
 const express = require('express');
 const { getMandate } = require('../integrations/trust/trustMandate');
+const pool = require('../integrations/bonds/pgPool');
 const router = express.Router();
 
-// ─────────────────────────────────────────────────────────────
-// DATABASE CONNECTION
-// Adjust the path to match your actual DB file location
-// ─────────────────────────────────────────────────────────────
-const Database = require('better-sqlite3');
-const path = require('path');
-
-function getDb() {
-  // Try common locations — adjust as needed
-  const dbPaths = [
-    path.join(__dirname, 'trust.db'),
-    path.join(__dirname, 'data', 'trust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p, { readonly: true });
-    } catch (_) {}
-  }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
+const SCHEMA = process.env.LEGACY_SQLITE_SCHEMA || 'legacy_sqlite';
+if (!/^[a-z_][a-z0-9_]*$/.test(SCHEMA)) {
+  throw new Error('LEGACY_SQLITE_SCHEMA must be a plain lowercase identifier, got: ' + SCHEMA);
 }
+const WALLETS = SCHEMA + '.wallets';
+const TRANSACTIONS = SCHEMA + '.transactions';
 
 // ─────────────────────────────────────────────────────────────
-// HELPER: cents → dollars
+// HELPERS
 // ─────────────────────────────────────────────────────────────
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
 
+/** Postgres returns bigint and numeric as strings; these columns are all cents. */
+const num = (value) => (value === null || value === undefined ? null : Number(value));
+
+async function one(sql, params) {
+  const res = await pool.query(sql, params);
+  return res.rows[0] || {};
+}
+
+async function all(sql, params) {
+  const res = await pool.query(sql, params);
+  return res.rows;
+}
+
 // ─────────────────────────────────────────────────────────────
-// MIDDLEWARE: attach DB to req, auto-close after response
+// MIDDLEWARE: the legacy ledger must be migrated before any route works
 // ─────────────────────────────────────────────────────────────
-router.use((req, res, next) => {
+const schemaState = { checkedAt: 0, ok: false, detail: null, walletColumns: [] };
+const SCHEMA_TTL_MS = 30000;
+
+async function ensureSchema() {
+  if (schemaState.ok && Date.now() - schemaState.checkedAt < SCHEMA_TTL_MS) return schemaState;
+
+  const res = await pool.query(
+    `SELECT table_name, column_name
+       FROM information_schema.columns
+      WHERE table_schema = $1 AND table_name IN ('wallets', 'transactions')`,
+    [SCHEMA]
+  );
+  const tables = new Set(res.rows.map((r) => r.table_name));
+  schemaState.checkedAt = Date.now();
+  schemaState.walletColumns = res.rows.filter((r) => r.table_name === 'wallets').map((r) => r.column_name);
+  schemaState.ok = tables.has('wallets') && tables.has('transactions');
+  schemaState.detail = schemaState.ok
+    ? null
+    : 'schema ' + SCHEMA + ' has no wallets/transactions table — run: node server/scripts/migrateSqliteToPostgres.js --confirm';
+  return schemaState;
+}
+
+router.use(async (req, res, next) => {
   try {
-    req.db = getDb();
-    res.on('finish', () => { try { req.db.close(); } catch (_) {} });
-    res.on('close',  () => { try { req.db.close(); } catch (_) {} });
+    const state = await ensureSchema();
+    if (!state.ok) {
+      return res.status(503).json({
+        success: false,
+        error: 'Analytics database not available',
+        detail: state.detail,
+      });
+    }
+    next();
   } catch (err) {
-    req.db = null;
-    req.dbError = err.message;
-  }
-  // Guard: if SQLite DB is unavailable, return a clear message instead of crashing
-  if (!req.db) {
-    return res.status(503).json({
+    res.status(503).json({
       success: false,
       error: 'Analytics database not available',
-      detail: req.dbError || 'trust.db not found — analytics module requires SQLite migration to PostgreSQL',
+      detail: err.message,
     });
   }
-  next();
 });
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/analytics/summary
 // Overall trust financial summary
 // ─────────────────────────────────────────────────────────────
-router.get('/summary', (req, res) => {
+router.get('/summary', async (req, res) => {
   try {
-    const db = req.db;
-
     // Total portfolio
-    const portfolioRow = db.prepare(`
+    const portfolioRow = await one(`
       SELECT
-        SUM(fiat_balance) AS total_portfolio_cents,
-        COUNT(*) AS total_wallets,
-        SUM(CASE WHEN role = 'trust_entity' THEN fiat_balance ELSE 0 END) AS trust_balance_cents,
-        SUM(CASE WHEN role = 'trustee'      THEN fiat_balance ELSE 0 END) AS trustee_balance_cents,
-        SUM(CASE WHEN role = 'beneficiary'  THEN fiat_balance ELSE 0 END) AS beneficiary_balance_cents
-      FROM wallets
-    `).get();
+        SUM(fiat_balance)::float8 AS total_portfolio_cents,
+        COUNT(*)::int AS total_wallets,
+        SUM(CASE WHEN role = 'trust_entity' THEN fiat_balance ELSE 0 END)::float8 AS trust_balance_cents,
+        SUM(CASE WHEN role = 'trustee'      THEN fiat_balance ELSE 0 END)::float8 AS trustee_balance_cents,
+        SUM(CASE WHEN role = 'beneficiary'  THEN fiat_balance ELSE 0 END)::float8 AS beneficiary_balance_cents
+      FROM ${WALLETS}
+    `);
 
     // Transaction aggregates
-    const txRow = db.prepare(`
+    const txRow = await one(`
       SELECT
-        COUNT(*) AS total_count,
-        SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END) AS total_credits_cents,
-        SUM(CASE WHEN amount < 0  THEN ABS(amount) ELSE 0 END) AS total_debits_cents,
-        MAX(CASE WHEN amount >= 0 THEN amount ELSE 0 END) AS largest_credit_cents,
-        MIN(CASE WHEN amount < 0  THEN amount ELSE 0 END) AS largest_debit_cents_neg
-      FROM transactions
+        COUNT(*)::int AS total_count,
+        COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0)::float8 AS total_credits_cents,
+        COALESCE(SUM(CASE WHEN amount < 0  THEN ABS(amount) ELSE 0 END), 0)::float8 AS total_debits_cents,
+        MAX(CASE WHEN amount >= 0 THEN amount ELSE 0 END)::float8 AS largest_credit_cents,
+        MIN(CASE WHEN amount < 0  THEN amount ELSE 0 END)::float8 AS largest_debit_cents_neg
+      FROM ${TRANSACTIONS}
       WHERE status = 'completed'
-    `).get();
+    `);
 
     // Distribution totals
-    const distRow = db.prepare(`
+    const distRow = await one(`
       SELECT
-        COUNT(*) AS dist_count,
-        SUM(ABS(amount)) AS total_dist_cents,
-        AVG(ABS(amount)) AS avg_dist_cents
-      FROM transactions
+        COUNT(*)::int AS dist_count,
+        SUM(ABS(amount))::float8 AS total_dist_cents,
+        AVG(ABS(amount))::float8 AS avg_dist_cents
+      FROM ${TRANSACTIONS}
       WHERE category = 'distribution' AND status = 'completed'
-    `).get();
+    `);
 
     // Interest income totals
-    const interestRow = db.prepare(`
-      SELECT SUM(amount) AS total_interest_cents
-      FROM transactions
+    const interestRow = await one(`
+      SELECT SUM(amount)::float8 AS total_interest_cents
+      FROM ${TRANSACTIONS}
       WHERE category IN ('interest', 'investment') AND status = 'completed'
-    `).get();
+    `);
 
     // Management fee totals
-    const feeRow = db.prepare(`
-      SELECT SUM(ABS(amount)) AS total_fees_cents
-      FROM transactions
+    const feeRow = await one(`
+      SELECT SUM(ABS(amount))::float8 AS total_fees_cents
+      FROM ${TRANSACTIONS}
       WHERE category = 'fee' AND status = 'completed'
-    `).get();
+    `);
 
     // Corpus
-    const corpusRow = db.prepare(`
-      SELECT SUM(amount) AS corpus_cents
-      FROM transactions
+    const corpusRow = await one(`
+      SELECT SUM(amount)::float8 AS corpus_cents
+      FROM ${TRANSACTIONS}
       WHERE category = 'corpus'
-    `).get();
+    `);
 
     // Inception date
-    const inceptionRow = db.prepare(`
-      SELECT MIN(created_at) AS inception_date FROM transactions WHERE category = 'corpus'
-    `).get();
+    const inceptionRow = await one(`
+      SELECT MIN(created_at) AS inception_date FROM ${TRANSACTIONS} WHERE category = 'corpus'
+    `);
 
     const summary = {
       generated_at: new Date().toISOString(),
       trust_name: getMandate().legalName,
-      inception_date: inceptionRow?.inception_date || null,
+      inception_date: inceptionRow.inception_date || null,
 
       portfolio: {
         total_cents: portfolioRow.total_portfolio_cents,
@@ -201,44 +218,43 @@ router.get('/summary', (req, res) => {
 // GET /api/analytics/wallets
 // Per-wallet breakdown with flow stats
 // ─────────────────────────────────────────────────────────────
-router.get('/wallets', (req, res) => {
+router.get('/wallets', async (req, res) => {
   try {
-    const db = req.db;
+    const wallets = await all(`SELECT * FROM ${WALLETS} ORDER BY id`);
 
-    const wallets = db.prepare(`SELECT * FROM wallets ORDER BY id`).all();
-
-    const walletStats = wallets.map(w => {
+    const walletStats = [];
+    for (const w of wallets) {
       // Inflows to this wallet
-      const inflow = db.prepare(`
+      const inflow = await one(`
         SELECT
-          COUNT(*) AS count,
-          COALESCE(SUM(ABS(amount)), 0) AS total_cents
-        FROM transactions
-        WHERE to_wallet_id = ? AND status = 'completed'
-      `).get(w.wallet_id);
+          COUNT(*)::int AS count,
+          COALESCE(SUM(ABS(amount)), 0)::float8 AS total_cents
+        FROM ${TRANSACTIONS}
+        WHERE to_wallet_id = $1 AND status = 'completed'
+      `, [w.wallet_id]);
 
       // Outflows from this wallet
-      const outflow = db.prepare(`
+      const outflow = await one(`
         SELECT
-          COUNT(*) AS count,
-          COALESCE(SUM(ABS(amount)), 0) AS total_cents
-        FROM transactions
-        WHERE from_wallet_id = ? AND status = 'completed'
-      `).get(w.wallet_id);
+          COUNT(*)::int AS count,
+          COALESCE(SUM(ABS(amount)), 0)::float8 AS total_cents
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 AND status = 'completed'
+      `, [w.wallet_id]);
 
       // Last transaction
-      const lastTx = db.prepare(`
+      const lastTx = await one(`
         SELECT MAX(created_at) AS last_date
-        FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
-      `).get(w.wallet_id, w.wallet_id);
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 OR to_wallet_id = $1
+      `, [w.wallet_id]);
 
-      return {
+      walletStats.push({
         wallet_id: w.wallet_id,
         name: w.name,
         role: w.role,
-        balance_cents: w.fiat_balance,
-        balance_usd: toDollars(w.fiat_balance),
+        balance_cents: num(w.fiat_balance),
+        balance_usd: toDollars(num(w.fiat_balance)),
         currency: w.currency || 'USD',
         status: w.status || 'active',
         email: w.email || null,
@@ -253,8 +269,8 @@ router.get('/wallets', (req, res) => {
         outflow_count: outflow.count,
         transaction_count: inflow.count + outflow.count,
         last_activity: lastTx.last_date || null,
-      };
-    });
+      });
+    }
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -271,90 +287,89 @@ router.get('/wallets', (req, res) => {
 // Aggregated transaction data — by category, method, month
 // Query params: ?category=distribution&method=ach&from=2024-01-01&to=2025-12-31
 // ─────────────────────────────────────────────────────────────
-router.get('/transactions', (req, res) => {
+router.get('/transactions', async (req, res) => {
   try {
-    const db = req.db;
     const { category, method, from: fromDate, to: toDate, limit = 100, offset = 0 } = req.query;
 
     // Build dynamic WHERE clause
     const conditions = [];
     const params = [];
 
-    if (category) { conditions.push('category = ?'); params.push(category); }
-    if (method)   { conditions.push('payment_method = ?'); params.push(method); }
-    if (fromDate) { conditions.push('DATE(created_at) >= ?'); params.push(fromDate); }
-    if (toDate)   { conditions.push('DATE(created_at) <= ?'); params.push(toDate); }
+    if (category) { conditions.push('category = $' + (params.length + 1)); params.push(category); }
+    if (method)   { conditions.push('payment_method = $' + (params.length + 1)); params.push(method); }
+    if (fromDate) { conditions.push('SUBSTR(created_at, 1, 10) >= $' + (params.length + 1)); params.push(fromDate); }
+    if (toDate)   { conditions.push('SUBSTR(created_at, 1, 10) <= $' + (params.length + 1)); params.push(toDate); }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     // Category breakdown
-    const byCategory = db.prepare(`
+    const byCategory = await all(`
       SELECT
         category,
-        COUNT(*) AS count,
-        SUM(ABS(amount)) AS total_cents,
-        AVG(ABS(amount)) AS avg_cents,
+        COUNT(*)::int AS count,
+        SUM(ABS(amount))::float8 AS total_cents,
+        AVG(ABS(amount))::float8 AS avg_cents,
         MIN(created_at) AS first_date,
         MAX(created_at) AS last_date
-      FROM transactions
+      FROM ${TRANSACTIONS}
       ${where}
       GROUP BY category
       ORDER BY total_cents DESC
-    `).all(...params);
+    `, params);
 
     // Method breakdown
-    const byMethod = db.prepare(`
+    const byMethod = await all(`
       SELECT
         payment_method AS method,
-        COUNT(*) AS count,
-        SUM(ABS(amount)) AS total_cents
-      FROM transactions
+        COUNT(*)::int AS count,
+        SUM(ABS(amount))::float8 AS total_cents
+      FROM ${TRANSACTIONS}
       ${where}
       GROUP BY payment_method
       ORDER BY count DESC
-    `).all(...params);
+    `, params);
 
     // Monthly flow
-    const byMonth = db.prepare(`
+    const byMonth = await all(`
       SELECT
-        STRFTIME('%Y-%m', created_at) AS month,
-        SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END) AS credits_cents,
-        SUM(CASE WHEN amount < 0  THEN ABS(amount) ELSE 0 END) AS debits_cents,
-        COUNT(*) AS count
-      FROM transactions
+        SUBSTR(created_at, 1, 7) AS month,
+        COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0)::float8 AS credits_cents,
+        COALESCE(SUM(CASE WHEN amount < 0  THEN ABS(amount) ELSE 0 END), 0)::float8 AS debits_cents,
+        COUNT(*)::int AS count
+      FROM ${TRANSACTIONS}
       ${where}
       GROUP BY month
       ORDER BY month ASC
-    `).all(...params);
+    `, params);
 
     // Individual transactions (paginated)
-    const txList = db.prepare(`
+    const txList = await all(`
       SELECT
         id,
         category,
         description,
-        amount,
+        amount::float8 AS amount,
         payment_method,
         from_wallet_id,
         to_wallet_id,
         status,
         created_at
-      FROM transactions
+      FROM ${TRANSACTIONS}
       ${where}
       ORDER BY created_at DESC
-      LIMIT ? OFFSET ?
-    `).all(...params, parseInt(limit), parseInt(offset));
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+    `, params.concat([parseInt(limit, 10), parseInt(offset, 10)]));
 
     // Total count
-    const totalRow = db.prepare(`
-      SELECT COUNT(*) AS total FROM transactions ${where}
-    `).get(...params);
+    const totalRow = await one(`
+      SELECT COUNT(*)::int AS total FROM ${TRANSACTIONS} ${where}
+    `, params);
 
     res.json({
       generated_at: new Date().toISOString(),
       filters: { category: category || null, method: method || null, from: fromDate || null, to: toDate || null },
       total_count: totalRow.total,
-      page: { limit: parseInt(limit), offset: parseInt(offset) },
+      page: { limit: parseInt(limit, 10), offset: parseInt(offset, 10) },
 
       by_category: byCategory.map(r => ({
         category: r.category,
@@ -408,61 +423,60 @@ router.get('/transactions', (req, res) => {
 // GET /api/analytics/beneficiaries
 // Per-beneficiary balance, allocation, disbursement analysis
 // ─────────────────────────────────────────────────────────────
-router.get('/beneficiaries', (req, res) => {
+router.get('/beneficiaries', async (req, res) => {
   try {
-    const db = req.db;
+    const beneficiaries = await all(`
+      SELECT * FROM ${WALLETS} WHERE role = 'beneficiary' ORDER BY id
+    `);
 
-    const beneficiaries = db.prepare(`
-      SELECT * FROM wallets WHERE role = 'beneficiary' ORDER BY id
-    `).all();
-
-    const result = beneficiaries.map(b => {
+    const result = [];
+    for (const b of beneficiaries) {
       // Total received
-      const received = db.prepare(`
-        SELECT COALESCE(SUM(ABS(amount)), 0) AS total, COUNT(*) AS count
-        FROM transactions
-        WHERE to_wallet_id = ? AND status = 'completed'
-      `).get(b.wallet_id);
+      const received = await one(`
+        SELECT COALESCE(SUM(ABS(amount)), 0)::float8 AS total, COUNT(*)::int AS count
+        FROM ${TRANSACTIONS}
+        WHERE to_wallet_id = $1 AND status = 'completed'
+      `, [b.wallet_id]);
 
       // Total disbursed
-      const disbursed = db.prepare(`
-        SELECT COALESCE(SUM(ABS(amount)), 0) AS total, COUNT(*) AS count
-        FROM transactions
-        WHERE from_wallet_id = ? AND status = 'completed'
-      `).get(b.wallet_id);
+      const disbursed = await one(`
+        SELECT COALESCE(SUM(ABS(amount)), 0)::float8 AS total, COUNT(*)::int AS count
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 AND status = 'completed'
+      `, [b.wallet_id]);
 
       // Last activity
-      const lastTx = db.prepare(`
-        SELECT MAX(created_at) AS last_date, category, payment_method
-        FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+      const lastTx = await one(`
+        SELECT created_at AS last_date, category, payment_method
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 OR to_wallet_id = $1
         ORDER BY created_at DESC
         LIMIT 1
-      `).get(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id]);
 
       // Payment methods used
-      const methods = db.prepare(`
-        SELECT payment_method, COUNT(*) AS count
-        FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+      const methods = await all(`
+        SELECT payment_method, COUNT(*)::int AS count
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 OR to_wallet_id = $1
         GROUP BY payment_method
-      `).all(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id]);
 
       // Recent transactions (last 5)
-      const recentTx = db.prepare(`
-        SELECT id, category, description, amount, payment_method, status, created_at
-        FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+      const recentTx = await all(`
+        SELECT id, category, description, amount::float8 AS amount, payment_method, status, created_at
+        FROM ${TRANSACTIONS}
+        WHERE from_wallet_id = $1 OR to_wallet_id = $1
         ORDER BY created_at DESC
         LIMIT 5
-      `).all(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id]);
 
-      return {
+      result.push({
         wallet_id: b.wallet_id,
         name: b.name,
         role: b.role,
-        current_balance_cents: b.fiat_balance,
-        current_balance_usd: toDollars(b.fiat_balance),
+        current_balance_cents: num(b.fiat_balance),
+        current_balance_usd: toDollars(num(b.fiat_balance)),
         currency: b.currency || 'USD',
         // Profile completeness
         email: b.email || null,
@@ -478,9 +492,9 @@ router.get('/beneficiaries', (req, res) => {
         net_position_cents: received.total - disbursed.total,
         net_position_usd: toDollars(received.total - disbursed.total),
         // Activity
-        last_activity: lastTx?.last_date || null,
-        last_tx_category: lastTx?.category || null,
-        last_tx_method: lastTx?.payment_method || null,
+        last_activity: lastTx.last_date || null,
+        last_tx_category: lastTx.category || null,
+        last_tx_method: lastTx.payment_method || null,
         payment_methods_used: methods.reduce((acc, m) => {
           acc[m.payment_method] = m.count;
           return acc;
@@ -496,14 +510,14 @@ router.get('/beneficiaries', (req, res) => {
           status: t.status,
           date: t.created_at,
         })),
-      };
-    });
+      });
+    }
 
     res.json({
       generated_at: new Date().toISOString(),
       count: result.length,
-      total_balance_cents: result.reduce((s, b) => s + b.current_balance_cents, 0),
-      total_balance_usd: toDollars(result.reduce((s, b) => s + b.current_balance_cents, 0)),
+      total_balance_cents: result.reduce((s, b) => s + (b.current_balance_cents || 0), 0),
+      total_balance_usd: toDollars(result.reduce((s, b) => s + (b.current_balance_cents || 0), 0)),
       total_distributed_cents: result.reduce((s, b) => s + b.total_disbursed_cents, 0),
       total_distributed_usd: toDollars(result.reduce((s, b) => s + b.total_disbursed_cents, 0)),
       beneficiaries: result,
@@ -517,36 +531,29 @@ router.get('/beneficiaries', (req, res) => {
 // GET /api/analytics/ach-readiness
 // Which beneficiaries can receive ACH disbursements
 // ─────────────────────────────────────────────────────────────
-router.get('/ach-readiness', (req, res) => {
+router.get('/ach-readiness', async (req, res) => {
   try {
-    const db = req.db;
+    // Bank details are an optional schema addition (see the bottom of this file),
+    // so report them as absent rather than failing the whole endpoint.
+    const columns = (await ensureSchema()).walletColumns;
+    const flag = (column) => columns.includes(column)
+      ? 'CASE WHEN ' + column + ' IS NOT NULL THEN 1 ELSE 0 END'
+      : '0';
 
-    // Fetch all beneficiaries and trustees
-    const users = db.prepare(`
+    const users = await all(`
       SELECT
-        w.wallet_id,
-        w.name,
-        w.role,
-        w.fiat_balance,
-        w.email,
-        w.phone,
-        w.holder_name,
-        -- These columns may not exist yet — use CASE to handle gracefully
-        -- Add routing_number and account_number columns to your wallets table
-        -- or create a separate bank_accounts table
-        CASE WHEN EXISTS(
-          SELECT 1 FROM wallets ba WHERE ba.wallet_id = w.wallet_id AND ba.routing_number IS NOT NULL
-        ) THEN 1 ELSE 0 END AS has_routing,
-        CASE WHEN EXISTS(
-          SELECT 1 FROM wallets ba WHERE ba.wallet_id = w.wallet_id AND ba.account_number IS NOT NULL
-        ) THEN 1 ELSE 0 END AS has_account
-      FROM wallets w
-      ORDER BY w.role, w.id
-    `).all();
-
-    // Alternate query if bank details are in a separate table:
-    // SELECT w.*, ba.routing_number, ba.account_number
-    // FROM wallets w LEFT JOIN bank_accounts ba ON ba.wallet_id = w.wallet_id
+        wallet_id,
+        name,
+        role,
+        fiat_balance::float8 AS fiat_balance,
+        email,
+        phone,
+        holder_name,
+        ${flag('routing_number')} AS has_routing,
+        ${flag('account_number')} AS has_account
+      FROM ${WALLETS}
+      ORDER BY role, id
+    `);
 
     const withStatus = users.map(u => {
       const blockers = [];
@@ -589,9 +596,9 @@ router.get('/ach-readiness', (req, res) => {
           : 0,
         total_disbursable_cents: beneficiaryStatus
           .filter(u => u.ach_ready)
-          .reduce((s, u) => s + u.current_balance_cents, 0),
+          .reduce((s, u) => s + (u.current_balance_cents || 0), 0),
         total_disbursable_usd: toDollars(
-          beneficiaryStatus.filter(u => u.ach_ready).reduce((s, u) => s + u.current_balance_cents, 0)
+          beneficiaryStatus.filter(u => u.ach_ready).reduce((s, u) => s + (u.current_balance_cents || 0), 0)
         ),
       },
       all_users: withStatus,
@@ -607,71 +614,67 @@ router.get('/ach-readiness', (req, res) => {
 // GET /api/analytics/distributions
 // Distribution history with trends
 // ─────────────────────────────────────────────────────────────
-router.get('/distributions', (req, res) => {
+router.get('/distributions', async (req, res) => {
   try {
-    const db = req.db;
     const { year } = req.query;
 
     const conditions = ["category = 'distribution'", "status = 'completed'"];
     const params = [];
-    if (year) { conditions.push("STRFTIME('%Y', created_at) = ?"); params.push(year); }
+    if (year) { conditions.push('SUBSTR(created_at, 1, 4) = $1'); params.push(year); }
     const where = 'WHERE ' + conditions.join(' AND ');
 
-    const distributions = db.prepare(`
+    const distributions = await all(`
       SELECT
         id,
         description,
-        amount,
+        amount::float8 AS amount,
         payment_method,
         from_wallet_id,
         to_wallet_id,
         status,
         created_at,
-        STRFTIME('%Y', created_at) AS year,
-        STRFTIME('%Y-%m', created_at) AS month,
-        STRFTIME('%Q', created_at) AS quarter
-      FROM transactions
+        SUBSTR(created_at, 1, 4) AS year,
+        SUBSTR(created_at, 1, 7) AS month
+      FROM ${TRANSACTIONS}
       ${where}
       ORDER BY created_at DESC
-    `).all(...params);
+    `, params);
 
     // Annual totals
-    const byYear = db.prepare(`
+    const byYear = await all(`
       SELECT
-        STRFTIME('%Y', created_at) AS year,
-        COUNT(*) AS count,
-        SUM(ABS(amount)) AS total_cents
-      FROM transactions
+        SUBSTR(created_at, 1, 4) AS year,
+        COUNT(*)::int AS count,
+        SUM(ABS(amount))::float8 AS total_cents
+      FROM ${TRANSACTIONS}
       WHERE category = 'distribution' AND status = 'completed'
       GROUP BY year
       ORDER BY year
-    `).all();
+    `);
 
-    // Quarterly totals
-    const byQuarter = db.prepare(`
+    // Monthly totals
+    const byMonth = await all(`
       SELECT
-        STRFTIME('%Y', created_at) AS year,
-        STRFTIME('%m', created_at) AS month_num,
-        COUNT(*) AS count,
-        SUM(ABS(amount)) AS total_cents,
-        AVG(ABS(amount)) AS avg_cents
-      FROM transactions
+        SUBSTR(created_at, 1, 4) AS year,
+        SUBSTR(created_at, 6, 2) AS month_num,
+        COUNT(*)::int AS count,
+        SUM(ABS(amount))::float8 AS total_cents,
+        AVG(ABS(amount))::float8 AS avg_cents
+      FROM ${TRANSACTIONS}
       WHERE category = 'distribution' AND status = 'completed'
       GROUP BY year, month_num
       ORDER BY year, month_num
-    `).all();
+    `);
+
+    const totalCents = distributions.reduce((s, d) => s + Math.abs(d.amount), 0);
 
     res.json({
       generated_at: new Date().toISOString(),
       count: distributions.length,
-      total_cents: distributions.reduce((s, d) => s + Math.abs(d.amount), 0),
-      total_usd: toDollars(distributions.reduce((s, d) => s + Math.abs(d.amount), 0)),
-      avg_cents: distributions.length
-        ? Math.round(distributions.reduce((s, d) => s + Math.abs(d.amount), 0) / distributions.length)
-        : 0,
-      avg_usd: distributions.length
-        ? toDollars(Math.round(distributions.reduce((s, d) => s + Math.abs(d.amount), 0) / distributions.length))
-        : 0,
+      total_cents: totalCents,
+      total_usd: toDollars(totalCents),
+      avg_cents: distributions.length ? Math.round(totalCents / distributions.length) : 0,
+      avg_usd: distributions.length ? toDollars(Math.round(totalCents / distributions.length)) : 0,
 
       by_year: byYear.map(r => ({
         year: r.year,
@@ -680,7 +683,7 @@ router.get('/distributions', (req, res) => {
         total_usd: toDollars(r.total_cents),
       })),
 
-      by_period: byQuarter.map(r => ({
+      by_period: byMonth.map(r => ({
         year: r.year,
         month: r.month_num,
         count: r.count,
@@ -713,15 +716,13 @@ router.get('/distributions', (req, res) => {
 // GET /api/analytics/data-quality
 // Profile completeness and missing field audit
 // ─────────────────────────────────────────────────────────────
-router.get('/data-quality', (req, res) => {
+router.get('/data-quality', async (req, res) => {
   try {
-    const db = req.db;
-
-    const users = db.prepare(`
+    const users = await all(`
       SELECT wallet_id, name, role, email, phone, holder_name
-      FROM wallets
+      FROM ${WALLETS}
       ORDER BY role, id
-    `).all();
+    `);
 
     const totalUsers = users.length;
 
@@ -729,32 +730,31 @@ router.get('/data-quality', (req, res) => {
       email:   users.filter(u => !u.email).length,
       phone:   users.filter(u => !u.phone).length,
       holder_name: users.filter(u => !u.holder_name).length,
-      // routing_number and account_number require those columns to exist:
-      // routing_number: users.filter(u => !u.routing_number).length,
-      // account_number: users.filter(u => !u.account_number).length,
     };
 
     // Orphaned transactions (wallets referenced that don't exist)
-    const orphanedFrom = db.prepare(`
-      SELECT COUNT(*) AS count FROM transactions t
-      LEFT JOIN wallets w ON w.wallet_id = t.from_wallet_id
+    const orphanedFrom = await one(`
+      SELECT COUNT(*)::int AS count FROM ${TRANSACTIONS} t
+      LEFT JOIN ${WALLETS} w ON w.wallet_id = t.from_wallet_id
       WHERE t.from_wallet_id IS NOT NULL AND w.wallet_id IS NULL
-    `).get();
+    `);
 
-    const orphanedTo = db.prepare(`
-      SELECT COUNT(*) AS count FROM transactions t
-      LEFT JOIN wallets w ON w.wallet_id = t.to_wallet_id
+    const orphanedTo = await one(`
+      SELECT COUNT(*)::int AS count FROM ${TRANSACTIONS} t
+      LEFT JOIN ${WALLETS} w ON w.wallet_id = t.to_wallet_id
       WHERE t.to_wallet_id IS NOT NULL AND w.wallet_id IS NULL
-    `).get();
+    `);
 
     // Transactions missing category
-    const missingCategory = db.prepare(`
-      SELECT COUNT(*) AS count FROM transactions WHERE category IS NULL OR category = ''
-    `).get();
+    const missingCategory = await one(`
+      SELECT COUNT(*)::int AS count FROM ${TRANSACTIONS} WHERE category IS NULL OR category = ''
+    `);
 
     const totalFields = totalUsers * Object.keys(missing).length;
     const missingTotal = Object.values(missing).reduce((a, b) => a + b, 0);
-    const completenessScore = Math.round(((totalFields - missingTotal) / totalFields) * 100);
+    const completenessScore = totalFields
+      ? Math.round(((totalFields - missingTotal) / totalFields) * 100)
+      : 0;
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -779,16 +779,16 @@ router.get('/data-quality', (req, res) => {
         missing_category: missingCategory.count,
       },
       recommended_schema_additions: [
-        { field: 'wallets.routing_number', type: 'TEXT', reason: 'Required for ACH disbursements' },
-        { field: 'wallets.account_number', type: 'TEXT', reason: 'Required for ACH disbursements' },
-        { field: 'wallets.account_type', type: 'TEXT', reason: 'Checking vs savings for ACH' },
-        { field: 'wallets.kyc_verified', type: 'INTEGER (boolean)', reason: 'KYC compliance tracking' },
-        { field: 'wallets.ssn_encrypted', type: 'TEXT', reason: 'IRS 1099 reporting' },
-        { field: 'wallets.date_of_birth', type: 'TEXT', reason: 'Identity verification' },
-        { field: 'wallets.mailing_address', type: 'TEXT', reason: 'Legal correspondence' },
-        { field: 'wallets.preferred_payment_method', type: 'TEXT', reason: 'Disbursement preferences' },
-        { field: 'transactions.is_test', type: 'INTEGER (boolean)', reason: 'Separate test from production transactions' },
-        { field: 'transactions.beneficiary_split', type: 'TEXT (JSON)', reason: 'Per-beneficiary distribution tracking' },
+        { field: 'wallets.routing_number', type: 'text', reason: 'Required for ACH disbursements' },
+        { field: 'wallets.account_number', type: 'text', reason: 'Required for ACH disbursements' },
+        { field: 'wallets.account_type', type: 'text', reason: 'Checking vs savings for ACH' },
+        { field: 'wallets.kyc_verified', type: 'boolean', reason: 'KYC compliance tracking' },
+        { field: 'wallets.ssn_encrypted', type: 'text', reason: 'IRS 1099 reporting' },
+        { field: 'wallets.date_of_birth', type: 'text', reason: 'Identity verification' },
+        { field: 'wallets.mailing_address', type: 'text', reason: 'Legal correspondence' },
+        { field: 'wallets.preferred_payment_method', type: 'text', reason: 'Disbursement preferences' },
+        { field: 'transactions.is_test', type: 'boolean', reason: 'Separate test from production transactions' },
+        { field: 'transactions.beneficiary_split', type: 'jsonb', reason: 'Per-beneficiary distribution tracking' },
       ],
     });
   } catch (err) {
@@ -799,7 +799,7 @@ router.get('/data-quality', (req, res) => {
 // ─────────────────────────────────────────────────────────────
 // GET /api/analytics/gl-summary
 // Fineract-backed GL summary (principal vs. income with double-entry data)
-// Falls back to SQLite-based summary if Fineract is unavailable
+// Falls back to the legacy ledger if Fineract is unavailable
 // ─────────────────────────────────────────────────────────────
 router.get('/gl-summary', async (req, res) => {
   try {
@@ -817,39 +817,37 @@ router.get('/gl-summary', async (req, res) => {
       accounts: summary.accounts,
     });
   } catch (fineractErr) {
-    // Fallback: derive a rough GL summary from SQLite
+    // Fallback: derive a rough GL summary from the legacy ledger
     try {
-      const db = req.db;
-
-      const portfolio = db.prepare(`
+      const portfolio = await one(`
         SELECT
-          SUM(fiat_balance) AS total_balance_cents,
-          SUM(CASE WHEN role = 'trust_entity' THEN fiat_balance ELSE 0 END) AS principal_cents,
-          SUM(CASE WHEN role IN ('trustee', 'beneficiary') THEN fiat_balance ELSE 0 END) AS distributed_cents
-        FROM wallets
-      `).get();
+          SUM(fiat_balance)::float8 AS total_balance_cents,
+          SUM(CASE WHEN role = 'trust_entity' THEN fiat_balance ELSE 0 END)::float8 AS principal_cents,
+          SUM(CASE WHEN role IN ('trustee', 'beneficiary') THEN fiat_balance ELSE 0 END)::float8 AS distributed_cents
+        FROM ${WALLETS}
+      `);
 
-      const income = db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) AS total_cents
-        FROM transactions
+      const income = await one(`
+        SELECT COALESCE(SUM(amount), 0)::float8 AS total_cents
+        FROM ${TRANSACTIONS}
         WHERE category IN ('interest', 'investment') AND status = 'completed'
-      `).get();
+      `);
 
       res.json({
-        source: 'sqlite_fallback',
+        source: 'legacy_ledger_fallback',
         fineract_error: fineractErr.message,
         generated_at: new Date().toISOString(),
         total_assets: toDollars(portfolio.total_balance_cents),
         principal_usd: toDollars(portfolio.principal_cents),
         distributed_usd: toDollars(portfolio.distributed_cents),
         income_usd: toDollars(income.total_cents),
-        note: 'Fineract unavailable — showing SQLite approximation without double-entry verification',
+        note: 'Fineract unavailable — showing the migrated legacy ledger without double-entry verification',
       });
-    } catch (sqliteErr) {
+    } catch (ledgerErr) {
       res.status(500).json({
-        error: 'GL summary unavailable from both Fineract and SQLite',
+        error: 'GL summary unavailable from both Fineract and the legacy ledger',
         fineract_error: fineractErr.message,
-        sqlite_error: sqliteErr.message,
+        legacy_ledger_error: ledgerErr.message,
       });
     }
   }
@@ -862,64 +860,32 @@ module.exports = router;
 
 /*
  * ─────────────────────────────────────────────────────────────
- * INTEGRATION INSTRUCTIONS
+ * ENDPOINTS
  * ─────────────────────────────────────────────────────────────
  *
- * 1. Copy this file to your server directory (same level as server.js)
+ *    GET /api/analytics/summary          Overall trust financial summary
+ *    GET /api/analytics/wallets          All wallets with flow stats
+ *    GET /api/analytics/transactions     Aggregated by category/method/month + paginated list
+ *                                        Query params: category, method, from, to, limit, offset
+ *    GET /api/analytics/beneficiaries    Per-beneficiary balance, flows, recent transactions
+ *    GET /api/analytics/ach-readiness    Who can receive ACH, who is blocked and why
+ *    GET /api/analytics/distributions    Distribution history, annual/monthly totals (?year=2025)
+ *    GET /api/analytics/data-quality     Missing fields, schema recommendations
+ *    GET /api/analytics/gl-summary       Fineract GL, falling back to the legacy ledger
  *
- * 2. In server.js, add:
+ * Column assumptions (schema LEGACY_SQLITE_SCHEMA, default legacy_sqlite):
+ *    - wallets.wallet_id (text), wallets.fiat_balance (bigint, cents)
+ *    - wallets.role (text: 'trust_entity'|'trustee'|'beneficiary')
+ *    - transactions.amount (bigint, cents; negative = debit)
+ *    - transactions.category, .payment_method, .status (text)
+ *    - transactions.from_wallet_id, .to_wallet_id (text)
+ *    - transactions.created_at (text, ISO 8601 — dates are grouped by SUBSTR)
  *
- *      const analyticsRoutes = require('./analytics-api-routes');
- *      app.use('/api/analytics', analyticsRoutes);
- *
- * 3. Available endpoints:
- *
- *    GET /api/analytics/summary
- *      → Overall trust financial summary
- *
- *    GET /api/analytics/wallets
- *      → All 8 wallets with flow stats
- *
- *    GET /api/analytics/transactions
- *      → Aggregated by category/method/month + paginated list
- *      → Query params: category, method, from, to, limit, offset
- *
- *    GET /api/analytics/beneficiaries
- *      → Per-beneficiary balance, flows, recent transactions
- *
- *    GET /api/analytics/ach-readiness
- *      → Who can receive ACH, who is blocked and why
- *
- *    GET /api/analytics/distributions
- *      → Distribution history, annual/quarterly totals
- *      → Query param: year (e.g. ?year=2025)
- *
- *    GET /api/analytics/data-quality
- *      → Missing fields, schema recommendations
- *
- * 4. Column name assumptions:
- *    - wallets.wallet_id (TEXT PK)
- *    - wallets.fiat_balance (INTEGER, cents)
- *    - wallets.role (TEXT: 'trust_entity'|'trustee'|'beneficiary')
- *    - transactions.amount (INTEGER, cents; negative = debit)
- *    - transactions.category (TEXT)
- *    - transactions.payment_method (TEXT)
- *    - transactions.from_wallet_id (TEXT FK)
- *    - transactions.to_wallet_id (TEXT FK)
- *    - transactions.created_at (TEXT ISO date)
- *    - transactions.status (TEXT: 'completed'|'pending'|etc.)
- *
- *    If column names differ in your schema, update the SQL queries above.
- *
- * 5. Required schema additions for full ACH readiness:
- *    ALTER TABLE wallets ADD COLUMN routing_number TEXT;
- *    ALTER TABLE wallets ADD COLUMN account_number TEXT;
- *    ALTER TABLE wallets ADD COLUMN account_type TEXT DEFAULT 'checking';
- *    ALTER TABLE wallets ADD COLUMN kyc_verified INTEGER DEFAULT 0;
- *    ALTER TABLE wallets ADD COLUMN ssn_encrypted TEXT;
- *    ALTER TABLE wallets ADD COLUMN date_of_birth TEXT;
- *    ALTER TABLE wallets ADD COLUMN mailing_address TEXT;
- *    ALTER TABLE wallets ADD COLUMN preferred_payment_method TEXT DEFAULT 'ach';
- *    ALTER TABLE transactions ADD COLUMN is_test INTEGER DEFAULT 0;
+ * Required schema additions for full ACH readiness (absent columns report as
+ * "not on file" rather than failing the endpoint):
+ *    ALTER TABLE legacy_sqlite.wallets ADD COLUMN routing_number text;
+ *    ALTER TABLE legacy_sqlite.wallets ADD COLUMN account_number text;
+ *    ALTER TABLE legacy_sqlite.wallets ADD COLUMN account_type text DEFAULT 'checking';
+ *    ALTER TABLE legacy_sqlite.wallets ADD COLUMN kyc_verified boolean DEFAULT false;
  * ─────────────────────────────────────────────────────────────
  */

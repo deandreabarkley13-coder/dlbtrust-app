@@ -2,7 +2,7 @@
 /**
  * One-Time Migration: Wallets → Apache Fineract
  *
- * Reads all wallets from trust.db, then for each wallet:
+ * Reads all wallets from the migrated legacy ledger in Postgres, then for each:
  *   1. Creates a Fineract client (beneficiary/trustee)
  *   2. Creates a savings account (using a configurable savings product)
  *   3. Posts the current fiat_balance as an opening deposit journal entry
@@ -11,7 +11,7 @@
  *   node server/scripts/migrate-wallets-to-fineract.js
  *
  * Environment:
- *   DB_PATH               — path to trust.db (default: data/dlbtrust.db)
+ *   LEGACY_SQLITE_SCHEMA  — schema holding the migrated wallets (default: legacy_sqlite)
  *   FINERACT_URL          — Fineract API base URL
  *   FINERACT_TENANT_ID    — Fineract tenant (default: "default")
  *   FINERACT_USERNAME     — Fineract admin user
@@ -26,10 +26,13 @@
 require('dotenv').config();
 
 const path = require('path');
-const Database = require('better-sqlite3');
+const pool = require(path.join(__dirname, '..', 'integrations', 'bonds', 'pgPool'));
 const { FineractClient } = require('../integrations/fineract/fineractClient');
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db');
+const SCHEMA = process.env.LEGACY_SQLITE_SCHEMA || 'legacy_sqlite';
+if (!/^[a-z_][a-z0-9_]*$/.test(SCHEMA)) {
+  throw new Error('LEGACY_SQLITE_SCHEMA must be a plain lowercase identifier, got: ' + SCHEMA);
+}
 const SAVINGS_PRODUCT_ID     = parseInt(process.env.FINERACT_SAVINGS_PRODUCT_ID, 10) || 1;
 const CASH_GL_ACCOUNT_ID     = parseInt(process.env.FINERACT_CASH_GL_ACCOUNT_ID, 10) || 1;
 const DEPOSIT_GL_ACCOUNT_ID  = parseInt(process.env.FINERACT_DEPOSIT_GL_ACCOUNT_ID, 10) || 2;
@@ -38,18 +41,17 @@ async function migrate() {
   console.log('═══════════════════════════════════════════════════════');
   console.log('  DLB Trust → Fineract Migration');
   console.log('═══════════════════════════════════════════════════════');
-  console.log(`  DB Path:       ${DB_PATH}`);
+  console.log(`  Wallet source: ${SCHEMA}.wallets (Postgres)`);
   console.log(`  Fineract URL:  ${process.env.FINERACT_URL || '(default)'}`);
   console.log(`  Savings Prod:  ${SAVINGS_PRODUCT_ID}`);
   console.log('');
 
-  // 1. Connect to SQLite
-  let db;
+  // 1. Connect to Postgres
   try {
-    db = new Database(DB_PATH, { readonly: true });
-    console.log('[DB] Connected to trust.db');
+    await pool.query('SELECT 1');
+    console.log('[DB] Connected to Postgres');
   } catch (err) {
-    console.error(`[DB] Cannot open ${DB_PATH}: ${err.message}`);
+    console.error(`[DB] Cannot reach Postgres: ${err.message}`);
     process.exit(1);
   }
 
@@ -66,9 +68,11 @@ async function migrate() {
   // 3. Read all wallets
   let wallets;
   try {
-    wallets = db.prepare('SELECT * FROM wallets ORDER BY id').all();
+    const res = await pool.query(`SELECT * FROM ${SCHEMA}.wallets ORDER BY id`);
+    wallets = res.rows;
   } catch (err) {
-    console.error(`[DB] Cannot read wallets: ${err.message}`);
+    console.error(`[DB] Cannot read ${SCHEMA}.wallets: ${err.message}`);
+    console.error('  Migrate the legacy SQLite file first: node server/scripts/migrateSqliteToPostgres.js --confirm');
     process.exit(1);
   }
 
@@ -111,7 +115,7 @@ async function migrate() {
       console.log(`  ✓ Savings account created: id=${savingsId}`);
 
       // 3c. Post opening balance as journal entry (if balance > 0)
-      const balanceCents = wallet.fiat_balance || 0;
+      const balanceCents = Number(wallet.fiat_balance || 0);
       const balanceDollars = balanceCents / 100;
 
       if (balanceDollars > 0) {
@@ -151,8 +155,6 @@ async function migrate() {
     console.log('');
   }
 
-  db.close();
-
   // 4. Summary
   console.log('═══════════════════════════════════════════════════════');
   console.log('  Migration Summary');
@@ -174,7 +176,11 @@ async function migrate() {
   return results;
 }
 
-migrate().catch(err => {
-  console.error('Migration failed:', err);
-  process.exit(1);
-});
+migrate()
+  .catch(err => {
+    console.error('Migration failed:', err);
+    process.exitCode = 1;
+  })
+  .finally(() => {
+    if (typeof pool.end === 'function') pool.end().catch(() => {});
+  });

@@ -30,6 +30,9 @@
     "trust:token-rail": "node server/scripts/trustTokenRailWire.js",
     "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
     "db:init": "tsx src/server/db/init.ts",
+    "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
+    "test:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.test.js",
+    "test:analytics-routes": "node server/routes/analytics.test.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
