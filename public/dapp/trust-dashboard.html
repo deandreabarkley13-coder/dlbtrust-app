@@ -181,7 +181,10 @@
               <div class="form-group"><label>Rail</label><input id="dist-rail-note" readonly /></div>
             </div>
             <div id="dist-dest-wallet">
-              <div class="form-group"><label>Destination Address</label><input id="dist-dest" placeholder="0x..." /></div>
+              <div class="form-row">
+                <div class="form-group"><label>Destination Address</label><input id="dist-dest" placeholder="0x..." /></div>
+                <div class="form-group"><label>On-chain Rail</label><select id="dist-wallet-rail" onchange="syncDestinationFields()"><option value="sit">Trust mint (SIT)</option><option value="thirdweb_server_wallet">Treasury server wallet (thirdweb)</option></select></div>
+              </div>
             </div>
             <div id="dist-dest-bank" class="hidden">
               <div class="form-row">
@@ -819,7 +822,7 @@
 
   function destinationLabel(r) {
     const type = r.destination_type || 'wallet';
-    const rail = (r.metadata && r.metadata.payoutRoute && r.metadata.payoutRoute.rail) || DEST_RAILS[type].split(' ')[0];
+    const rail = (r.metadata && r.metadata.payoutRoute && r.metadata.payoutRoute.rail) || (DEST_RAILS[type] || '').split(' ')[0];
     return `${type} · ${rail} · ${r.destination_address || '—'}`;
   }
 
@@ -843,7 +846,9 @@
   }
 
   const DEST_RAILS = {
-    wallet: 'sit — on-chain transfer to the wallet',
+    wallet: 'sit — trust mint to the wallet',
+    sit: 'sit — trust mint to the wallet',
+    thirdweb_server_wallet: 'thirdweb_server_wallet — treasury wallet, released on execute',
     bank: 'ach — NACHA batch, held until transmission',
     biller: 'bill_pay — Melio',
   };
@@ -851,7 +856,7 @@
   function syncDestinationFields() {
     const type = el('dist-dest-type').value;
     ['wallet', 'bank', 'biller'].forEach(k => el('dist-dest-' + k).classList.toggle('hidden', k !== type));
-    el('dist-rail-note').value = DEST_RAILS[type];
+    el('dist-rail-note').value = type === 'wallet' ? DEST_RAILS[el('dist-wallet-rail').value] : DEST_RAILS[type];
   }
 
   function clearDestinationFields() {
@@ -886,7 +891,7 @@
         },
       };
     }
-    return { destinationType, destinationAddress: el('dist-dest').value.trim() };
+    return { destinationType, destinationAddress: el('dist-dest').value.trim(), payoutRail: el('dist-wallet-rail').value };
   }
 
   async function createDistribution() {
