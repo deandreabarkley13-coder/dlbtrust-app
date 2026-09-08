@@ -12,6 +12,7 @@ const router  = express.Router();
 const { TemplateEngine } = require('../integrations/documents/templateEngine');
 const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { GenerationEngine } = require('../integrations/documents/generationEngine');
+const { DocumentStorageAdapter } = require('../integrations/documents/storageAdapter');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // TEMPLATES
@@ -106,6 +107,11 @@ router.post('/templates/:id/clone', async (req, res) => {
 // DOCUMENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+// ─── GET /api/documents/storage/status ────────────────────────────────────────
+router.get('/storage/status', (req, res) => {
+  res.json({ success: true, data: DocumentStorageAdapter.status() });
+});
+
 // ─── GET /api/documents/stats ─────────────────────────────────────────────────
 router.get('/stats', async (req, res) => {
   try {
@@ -146,6 +152,34 @@ router.post('/', async (req, res) => {
     res.json({ success: true, data: doc });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/documents/:id/pinned ────────────────────────────────────────────
+// Fetch the document back from the pinning backend and unseal it, so the
+// ciphertext on IPFS can be proven to still decrypt to the anchored hash.
+router.get('/:id/pinned', async (req, res) => {
+  try {
+    const doc = await DocumentEngine.getDocument(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, error: `Document ${req.params.id} not found` });
+    const fetched = await DocumentStorageAdapter.retrieve({
+      storageUri: doc.storage_uri,
+      contentHash: doc.content_hash,
+    });
+    res.json({
+      success: true,
+      data: {
+        document_id: doc.document_id,
+        storage_uri: doc.storage_uri,
+        encrypted: fetched.encrypted,
+        content_hash: fetched.contentHash,
+        hash_matches_record: fetched.verified,
+        content: fetched.content.toString('utf8'),
+      },
+    });
+  } catch (err) {
+    const status = /not found/.test(err.message) ? 404 : 400;
+    res.status(status).json({ success: false, error: err.message });
   }
 });
 

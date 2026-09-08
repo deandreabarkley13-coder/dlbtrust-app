@@ -168,10 +168,20 @@ describe('document storage anchoring', () => {
     process.env.DOCUMENT_STORAGE_BACKEND = 'ipfs';
     process.env.DOCUMENT_STORAGE_LIVE = 'true';
     process.env.DOCUMENT_STORAGE_IPFS_API_URL = '';
+    process.env.DOCUMENT_STORAGE_ENCRYPTION_KEY = 'a'.repeat(64);
     const anchor = await DocumentStorageAdapter.anchor({ documentId: 'DOC-3', content: 'y' });
     expect(anchor.contentHash).toMatch(/^sha256:/);
     expect(anchor.mode).toBe('shadow');
     expect(anchor.error).toContain('IPFS_API_URL');
+    delete process.env.DOCUMENT_STORAGE_ENCRYPTION_KEY;
+  });
+
+  it('refuses a live pin when no encryption key is configured', async () => {
+    process.env.DOCUMENT_STORAGE_BACKEND = 'thirdweb';
+    process.env.DOCUMENT_STORAGE_LIVE = 'true';
+    const anchor = await DocumentStorageAdapter.anchor({ documentId: 'DOC-4', content: 'z' });
+    expect(anchor.mode).toBe('shadow');
+    expect(anchor.error).toContain('DOCUMENT_STORAGE_ENCRYPTION_KEY not configured');
   });
 });
 

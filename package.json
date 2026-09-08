@@ -33,7 +33,8 @@
     "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
     "test:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.test.js",
     "test:analytics-routes": "node server/routes/analytics.test.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:document-storage": "node server/integrations/documents/storageAdapter.test.js"
   },
   "dependencies": {
     "@account-abstraction/contracts": "^0.8.0",
