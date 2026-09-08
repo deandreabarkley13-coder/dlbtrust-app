@@ -52,6 +52,7 @@ class DocumentEngine {
       storage: {
         backend: anchor.backend || 'none',
         mode: anchor.mode,
+        ...(anchor.encryption ? { encryption: anchor.encryption } : {}),
         ...(anchor.error ? { error: anchor.error } : {}),
       },
     };
