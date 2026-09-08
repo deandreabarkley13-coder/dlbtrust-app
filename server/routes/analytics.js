@@ -43,7 +43,7 @@ async function all(sql, params) {
 // ─────────────────────────────────────────────────────────────
 // MIDDLEWARE: the legacy ledger must be migrated before any route works
 // ─────────────────────────────────────────────────────────────
-const schemaState = { checkedAt: 0, ok: false, detail: null, walletColumns: [] };
+const schemaState = { checkedAt: 0, ok: false, detail: null, walletColumns: [], methodSql: 'NULL::text' };
 const SCHEMA_TTL_MS = 30000;
 
 async function ensureSchema() {
@@ -58,6 +58,13 @@ async function ensureSchema() {
   const tables = new Set(res.rows.map((r) => r.table_name));
   schemaState.checkedAt = Date.now();
   schemaState.walletColumns = res.rows.filter((r) => r.table_name === 'wallets').map((r) => r.column_name);
+
+  // The ledger names this column `method`; older exports call it `payment_method`.
+  const txColumns = res.rows.filter((r) => r.table_name === 'transactions').map((r) => r.column_name);
+  schemaState.methodSql = txColumns.includes('payment_method')
+    ? 'payment_method'
+    : txColumns.includes('method') ? 'method' : 'NULL::text';
+
   schemaState.ok = tables.has('wallets') && tables.has('transactions');
   schemaState.detail = schemaState.ok
     ? null
@@ -296,7 +303,7 @@ router.get('/transactions', async (req, res) => {
     const params = [];
 
     if (category) { conditions.push('category = $' + (params.length + 1)); params.push(category); }
-    if (method)   { conditions.push('payment_method = $' + (params.length + 1)); params.push(method); }
+    if (method)   { conditions.push(schemaState.methodSql + ' = $' + (params.length + 1)); params.push(method); }
     if (fromDate) { conditions.push('SUBSTR(created_at, 1, 10) >= $' + (params.length + 1)); params.push(fromDate); }
     if (toDate)   { conditions.push('SUBSTR(created_at, 1, 10) <= $' + (params.length + 1)); params.push(toDate); }
 
@@ -320,12 +327,12 @@ router.get('/transactions', async (req, res) => {
     // Method breakdown
     const byMethod = await all(`
       SELECT
-        payment_method AS method,
+        ${schemaState.methodSql} AS method,
         COUNT(*)::int AS count,
         SUM(ABS(amount))::float8 AS total_cents
       FROM ${TRANSACTIONS}
       ${where}
-      GROUP BY payment_method
+      GROUP BY ${schemaState.methodSql}
       ORDER BY count DESC
     `, params);
 
@@ -349,7 +356,7 @@ router.get('/transactions', async (req, res) => {
         category,
         description,
         amount::float8 AS amount,
-        payment_method,
+        ${schemaState.methodSql} AS payment_method,
         from_wallet_id,
         to_wallet_id,
         status,
@@ -447,7 +454,7 @@ router.get('/beneficiaries', async (req, res) => {
 
       // Last activity
       const lastTx = await one(`
-        SELECT created_at AS last_date, category, payment_method
+        SELECT created_at AS last_date, category, ${schemaState.methodSql} AS payment_method
         FROM ${TRANSACTIONS}
         WHERE from_wallet_id = $1 OR to_wallet_id = $1
         ORDER BY created_at DESC
@@ -456,15 +463,15 @@ router.get('/beneficiaries', async (req, res) => {
 
       // Payment methods used
       const methods = await all(`
-        SELECT payment_method, COUNT(*)::int AS count
+        SELECT ${schemaState.methodSql} AS payment_method, COUNT(*)::int AS count
         FROM ${TRANSACTIONS}
         WHERE from_wallet_id = $1 OR to_wallet_id = $1
-        GROUP BY payment_method
+        GROUP BY ${schemaState.methodSql}
       `, [b.wallet_id]);
 
       // Recent transactions (last 5)
       const recentTx = await all(`
-        SELECT id, category, description, amount::float8 AS amount, payment_method, status, created_at
+        SELECT id, category, description, amount::float8 AS amount, ${schemaState.methodSql} AS payment_method, status, created_at
         FROM ${TRANSACTIONS}
         WHERE from_wallet_id = $1 OR to_wallet_id = $1
         ORDER BY created_at DESC
@@ -496,6 +503,7 @@ router.get('/beneficiaries', async (req, res) => {
         last_tx_category: lastTx.category || null,
         last_tx_method: lastTx.payment_method || null,
         payment_methods_used: methods.reduce((acc, m) => {
+          if (m.payment_method === null) return acc;
           acc[m.payment_method] = m.count;
           return acc;
         }, {}),
@@ -628,7 +636,7 @@ router.get('/distributions', async (req, res) => {
         id,
         description,
         amount::float8 AS amount,
-        payment_method,
+        ${schemaState.methodSql} AS payment_method,
         from_wallet_id,
         to_wallet_id,
         status,

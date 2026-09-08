@@ -72,6 +72,7 @@ async function seed() {
 
 function startServer() {
   const app = express();
+  delete require.cache[require.resolve('./analytics')]; // re-probes the schema
   app.use('/api/analytics', require('./analytics'));
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => resolve(server));
@@ -187,6 +188,31 @@ async function main() {
   } else {
     console.log('  ✓ GL summary served by Fineract (fallback not exercised)');
   }
+
+  await new Promise((r) => server.close(r));
+
+  // The production ledger calls this column `method`, not `payment_method`.
+  await pool.query(`ALTER TABLE ${SCHEMA}.transactions RENAME COLUMN payment_method TO method`);
+  server = await startServer();
+  port = server.address().port;
+
+  const renamed = await get(port, '/api/analytics/transactions');
+  assert.strictEqual(renamed.status, 200, 'transactions must not require a payment_method column');
+  assert.deepStrictEqual(
+    renamed.body.by_method.map((m) => m.method).sort(),
+    ['ach', 'book', 'wire'],
+    'method breakdown resolves the alternate column name'
+  );
+  const renamedBens = await get(port, '/api/analytics/beneficiaries');
+  assert.strictEqual(renamedBens.status, 200);
+  assert.deepStrictEqual(
+    renamedBens.body.beneficiaries.find((b) => b.wallet_id === 'W-JANE').payment_methods_used,
+    { ach: 1 }
+  );
+  const renamedDists = await get(port, '/api/analytics/distributions');
+  assert.strictEqual(renamedDists.status, 200);
+  assert.strictEqual(renamedDists.body.distributions[0].method, 'ach');
+  console.log('  ✓ method column resolved whether it is `method` or `payment_method`');
 
   await new Promise((r) => server.close(r));
   await pool.query('DROP SCHEMA IF EXISTS ' + SCHEMA + ' CASCADE');
