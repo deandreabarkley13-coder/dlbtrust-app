@@ -1,0 +1,17 @@
+{
+  "$comment": "TrustDistributionPolicy 0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64 on Base (8453). Applied with scripts/configureTrustDistributionPolicy.cjs while the server wallet still owns the contract; the last call hands governance to the maker trustee's wallet. Amounts are USDC smallest units (6 decimals); 0 means no ceiling.",
+  "roles": [
+    { "role": "maker", "account": "0x1A904F795a0511C31Ba6347504D08d1bA58E4f89" },
+    { "role": "executor", "account": "0x1A904F795a0511C31Ba6347504D08d1bA58E4f89" },
+    { "role": "checker", "account": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169" },
+    { "role": "compliance", "account": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0" },
+    { "role": "pauser", "account": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0" },
+    { "role": "pauser", "account": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169" }
+  ],
+  "purposes": ["distribution", "medical", "education", "housing"],
+  "tokens": [
+    { "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "0", "periodCap": "0", "periodSeconds": 0 }
+  ],
+  "beneficiaries": [],
+  "transferOwnershipTo": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0"
+}
