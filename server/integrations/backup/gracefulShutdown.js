@@ -37,7 +37,16 @@ async function performGracefulShutdown(signal) {
     });
   }
 
-  // 2. Save in-flight state
+  // 2. Release the leader lock first, so a surviving replica picks up the
+  //    background loops now instead of waiting out the election interval.
+  try {
+    var leader = require(path.join(__dirname, '../cluster/leaderElection'));
+    await leader.stop();
+  } catch(e) {
+    console.warn('[shutdown] Leader release failed:', e.message);
+  }
+
+  // 3. Save in-flight state
   var state = {
     shutdown_at: new Date().toISOString(),
     signal: signal,
@@ -61,14 +70,14 @@ async function performGracefulShutdown(signal) {
       }
     } catch(e) {}
 
-    // 3. Close DB pool
+    // 4. Close DB pool
     try { await pool.end(); } catch(e) {}
 
   } catch(e) {
     console.warn('[shutdown] DB state save error:', e.message);
   }
 
-  // 4. Write shutdown marker
+  // 5. Write shutdown marker
   try {
     var dataDir = path.dirname(SHUTDOWN_MARKER);
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
@@ -81,7 +90,7 @@ async function performGracefulShutdown(signal) {
   var elapsed = Date.now() - startTime;
   console.log('[shutdown] Graceful shutdown complete in ' + elapsed + 'ms');
 
-  // 5. Exit
+  // 6. Exit
   process.exit(0);
 }
 

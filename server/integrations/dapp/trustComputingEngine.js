@@ -1,33 +1,14 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 const { CrossChainConversionEngine } = require('./crossChainConversionEngine');
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const JOBS_FILE = 'trust-computing-jobs.json';
 
-function jobsPath() { return path.join(dataDir(), 'trust-computing-jobs.json'); }
+function loadJobs() { return stateStore.read(JOBS_FILE, () => []); }
 
-function ensureDir() {
-  const dir = dataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadJobs() {
-  ensureDir();
-  try { if (fs.existsSync(jobsPath())) return JSON.parse(fs.readFileSync(jobsPath(), 'utf8')); } catch (e) { console.warn('[TrustComputingEngine] load jobs failed:', e.message); }
-  return [];
-}
-
-function saveJobs(jobs) {
-  ensureDir();
-  try { fs.writeFileSync(jobsPath(), JSON.stringify(jobs.slice(0, 1000), null, 2)); } catch (e) { console.warn('[TrustComputingEngine] save jobs failed:', e.message); }
-}
+function saveJobs(jobs) { stateStore.write(JOBS_FILE, jobs.slice(0, 1000)); }
 
 function generateId() {
   return `COMP-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;

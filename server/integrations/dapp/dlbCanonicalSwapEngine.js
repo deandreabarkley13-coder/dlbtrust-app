@@ -26,29 +26,12 @@ function num(name, def = 0) { const n = Number(process.env[name]); return Number
 
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
-function dataDir() {
-  if (process.env.PERSISTENT_DATA_DIR && fs.existsSync(process.env.PERSISTENT_DATA_DIR)) return process.env.PERSISTENT_DATA_DIR;
-  if (fs.existsSync('/data')) return '/data';
-  return path.join(process.cwd(), 'data');
-}
+const stateStore = require('../cluster/jsonStateStore');
+const STATE_FILE = 'dlb-canonical-swap-state.json';
 
-function statePath() { return path.join(dataDir(), 'dlb-canonical-swap-state.json'); }
+function loadState() { return stateStore.read(STATE_FILE, () => ({})); }
 
-function ensureDir() {
-  const dir = dataDir();
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-}
-
-function loadState() {
-  ensureDir();
-  try { if (fs.existsSync(statePath())) return JSON.parse(fs.readFileSync(statePath(), 'utf8')); } catch (e) { console.warn('[DlbCanonicalSwapEngine] load state failed:', e.message); }
-  return {};
-}
-
-function saveState(state) {
-  ensureDir();
-  try { fs.writeFileSync(statePath(), JSON.stringify(state, null, 2)); } catch (e) { console.warn('[DlbCanonicalSwapEngine] save state failed:', e.message); }
-}
+function saveState(state) { stateStore.write(STATE_FILE, state); }
 
 function getArtifact() {
   const abiPath = path.join(process.cwd(), 'artifacts', 'contracts_DlbCanonicalSwap_sol_DlbCanonicalSwap.abi');

@@ -337,6 +337,7 @@ class LiveBondEngine {
   }
 
   static scheduleAccrualJob() {
+    LiveBondEngine.stopAccrualJob();
     const runAccrual = async () => {
       try {
         const result = await pool.query(
@@ -358,10 +359,18 @@ class LiveBondEngine {
     };
 
     // Run immediately on startup, then every 24 hours
-    setTimeout(runAccrual, 3000);
-    setInterval(runAccrual, 24 * 60 * 60 * 1000);
+    LiveBondEngine._firstAccrual = setTimeout(runAccrual, 3000);
+    LiveBondEngine._accrualInterval = setInterval(runAccrual, 24 * 60 * 60 * 1000);
     console.log('[LiveEngine] Daily accrual job scheduled (runs on startup + 24h interval)');
   }
+
+  static stopAccrualJob() {
+    if (LiveBondEngine._firstAccrual) { clearTimeout(LiveBondEngine._firstAccrual); LiveBondEngine._firstAccrual = null; }
+    if (LiveBondEngine._accrualInterval) { clearInterval(LiveBondEngine._accrualInterval); LiveBondEngine._accrualInterval = null; }
+  }
 }
+
+LiveBondEngine._firstAccrual = null;
+LiveBondEngine._accrualInterval = null;
 
 module.exports = { LiveBondEngine };

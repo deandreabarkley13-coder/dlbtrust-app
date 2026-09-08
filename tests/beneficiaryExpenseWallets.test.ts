@@ -38,6 +38,9 @@ beforeEach(() => {
   vi.spyOn(ThirdwebServerWalletEngine, 'ensureWallet').mockImplementation(async (identifier: string) => ({
     identifier, address: EXPENSE, smartAccountAddress: null, createdAt: '2026-01-01',
   }));
+  // Funding is asserted against chain balances, which these tests never mock —
+  // the underfunded guard has its own coverage in serverWalletFunding.test.ts.
+  vi.spyOn(ThirdwebServerWalletEngine, 'assertFunded').mockResolvedValue({ funded: true } as any);
   // Test asset: 0 decimals at $1/unit so quantity == USD.
   vi.spyOn(ThirdwebPriceOracle, 'getPrice').mockResolvedValue({
     chainId: 1, tokenAddress: '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE', symbol: 'TST', decimals: 0, priceUsd: 1, source: 'thirdweb', fetchedAt: Date.now(),
