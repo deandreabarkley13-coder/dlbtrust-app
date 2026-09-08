@@ -16,16 +16,126 @@
  *     concurrent mutations of the same document serialise instead of racing.
  *
  * Everything is synchronous, matching the engines' existing call signatures.
+ *
+ * With STATE_STORE_BACKEND=postgres the documents live in a Postgres table
+ * instead of the volume, which is what lets the service run more than one
+ * instance: the volume is ReadWriteOnce, so a second instance cannot mount it
+ * at all. The file layout stays the seed for that table — the first read of a
+ * document that has no row yet imports the file — and stays the store for
+ * local development.
  */
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const pgSync = require('./pgSync');
 
 const LOCK_TIMEOUT_MS = parseInt(process.env.STATE_LOCK_TIMEOUT_MS || '5000', 10);
 const LOCK_STALE_MS = parseInt(process.env.STATE_LOCK_STALE_MS || '30000', 10);
 const LOCK_POLL_MS = 25;
 const OWNER = (process.env.HOSTNAME || os.hostname()) + ':' + process.pid;
+
+const PG_SCHEMA = process.env.STATE_STORE_SCHEMA || 'public';
+if (!/^[a-z_][a-z0-9_]*$/.test(PG_SCHEMA)) {
+  throw new Error('STATE_STORE_SCHEMA must be a plain lowercase identifier, got: ' + PG_SCHEMA);
+}
+const PG_TABLE = PG_SCHEMA + '.cluster_state';
+
+function usePostgres() {
+  return String(process.env.STATE_STORE_BACKEND || 'file').toLowerCase() === 'postgres';
+}
+
+let tableReady = false;
+
+function ensureTable() {
+  if (tableReady) return;
+  try {
+    pgSync.query('CREATE TABLE IF NOT EXISTS ' + PG_TABLE + ' ('
+      + 'doc_name text PRIMARY KEY,'
+      + 'doc jsonb NOT NULL,'
+      + 'revision bigint NOT NULL DEFAULT 1,'
+      + 'updated_at timestamptz NOT NULL DEFAULT now(),'
+      + 'updated_by text)', []);
+  } catch (e) {
+    // Two instances starting together can both pass IF NOT EXISTS and race on
+    // the catalogue; the loser's error means the table is there.
+    if (e.code !== '23505' && e.code !== '42P07') throw e;
+  }
+  tableReady = true;
+}
+
+// Revision of each document as this process last saw it in Postgres, so a
+// write can tell whether another instance changed it in between.
+const lastRevision = new Map();
+
+function pgRead(fileName, fallback) {
+  ensureTable();
+  const found = pgSync.query('SELECT doc, revision FROM ' + PG_TABLE + ' WHERE doc_name = $1', [fileName]);
+  if (found.rows.length) {
+    lastRevision.set(fileName, String(found.rows[0].revision));
+    return found.rows[0].doc;
+  }
+  // No row yet: a document left on the volume by the single-instance era is the
+  // starting value, so the move to Postgres does not lose it.
+  const seed = fileRead(fileName, null);
+  if (seed !== null && seed !== undefined) {
+    console.log('[state-store] seeding ' + fileName + ' into ' + PG_TABLE + ' from the volume');
+    const seeded = pgSync.query('INSERT INTO ' + PG_TABLE + ' (doc_name, doc, updated_by) VALUES ($1, $2::jsonb, $3)'
+      + ' ON CONFLICT (doc_name) DO NOTHING RETURNING revision', [fileName, JSON.stringify(seed), OWNER]);
+    if (seeded.rows.length) {
+      lastRevision.set(fileName, String(seeded.rows[0].revision));
+      return seed;
+    }
+    return pgRead(fileName, fallback);
+  }
+  lastRevision.delete(fileName);
+  return typeof fallback === 'function' ? fallback() : fallback;
+}
+
+function pgWrite(fileName, doc) {
+  ensureTable();
+  const seen = lastRevision.get(fileName);
+  const written = pgSync.query('INSERT INTO ' + PG_TABLE + ' (doc_name, doc, updated_by) VALUES ($1, $2::jsonb, $3)'
+    + ' ON CONFLICT (doc_name) DO UPDATE SET doc = EXCLUDED.doc, revision = ' + PG_TABLE + '.revision + 1,'
+    + ' updated_at = now(), updated_by = EXCLUDED.updated_by'
+    + ' RETURNING revision', [fileName, JSON.stringify(doc), OWNER]);
+  const revision = String(written.rows[0].revision);
+  if (seen !== undefined && String(Number(seen) + 1) !== revision) {
+    conflicts += 1;
+    console.warn('[state-store] CONFLICT on ' + fileName + ' — it changed since this instance read it; overwriting with this instance\'s version');
+  }
+  lastRevision.set(fileName, revision);
+  return true;
+}
+
+/**
+ * Read-modify-write against Postgres, holding a row lock for the whole
+ * operation, so a concurrent mutation on another instance waits its turn
+ * instead of building on a value that is about to be replaced.
+ */
+function pgUpdate(fileName, fallback, mutator) {
+  ensureTable();
+  return pgSync.transaction((query) => {
+    let locked = query('SELECT doc, revision FROM ' + PG_TABLE + ' WHERE doc_name = $1 FOR UPDATE', [fileName]);
+    if (!locked.rows.length) {
+      const seed = fileRead(fileName, null);
+      const initial = seed === null || seed === undefined
+        ? (typeof fallback === 'function' ? fallback() : fallback)
+        : seed;
+      query('INSERT INTO ' + PG_TABLE + ' (doc_name, doc, updated_by) VALUES ($1, $2::jsonb, $3)'
+        + ' ON CONFLICT (doc_name) DO NOTHING', [fileName, JSON.stringify(initial), OWNER]);
+      locked = query('SELECT doc, revision FROM ' + PG_TABLE + ' WHERE doc_name = $1 FOR UPDATE', [fileName]);
+    }
+    const current = locked.rows[0].doc;
+    const next = mutator(current);
+    const doc = next === undefined ? current : next;
+    const written = query('UPDATE ' + PG_TABLE + ' SET doc = $2::jsonb, revision = revision + 1,'
+      + ' updated_at = now(), updated_by = $3 WHERE doc_name = $1 RETURNING revision',
+    [fileName, JSON.stringify(doc), OWNER]);
+    lastRevision.set(fileName, String(written.rows[0].revision));
+    return doc;
+  });
+}
 
 /**
  * Where persistent documents live: the mounted volume in production, a
@@ -63,7 +173,7 @@ function fingerprint(file) {
   }
 }
 
-function read(fileName, fallback) {
+function fileRead(fileName, fallback) {
   const file = resolve(fileName);
   try {
     if (fs.existsSync(file)) {
@@ -78,7 +188,7 @@ function read(fileName, fallback) {
   return typeof fallback === 'function' ? fallback() : fallback;
 }
 
-function write(fileName, doc) {
+function fileWrite(fileName, doc) {
   const file = resolve(fileName);
   // A document that moved since this process read it means a concurrent writer:
   // last write wins, but it must not do so silently.
@@ -154,21 +264,40 @@ function sleep(ms) {
  * mutator's return value is what gets written; return undefined to write the
  * (mutated in place) document it was given. Returns the written document.
  */
-function update(fileName, fallback, mutator) {
+function fileUpdate(fileName, fallback, mutator) {
   const locked = acquire(fileName);
   try {
-    const current = read(fileName, fallback);
+    const current = fileRead(fileName, fallback);
     const next = mutator(current);
     const doc = next === undefined ? current : next;
-    write(fileName, doc);
+    fileWrite(fileName, doc);
     return doc;
   } finally {
     if (locked) release(fileName);
   }
 }
 
+function read(fileName, fallback) {
+  return usePostgres() ? pgRead(fileName, fallback) : fileRead(fileName, fallback);
+}
+
+function write(fileName, doc) {
+  return usePostgres() ? pgWrite(fileName, doc) : fileWrite(fileName, doc);
+}
+
+function update(fileName, fallback, mutator) {
+  return usePostgres() ? pgUpdate(fileName, fallback, mutator) : fileUpdate(fileName, fallback, mutator);
+}
+
 function stats() {
-  return { dir: dataDir(), documents: lastSeen.size, conflicts: conflicts };
+  const postgres = usePostgres();
+  return {
+    backend: postgres ? 'postgres' : 'file',
+    table: postgres ? PG_TABLE : null,
+    dir: dataDir(),
+    documents: postgres ? lastRevision.size : lastSeen.size,
+    conflicts: conflicts,
+  };
 }
 
 module.exports = {
