@@ -100,6 +100,20 @@ function createTableSql(table) {
   return 'CREATE TABLE ' + quote(SCHEMA) + '.' + quote(table.name) + ' (\n' + cols.join(',\n') + '\n)';
 }
 
+async function ensureSchema() {
+  const res = await pool.query('SELECT 1 FROM pg_namespace WHERE nspname = $1', [SCHEMA]);
+  if (res.rowCount) return;
+  try {
+    await pool.query('CREATE SCHEMA ' + quote(SCHEMA));
+  } catch (err) {
+    throw new Error(
+      'schema ' + SCHEMA + ' does not exist and could not be created (' + err.message + '). ' +
+        'Create it once with the database owner, then rerun:\n' +
+        '  CREATE SCHEMA ' + SCHEMA + ' AUTHORIZATION "<app database user>";'
+    );
+  }
+}
+
 async function targetCount(name) {
   const res = await pool.query(
     'SELECT to_regclass($1) AS reg',
@@ -175,7 +189,7 @@ async function main() {
     return;
   }
 
-  await pool.query('CREATE SCHEMA IF NOT EXISTS ' + quote(SCHEMA));
+  await ensureSchema();
 
   const failures = [];
   let copiedRows = 0;
