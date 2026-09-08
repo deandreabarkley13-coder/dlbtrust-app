@@ -31,10 +31,13 @@
     "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
+    "db:migrate-json-state": "node server/scripts/migrateJsonStateToPostgres.js",
     "test:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.test.js",
     "test:analytics-routes": "node server/routes/analytics.test.js",
     "typecheck": "tsc --noEmit",
-    "test:document-storage": "node server/integrations/documents/storageAdapter.test.js"
+    "test:document-storage": "node server/integrations/documents/storageAdapter.test.js",
+    "test:json-state": "node server/integrations/cluster/jsonStateStore.test.js",
+    "test:json-state-postgres": "node server/integrations/cluster/pgStateStore.test.js"
   },
   "dependencies": {
     "@account-abstraction/contracts": "^0.8.0",
