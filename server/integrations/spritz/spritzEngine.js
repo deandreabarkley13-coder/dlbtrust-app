@@ -1,12 +1,13 @@
 'use strict';
 
 /**
- * SpritzEngine — crypto-to-fiat off-ramp via the Spritz Finance API.
+ * SpritzEngine — fiat <-> crypto rails via the Spritz Finance API.
  *
  * Uses the user API key (SPRITZ_API_KEY) as a Bearer token against
  * https://platform.spritz.finance. Supports bank-account management,
- * off-ramp quotes, on-chain transaction params, and execution from an
- * internal DLB wallet.
+ * off-ramp quotes, on-chain transaction params, execution from an internal
+ * DLB wallet, and the ACH-debit on-ramp (funding sources -> direct deposits
+ * of USDC to a raw address on Base).
  */
 
 const { getConfig } = require('../dapp/config');
@@ -24,6 +25,19 @@ const erc20Abi = [
 
 const SUPPORTED_CHAINS = ['ethereum','polygon','arbitrum','base','optimism','avalanche','binance-smart-chain','solana','bitcoin','dash','tron','sui','hyperevm','monad','sonic','unichain'];
 const SUPPORTED_RAILS = ['ach_standard','ach_same_day','rtp','wire','eft','sepa','faster_payments','push_to_card','push_to_debit','bill_pay','card_deposit'];
+const DEPOSIT_NETWORKS = ['solana','ethereum','polygon','base','avalanche','arbitrum'];
+const CHAIN_NAME_BY_ID = { 1: 'ethereum', 137: 'polygon', 42161: 'arbitrum', 8453: 'base', 10: 'optimism', 43114: 'avalanche', 56: 'binance-smart-chain', 11155111: 'ethereum' };
+
+function viemChain(chainId) {
+  if (!chains) return undefined;
+  return Object.values(chains).find(c => c && typeof c === 'object' && c.id === Number(chainId));
+}
+
+function toUsdString(amount) {
+  const n = Number(amount);
+  if (!Number.isFinite(n) || n <= 0) throw new Error('amountUsd must be a positive number');
+  return n.toFixed(2);
+}
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function baseUrl() { return str('SPRITZ_API_BASE_URL', 'https://platform.spritz.finance').replace(/\/$/, ''); }
@@ -108,6 +122,7 @@ async function spritzRequest(method, path, body, options = {}) {
   } else {
     headers['Authorization'] = `Bearer ${apiKey()}`;
   }
+  if (options.headers) Object.assign(headers, options.headers);
   const opts = { method, headers };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
@@ -126,6 +141,74 @@ async function spritzRequest(method, path, body, options = {}) {
 class SpritzEngine {
   static async getUser() {
     return spritzRequest('GET', '/v1/users/me');
+  }
+
+  /** Per-product capability status (fiat_to_crypto / crypto_to_fiat / ...) from the user record. */
+  static async capabilities() {
+    const user = await this.getUser();
+    const list = Array.isArray(user && user.capabilities) ? user.capabilities : [];
+    return list.map(c => ({
+      product: c.product,
+      method: c.method || null,
+      name: c.name,
+      status: c.status,
+      nextRequirement: c.nextRequirement || null,
+      requirements: (c.requirements || []).map(r => ({ type: r.type, status: r.status, description: r.description, actionUrl: r.actionUrl || null })),
+    }));
+  }
+
+  static chainName(chainId) {
+    return CHAIN_NAME_BY_ID[Number(chainId)] || null;
+  }
+
+  // ─── On-ramp: funding sources and direct deposits ──────────────────────────
+
+  /** Plaid-linked bank accounts that can be debited for a deposit. */
+  static async listFundingSources() {
+    return spritzRequest('GET', '/v1/funding-sources/');
+  }
+
+  static async getFundingSource(fundingSourceId) {
+    if (!fundingSourceId) throw new Error('fundingSourceId required');
+    return spritzRequest('GET', `/v1/funding-sources/${fundingSourceId}`);
+  }
+
+  static async getFundingSourceDepositLimits(fundingSourceId) {
+    if (!fundingSourceId) throw new Error('fundingSourceId required');
+    return spritzRequest('GET', `/v1/funding-sources/${fundingSourceId}/deposit-limits`);
+  }
+
+  /**
+   * Prepare an ACH-debit deposit that delivers USDC to a raw wallet address
+   * (no wallet signature; authorization comes from the verified funding source).
+   */
+  static async prepareDirectDeposit({ sourceId, address, network = 'base', asset = 'USDC', amountUsd, quoteType = 'exact_input', priority = 'normal' } = {}) {
+    if (!sourceId) throw new Error('sourceId required');
+    if (!address) throw new Error('address required');
+    const net = String(network).toLowerCase();
+    if (!DEPOSIT_NETWORKS.includes(net)) throw new Error(`Unsupported deposit network: ${network}`);
+    if (String(asset).toUpperCase() !== 'USDC') throw new Error('Only USDC deposits are supported');
+    if (!['exact_input', 'exact_output'].includes(quoteType)) throw new Error('quoteType must be exact_input or exact_output');
+    if (!['normal', 'high'].includes(priority)) throw new Error('priority must be normal or high');
+    return spritzRequest('POST', '/v1/deposits/direct/prepare', {
+      sourceId, address, network: net, asset: 'USDC', quoteType, amountUsd: toUsdString(amountUsd), priority,
+    });
+  }
+
+  /** Execute a prepared deposit. Idempotency-Key is mandatory on this endpoint. */
+  static async createDirectDeposit({ preparationId, idempotencyKey } = {}) {
+    if (!preparationId) throw new Error('preparationId required');
+    if (!idempotencyKey) throw new Error('idempotencyKey required');
+    return spritzRequest('POST', '/v1/deposits/direct', { preparationId }, { headers: { 'Idempotency-Key': idempotencyKey } });
+  }
+
+  static async listDeposits() {
+    return spritzRequest('GET', '/v1/deposits/');
+  }
+
+  static async getDeposit(depositId) {
+    if (!depositId) throw new Error('depositId required');
+    return spritzRequest('GET', `/v1/deposits/${depositId}`);
   }
 
   static async listBankAccounts() {
@@ -189,7 +272,7 @@ class SpritzEngine {
     const cfg = getConfig();
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
     const account = privateKeyToAccount(cfg.privateKey);
-    const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+    const chain = viemChain(cfg.chainId);
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
@@ -290,4 +373,4 @@ class SpritzEngine {
   }
 }
 
-module.exports = { SpritzEngine, SUPPORTED_CHAINS, SUPPORTED_RAILS };
+module.exports = { SpritzEngine, SUPPORTED_CHAINS, SUPPORTED_RAILS, DEPOSIT_NETWORKS, CHAIN_NAME_BY_ID };
