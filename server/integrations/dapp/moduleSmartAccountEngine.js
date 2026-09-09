@@ -17,7 +17,7 @@ const { SafeEngine } = require('./safeEngine');
 const { WalletEngine } = require('./walletEngine');
 const { privateKeyToAccount } = require('viem/accounts');
 const { createPublicClient, http, parseUnits } = require('viem');
-const { mainnet, sepolia } = require('viem/chains');
+const { mainnet, sepolia, base } = require('viem/chains');
 
 let BondEngine;
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -98,8 +98,9 @@ function id(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(3
 function chainById(id) {
   switch (id) {
     case 1: return mainnet;
+    case 8453: return base;
     case 11155111: return sepolia;
-    default: return mainnet;
+    default: throw new Error(`unsupported DAPP_CHAIN_ID ${id} for module smart accounts`);
   }
 }
 

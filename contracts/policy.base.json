@@ -13,10 +13,10 @@
     { "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "1000000000000", "periodCap": "0", "periodSeconds": 0 }
   ],
   "beneficiaries": [
-    { "$name": "DeAndrea L Barkley (Hold Account TBA-1787428749974-K39TPB)", "beneficiary": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "300000000000", "periodCap": "300000000000", "periodSeconds": 31536000 },
-    { "$name": "Malissa A Robinson (Hold Account TBA-1787428856577-FLLK5G)", "beneficiary": "0xfEa48eF825cD2A8CEc45B933E29130aAf6c2890F", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "100000000000", "periodCap": "100000000000", "periodSeconds": 31536000 },
-    { "$name": "Jeremy N Robinson (Hold Account TBA-1787428994918-NMWYQM)", "beneficiary": "0x9f8903311F50a0517763B609c463e6F02e676e2f", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "100000000000", "periodCap": "100000000000", "periodSeconds": 31536000 },
-    { "$name": "DB NET MGMT Operating - trust expenses (Hold Account TBA-1786268795468-28Y7E0)", "beneficiary": "0x491c175a4C24106e52a7423f216a56af7786125F", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "1000000000000", "periodCap": "1000000000000", "periodSeconds": 31536000 }
+    { "$name": "DeAndrea L Barkley (Hold Account TBA-1787428749974-K39TPB)", "$role": "beneficiary", "beneficiary": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "300000000000", "periodCap": "300000000000", "periodSeconds": 31536000 },
+    { "$name": "Malissa A Robinson (Hold Account TBA-1787428856577-FLLK5G)", "$role": "beneficiary", "beneficiary": "0xfEa48eF825cD2A8CEc45B933E29130aAf6c2890F", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "100000000000", "periodCap": "100000000000", "periodSeconds": 31536000 },
+    { "$name": "Jeremy N Robinson (Hold Account TBA-1787428994918-NMWYQM)", "$role": "beneficiary", "beneficiary": "0x9f8903311F50a0517763B609c463e6F02e676e2f", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "100000000000", "periodCap": "100000000000", "periodSeconds": 31536000 },
+    { "$name": "DB NET MGMT Operating - trust expenses (Hold Account TBA-1786268795468-28Y7E0)", "$role": "trustee", "beneficiary": "0x491c175a4C24106e52a7423f216a56af7786125F", "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "maxPerDistribution": "1000000000000", "periodCap": "1000000000000", "periodSeconds": 31536000 }
   ],
   "transferOwnershipTo": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0"
 }

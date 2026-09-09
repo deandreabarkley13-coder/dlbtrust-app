@@ -7,6 +7,7 @@ const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAc
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
+const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
 const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
@@ -339,6 +340,11 @@ router.get('/spritz/treasury/settlement-bank', operatorAuth, async (req, res) =>
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.settlementBank() }); } catch (err) { sendError(res, err); }
 });
 
+// Allocation buckets: coupon income -> beneficiaries, Trust Operating -> trustees.
+router.get('/spritz/treasury/allocations', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAllocationEngine.summaries() }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/spritz/treasury/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const postedBy = req.user && (req.user.username || req.user.id);
@@ -355,17 +361,17 @@ router.post('/spritz/treasury/fund/quote', operatorAuth, writeRateLimiter(), asy
 
 router.post('/spritz/treasury/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference } = req.body || {};
+    const { amountUsd, bucket, sourceType, sourceAccountId, sourceToken, sourceModule, reference } = req.body || {};
     const createdBy = req.user && (req.user.username || req.user.id);
-    const data = await SpritzTreasuryLegEngine.fund({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy });
+    const data = await SpritzTreasuryLegEngine.fund({ amountUsd, bucket, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/treasury/payout/stage', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet } = req.body || {};
-    const data = await SpritzTreasuryLegEngine.stagePayout({ bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet });
+    const { bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket } = req.body || {};
+    const data = await SpritzTreasuryLegEngine.stagePayout({ bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
