@@ -8,7 +8,8 @@
  * through whichever configured provider is available.
  *
  * Supported flows:
- *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint
+ *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint,
+ *    Spritz ACH-debit deposit straight into the TrustDistributionPolicy contract
  *  - Off-ramp (USDC/USDS/ETH -> fiat bank/card): Spritz, Coinbase sell+withdraw
  *  - Reserve conversion (DLB-PTCUSD/DLBUSD/DLB-PRB -> USDC/USDS): TrustMarketEngine P2P
  */
@@ -17,11 +18,12 @@ const { getConfig } = require('./config');
 const { TrustMarketEngine } = require('./trustMarketEngine');
 const { RampFeeEngine } = require('./rampFeeEngine');
 
-let CoinbaseTreasuryBridge, CoinbaseSpotEngine, MoonPayEngine, SpritzEngine, CircleMintClient;
+let CoinbaseTreasuryBridge, CoinbaseSpotEngine, MoonPayEngine, SpritzEngine, SpritzTreasuryLegEngine, CircleMintClient;
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) { }
 try { ({ CoinbaseSpotEngine } = require('./coinbaseSpotEngine')); } catch (e) { }
 try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) { }
 try { ({ SpritzEngine } = require('../spritz/spritzEngine')); } catch (e) { }
+try { ({ SpritzTreasuryLegEngine } = require('../spritz/spritzTreasuryLegEngine')); } catch (e) { }
 try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintClient; } catch (e) { }
 
 function id(prefix = 'RMP') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
@@ -71,7 +73,7 @@ class OnOffRampEngine {
     // Spritz off-ramp
     if (SpritzEngine) {
       const spritzKey = process.env.SPRITZ_API_KEY || cfg.spritzApiKey;
-      list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
+      list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['onramp', 'offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
     } else {
       list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: false, issues: ['SpritzEngine not available'] });
     }
@@ -163,6 +165,25 @@ class OnOffRampEngine {
           : 'Set CIRCLE_MINT_API_KEY and complete Circle Mint onboarding.',
         issues: circleKey ? [] : ['CIRCLE_MINT_API_KEY not configured'],
       });
+
+      // Spritz ACH-debit on-ramp: bank funding source -> USDC on Base -> policy contract
+      if (SpritzTreasuryLegEngine) {
+        const r = await SpritzTreasuryLegEngine.readiness().catch(e => ({ ready: false, issues: [e.message], policyContract: null }));
+        routes.push({
+          provider: 'spritz',
+          name: 'Spritz ACH Debit On-Ramp',
+          direction: 'onramp',
+          sourceAsset: sourceAsset || 'USD',
+          targetAsset: 'USDC',
+          amount,
+          targetAddress: r.policyContract || toAddress,
+          status: r.ready ? 'ready' : 'needs_config',
+          instructions: r.ready
+            ? `Debits the linked funding source and delivers USDC on ${r.network} to the TrustDistributionPolicy contract.`
+            : `Fix: ${(r.issues || []).join(', ')}`,
+          issues: r.issues || [],
+        });
+      }
     }
 
     // --- Crypto -> Fiat ---
@@ -328,6 +349,18 @@ class OnOffRampEngine {
       const client = new CircleMintClient({ apiKey, baseUrl: process.env.CIRCLE_MINT_BASE_URL });
       // Circle Mint on-ramp requires a verified wallet address; quote only here.
       return { status: 'needs_recipient_setup', instructions: 'Create a verified recipient address for the operator wallet in Circle Mint, then call execute.' };
+    }
+
+    if (provider === 'spritz' && (direction === 'onramp' || direction === 'fiat_to_crypto')) {
+      if (!SpritzTreasuryLegEngine) throw new Error('SpritzTreasuryLegEngine not available');
+      return SpritzTreasuryLegEngine.fund({
+        amountUsd: p.amount,
+        sourceId: p.sourceId,
+        preparationId: p.preparationId,
+        priority: p.priority,
+        reference: p.reference || proposal.id,
+        createdBy: proposal.created_by || proposal.createdBy,
+      });
     }
 
     if (provider === 'spritz') {

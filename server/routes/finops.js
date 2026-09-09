@@ -6,6 +6,7 @@ const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
 const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
+const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
 const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
@@ -304,6 +305,69 @@ router.get('/spritz/off-ramps', operatorAuth, async (req, res) => {
 router.get('/spritz/off-ramps/:id', operatorAuth, async (req, res) => {
   try {
     const data = await SpritzEngine.getOffRamp(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz on-ramp: funding sources and deposits ────────────────────────────
+router.get('/spritz/capabilities', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.capabilities() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/funding-sources', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listFundingSources() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/funding-sources/:id/deposit-limits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.getFundingSourceDepositLimits(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/deposits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listDeposits() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/deposits/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.getDeposit(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz treasury leg: ERP <-> policy contract <-> Spritz ─────────────────
+router.get('/spritz/treasury/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/treasury/reconcile', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.reconcileFunding() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/treasury/fund/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amountUsd, sourceId, priority } = req.body || {};
+    res.json({ success: true, data: await SpritzTreasuryLegEngine.quoteFunding({ amountUsd, sourceId, priority }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/treasury/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { preparationId, amountUsd, sourceId, reference, priority } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    const data = await SpritzTreasuryLegEngine.fund({ preparationId, amountUsd, sourceId, reference, priority, createdBy });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/treasury/payout/stage', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet } = req.body || {};
+    const data = await SpritzTreasuryLegEngine.stagePayout({ bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/treasury/payout/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { distributionId, spritzQuoteId, reference, amountUsd } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    const data = await SpritzTreasuryLegEngine.executePayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
