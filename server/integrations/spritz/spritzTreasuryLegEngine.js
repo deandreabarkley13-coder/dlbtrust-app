@@ -20,6 +20,7 @@
 const { SpritzEngine } = require('./spritzEngine');
 const { TrustPolicyEngine } = require('../dapp/trustPolicyEngine');
 const { getConfig } = require('../dapp/config');
+const { TrustAllocationEngine } = require('../dapp/trustAllocationEngine');
 
 let CanonicalMoneyEngine;
 try { ({ CanonicalMoneyEngine } = require('../dapp/canonicalMoneyEngine')); } catch (e) { CanonicalMoneyEngine = null; }
@@ -241,9 +242,14 @@ class SpritzTreasuryLegEngine {
    * paid to the policy contract. Nothing moves until the checker approves;
    * `reconcileFunding()` books the GL entry once the request has executed.
    */
-  static async fund({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy, autoApprove = false } = {}) {
+  static async fund({ amountUsd, bucket, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy, autoApprove = false } = {}) {
     const cfg = this.config();
     if (!reference) throw badRequest('reference required (ERP reference)');
+    if (bucket) {
+      const allocated = TrustAllocationEngine.fundingSource(bucket);
+      sourceToken = sourceToken || allocated.sourceToken;
+      sourceModule = sourceModule || allocated.sourceModule;
+    }
     const quote = await this.quoteFunding({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule });
     if (!quote.executable) {
       throw conflict(`ERP funding route is not executable: ${quote.route.note || 'no canonical liquidity pool'}`, 'ERP_FUNDING_ROUTE_UNAVAILABLE');
@@ -266,6 +272,7 @@ class SpritzTreasuryLegEngine {
       requestId: proposal.requestId,
       proposalId: proposal.proposalId,
       reference,
+      bucket: bucket || null,
       source: quote.source,
       destination: cfg.policyAddress,
       chainId: cfg.chainId,
@@ -335,7 +342,7 @@ class SpritzTreasuryLegEngine {
    * The quote is created first so the amount the checker approves is the
    * amount Spritz will consume.
    */
-  static async stagePayout({ amountUsd, purpose, reference, rail, memo, payoutWallet, bankAccountId } = {}) {
+  static async stagePayout({ amountUsd, purpose, reference, rail, memo, payoutWallet, bankAccountId, bucket } = {}) {
     const cfg = this.config();
     if (!reference) throw badRequest('reference required');
     const wallet = payoutWallet || cfg.payoutWallet;
@@ -352,6 +359,8 @@ class SpritzTreasuryLegEngine {
     if (bankAccountId && bankAccountId !== bank.id) {
       throw conflict(`bankAccountId ${bankAccountId} is not the settlement bank (${bank.id}); Spritz payouts settle only to ${cfg.settlementBankMatch}`, 'SPRITZ_SETTLEMENT_BANK_MISMATCH');
     }
+
+    const allocation = await TrustAllocationEngine.assertPayout({ bucket, payoutWallet: wallet, purpose, amountUsd, reference });
 
     const quote = await SpritzEngine.createOffRampQuote({
       accountId: bank.id,
@@ -373,9 +382,15 @@ class SpritzTreasuryLegEngine {
       reference,
     });
 
+    await TrustAllocationEngine.recordPayout({
+      bucket: allocation.key, reference, payoutWallet: wallet, purpose, amountUsd,
+      distributionId: proposal && (proposal.distributionId || proposal.id), spritzQuoteId: quote.id || null,
+    });
+
     return {
       status: 'proposed',
       reference,
+      bucket: allocation.key,
       payoutWallet: wallet,
       settlementBank: bank,
       amountUsd: Number(amountUsd).toFixed(2),
@@ -416,6 +431,7 @@ class SpritzTreasuryLegEngine {
       lines,
       postedBy: createdBy,
     });
+    await TrustAllocationEngine.markExecuted(reference);
 
     return {
       status: 'settling',

@@ -109,6 +109,8 @@ class ThirdwebChainSigner {
 
   static active() { return this.getConfig().signer === 'thirdweb'; }
 
+  static artifact(name) { return artifact(name); }
+
   static readiness() {
     const cfg = this.getConfig();
     const issues = [];

@@ -42,6 +42,7 @@ describe('Spritz treasury leg', () => {
     calls.length = 0;
     delete process.env.SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID;
     delete process.env.SPRITZ_FUNDING_SOURCE_TOKEN;
+    delete process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS;
     vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as any);
   });
 
@@ -182,6 +183,11 @@ describe('Spritz treasury leg', () => {
   });
 
   it('stages a payout as a Spritz quote to the settlement bank plus a governed distribution for the quoted USDC input', async () => {
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (/FROM coupon_payments/.test(sql)) return { rows: [{ total: '83333.33' }], rowCount: 1 } as any;
+      return { rows: [], rowCount: 0 } as any;
+    });
     vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
     const propose = vi.spyOn(TrustPolicyEngine, 'propose').mockResolvedValue({ distributionId: '7', status: 'proposed' } as any);
     stubSpritz((path) => {
@@ -195,6 +201,6 @@ describe('Spritz treasury leg', () => {
     const quote = calls.find(c => c.url.endsWith('/v1/off-ramp-quotes/'))!;
     expect(JSON.parse(quote.init.body as string)).toMatchObject({ accountId: 'ba_dbnet', amount: '100.00', chain: 'base', tokenAddress: USDC, rail: 'rtp', amountMode: 'output' });
     expect(propose).toHaveBeenCalledWith(expect.objectContaining({ beneficiary: PAYOUT, quantity: '100500000', purpose: 'distribution', reference: 'PAY-2' }));
-    expect(out).toMatchObject({ status: 'proposed', spritzQuoteId: 'q_1', quantityUnits: '100500000', settlementBank: { id: 'ba_dbnet' }, distribution: { distributionId: '7' } });
+    expect(out).toMatchObject({ status: 'proposed', bucket: 'coupon_income', spritzQuoteId: 'q_1', quantityUnits: '100500000', settlementBank: { id: 'ba_dbnet' }, distribution: { distributionId: '7' } });
   });
 });
