@@ -4,27 +4,32 @@
  * SpritzTreasuryLegEngine — the Spritz leg of the treasury-core ERP and the
  * governed smart accounts on Base.
  *
- *   fund:   bank funding source --(Spritz ACH-debit on-ramp)--> USDC on Base
- *           delivered straight to the TrustDistributionPolicy contract.
+ *   fund:   Treasury-Core ERP reserve (ledger source or module/bond token such
+ *           as DLB-PRB / DLB-TREASURY) --(CanonicalMoneyEngine, maker/checker
+ *           consensus)--> USDC on Base delivered to the TrustDistributionPolicy
+ *           contract. No bank account is ever debited.
  *   payout: policy contract --(governed distribution)--> payout wallet
- *           --(Spritz off-ramp)--> beneficiary bank (ACH / RTP / card).
+ *           --(Spritz off-ramp)--> settlement bank (DB NET MGMT).
  *
  * Every leg is booked as a double-entry journal in the trust GL
- * (TrustAccountingEngine) keyed by the Spritz deposit / off-ramp id so a
- * replay never double-books. No leg moves value until Spritz confirms it and
- * the policy contract's on-chain balance is read back.
+ * (TrustAccountingEngine) keyed by the ERP request / Spritz quote id so a
+ * replay never double-books. Funding is only "complete" once the policy
+ * contract's on-chain USDC balance is read back.
  */
 
 const { SpritzEngine } = require('./spritzEngine');
 const { TrustPolicyEngine } = require('../dapp/trustPolicyEngine');
 const { getConfig } = require('../dapp/config');
 
+let CanonicalMoneyEngine;
+try { ({ CanonicalMoneyEngine } = require('../dapp/canonicalMoneyEngine')); } catch (e) { CanonicalMoneyEngine = null; }
 let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const USDC_DECIMALS = 6;
+const DEFAULT_SETTLEMENT_BANK_MATCH = 'DB NET MGMT';
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 
@@ -32,11 +37,11 @@ function glConfig() {
   return {
     // USDC held by the policy contract (digital-asset treasury).
     treasuryAccount: str('SPRITZ_TREASURY_GL_ACCOUNT', '1210'),
-    // Bank account debited by the Spritz on-ramp.
-    bankAccount: str('SPRITZ_FUNDING_BANK_GL_ACCOUNT', str('PTC_BANK_GL_ACCOUNT', '1010')),
+    // ERP reserve the USDC is converted out of (bond investments by default).
+    reserveAccount: str('SPRITZ_FUNDING_RESERVE_GL_ACCOUNT', '1100'),
     // Beneficiary distributions settled through the Spritz off-ramp.
     distributionsAccount: str('SPRITZ_DISTRIBUTIONS_GL_ACCOUNT', '2000'),
-    // Spritz platform / network fees.
+    // Spritz / swap fees.
     feeAccount: str('SPRITZ_FEE_GL_ACCOUNT', '5300'),
     bookingEnabled: str('SPRITZ_GL_BOOKING_ENABLED', 'true').toLowerCase() !== 'false',
   };
@@ -44,6 +49,10 @@ function glConfig() {
 
 function badRequest(message, code = 'BAD_REQUEST') {
   return Object.assign(new Error(message), { status: 400, code });
+}
+
+function conflict(message, code) {
+  return Object.assign(new Error(message), { status: 409, code });
 }
 
 function usdToUnits(amountUsd) {
@@ -101,6 +110,12 @@ async function book({ referenceType, referenceId, description, lines, postedBy }
   }
 }
 
+function bankMatches(account, needle) {
+  const hay = [account.label, account.accountHolderName, account.name, account.institution && account.institution.name]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(String(needle).toLowerCase());
+}
+
 class SpritzTreasuryLegEngine {
   static config() {
     const dapp = getConfig();
@@ -112,36 +127,77 @@ class SpritzTreasuryLegEngine {
       settlementToken: policy.settlementToken || dapp.usdcAddress || null,
       payoutWallet: str('SPRITZ_PAYOUT_WALLET', dapp.operatorAddress || ''),
       defaultRail: str('SPRITZ_PAYOUT_RAIL', 'ach_standard'),
+      settlementBankAccountId: str('SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID'),
+      settlementBankMatch: str('SPRITZ_SETTLEMENT_BANK_MATCH', DEFAULT_SETTLEMENT_BANK_MATCH),
+      fundingSource: {
+        sourceType: str('SPRITZ_FUNDING_SOURCE_TYPE'),
+        sourceAccountId: str('SPRITZ_FUNDING_SOURCE_ACCOUNT'),
+        sourceToken: str('SPRITZ_FUNDING_SOURCE_TOKEN'),
+        sourceModule: str('SPRITZ_FUNDING_SOURCE_MODULE'),
+      },
       gl: glConfig(),
     };
   }
 
-  /** What the Spritz leg can do right now, without moving anything. */
+  /**
+   * The DB NET MGMT bank account on the Spritz user: the only place the
+   * off-ramp settles to. Resolved by id when pinned, otherwise by name match.
+   */
+  static async settlementBank() {
+    const cfg = this.config();
+    const accounts = await SpritzEngine.listBankAccounts();
+    const list = Array.isArray(accounts) ? accounts : [];
+    let match = null;
+    if (cfg.settlementBankAccountId) match = list.find(b => b.id === cfg.settlementBankAccountId) || null;
+    if (!match) match = list.find(b => bankMatches(b, cfg.settlementBankMatch) && (!b.status || /active/i.test(String(b.status)))) || null;
+    if (!match) {
+      throw conflict(`No Spritz settlement bank account matching "${cfg.settlementBankMatch}"; set SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID`, 'SPRITZ_SETTLEMENT_BANK_NOT_FOUND');
+    }
+    return {
+      id: match.id,
+      label: match.label || null,
+      institution: (match.institution && match.institution.name) || null,
+      accountNumberLast4: match.accountNumberLast4 || null,
+      status: match.status || null,
+      supportedRails: match.supportedRails || [],
+    };
+  }
+
+  /** What the leg can do right now, without moving anything. */
   static async readiness() {
     const cfg = this.config();
     const issues = [];
     if (!str('SPRITZ_API_KEY')) issues.push('SPRITZ_API_KEY not configured');
     if (!cfg.policyAddress) issues.push('TRUST_POLICY_ADDRESS not configured');
     if (!cfg.network) issues.push(`chain ${cfg.chainId} has no Spritz network mapping`);
+    if (!CanonicalMoneyEngine) issues.push('CanonicalMoneyEngine not available (ERP funding route)');
+    const fs = cfg.fundingSource;
+    if (!fs.sourceType && !fs.sourceToken && !fs.sourceModule) {
+      issues.push('No default ERP funding source (SPRITZ_FUNDING_SOURCE_TYPE / _TOKEN / _MODULE); pass one per request');
+    }
 
     let capabilities = [];
-    let fundingSources = [];
-    let bankAccounts = [];
-    if (!issues.length) {
+    let settlementBank = null;
+    if (str('SPRITZ_API_KEY')) {
       try {
-        [capabilities, fundingSources, bankAccounts] = await Promise.all([
-          SpritzEngine.capabilities(),
-          SpritzEngine.listFundingSources(),
-          SpritzEngine.listBankAccounts(),
-        ]);
+        capabilities = await SpritzEngine.capabilities();
+        settlementBank = await this.settlementBank();
       } catch (e) {
-        issues.push(`Spritz API unreachable: ${e.message}`);
+        issues.push(e.message);
       }
     }
-    const onramp = capabilities.find(c => c.product === 'fiat_to_crypto' && c.method === 'ach_debit');
     const offramp = capabilities.find(c => c.product === 'crypto_to_fiat' && c.method === 'ach_credit');
-    if (onramp && onramp.status !== 'active') issues.push(`Spritz ACH-debit on-ramp is ${onramp.status}`);
-    if (!fundingSources.length && !issues.length) issues.push('No Plaid-linked funding source in Spritz; link the trust bank account in the Spritz dashboard');
+    if (offramp && offramp.status !== 'active') issues.push(`Spritz ACH payout is ${offramp.status}`);
+
+    let fundingRoute = null;
+    if (CanonicalMoneyEngine && (fs.sourceType || fs.sourceToken || fs.sourceModule)) {
+      try {
+        fundingRoute = await CanonicalMoneyEngine.quote({ ...fs, amount: '1', targetAsset: 'USDC' });
+        if (fundingRoute.action !== 'mint_and_swap' && !fundingRoute.poolAddress) issues.push(fundingRoute.note || 'No canonical liquidity pool for the ERP funding route');
+      } catch (e) {
+        issues.push(`ERP funding route: ${e.message}`);
+      }
+    }
 
     return {
       provider: 'spritz-treasury-leg',
@@ -152,112 +208,102 @@ class SpritzTreasuryLegEngine {
       network: cfg.network,
       settlementToken: cfg.settlementToken,
       payoutWallet: cfg.payoutWallet || null,
-      onramp: onramp ? { status: onramp.status, nextRequirement: onramp.nextRequirement } : null,
+      fundingSource: { kind: 'treasury_core_erp', ...fs, route: fundingRoute },
+      settlementBank,
       offramp: offramp ? { status: offramp.status } : null,
-      fundingSources: fundingSources.map(f => ({
-        id: f.id, institution: (f.institution && f.institution.name) || f.institutionName || null,
-        accountNumberLast4: f.accountNumberLast4 || null, status: f.status || null,
-      })),
-      bankAccounts: bankAccounts.map(b => ({
-        id: b.id, label: b.label || null, institution: (b.institution && b.institution.name) || null,
-        accountNumberLast4: b.accountNumberLast4 || null, status: b.status, supportedRails: b.supportedRails || [],
-      })),
       gl: cfg.gl,
     };
   }
 
-  // ─── Fund: bank -> Spritz -> USDC on Base -> policy contract ───────────────
+  // ─── Fund: ERP reserve -> USDC on Base -> policy contract ─────────────────
 
-  /**
-   * Price a deposit into the policy contract. Nothing moves: the preparation
-   * expires unless `fund()` is called with the returned preparationId.
-   */
-  static async quoteFunding({ amountUsd, sourceId, priority = 'normal' } = {}) {
+  /** Price the ERP reserve -> USDC route without creating anything. */
+  static async quoteFunding({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
     const cfg = this.config();
-    if (!cfg.policyAddress) throw badRequest('TRUST_POLICY_ADDRESS not configured', 'TRUST_POLICY_NOT_CONFIGURED');
-    if (!cfg.network) throw badRequest(`chain ${cfg.chainId} is not a Spritz deposit network`);
-    const source = sourceId || await this._defaultFundingSource();
-    const prep = await SpritzEngine.prepareDirectDeposit({
-      sourceId: source,
-      address: cfg.policyAddress,
-      network: cfg.network,
-      asset: 'USDC',
-      amountUsd,
-      quoteType: 'exact_input',
-      priority,
-    });
+    if (!cfg.policyAddress) throw conflict('TRUST_POLICY_ADDRESS not configured', 'TRUST_POLICY_NOT_CONFIGURED');
+    if (!CanonicalMoneyEngine) throw new Error('CanonicalMoneyEngine not available');
+    const source = this._fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule });
+    const amount = Number(amountUsd);
+    if (!Number.isFinite(amount) || amount <= 0) throw badRequest('amountUsd must be a positive number');
+    const route = await CanonicalMoneyEngine.quote({ ...source, amount: amount.toFixed(2), targetAsset: 'USDC' });
     return {
-      preparationId: prep.id || prep.preparationId || null,
-      sourceId: source,
+      source,
       destination: cfg.policyAddress,
-      network: cfg.network,
-      amountUsd: Number(amountUsd).toFixed(2),
-      preparation: prep,
+      chainId: cfg.chainId,
+      amountUsd: amount.toFixed(2),
+      route,
+      executable: route.action === 'mint_and_swap' || Boolean(route.poolAddress),
     };
   }
 
   /**
-   * Execute a prepared deposit. `reference` is the ERP reference the deposit
-   * is booked under; it doubles as the Spritz idempotency key so a retry after
-   * a timeout recovers the original deposit instead of creating a second one.
+   * Raise the maker/checker proposal that converts an ERP reserve into USDC
+   * paid to the policy contract. Nothing moves until the checker approves;
+   * `reconcileFunding()` books the GL entry once the request has executed.
    */
-  static async fund({ preparationId, amountUsd, sourceId, reference, priority = 'normal', createdBy } = {}) {
+  static async fund({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy, autoApprove = false } = {}) {
     const cfg = this.config();
-    if (!reference) throw badRequest('reference required (ERP reference / idempotency key)');
-    let prepId = preparationId;
-    let quote = null;
-    if (!prepId) {
-      quote = await this.quoteFunding({ amountUsd, sourceId, priority });
-      prepId = quote.preparationId;
+    if (!reference) throw badRequest('reference required (ERP reference)');
+    const quote = await this.quoteFunding({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule });
+    if (!quote.executable) {
+      throw conflict(`ERP funding route is not executable: ${quote.route.note || 'no canonical liquidity pool'}`, 'ERP_FUNDING_ROUTE_UNAVAILABLE');
     }
-    if (!prepId) throw new Error('Spritz did not return a preparation id');
-
-    const deposit = await SpritzEngine.createDirectDeposit({ preparationId: prepId, idempotencyKey: `dlb-fund-${reference}` });
-    const gross = num(deposit.amountUsd || deposit.inputAmount || (deposit.input && deposit.input.amount) || amountUsd || (quote && quote.amountUsd));
-    const fee = num(deposit.feeUsd || (deposit.fees && deposit.fees.total));
-    const gl = cfg.gl;
-    const lines = [
-      { accountCode: gl.treasuryAccount, debitAmount: +(gross - fee).toFixed(2), creditAmount: 0, description: `USDC to policy contract ${cfg.policyAddress}` },
-      { accountCode: gl.bankAccount, debitAmount: 0, creditAmount: +gross.toFixed(2), description: 'Spritz ACH debit from funding source' },
-    ];
-    if (fee > 0) lines.push({ accountCode: gl.feeAccount, debitAmount: +fee.toFixed(2), creditAmount: 0, description: 'Spritz on-ramp fee' });
-    const journal = await book({
-      referenceType: 'spritz_deposit',
-      referenceId: deposit.id || `prep:${prepId}`,
-      description: `Spritz on-ramp ${gross.toFixed(2)} USD -> USDC (${cfg.network}) to TrustDistributionPolicy [${reference}]`,
-      lines,
-      postedBy: createdBy,
+    const existing = await this._requestByReference(reference);
+    if (existing) {
+      return { status: existing.status, requestId: existing.id, proposalId: existing.proposal_id, reference, destination: cfg.policyAddress, amountUsd: quote.amountUsd, idempotent: true };
+    }
+    const proposal = await CanonicalMoneyEngine.propose({
+      ...quote.source,
+      amount: quote.amountUsd,
+      targetAsset: 'USDC',
+      recipient: cfg.policyAddress,
+      title: `Fund TrustDistributionPolicy ${quote.amountUsd} USDC from ERP reserve [${reference}]`,
+      createdBy: createdBy || 'spritz-treasury-leg',
+      autoApprove,
     });
-
     return {
-      status: deposit.status || 'submitted',
-      depositId: deposit.id || null,
-      preparationId: prepId,
+      status: 'proposed',
+      requestId: proposal.requestId,
+      proposalId: proposal.proposalId,
       reference,
+      source: quote.source,
       destination: cfg.policyAddress,
-      network: cfg.network,
-      amountUsd: gross.toFixed(2),
-      feeUsd: fee.toFixed(2),
-      deposit,
-      journal,
-      note: 'Funding is complete only when the policy contract balance on chain reflects the USDC; see reconcileFunding().',
+      chainId: cfg.chainId,
+      amountUsd: quote.amountUsd,
+      route: proposal.route,
+      next: 'checker approves the canonical_money proposal; then call reconcileFunding() to book the reserve -> USDC journal once the contract balance reflects it.',
     };
   }
 
-  /** Spritz deposit records vs. the policy contract's on-chain USDC balance. */
-  static async reconcileFunding() {
+  /**
+   * ERP funding requests to the policy contract vs. its on-chain USDC balance.
+   * Completed requests are journaled (Dr USDC treasury / Cr ERP reserve) once.
+   */
+  static async reconcileFunding({ postedBy } = {}) {
     const cfg = this.config();
-    const [deposits, status] = await Promise.all([
-      SpritzEngine.listDeposits(),
+    const [toContract, status] = await Promise.all([
+      this._requestsToContract(cfg.policyAddress),
       TrustPolicyEngine.status({ token: cfg.settlementToken || undefined }),
     ]);
-    const list = Array.isArray(deposits) ? deposits : (deposits && deposits.data) || [];
-    const toContract = list.filter(d => {
-      const addr = d.address || d.destinationAddress || (d.destination && d.destination.address) || '';
-      return String(addr).toLowerCase() === String(cfg.policyAddress || '').toLowerCase();
-    });
-    const settled = toContract.filter(d => /complete|settled|success/i.test(String(d.status || '')));
-    const settledUsd = settled.reduce((s, d) => s + num(d.outputAmount || (d.output && d.output.amount) || d.amountUsd), 0);
+    const completed = toContract.filter(r => r.status === 'completed');
+    const journals = [];
+    for (const r of completed) {
+      const amount = num(r.amount);
+      journals.push({
+        requestId: r.id,
+        ...(await book({
+          referenceType: 'erp_policy_funding',
+          referenceId: r.id,
+          description: `ERP reserve -> ${amount.toFixed(2)} USDC to TrustDistributionPolicy ${cfg.policyAddress} (${r.source_type || r.source_token || r.source_module})`,
+          lines: [
+            { accountCode: cfg.gl.treasuryAccount, debitAmount: +amount.toFixed(2), creditAmount: 0, description: `USDC to policy contract ${cfg.policyAddress}` },
+            { accountCode: cfg.gl.reserveAccount, debitAmount: 0, creditAmount: +amount.toFixed(2), description: `ERP reserve converted (${r.source_type || r.source_token || r.source_module})` },
+          ],
+          postedBy,
+        })),
+      });
+    }
+    const completedUsd = completed.reduce((s, r) => s + num(r.amount), 0);
     return {
       policyContract: cfg.policyAddress,
       onChain: {
@@ -266,45 +312,49 @@ class SpritzTreasuryLegEngine {
         balanceUsd: unitsToUsd(status.treasury.balance),
         availableUnits: status.treasury.available,
       },
-      spritz: {
-        depositsToContract: toContract.length,
-        settled: settled.length,
-        settledUsd: settledUsd.toFixed(2),
-        pending: toContract.filter(d => !settled.includes(d)).map(d => ({ id: d.id, status: d.status })),
+      erp: {
+        requestsToContract: toContract.length,
+        completed: completed.length,
+        completedUsd: completedUsd.toFixed(2),
+        pending: toContract.filter(r => r.status !== 'completed').map(r => ({ id: r.id, status: r.status, amount: r.amount })),
+        journals,
       },
       funded: BigInt(status.treasury.balance || '0') > 0n,
     };
   }
 
-  // ─── Payout: policy contract -> payout wallet -> Spritz -> beneficiary bank ─
+  // ─── Payout: policy contract -> payout wallet -> Spritz -> settlement bank ─
 
   /**
-   * Stage a governed distribution whose fiat leg settles through Spritz.
+   * Stage a governed distribution whose fiat leg settles through Spritz to the
+   * DB NET MGMT settlement bank.
    *
    * The policy contract only pays allow-listed wallets, so the distribution is
    * proposed to the payout wallet (default: DAPP_OPERATOR_ADDRESS) which then
-   * executes the Spritz off-ramp quote to the beneficiary's bank account after
-   * the checker approval + timelock. The quote is created first so the amount
-   * the checker approves is the amount Spritz will pay out.
+   * executes the Spritz off-ramp quote after the checker approval + timelock.
+   * The quote is created first so the amount the checker approves is the
+   * amount Spritz will consume.
    */
-  static async stagePayout({ bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet } = {}) {
+  static async stagePayout({ amountUsd, purpose, reference, rail, memo, payoutWallet, bankAccountId } = {}) {
     const cfg = this.config();
-    if (!bankAccountId) throw badRequest('bankAccountId required (Spritz bank account of the beneficiary)');
     if (!reference) throw badRequest('reference required');
     const wallet = payoutWallet || cfg.payoutWallet;
-    if (!wallet) throw badRequest('SPRITZ_PAYOUT_WALLET (or DAPP_OPERATOR_ADDRESS) not configured', 'PAYOUT_WALLET_NOT_CONFIGURED');
+    if (!wallet) throw conflict('SPRITZ_PAYOUT_WALLET (or DAPP_OPERATOR_ADDRESS) not configured', 'PAYOUT_WALLET_NOT_CONFIGURED');
     if (!cfg.network) throw badRequest(`chain ${cfg.chainId} is not a Spritz network`);
 
     const gate = await TrustPolicyEngine.beneficiaryStatus({ beneficiary: wallet, token: cfg.settlementToken || undefined });
     if (!gate.allowed) {
-      throw Object.assign(new Error(`payout wallet ${wallet} is not an allow-listed beneficiary on the policy contract; the contract owner must call setBeneficiary/setBeneficiaryLimits first`), {
-        status: 409, code: 'PAYOUT_WALLET_NOT_ALLOWLISTED',
-      });
+      throw conflict(`payout wallet ${wallet} is not an allow-listed beneficiary on the policy contract; the contract owner must call setBeneficiary/setBeneficiaryLimits first`, 'PAYOUT_WALLET_NOT_ALLOWLISTED');
     }
-    if (gate.frozen) throw Object.assign(new Error(`payout wallet ${wallet} is frozen on the policy contract`), { status: 409, code: 'PAYOUT_WALLET_FROZEN' });
+    if (gate.frozen) throw conflict(`payout wallet ${wallet} is frozen on the policy contract`, 'PAYOUT_WALLET_FROZEN');
+
+    const bank = await this.settlementBank();
+    if (bankAccountId && bankAccountId !== bank.id) {
+      throw conflict(`bankAccountId ${bankAccountId} is not the settlement bank (${bank.id}); Spritz payouts settle only to ${cfg.settlementBankMatch}`, 'SPRITZ_SETTLEMENT_BANK_MISMATCH');
+    }
 
     const quote = await SpritzEngine.createOffRampQuote({
-      accountId: bankAccountId,
+      accountId: bank.id,
       amount: Number(amountUsd).toFixed(2),
       chain: cfg.network,
       tokenAddress: cfg.settlementToken || undefined,
@@ -327,7 +377,7 @@ class SpritzTreasuryLegEngine {
       status: 'proposed',
       reference,
       payoutWallet: wallet,
-      bankAccountId,
+      settlementBank: bank,
       amountUsd: Number(amountUsd).toFixed(2),
       quantityUnits: quantity.toString(),
       rail: rail || cfg.defaultRail,
@@ -340,7 +390,7 @@ class SpritzTreasuryLegEngine {
 
   /**
    * Release the distribution to the payout wallet and settle the Spritz
-   * off-ramp from it, booking the beneficiary payout in the GL.
+   * off-ramp from it, booking the payout in the GL.
    */
   static async executePayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy } = {}) {
     const cfg = this.config();
@@ -355,7 +405,7 @@ class SpritzTreasuryLegEngine {
     const fee = num(quote && (quote.feeUsd || (quote.fees && quote.fees.total)));
     const gl = cfg.gl;
     const lines = [
-      { accountCode: gl.distributionsAccount, debitAmount: +gross.toFixed(2), creditAmount: 0, description: `Beneficiary payout via Spritz off-ramp (distribution ${distributionId})` },
+      { accountCode: gl.distributionsAccount, debitAmount: +gross.toFixed(2), creditAmount: 0, description: `Payout to settlement bank via Spritz off-ramp (distribution ${distributionId})` },
       { accountCode: gl.treasuryAccount, debitAmount: 0, creditAmount: +(gross + fee).toFixed(2), description: `USDC released from policy contract ${cfg.policyAddress}` },
     ];
     if (fee > 0) lines.push({ accountCode: gl.feeAccount, debitAmount: +fee.toFixed(2), creditAmount: 0, description: 'Spritz off-ramp fee' });
@@ -380,16 +430,55 @@ class SpritzTreasuryLegEngine {
     };
   }
 
-  static async _defaultFundingSource() {
-    const sources = await SpritzEngine.listFundingSources();
-    const list = Array.isArray(sources) ? sources : [];
-    const active = list.find(s => !s.status || /active|verified/i.test(String(s.status))) || list[0];
-    if (!active) {
-      throw Object.assign(new Error('No Spritz funding source: link the trust bank account via Plaid in the Spritz dashboard'), {
-        status: 409, code: 'SPRITZ_NO_FUNDING_SOURCE',
-      });
+  // ─── helpers ───────────────────────────────────────────────────────────────
+
+  static _fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
+    const cfg = this.config().fundingSource;
+    const source = {
+      sourceType: sourceType || cfg.sourceType || undefined,
+      sourceAccountId: sourceAccountId || cfg.sourceAccountId || undefined,
+      sourceToken: sourceToken || cfg.sourceToken || undefined,
+      sourceModule: sourceModule || cfg.sourceModule || undefined,
+    };
+    if (!source.sourceType && !source.sourceToken && !source.sourceModule) {
+      throw badRequest('ERP funding source required: sourceType+sourceAccountId (ledger), sourceToken, or sourceModule', 'ERP_FUNDING_SOURCE_REQUIRED');
     }
-    return active.id;
+    if (source.sourceType && !source.sourceAccountId) throw badRequest('sourceAccountId required with sourceType');
+    return source;
+  }
+
+  /** canonical_money requests whose proposal pays USDC to the policy contract. */
+  static async _requestsToContract(policyAddress) {
+    if (!pool || !pool.query || !policyAddress) return [];
+    try {
+      const rows = await pool.query(
+        `SELECT r.id, r.proposal_id, r.source_type, r.source_token, r.source_module, r.amount, r.status, r.created_at
+           FROM canonical_money_requests r
+           JOIN canonical_proposals p ON p.id = r.proposal_id
+          WHERE p.category = 'canonical_money' AND LOWER(p.payload->>'recipient') = $1
+          ORDER BY r.created_at DESC LIMIT 200`,
+        [String(policyAddress).toLowerCase()]
+      );
+      return rows.rows;
+    } catch (e) {
+      return [];
+    }
+  }
+
+  static async _requestByReference(reference) {
+    if (!pool || !pool.query) return null;
+    try {
+      const rows = await pool.query(
+        `SELECT r.* FROM canonical_money_requests r
+           JOIN canonical_proposals p ON p.id = r.proposal_id
+          WHERE p.title LIKE $1 AND r.status <> 'failed'
+          ORDER BY r.created_at DESC LIMIT 1`,
+        [`%[${reference}]%`]
+      );
+      return rows.rows[0] || null;
+    } catch (e) {
+      return null;
+    }
   }
 }
 

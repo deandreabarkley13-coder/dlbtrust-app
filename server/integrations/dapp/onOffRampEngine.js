@@ -8,9 +8,9 @@
  * through whichever configured provider is available.
  *
  * Supported flows:
- *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint,
- *    Spritz ACH-debit deposit straight into the TrustDistributionPolicy contract
- *  - Off-ramp (USDC/USDS/ETH -> fiat bank/card): Spritz, Coinbase sell+withdraw
+ *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint
+ *  - Off-ramp (USDC/USDS/ETH -> fiat bank/card): Spritz (to the settlement bank), Coinbase sell+withdraw
+ *  - Policy funding (ERP reserve -> USDC -> TrustDistributionPolicy): SpritzTreasuryLegEngine
  *  - Reserve conversion (DLB-PTCUSD/DLBUSD/DLB-PRB -> USDC/USDS): TrustMarketEngine P2P
  */
 
@@ -73,9 +73,14 @@ class OnOffRampEngine {
     // Spritz off-ramp
     if (SpritzEngine) {
       const spritzKey = process.env.SPRITZ_API_KEY || cfg.spritzApiKey;
-      list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['onramp', 'offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
+      list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
     } else {
       list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: false, issues: ['SpritzEngine not available'] });
+    }
+
+    // Treasury-Core ERP reserve -> USDC -> TrustDistributionPolicy contract
+    if (SpritzTreasuryLegEngine) {
+      list.push({ id: 'erp_policy_funding', name: 'Treasury-Core ERP -> TrustDistributionPolicy', directions: ['reserve_to_canonical', 'exchange'], ready: true, issues: [] });
     }
 
     // Internal shadow rail. Always available, moves no value: it records the
@@ -166,24 +171,6 @@ class OnOffRampEngine {
         issues: circleKey ? [] : ['CIRCLE_MINT_API_KEY not configured'],
       });
 
-      // Spritz ACH-debit on-ramp: bank funding source -> USDC on Base -> policy contract
-      if (SpritzTreasuryLegEngine) {
-        const r = await SpritzTreasuryLegEngine.readiness().catch(e => ({ ready: false, issues: [e.message], policyContract: null }));
-        routes.push({
-          provider: 'spritz',
-          name: 'Spritz ACH Debit On-Ramp',
-          direction: 'onramp',
-          sourceAsset: sourceAsset || 'USD',
-          targetAsset: 'USDC',
-          amount,
-          targetAddress: r.policyContract || toAddress,
-          status: r.ready ? 'ready' : 'needs_config',
-          instructions: r.ready
-            ? `Debits the linked funding source and delivers USDC on ${r.network} to the TrustDistributionPolicy contract.`
-            : `Fix: ${(r.issues || []).join(', ')}`,
-          issues: r.issues || [],
-        });
-      }
     }
 
     // --- Crypto -> Fiat ---
@@ -213,6 +200,24 @@ class OnOffRampEngine {
 
     // --- Reserve/Trust Token -> Canonical Stablecoin ---
     if (direction === 'exchange' || direction === 'reserve_to_canonical' || direction === 'crypto_to_crypto') {
+      // ERP reserve -> USDC paid into the TrustDistributionPolicy contract
+      if (SpritzTreasuryLegEngine) {
+        const r = await SpritzTreasuryLegEngine.readiness().catch(e => ({ ready: false, issues: [e.message], policyContract: null }));
+        routes.push({
+          provider: 'erp_policy_funding',
+          name: 'Treasury-Core ERP -> TrustDistributionPolicy',
+          direction: 'reserve_to_canonical',
+          sourceAsset: sourceAsset || (r.fundingSource && (r.fundingSource.sourceToken || r.fundingSource.sourceModule || r.fundingSource.sourceType)) || 'ERP',
+          targetAsset: 'USDC',
+          amount,
+          targetAddress: r.policyContract || null,
+          status: r.ready ? 'ready' : 'needs_config',
+          instructions: r.ready
+            ? 'Converts the ERP reserve to USDC under maker/checker consensus and pays it to the policy contract. No bank is debited.'
+            : `Fix: ${(r.issues || []).join(', ')}`,
+          issues: r.issues || [],
+        });
+      }
       if (TrustMarketEngine) {
         const q = await TrustMarketEngine.quote({ trustToken: sourceAsset || 'DLB-PTCUSD', pairedAsset: targetAsset || 'USDS', amount }).catch(e => ({ status: 'error', issues: [e.message] }));
         routes.push({
@@ -351,16 +356,21 @@ class OnOffRampEngine {
       return { status: 'needs_recipient_setup', instructions: 'Create a verified recipient address for the operator wallet in Circle Mint, then call execute.' };
     }
 
-    if (provider === 'spritz' && (direction === 'onramp' || direction === 'fiat_to_crypto')) {
+    if (provider === 'erp_policy_funding') {
       if (!SpritzTreasuryLegEngine) throw new Error('SpritzTreasuryLegEngine not available');
       return SpritzTreasuryLegEngine.fund({
         amountUsd: p.amount,
-        sourceId: p.sourceId,
-        preparationId: p.preparationId,
-        priority: p.priority,
+        sourceType: p.sourceType,
+        sourceAccountId: p.sourceAccountId,
+        sourceToken: p.sourceToken || p.sourceAsset,
+        sourceModule: p.sourceModule,
         reference: p.reference || proposal.id,
         createdBy: proposal.created_by || proposal.createdBy,
       });
+    }
+
+    if (provider === 'spritz' && (direction === 'onramp' || direction === 'fiat_to_crypto')) {
+      throw Object.assign(new Error('Spritz is the settlement (off-ramp) leg only; the policy contract is funded from the Treasury-Core ERP via SpritzTreasuryLegEngine.fund()'), { status: 409, code: 'SPRITZ_NOT_A_FUNDING_SOURCE' });
     }
 
     if (provider === 'spritz') {

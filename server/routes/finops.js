@@ -335,22 +335,29 @@ router.get('/spritz/treasury/readiness', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.readiness() }); } catch (err) { sendError(res, err); }
 });
 
-router.get('/spritz/treasury/reconcile', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.reconcileFunding() }); } catch (err) { sendError(res, err); }
+router.get('/spritz/treasury/settlement-bank', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.settlementBank() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/treasury/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const postedBy = req.user && (req.user.username || req.user.id);
+    res.json({ success: true, data: await SpritzTreasuryLegEngine.reconcileFunding({ postedBy }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/treasury/fund/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { amountUsd, sourceId, priority } = req.body || {};
-    res.json({ success: true, data: await SpritzTreasuryLegEngine.quoteFunding({ amountUsd, sourceId, priority }) });
+    const { amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule } = req.body || {};
+    res.json({ success: true, data: await SpritzTreasuryLegEngine.quoteFunding({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule }) });
   } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/treasury/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { preparationId, amountUsd, sourceId, reference, priority } = req.body || {};
+    const { amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference } = req.body || {};
     const createdBy = req.user && (req.user.username || req.user.id);
-    const data = await SpritzTreasuryLegEngine.fund({ preparationId, amountUsd, sourceId, reference, priority, createdBy });
+    const data = await SpritzTreasuryLegEngine.fund({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
