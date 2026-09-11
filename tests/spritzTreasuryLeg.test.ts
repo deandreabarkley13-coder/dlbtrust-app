@@ -125,6 +125,45 @@ describe('Spritz treasury leg', () => {
     }
   });
 
+  it('funds a bucket from its Treasury-Core ERP GL account with no DEX pool, and keeps the two GL accounts segregated', async () => {
+    process.env.COUPON_INCOME_GL_ACCOUNT_CODE = '1105';
+    process.env.TRUST_OPERATING_GL_ACCOUNT_CODE = '1110';
+    process.env.DLB_PRB_TOKEN_ADDRESS = PRB;
+    try {
+      const propose = vi.spyOn(CanonicalMoneyEngine, 'propose').mockResolvedValue({ requestId: 'CM-1', proposalId: 'PROP-1', route: { action: 'erp_treasury' } } as any);
+
+      // Real _pickRoute: the canonical source routes through the ERP, never a pool.
+      const route = await CanonicalMoneyEngine.quote({ sourceType: 'canonical', sourceAccountId: '1105', sourceModule: 'bond_portfolio', amount: '1', targetAsset: 'USDC' });
+      expect(route).toMatchObject({ action: 'erp_treasury', sourceAccountId: '1105', glAccounts: { cash: '1105' } });
+      expect(route.poolAddress).toBeUndefined();
+      expect(TrustAllocationEngine.routeExecutable(route)).toBe(true);
+
+      // Bucket resolves to its GL account (GL wins over the module token).
+      expect(TrustAllocationEngine.fundingSource('coupon_income')).toEqual({ sourceType: 'canonical', sourceAccountId: '1105', sourceModule: 'bond_portfolio' });
+      const coupon = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'coupon_income', reference: 'ERP-1' });
+      expect(coupon).toMatchObject({ bucket: 'coupon_income', source: { sourceType: 'canonical', sourceAccountId: '1105' } });
+      expect(propose).toHaveBeenLastCalledWith(expect.objectContaining({ sourceType: 'canonical', sourceAccountId: '1105', recipient: POLICY }));
+
+      // The GL account alone pins the bucket; the other bucket's GL account is refused.
+      const ops = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, sourceType: 'canonical', sourceAccountId: '1110', reference: 'ERP-2' });
+      expect(ops).toMatchObject({ bucket: 'trust_operating' });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'coupon_income', sourceType: 'canonical', sourceAccountId: '1110', reference: 'ERP-3' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'trust_operating', sourceType: 'canonical', sourceAccountId: '9999', reference: 'ERP-4' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, sourceType: 'canonical', sourceAccountId: '1105', sourceModule: 'treasury', reference: 'ERP-5' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      expect(propose).toHaveBeenCalledTimes(2);
+
+      const sources = await TrustAllocationEngine.fundingSources({ quote: (q: any) => CanonicalMoneyEngine.quote(q) });
+      expect(sources).toEqual([
+        expect.objectContaining({ bucket: 'coupon_income', liquidity: 'treasury_core_erp', glAccountCode: '1105', configured: true, executable: true }),
+        expect.objectContaining({ bucket: 'trust_operating', liquidity: 'treasury_core_erp', glAccountCode: '1110', configured: true, executable: true }),
+      ]);
+    } finally {
+      delete process.env.COUPON_INCOME_GL_ACCOUNT_CODE;
+      delete process.env.TRUST_OPERATING_GL_ACCOUNT_CODE;
+      delete process.env.DLB_PRB_TOKEN_ADDRESS;
+    }
+  });
+
   it('refuses to fund when the ERP route has no canonical liquidity', async () => {
     vi.spyOn(CanonicalMoneyEngine, 'quote').mockResolvedValue({ action: 'dex_swap', tokenIn: PRB, poolAddress: null, note: 'No canonical liquidity pool found; create one first' } as any);
     const propose = vi.spyOn(CanonicalMoneyEngine, 'propose');
