@@ -1010,6 +1010,7 @@
       <p class="muted" id="relayer-summary" style="margin:6px 0;">${escHtml(text)}</p>
       <div class="form-row">
         <div class="form-group"><label>Session length (days)</label><input id="grant-days" type="number" min="1" step="1" placeholder="30" /></div>
+        <div class="form-group"><label>Account admin (trustee wallet, optional)</label><input id="account-admin" type="text" placeholder="defaults to policy owner" /></div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <button class="btn btn-sec btn-sm" onclick="prepareAccount()">Predict smart account</button>
@@ -1030,7 +1031,8 @@
     const status = el('account-status');
     try {
       status.textContent = 'Predicting…';
-      const res = await api('/api/finops/spritz/relayer/account/prepare', { method: 'POST', body: JSON.stringify({}) });
+      const admin = (el('account-admin').value || '').trim();
+      const res = await api('/api/finops/spritz/relayer/account/prepare', { method: 'POST', body: JSON.stringify(admin ? { admin } : {}) });
       pipeline.account = res.data;
       const d = res.data;
       status.textContent = `${d.deployed ? 'Deployed' : 'Not deployed'} thirdweb account ${d.address} (admin ${d.admin}, factory ${d.factory}). ` + (d.issues.length ? d.issues.join('; ') + '. ' : '') + d.next.join(' → ');
