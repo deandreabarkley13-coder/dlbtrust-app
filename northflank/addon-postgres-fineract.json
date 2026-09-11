@@ -1,0 +1,13 @@
+{
+  "name": "fineract-db",
+  "description": "PostgreSQL for Apache Fineract (Treasury-Core banking ERP GL)",
+  "type": "postgresql",
+  "version": "16",
+  "tlsEnabled": false,
+  "externalAccessEnabled": false,
+  "billing": {
+    "deploymentPlan": "nf-compute-20",
+    "storage": 10240,
+    "replicas": 1
+  }
+}

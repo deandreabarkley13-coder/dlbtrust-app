@@ -25,6 +25,8 @@ const FINERACT_URL       = process.env.FINERACT_URL || 'https://localhost:8443/f
 const FINERACT_TENANT_ID = process.env.FINERACT_TENANT_ID || 'default';
 const FINERACT_USERNAME  = process.env.FINERACT_USERNAME || 'mifos';
 const FINERACT_PASSWORD  = process.env.FINERACT_PASSWORD || 'password';
+const GL_USAGE_DETAIL = 1;
+const GL_USAGE_HEADER = 2;
 
 // ─── Keep-Alive Agents (reuse TCP connections) ────────────────────────────────
 const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 4, rejectUnauthorized: false });
@@ -400,17 +402,22 @@ class FineractClient {
   /**
    * Create a GL account in Fineract.
    * type: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=INCOME, 5=EXPENSE
-   * usage: 1=HEADER, 2=DETAIL
+   * usage: 1=DETAIL (postable), 2=HEADER
    */
   static async createGLAccount({ name, glCode, type, usage, description, manualEntriesAllowed }) {
     return fineractRequest('POST', 'glaccounts', {
       name,
       glCode,
       type,
-      usage: usage || 2,
+      usage: usage || GL_USAGE_DETAIL,
       description: description || '',
       manualEntriesAllowed: manualEntriesAllowed !== false,
     });
+  }
+
+  /** Fineract refuses to change `usage` on update; delete (no journal entries) and recreate instead. */
+  static async deleteGLAccount(glAccountId) {
+    return fineractRequest('DELETE', `glaccounts/${glAccountId}`);
   }
 
   /**
@@ -557,4 +564,4 @@ function formatFineractDateShort(date) {
   return `${String(d.getDate()).padStart(2, '0')} ${months[d.getMonth()]} ${d.getFullYear()}`;
 }
 
-module.exports = { FineractClient, fineractRequest };
+module.exports = { FineractClient, fineractRequest, GL_USAGE_DETAIL, GL_USAGE_HEADER };
