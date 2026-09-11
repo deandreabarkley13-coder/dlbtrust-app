@@ -846,7 +846,15 @@ class SpritzTreasuryLegEngine {
     const relay = pick('payout relayer', relayer);
     const ff = pick('fiat funding', fiat);
     const stages = [
-      { key: 'erp', label: 'Treasury-Core ERP (canonical GL)', ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false)), detail: rd ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}` : null },
+      {
+        key: 'erp',
+        label: 'Treasury-Core ERP (canonical GL)',
+        ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false))
+          && (!ff || !ff.erpPosition || ff.erpPosition.ok),
+        detail: rd
+          ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}${ff && ff.erpPosition ? `; ${ff.erpPosition.detail}` : ''}`
+          : null,
+      },
       {
         key: 'fiatFunding',
         label: 'ERP credit push -> Spritz auto-ramp (fiat in, USDC to policy)',

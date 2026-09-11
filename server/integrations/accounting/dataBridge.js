@@ -821,10 +821,15 @@ class DataBridge {
         return { syncId: syncId, matched: 0, unmatched: 0, error: 'Cannot connect to Fineract: ' + glErr.message, discrepancies: [] };
       }
 
+      // getGLSummary() groups accounts by type ({ assets: [], liabilities: [], ... })
       var glMap = {};
-      if (glSummary && Array.isArray(glSummary.accounts)) {
-        for (var g = 0; g < glSummary.accounts.length; g++) {
-          var glAcct = glSummary.accounts[g];
+      var glGroups = glSummary && glSummary.accounts
+        ? (Array.isArray(glSummary.accounts) ? [glSummary.accounts] : Object.values(glSummary.accounts))
+        : [];
+      for (var gi = 0; gi < glGroups.length; gi++) {
+        var group = glGroups[gi] || [];
+        for (var g = 0; g < group.length; g++) {
+          var glAcct = group[g];
           glMap[glAcct.id] = glAcct;
         }
       }
