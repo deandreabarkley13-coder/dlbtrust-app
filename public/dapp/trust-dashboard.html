@@ -132,6 +132,17 @@
           <div class="stat-card"><div class="label">Pending Approvals</div><div class="value" id="pending-value">—</div><div class="sub">distribution / payment requests</div></div>
         </div>
 
+        <div class="card" id="pipeline-card">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h2 style="margin:0;">Settlement Pipeline</h2>
+            <span class="badge" id="pipeline-indicator">Loading</span>
+            <span class="muted" id="pipeline-status">ERP canonical GL → policy contract → Spritz payout wallet → bank / bill</span>
+          </div>
+          <div id="pipeline-stages" class="muted" style="margin-top:10px;">Loading…</div>
+          <div id="pipeline-detail" style="margin-top:10px;"></div>
+          <div id="pipeline-allowlist" style="margin-top:10px;"></div>
+        </div>
+
         <div class="workflow">
           <div>
             <div class="card">
@@ -876,6 +887,130 @@
     } finally {
       live.loading = false;
       if (btn) btn.disabled = false;
+    }
+    loadPipeline();
+  }
+
+  const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const shortAddr = (a) => (a && a.length > 12 ? a.slice(0, 6) + '…' + a.slice(-4) : (a || '—'));
+  const pipeline = { loading: false, data: null, prepared: null };
+
+  async function loadPipeline() {
+    if (pipeline.loading) return;
+    pipeline.loading = true;
+    try {
+      const res = await api('/api/finops/spritz/pipeline?limit=10');
+      pipeline.data = res.data || null;
+      renderPipeline(pipeline.data, null);
+    } catch (e) {
+      console.error('pipeline', e);
+      renderPipeline(null, e.message || 'unknown error');
+    } finally {
+      pipeline.loading = false;
+    }
+  }
+
+  function renderPipeline(p, error) {
+    const indicator = el('pipeline-indicator');
+    if (!indicator) return;
+    if (error || !p) {
+      indicator.textContent = 'Stale';
+      indicator.className = 'badge rejected';
+      el('pipeline-status').textContent = 'Could not load pipeline: ' + (error || 'no data');
+      return;
+    }
+    indicator.textContent = p.ready ? 'Ready' : 'Blocked';
+    indicator.className = 'badge ' + (p.ready ? 'approved' : 'pending');
+    el('pipeline-status').textContent = 'As of ' + new Date(p.asOf).toLocaleTimeString() + (p.errors.length ? ' · ' + p.errors.length + ' component error(s)' : '');
+    el('pipeline-stages').innerHTML = '<div style="display:grid;gap:6px;">' + p.stages.map((s) =>
+      `<div style="display:flex;gap:10px;align-items:flex-start;"><span class="badge ${s.ok ? 'approved' : 'rejected'}" style="min-width:64px;text-align:center;">${s.ok ? 'OK' : 'BLOCKED'}</span><div><strong style="font-size:.8rem;">${escHtml(s.label)}</strong><div class="muted">${escHtml(s.detail || '')}</div></div></div>`
+    ).join('') + (p.errors.length ? `<div class="muted" style="color:var(--danger);">${p.errors.map(escHtml).join('<br>')}</div>` : '') + '</div>';
+
+    const pol = p.policy || {};
+    const pw = p.payoutWallet || {};
+    const rd = p.readiness || {};
+    const cos = p.collateralOs || {};
+    const usdcUnits = (u) => Number(u || 0) / 1e6;
+    const buckets = (p.buckets || []).map((b) => `<div class="badge">${escHtml(b.label || b.bucket)}: recognised ${fmtUsd(b.recognisedUsd)} · staged ${fmtUsd(b.stagedUsd)} · headroom ${fmtUsd(b.headroomUsd)}</div>`).join(' ');
+    const legs = (p.fundingLegs || []).slice(0, 5).map((l) => `<tr><td>fund</td><td>${escHtml(l.sourceType || l.sourceModule || '')} ${escHtml(l.sourceAccount || l.sourceToken || '')}</td><td>${fmtUsd(l.amount)}</td><td><span class="badge">${escHtml(l.status)}</span></td><td>${new Date(l.createdAt).toLocaleString()}</td></tr>`)
+      .concat((p.payouts || []).slice(0, 5).map((o) => `<tr><td>payout</td><td>${escHtml(o.bucket)} → ${shortAddr(o.payoutWallet)}</td><td>${fmtUsd(o.amountUsd)}</td><td><span class="badge">${escHtml(o.status)}</span></td><td>${new Date(o.createdAt).toLocaleString()}</td></tr>`))
+      .concat((p.billPayments || []).slice(0, 5).map((b) => `<tr><td>bill pay</td><td>${escHtml(b.spritzBillId || b.spritz_bill_id || '')}</td><td>${fmtUsd(b.amountUsd || b.amount_usd)}</td><td><span class="badge">${escHtml(b.status)}</span></td><td>${new Date(b.createdAt || b.created_at).toLocaleString()}</td></tr>`));
+    el('pipeline-detail').innerHTML = `
+      <div class="grid">
+        <div class="stat-card"><div class="label">Policy contract USDC</div><div class="value">${pol.treasury ? fmtUsd(usdcUnits(pol.treasury.available)) : '—'}</div><div class="sub">${shortAddr(pol.contract)} · owner ${shortAddr(pol.owner)}${pol.paused ? ' · PAUSED' : ''}</div></div>
+        <div class="stat-card"><div class="label">Payout wallet USDC</div><div class="value">${pw.usdcBalance != null ? fmtUsd(pw.usdcBalance) : '—'}</div><div class="sub">${shortAddr(pw.address)} · ${pw.policy && pw.policy.allowed ? 'allow-listed' : 'NOT allow-listed'}</div></div>
+        <div class="stat-card"><div class="label">Spritz settlement</div><div class="value">${rd.settlementBank ? escHtml(rd.settlementBank.institution || rd.settlementBank.label || 'bank') : (rd.settlementDestinations && rd.settlementDestinations.bills ? rd.settlementDestinations.bills + ' bill(s)' : '—')}</div><div class="sub">${rd.settlementBank ? '••••' + escHtml(rd.settlementBank.accountNumberLast4 || '') + ' · ' + escHtml(rd.settlementBank.status || '') : 'no bank linked'}</div></div>
+        <div class="stat-card"><div class="label">Collateral OS</div><div class="value">${cos.facility ? fmtUsd(cos.facility.availableUsd) : '—'}</div><div class="sub">${cos.facility ? (cos.facility.openDraws || 0) + ' open draws · ' + fmtUsd(cos.facility.drawnUsd) + ' drawn of ' + fmtUsd(cos.facility.spendableUsd) : 'unavailable'}</div></div>
+      </div>
+      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${buckets}</div>
+      ${legs.length ? `<table class="table" style="margin-top:10px;"><thead><tr><th>Leg</th><th>Route</th><th>Amount</th><th>Status</th><th>When</th></tr></thead><tbody>${legs.join('')}</tbody></table>` : '<p class="muted" style="margin-top:8px;">No funding or payout legs recorded yet.</p>'}`;
+
+    const allow = el('pipeline-allowlist');
+    if (pw.policy && pw.policy.allowed) {
+      allow.innerHTML = '';
+    } else {
+      allow.innerHTML = `<div class="panel">
+        <strong style="font-size:.85rem;">Payout wallet not allow-listed on the policy contract</strong>
+        <p class="muted" style="margin:6px 0;">Only the contract owner (${escHtml(pol.owner || 'trustee governance wallet')}) can call setBeneficiary / setBeneficiaryLimits. Prepare the transactions here and sign them from the owner wallet.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Max per distribution (USD)</label><input id="allow-max" type="number" min="0" step="0.01" placeholder="0 = no cap" /></div>
+          <div class="form-group"><label>Period cap (USD)</label><input id="allow-cap" type="number" min="0" step="0.01" placeholder="0 = no cap" /></div>
+          <div class="form-group"><label>Period (seconds)</label><input id="allow-period" type="number" min="0" step="1" placeholder="0" /></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-gold btn-sm" onclick="prepareAllowlist()">Prepare owner transactions</button>
+          <button class="btn btn-sec btn-sm" id="allow-sign-btn" onclick="signAllowlist()" disabled>Sign with owner wallet</button>
+          <button class="btn btn-sec btn-sm" onclick="loadPipeline()">Re-check</button>
+        </div>
+        <div id="allow-status" class="muted" style="margin-top:8px;"></div>
+        <pre id="allow-txs" class="muted" style="white-space:pre-wrap;word-break:break-all;display:none;"></pre>
+      </div>`;
+    }
+  }
+
+  async function prepareAllowlist() {
+    const status = el('allow-status');
+    try {
+      status.textContent = 'Encoding…';
+      const body = {
+        maxPerDistributionUsd: el('allow-max').value || undefined,
+        periodCapUsd: el('allow-cap').value || undefined,
+        periodSeconds: el('allow-period').value || 0,
+      };
+      const res = await api('/api/finops/spritz/wallet/allowlist/prepare', { method: 'POST', body: JSON.stringify(body) });
+      pipeline.prepared = res.data;
+      const pre = el('allow-txs');
+      pre.style.display = 'block';
+      pre.textContent = JSON.stringify(res.data.txs.map((t) => ({ action: t.action, from: t.from, to: t.to, chainId: t.chainId, data: t.data })), null, 2);
+      status.textContent = res.data.alreadyAllowed ? 'Wallet is already allow-listed.' : res.data.instructions;
+      el('allow-sign-btn').disabled = !window.ethereum;
+      if (!window.ethereum) status.textContent += ' No browser wallet detected — paste the calldata into the owner wallet.';
+    } catch (e) {
+      status.textContent = 'Prepare failed: ' + e.message;
+    }
+  }
+
+  async function signAllowlist() {
+    const status = el('allow-status');
+    const prep = pipeline.prepared;
+    if (!prep || !window.ethereum) return;
+    try {
+      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (String(from).toLowerCase() !== String(prep.owner).toLowerCase()) {
+        status.textContent = `Connected wallet ${from} is not the contract owner ${prep.owner}; switch accounts.`;
+        return;
+      }
+      const chainHex = '0x' + Number(prep.chainId).toString(16);
+      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* user may already be on chain */ }
+      for (const tx of prep.txs) {
+        status.textContent = `Signing ${tx.action}…`;
+        const hash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from, to: tx.to, data: tx.data, value: tx.value }] });
+        status.textContent = `${tx.action} submitted: ${hash}`;
+      }
+      status.textContent += ' — waiting for confirmation, re-checking…';
+      setTimeout(loadPipeline, 15000);
+    } catch (e) {
+      status.textContent = 'Signing failed: ' + (e.message || e);
     }
   }
 

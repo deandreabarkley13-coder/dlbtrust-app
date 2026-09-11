@@ -636,6 +636,103 @@ class SpritzTreasuryLegEngine {
     };
   }
 
+  /**
+   * Unsigned owner transactions that allow-list the payout wallet on the policy
+   * contract. The contract owner (trustee governance wallet) signs them; the
+   * server wallet cannot, so nothing is submitted here.
+   */
+  static async prepareAllowlistPayoutWallet({ address, maxPerDistributionUsd, periodCapUsd, periodSeconds } = {}) {
+    const cfg = this.config();
+    const wallet = address || cfg.payoutWallet;
+    const toUnits = (usd) => (usd === undefined || usd === null || usd === '' ? '0' : usdToUnits(usd).toString());
+    const prepared = await TrustPolicyEngine.prepareBeneficiaryAllowlist({
+      beneficiary: wallet,
+      token: cfg.settlementToken || undefined,
+      maxPerDistribution: toUnits(maxPerDistributionUsd),
+      periodCap: toUnits(periodCapUsd),
+      periodSeconds: Number(periodSeconds) || 0,
+    });
+    const status = await this.payoutWalletStatus({ address: wallet });
+    return {
+      ...prepared,
+      beneficiary: wallet,
+      token: cfg.settlementToken,
+      alreadyAllowed: Boolean(status.policy && status.policy.allowed),
+      limits: { maxPerDistributionUsd: num(maxPerDistributionUsd), periodCapUsd: num(periodCapUsd), periodSeconds: Number(periodSeconds) || 0 },
+      instructions: prepared.serverWalletIsOwner
+        ? 'Server wallet owns the contract: POST /api/dapp/trust-policy/beneficiaries submits directly.'
+        : `Sign and broadcast each tx from ${prepared.owner} (contract owner) on chain ${prepared.chainId}, then re-check /spritz/wallet/status.`,
+    };
+  }
+
+  /** Staged/executed Spritz payouts recorded against allocation buckets. */
+  static async listPayouts(opts = {}) {
+    return TrustAllocationEngine.listPayouts(opts);
+  }
+
+  /** Funding legs (ERP reserve -> USDC -> policy contract) recorded as canonical money requests. */
+  static async listFundingLegs({ limit = 50 } = {}) {
+    const cfg = this.config();
+    const rows = await this._requestsToContract(cfg.policyAddress);
+    return rows.slice(0, Math.min(Math.max(Number(limit) || 50, 1), 200)).map((r) => ({
+      requestId: r.id,
+      proposalId: r.proposal_id,
+      sourceType: r.source_type,
+      sourceAccount: r.source_account,
+      sourceToken: r.source_token,
+      sourceModule: r.source_module,
+      amount: r.amount,
+      route: r.route,
+      status: r.status,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * One live snapshot of the Treasury-Core ERP -> policy contract -> Spritz
+   * pipeline: funding route, canonical buckets, policy contract, payout wallet,
+   * settlement destinations, and the most recent legs in each direction.
+   */
+  static async pipeline({ limit = 20 } = {}) {
+    const cfg = this.config();
+    const settle = (p) => p.then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
+    const [readiness, policy, payoutWallet, buckets, funding, payouts] = await Promise.all([
+      settle(this.readiness()),
+      settle(TrustPolicyEngine.status()),
+      settle(this.payoutWalletStatus()),
+      settle(TrustAllocationEngine.summaries()),
+      settle(this.listFundingLegs({ limit })),
+      settle(this.listPayouts({ limit })),
+    ]);
+    const errors = [];
+    const pick = (label, r, fallback = null) => { if (!r.ok) errors.push(`${label}: ${r.error}`); return r.ok ? r.value : fallback; };
+    const rd = pick('treasury leg', readiness);
+    const pw = pick('payout wallet', payoutWallet);
+    const pol = pick('policy contract', policy);
+    const stages = [
+      { key: 'erp', label: 'Treasury-Core ERP (canonical GL)', ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false)), detail: rd ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}` : null },
+      { key: 'policy', label: 'Trust distribution policy (on-chain)', ok: Boolean(pol && pol.live && !pol.paused), detail: pol ? `${cfg.policyAddress} chain ${cfg.chainId}${pol.paused ? ' PAUSED' : ''}` : null },
+      { key: 'payoutWallet', label: 'Spritz payout wallet (Coinbase)', ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
+      { key: 'spritz', label: 'Spritz off-ramp / Bill Pay', ok: Boolean(rd && rd.settlementDestinations && rd.settlementDestinations.default), detail: rd && rd.settlementDestinations ? `bank ${rd.settlementDestinations.bank}, bills ${rd.settlementDestinations.bills}` : null },
+    ];
+    return {
+      asOf: new Date().toISOString(),
+      ready: stages.every((s) => s.ok) && errors.length === 0,
+      stages,
+      errors,
+      config: {
+        policyContract: cfg.policyAddress, chainId: cfg.chainId, network: cfg.network, settlementToken: cfg.settlementToken,
+        payoutWallet: cfg.payoutWallet, payoutWalletSigner: cfg.payoutWalletSigner, gl: cfg.gl, fundingSource: cfg.fundingSource,
+      },
+      readiness: rd,
+      policy: pol,
+      payoutWallet: pw,
+      buckets: pick('allocation buckets', buckets, []),
+      fundingLegs: pick('funding legs', funding, []),
+      payouts: pick('payouts', payouts, []),
+    };
+  }
+
   // ─── helpers ───────────────────────────────────────────────────────────────
 
   /**

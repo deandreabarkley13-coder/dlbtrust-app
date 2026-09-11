@@ -361,6 +361,33 @@ class TrustAllocationEngine {
     return { reference, bucket, status: 'staged' };
   }
 
+  /** Staged and executed payouts, newest first. */
+  static async listPayouts({ bucket, status, limit = 50 } = {}) {
+    await ensureTable();
+    if (!pool) return [];
+    const conds = [];
+    const params = [];
+    if (bucket) { conds.push(`bucket = $${params.length + 1}`); params.push(bucket); }
+    if (status) { conds.push(`status = $${params.length + 1}`); params.push(status); }
+    params.push(Math.min(Math.max(Number(limit) || 50, 1), 500));
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const { rows } = await pool.query(
+      `SELECT * FROM ${TABLE} ${where} ORDER BY created_at DESC LIMIT $${params.length}`, params
+    );
+    return rows.map((r) => ({
+      reference: r.reference,
+      bucket: r.bucket,
+      payoutWallet: r.payout_wallet,
+      purpose: r.purpose,
+      amountUsd: Number(r.amount_usd),
+      distributionId: r.distribution_id,
+      spritzQuoteId: r.spritz_quote_id,
+      status: r.status,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
   static async markExecuted(reference) {
     await ensureTable();
     if (!pool || !reference) return null;
