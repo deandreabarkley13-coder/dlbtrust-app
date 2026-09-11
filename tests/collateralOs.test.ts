@@ -64,7 +64,7 @@ function store() {
       });
       return { rows: [] };
     }
-    if (/^SELECT id, status, amount FROM canonical_money_requests/.test(text)) return { rows: t.canonical_money_requests.filter(r => r.id === params[0]) };
+    if (/^SELECT id, status, amount, route FROM canonical_money_requests/.test(text)) return { rows: t.canonical_money_requests.filter(r => r.id === params[0]) };
     if ((m = /^SELECT \* FROM (\w+) WHERE (\w+) = \$1( ORDER BY .+)?$/.exec(text))) return { rows: t[m[1]].filter(r => r[m![2]] === params[0]) };
     if ((m = /^SELECT \* FROM (\w+)( WHERE (.+?))? ORDER BY .+ LIMIT \d+$/.exec(text))) {
       let rows = [...t[m[1]]];

@@ -619,6 +619,10 @@ const CollateralOsEngine = {
   /**
    * Draws whose ERP request completed become `funded` and are journaled once:
    *   DR USDC treasury (policy contract) / CR Collateral facility (liability).
+   * When the request ran the Treasury-Core `erp_treasury` route the ERP cash
+   * account was already credited and USDC treasury debited by
+   * CanonicalFundingSource, so the facility entry instead restores that cash:
+   *   DR bucket ERP cash / CR Collateral facility — net effect identical.
    */
   async reconcile({ postedBy } = {}) {
     await this.ensureTables();
@@ -629,7 +633,7 @@ const CollateralOsEngine = {
       if (!d.requestId) { results.push({ drawId: d.drawId, status: d.status, note: 'no ERP request id' }); continue; }
       let request = null;
       try {
-        const r = await pool.query(`SELECT id, status, amount FROM canonical_money_requests WHERE id = $1`, [d.requestId]);
+        const r = await pool.query(`SELECT id, status, amount, route FROM canonical_money_requests WHERE id = $1`, [d.requestId]);
         request = r.rows[0] || null;
       } catch { request = null; }
       if (!request) { results.push({ drawId: d.drawId, status: d.status, requestId: d.requestId, note: 'ERP request not found' }); continue; }
@@ -640,12 +644,16 @@ const CollateralOsEngine = {
         continue;
       }
       if (request.status !== 'completed') { results.push({ drawId: d.drawId, status: d.status, requestId: d.requestId, requestStatus: request.status }); continue; }
+      const route = typeof request.route === 'string' ? JSON.parse(request.route || '{}') : (request.route || {});
+      const erpCash = route.action === 'erp_treasury' && route.glAccounts ? route.glAccounts.cash : null;
       const journal = await book({
         referenceType: 'collateral_draw',
         referenceId: d.drawId,
         description: `Collateral draw ${d.amountUsd.toFixed(2)} USDC to policy contract ${d.destination} secured by ${d.positionId || 'facility'} [${d.reference}]`,
         lines: [
-          { accountCode: cfg.gl.treasuryAccount, debitAmount: d.amountUsd, creditAmount: 0, description: `USDC to policy contract ${d.destination}` },
+          erpCash
+            ? { accountCode: erpCash, debitAmount: d.amountUsd, creditAmount: 0, description: `Restore ${d.bucket} ERP cash ${erpCash} advanced to policy contract ${d.destination} (facility-financed)` }
+            : { accountCode: cfg.gl.treasuryAccount, debitAmount: d.amountUsd, creditAmount: 0, description: `USDC to policy contract ${d.destination}` },
           { accountCode: cfg.gl.facilityAccount, debitAmount: 0, creditAmount: d.amountUsd, description: `Collateralized facility draw ${d.drawId}` },
         ],
         postedBy,

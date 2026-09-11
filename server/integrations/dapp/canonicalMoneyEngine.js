@@ -1,11 +1,22 @@
 'use strict';
 
 const { query } = require('../bonds/pgPool');
-let StablecoinDexEngine, DexSwapEngine, PtcStablecoinEngine, CanonicalLiquidityEngine;
+let StablecoinDexEngine, DexSwapEngine, PtcStablecoinEngine, CanonicalLiquidityEngine, CanonicalFundingSource, ThirdwebServerWalletEngine;
 try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) { /* optional */ }
+try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { /* optional */ }
+try { ({ ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine')); } catch (e) { /* optional */ }
 try { ({ DexSwapEngine } = require('./dexSwapEngine')); } catch (e) { /* optional */ }
 try { ({ PtcStablecoinEngine } = require('./ptcStablecoinEngine')); } catch (e) { /* optional */ }
 try { ({ CanonicalLiquidityEngine } = require('./canonicalLiquidityEngine')); } catch (e) { /* optional */ }
+let dappConfig = null;
+try { ({ getConfig: dappConfig } = require('./config')); } catch (e) { /* optional */ }
+
+const CANONICAL_SOURCE_TYPES = new Set(['canonical', 'erp', 'core_banking_canonical']);
+const USDC_DECIMALS = 6;
+
+function usdcAddress() {
+  return dappConfig ? dappConfig().usdcAddress || null : null;
+}
 
 function canonicalConsensusEngine() {
   const { CanonicalConsensusEngine } = require('./canonicalConsensusEngine');
@@ -19,6 +30,10 @@ function id(prefix = 'CM') { return `${prefix}-${Date.now()}-${Math.random().toS
  * CanonicalMoneyEngine — turn trust assets and income into canonical spendable stablecoins.
  *
  * Supported sources:
+ *  - canonical: the Treasury-Core banking ERP (Fineract GL). The liquidity is
+ *    the treasury's own USDC: CanonicalFundingSource moves the GL (Dr USDC
+ *    treasury / Cr source cash account, both books) and the treasury wallet
+ *    deposits USDC into the recipient policy contract. No DEX pool.
  *  - ledger sources (cash, treasury, trust, bond, fixed_income/bond_interest, fineract, sub_ledger)
  *  - DLB-PTCUSD stablecoin
  *  - module reserve tokens (DLB-PRB, DLB-TREASURY, etc.)
@@ -119,6 +134,23 @@ class CanonicalMoneyEngine {
   }
 
   static async _pickRoute({ sourceType, sourceAccountId, sourceToken, sourceModule, targetAsset, poolAddress }) {
+    // Treasury-Core ERP GL -> treasury USDC -> policy contract (no pool)
+    if (sourceType && CANONICAL_SOURCE_TYPES.has(String(sourceType).toLowerCase())) {
+      if (String(targetAsset || 'USDC').toUpperCase() !== 'USDC') throw new Error('canonical ERP source funds USDC only');
+      if (!sourceAccountId) throw new Error('sourceAccountId (ERP GL cash account code) required for canonical source');
+      const erp = CanonicalFundingSource ? CanonicalFundingSource.getConfig() : null;
+      return {
+        action: 'erp_treasury',
+        sourceType: 'canonical',
+        sourceAccountId: String(sourceAccountId),
+        sourceModule: sourceModule || null,
+        targetAsset: 'USDC',
+        tokenOut: usdcAddress(),
+        glAccounts: erp ? { cash: String(sourceAccountId), asset: erp.assetAccountCode } : null,
+        live: Boolean(erp && erp.live),
+        note: 'Treasury-Core ERP: Dr USDC treasury / Cr ERP cash account, treasury wallet deposits USDC to the policy contract',
+      };
+    }
     // Ledger / source-of-funds -> DLBUSD -> canonical stablecoin
     if (sourceType) return { action: 'mint_and_swap', sourceType, sourceAccountId, targetAsset, note: 'Mint DLBUSD from ledger and swap on DEX' };
     const ptcAddress = process.env.DLB_PTCUSD_ADDRESS || '0xb01e6280ffe6faac679a17b029df8e065e8d0002';
@@ -154,6 +186,35 @@ class CanonicalMoneyEngine {
     if (!StablecoinDexEngine && !DexSwapEngine && !PtcStablecoinEngine) throw new Error('No money conversion engines available');
     const { amount, targetAsset, recipient, createPoolIfMissing, poolSeedUsdc, poolSeedDlbusd } = payload;
     switch (route.action) {
+      case 'erp_treasury': {
+        if (!CanonicalFundingSource) throw new Error('CanonicalFundingSource not available');
+        const funding = await CanonicalFundingSource.commit({
+          amountUsd: amount,
+          reference: payload.requestId,
+          referenceType: 'canonical_money',
+          memo: `ERP ${route.sourceAccountId} -> ${amount} USDC${recipient ? ' to ' + recipient : ''}`,
+          cashAccountCode: route.sourceAccountId,
+          postedBy: 'canonical-money-engine',
+          purpose: route.sourceModule ? `${route.sourceModule} funding` : 'treasury funding',
+        });
+        let deposit = null;
+        if (recipient) {
+          if (!ThirdwebServerWalletEngine) throw new Error('ThirdwebServerWalletEngine not available');
+          const policy = String(process.env.TRUST_POLICY_ADDRESS || '').toLowerCase();
+          if (!policy || policy !== String(recipient).toLowerCase()) {
+            throw new Error(`canonical ERP funding deposits only to the policy contract ${policy || '(TRUST_POLICY_ADDRESS unset)'}, not ${recipient}`);
+          }
+          deposit = await ThirdwebServerWalletEngine.fundPolicy({
+            quantity: BigInt(Math.round(Number(amount) * 10 ** USDC_DECIMALS)),
+            tokenAddress: route.tokenOut || undefined,
+            reference: payload.requestId,
+            memo: `ERP ${route.sourceAccountId} funding`,
+            amountUsd: amount,
+          });
+        }
+        const shadow = Boolean(funding.shadow) || Boolean(deposit && deposit.shadow);
+        return { action: route.action, status: shadow ? 'shadow' : 'completed', shadow, funding, deposit, journaledBy: 'canonical_funding_source' };
+      }
       case 'mint_and_swap':
         if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
         return await StablecoinDexEngine.depositAndSwap({

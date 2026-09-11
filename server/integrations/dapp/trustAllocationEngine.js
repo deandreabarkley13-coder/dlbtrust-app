@@ -9,8 +9,14 @@
  *                    -> trustees, purposes operating/trustee_fee
  *
  * A bucket decides three things for a Spritz payout or an ERP funding leg:
- * which ERP source backs it (the module token deployed on Base), which
- * wallets may be paid, and which policy purposes are valid. Amounts staged
+ * which ERP source backs it, which wallets may be paid, and which policy
+ * purposes are valid. The liquidity lives in the Treasury-Core banking ERP
+ * (Fineract GL): when a bucket's GL cash account is configured
+ * (COUPON_INCOME_GL_ACCOUNT_CODE / TRUST_OPERATING_GL_ACCOUNT_CODE) the bucket
+ * funds as the `canonical` source of that account, so a draw is a GL move
+ * (Dr USDC treasury / Cr bucket cash) plus a USDC deposit from the treasury
+ * wallet — no DEX pool. Without a GL code the bucket falls back to its module
+ * token on Base and needs a canonical liquidity pool to swap through. Amounts staged
  * against a bucket are tracked so its ERP headroom (income recognised minus
  * payouts already staged/executed) is never exceeded. Headroom is an ERP
  * accounting figure: the policy contract still needs real USDC (see
@@ -40,6 +46,7 @@ const BUCKETS = {
     payeeRole: 'beneficiary',
     purposes: ['distribution', 'medical', 'education', 'housing'],
     erpSource: 'coupon_payments',
+    glEnv: 'COUPON_INCOME_GL_ACCOUNT_CODE',
   },
   trust_operating: {
     key: 'trust_operating',
@@ -49,14 +56,18 @@ const BUCKETS = {
     payeeRole: 'trustee',
     purposes: ['operating', 'trustee_fee'],
     erpSource: 'treasury_module',
+    glEnv: 'TRUST_OPERATING_GL_ACCOUNT_CODE',
   },
 };
+
+const CANONICAL_SOURCE_TYPES = new Set(['canonical', 'erp', 'core_banking_canonical']);
 
 const TABLE = 'trust_allocation_payouts';
 let tableReady = false;
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function lower(a) { return String(a || '').toLowerCase(); }
+function isCanonical(sourceType) { return CANONICAL_SOURCE_TYPES.has(lower(sourceType)); }
 
 function httpError(status, message, code) {
   const err = new Error(message);
@@ -124,18 +135,31 @@ class TrustAllocationEngine {
     return policyPayees().filter((p) => p.role === b.payeeRole);
   }
 
-  /** ERP funding source for a bucket: the module token deployed on Base, else the module ledger. */
+  /** Treasury-Core ERP GL cash account a bucket draws from, or null. */
+  static glAccountCode(bucketKey) {
+    return str(this.bucket(bucketKey).glEnv) || null;
+  }
+
+  /**
+   * ERP funding source for a bucket: the bucket's canonical GL account when
+   * configured, else the module token deployed on Base, else the module ledger.
+   */
   static fundingSource(bucketKey) {
     const b = this.bucket(bucketKey);
+    const gl = this.glAccountCode(b.key);
+    if (gl) return { sourceType: 'canonical', sourceAccountId: gl, sourceModule: b.sourceModule };
     const token = str(b.tokenEnv);
     return token ? { sourceToken: token, sourceModule: b.sourceModule } : { sourceModule: b.sourceModule };
   }
 
   /** The bucket an ERP funding source belongs to, or null when it belongs to none. */
-  static bucketForSource({ sourceToken, sourceModule } = {}) {
+  static bucketForSource({ sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
     const token = lower(sourceToken);
     const mod = String(sourceModule || '').trim();
-    return this.buckets().find((b) => (token && lower(str(b.tokenEnv)) === token) || (mod && b.sourceModule === mod)) || null;
+    const gl = isCanonical(sourceType) ? String(sourceAccountId || '').trim() : '';
+    return this.buckets().find((b) => (token && lower(str(b.tokenEnv)) === token)
+      || (mod && b.sourceModule === mod)
+      || (gl && str(b.glEnv) && str(b.glEnv) === gl)) || null;
   }
 
   /**
@@ -143,24 +167,36 @@ class TrustAllocationEngine {
    * one bucket, and a bucket may only be funded from its own source. Coupon
    * income (DLB-PRB / bond_portfolio) never funds Trust Operating and the
    * treasury module never funds beneficiary support. Returns the resolved
-   * bucket and source; ledger sources (sourceType+sourceAccountId) belong to
-   * no bucket and are refused whenever a bucket is in play.
+   * bucket and source. The canonical ERP GL account of a bucket is its own
+   * source; any other ledger source (sourceType+sourceAccountId) belongs to no
+   * bucket and is refused whenever a bucket is in play.
    */
   static assertFundingSource({ bucket, sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
     const explicit = bucket ? this.bucket(bucket) : null;
-    const owner = this.bucketForSource({ sourceToken, sourceModule });
+    const owner = this.bucketForSource({ sourceType, sourceAccountId, sourceToken, sourceModule });
     const tokenOwner = sourceToken ? this.bucketForSource({ sourceToken }) : null;
     const moduleOwner = sourceModule ? this.bucketForSource({ sourceModule }) : null;
+    const glOwner = isCanonical(sourceType) ? this.bucketForSource({ sourceType, sourceAccountId }) : null;
     if (tokenOwner && moduleOwner && tokenOwner.key !== moduleOwner.key) {
       throw httpError(409, `sourceToken belongs to ${tokenOwner.key} but sourceModule ${sourceModule} belongs to ${moduleOwner.key}`, 'ALLOCATION_SOURCE_MISMATCH');
+    }
+    if (glOwner && moduleOwner && glOwner.key !== moduleOwner.key) {
+      throw httpError(409, `canonical GL account ${sourceAccountId} belongs to ${glOwner.key} but sourceModule ${sourceModule} belongs to ${moduleOwner.key}`, 'ALLOCATION_SOURCE_MISMATCH');
     }
     const b = explicit || owner;
     if (!b) {
       if (sourceType || sourceToken || sourceModule) return { bucket: null, source: { sourceType, sourceAccountId, sourceToken, sourceModule } };
       throw httpError(400, `bucket required: ${Object.keys(BUCKETS).join(' or ')}`, 'ALLOCATION_BUCKET_REQUIRED');
     }
-    if (sourceType || sourceAccountId) {
-      throw httpError(409, `${b.key} is funded only from its allocated source (${b.sourceModule}); ledger source ${sourceType || ''}${sourceAccountId ? ':' + sourceAccountId : ''} is not segregated`, 'ALLOCATION_SOURCE_MISMATCH');
+    if (isCanonical(sourceType)) {
+      if (glOwner && glOwner.key !== b.key) {
+        throw httpError(409, `${b.key} cannot be funded from ${glOwner.key} GL account ${sourceAccountId}; ${BUCKETS.coupon_income.label} and ${BUCKETS.trust_operating.label} must not mix`, 'ALLOCATION_SOURCE_MISMATCH');
+      }
+      if (!glOwner) {
+        throw httpError(409, `canonical GL account ${sourceAccountId || '(none)'} is not the allocated ERP account of ${b.key} (${b.glEnv}${str(b.glEnv) ? '=' + str(b.glEnv) : ' not configured'})`, 'ALLOCATION_SOURCE_MISMATCH');
+      }
+    } else if (sourceType || sourceAccountId) {
+      throw httpError(409, `${b.key} is funded only from its allocated source (${str(b.glEnv) ? 'canonical GL ' + str(b.glEnv) : b.sourceModule}); ledger source ${sourceType || ''}${sourceAccountId ? ':' + sourceAccountId : ''} is not segregated`, 'ALLOCATION_SOURCE_MISMATCH');
     }
     if (owner && owner.key !== b.key) {
       throw httpError(409, `${b.key} cannot be funded from ${owner.key} source (${sourceToken || sourceModule}); ${BUCKETS.coupon_income.label} and ${BUCKETS.trust_operating.label} must not mix`, 'ALLOCATION_SOURCE_MISMATCH');
@@ -184,20 +220,24 @@ class TrustAllocationEngine {
         label: b.label,
         erpSource: b.erpSource,
         sourceModule: b.sourceModule,
+        sourceType: source.sourceType || null,
+        glAccountCode: source.sourceType ? source.sourceAccountId : null,
+        glEnv: b.glEnv,
         sourceToken: source.sourceToken || null,
         tokenEnv: b.tokenEnv,
         payeeRole: b.payeeRole,
         purposes: b.purposes,
-        configured: Boolean(source.sourceToken),
+        liquidity: source.sourceType ? 'treasury_core_erp' : (source.sourceToken ? 'dex_pool' : 'module_ledger'),
+        configured: Boolean(source.sourceType || source.sourceToken),
         executable: null,
         route: null,
-        issue: source.sourceToken ? null : `${b.tokenEnv} not configured; ${b.key} falls back to the ${b.sourceModule} ledger`,
+        issue: source.sourceType || source.sourceToken ? null : `${b.glEnv} and ${b.tokenEnv} not configured; ${b.key} falls back to the ${b.sourceModule} ledger`,
       };
       if (typeof quote === 'function') {
         try {
           const route = await quote({ ...source, amount: '1', targetAsset: 'USDC' });
           entry.route = route;
-          entry.executable = route.action === 'mint_and_swap' || Boolean(route.poolAddress);
+          entry.executable = TrustAllocationEngine.routeExecutable(route);
           if (!entry.executable) entry.issue = route.note || `no canonical liquidity route for ${b.key}`;
         } catch (e) {
           entry.executable = false;
@@ -206,6 +246,12 @@ class TrustAllocationEngine {
       }
       return entry;
     }));
+  }
+
+  /** Whether a CanonicalMoneyEngine route can run now (ERP routes need no pool). */
+  static routeExecutable(route) {
+    if (!route) return false;
+    return route.action === 'erp_treasury' || route.action === 'mint_and_swap' || Boolean(route.poolAddress);
   }
 
   /** Income recognised in the ERP for a bucket, in USD. */
@@ -239,6 +285,7 @@ class TrustAllocationEngine {
       label: b.label,
       sourceModule: b.sourceModule,
       sourceToken: str(b.tokenEnv) || null,
+      glAccountCode: this.glAccountCode(b.key),
       purposes: b.purposes,
       payees: this.payees(b.key),
       recognisedUsd: +recognised.toFixed(2),

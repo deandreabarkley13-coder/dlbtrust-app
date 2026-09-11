@@ -179,7 +179,7 @@ class SpritzTreasuryLegEngine {
       else if (s.executable === false) issues.push(`${s.bucket} funding route: ${s.issue}`);
     }
     const defaultOwner = TrustAllocationEngine.bucketForSource(fs);
-    if (fs.sourceType || ((fs.sourceToken || fs.sourceModule) && !defaultOwner)) {
+    if ((fs.sourceType || fs.sourceToken || fs.sourceModule) && !defaultOwner) {
       issues.push('SPRITZ_FUNDING_SOURCE_* default is not a segregated bucket source; bucket-tagged funding refuses it');
     }
 
@@ -200,7 +200,7 @@ class SpritzTreasuryLegEngine {
     if (CanonicalMoneyEngine && (fs.sourceType || fs.sourceToken || fs.sourceModule)) {
       try {
         fundingRoute = await CanonicalMoneyEngine.quote({ ...fs, amount: '1', targetAsset: 'USDC' });
-        if (fundingRoute.action !== 'mint_and_swap' && !fundingRoute.poolAddress) issues.push(fundingRoute.note || 'No canonical liquidity pool for the ERP funding route');
+        if (!TrustAllocationEngine.routeExecutable(fundingRoute)) issues.push(fundingRoute.note || 'No canonical liquidity pool for the ERP funding route');
       } catch (e) {
         issues.push(`ERP funding route: ${e.message}`);
       }
@@ -241,7 +241,7 @@ class SpritzTreasuryLegEngine {
       chainId: cfg.chainId,
       amountUsd: amount.toFixed(2),
       route,
-      executable: route.action === 'mint_and_swap' || Boolean(route.poolAddress),
+      executable: TrustAllocationEngine.routeExecutable(route),
     };
   }
 
@@ -291,7 +291,9 @@ class SpritzTreasuryLegEngine {
 
   /**
    * ERP funding requests to the policy contract vs. its on-chain USDC balance.
-   * Completed requests are journaled (Dr USDC treasury / Cr ERP reserve) once.
+   * Completed requests are journaled (Dr USDC treasury / Cr ERP reserve) once;
+   * `erp_treasury` requests are skipped because CanonicalFundingSource already
+   * posted that entry to both books when the proposal executed.
    */
   static async reconcileFunding({ postedBy } = {}) {
     const cfg = this.config();
@@ -303,6 +305,11 @@ class SpritzTreasuryLegEngine {
     const journals = [];
     for (const r of completed) {
       const amount = num(r.amount);
+      const route = typeof r.route === 'string' ? JSON.parse(r.route || '{}') : (r.route || {});
+      if (route.action === 'erp_treasury') {
+        journals.push({ requestId: r.id, status: 'booked', booked: true, bookedBy: 'canonical_funding_source', glAccounts: route.glAccounts || null });
+        continue;
+      }
       journals.push({
         requestId: r.id,
         ...(await book({
@@ -478,7 +485,7 @@ class SpritzTreasuryLegEngine {
     if (!pool || !pool.query || !policyAddress) return [];
     try {
       const rows = await pool.query(
-        `SELECT r.id, r.proposal_id, r.source_type, r.source_token, r.source_module, r.amount, r.status, r.created_at
+        `SELECT r.id, r.proposal_id, r.source_type, r.source_account, r.source_token, r.source_module, r.amount, r.route, r.status, r.created_at
            FROM canonical_money_requests r
            JOIN canonical_proposals p ON p.id = r.proposal_id
           WHERE p.category = 'canonical_money' AND LOWER(p.payload->>'recipient') = $1

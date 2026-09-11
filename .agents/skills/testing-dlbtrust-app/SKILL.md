@@ -5,6 +5,50 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Collateral OS (backend API and CLI)
+
+- For source-segregation testing, set `DLB_PRB_TOKEN_ADDRESS` and
+  `DLB_TREASURY_TOKEN_ADDRESS` to the intended test contracts in both server and
+  CLI environments; unset generic `SPRITZ_FUNDING_SOURCE_*` defaults. Confirm
+  `/api/finops/spritz/treasury/funding-sources` reports the two configured buckets.
+- Check rejection HTTP status and literal error `code` separately for Collateral
+  draw, Spritz fund, and CLI interfaces; a matching message alone is insufficient.
+  Compare `canonical_money_requests` row counts before/after and check
+  `to_regclass('public.canonical_proposals')`; the proposal table may not exist
+  until first use. Avoid initializing it solely for a no-side-effects assertion.
+- `configured:true` funding sources do not prove executable routes. Fresh local
+  databases may lack `canonical_liquidity_pools`; report that readiness limitation
+  separately from bucket/source configuration.
+- Routes live at `/api/collateral-os`; no dedicated frontend is required. Use
+  the standard local startup and `COLLATERAL_CUSTODY_WALLET` with a disposable
+  test address when testing unverified, par-valued collateral without providers.
+  Do not describe this as proof of custody or live funding.
+- Readiness and facility CLI commands are `npm run trust:collateral -- readiness`
+  and `npm run trust:collateral -- facility`. Supply the same `DATABASE_URL`
+  and collateral configuration as the server.
+- Tokenization and collateral tables are created lazily. An absent `bond_tokens`
+  table before the first token lookup can be normal. Inspect existing tokens
+  before choosing a test fixture; do not pledge production holdings blindly.
+- Draw requests require both `amountUsd` and a unique `reference`; omitting
+  the reference returns validation failure before the insufficient-capacity
+  check. Keep `autoApprove:false`. Missing `TRUST_POLICY_ADDRESS` can return
+  HTTP 409 `TRUST_POLICY_NOT_CONFIGURED` before any funding proposal exists.
+- Browser-native JSON GET views support `?adminToken=...` for the local
+  disposable admin token. Enable Chrome's **Pretty-print** checkbox; zoom
+  with Ctrl+= for readable evidence. Use browser-context fetch for authenticated
+  API mutations, never extracted browser cookies in shell requests.
+- Cleanup an unencumbered fixture through `POST /positions/:id/release`;
+  confirm facility capacity returns to baseline and the `pledged`/`released`
+  events persist. A released position retains historical value but contributes
+  zero to the active facility.
+
+### Devin Secrets Needed
+
+- None for local par-valued, unverified pledge/release testing beyond the
+  standard local database/admin setup. Live funding needs `SPRITZ_API_KEY`,
+  policy address, and ERP funding source configuration; verified holdings need
+  a configured thirdweb server wallet. Check `/readiness` before live tests.
+
 ## Bond Redemption OS (backend and CLI)
 
 - Routes mount at `/api/bond-redemption-os`; the DataBridge module summary is

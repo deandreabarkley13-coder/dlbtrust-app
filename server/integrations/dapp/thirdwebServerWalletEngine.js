@@ -538,6 +538,77 @@ class ThirdwebServerWalletEngine {
     return record;
   }
 
+  /**
+   * Deposit USDC from the treasury wallet into TrustDistributionPolicy. This
+   * is the ERP -> policy funding leg (Treasury-Core GL already debited by
+   * CanonicalFundingSource), not a distribution: value only reaches a payee
+   * through the contract's maker/checker flow, so the enforced-policy guard
+   * and the per-role distribution limits do not apply. Refuses any recipient
+   * other than TRUST_POLICY_ADDRESS. Shadow unless THIRDWEB_SERVER_WALLET_LIVE.
+   */
+  static async fundPolicy({ quantity, tokenAddress, chainId, reference = null, memo = null, amountUsd } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('THIRDWEB_SERVER_WALLET_ENABLED=false');
+    const policyAddress = str('TRUST_POLICY_ADDRESS');
+    if (!policyAddress) throw Object.assign(new Error('TRUST_POLICY_ADDRESS not configured'), { status: 409, code: 'TRUST_POLICY_NOT_CONFIGURED' });
+    const token = tokenAddress || getBaseConfig().usdcAddress;
+    if (!isAddress(token)) throw new Error('tokenAddress invalid');
+    const amount = toBigInt(quantity);
+    if (amount <= 0n) throw new Error('quantity must be positive');
+    const chain = Number(chainId || cfg.chainId);
+    if (cfg.maxQuantityPerSend > 0n && amount > cfg.maxQuantityPerSend) {
+      throw new Error(`quantity ${amount} exceeds THIRDWEB_SERVER_WALLET_MAX_QUANTITY (${cfg.maxQuantityPerSend})`);
+    }
+    const from = cfg.address ? checksum(cfg.address) : (cfg.live ? await this.resolveAddress() : null);
+    if (cfg.live && cfg.fundingPreflight) {
+      await this.assertFunded({ chainId: chain, tokenAddress: token, quantity: amount });
+    }
+    const record = {
+      id: identifier(),
+      provider: 'thirdweb-server-wallet',
+      chainId: chain,
+      from,
+      to: checksum(policyAddress),
+      tokenAddress: checksum(token),
+      asset: 'erc20',
+      quantity: amount.toString(),
+      shadow: !cfg.live,
+      status: cfg.live ? 'submitted' : 'shadow',
+      transactionId: null,
+      transactionHash: null,
+      reference,
+      memo,
+      requesterRole: 'treasury',
+      amountUsd: amountUsd === undefined || amountUsd === null ? null : Number(amountUsd),
+      priceUsd: null,
+      priceSource: null,
+      purpose: 'policy_funding',
+      limitUsd: null,
+      error: null,
+    };
+    if (!cfg.live) {
+      record.reason = 'THIRDWEB_SERVER_WALLET_LIVE=false: policy funding recorded, nothing sent to thirdweb';
+      await this._persist(record).catch(() => undefined);
+      return record;
+    }
+    if (!cfg.secretKey) throw new Error('THIRDWEB_SECRET_KEY is required for a live transfer');
+    try {
+      const result = await this._request('POST', '/v1/wallets/send', {
+        from, chainId: chain, tokenAddress: record.tokenAddress,
+        recipients: [{ address: record.to, quantity: record.quantity }],
+      });
+      record.transactionId = (result.transactionIds || [])[0] || null;
+      if (!record.transactionId) throw new Error('thirdweb returned no transactionId');
+    } catch (e) {
+      record.status = 'failed';
+      record.error = e.message;
+      await this._persist(record).catch(() => undefined);
+      throw e;
+    }
+    await this._persist(record).catch(() => undefined);
+    return record;
+  }
+
   static async _persist(record) {
     memoryTransfers.push({ ...record });
     if (memoryTransfers.length > 500) memoryTransfers.splice(0, memoryTransfers.length - 500);
