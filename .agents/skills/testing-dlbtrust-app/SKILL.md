@@ -5,6 +5,33 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Trust control-plane readiness
+
+- Start the standard local server against local Postgres. For read-only provider
+  checks, bind the repo-scoped `SPRITZ_API_KEY` secret to the server process;
+  do not copy provider credentials from deployed infrastructure or put them in
+  plaintext env files.
+- Navigate browser-native JSON GETs with the disposable local `adminToken`
+  query parameter. Re-enable **Pretty-print** after each navigation if needed.
+  Chrome zoom uses `Ctrl+=` (not `Ctrl+plus`).
+- Compare `/api/trust/control-plane/readiness` (config evaluation) with
+  `?full=true` (provider and funding-route evaluation). A provider rejection
+  should remain a readiness issue rather than changing the endpoint to HTTP 500.
+  Compare the full issues with `/api/finops/spritz/treasury/readiness`; normalize
+  provider request IDs before comparing strings.
+- Search current frontend sources for control-plane consumers before promising
+  UI coverage. The related `/dashboard` **Overview → Refresh now** view reads
+  `/api/trust-ops/summary`; rendering that view alone does not prove the
+  control-plane endpoint response.
+- A populated key does not prove valid provider access. Report provider 401s,
+  missing policy contracts, and non-executable funding routes separately from
+  graceful readiness/error reporting. Never initiate payments to prove readiness.
+
+### Devin Secrets Needed
+
+- `SPRITZ_API_KEY` (repo-scoped): optional for provider-backed readiness reads;
+  absent credentials still permit config and degraded-readiness testing.
+
 ## Collateral OS (backend API and CLI)
 
 - For source-segregation testing, set `DLB_PRB_TOKEN_ADDRESS` and
