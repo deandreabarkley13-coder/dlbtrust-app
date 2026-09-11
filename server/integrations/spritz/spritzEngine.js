@@ -267,6 +267,50 @@ class SpritzEngine {
     return spritzRequest('GET', `/v1/off-ramps/${offRampId}`);
   }
 
+  /**
+   * Unsigned transaction bundle for paying a quote from an externally-held
+   * wallet (e.g. the trust's Coinbase Spritz wallet): the server never signs.
+   * Returns the ERC-20 approve (when the allowance is short) and the Spritz
+   * payment call, both as { to, data, value } for the wallet to sign in order.
+   */
+  static async prepareQuoteTransaction(quoteId, { senderAddress } = {}) {
+    if (!viem) throw new Error('viem not installed');
+    if (!senderAddress || !/^0x[a-fA-F0-9]{40}$/.test(senderAddress)) throw new Error('senderAddress required');
+    const cfg = getConfig();
+    const params = await this.getTransactionParams(quoteId, { senderAddress });
+    if (!params || params.type !== 'evm' || !params.contractAddress || !params.calldata) throw new Error('Invalid or non-EVM transaction params');
+    const { contractAddress, calldata, inputToken, requiredTokenInput } = params;
+    const required = BigInt(requiredTokenInput);
+
+    let balance = null;
+    let allowance = null;
+    try {
+      const publicClient = viem.createPublicClient({ chain: viemChain(cfg.chainId), transport: viem.http(cfg.rpcUrl) });
+      balance = await publicClient.readContract({ address: inputToken, abi: erc20Abi, functionName: 'balanceOf', args: [senderAddress] });
+      allowance = await publicClient.readContract({ address: inputToken, abi: erc20Abi, functionName: 'allowance', args: [senderAddress, contractAddress] });
+    } catch (e) {
+      balance = null; allowance = null;
+    }
+    const approve = allowance !== null && allowance >= required ? null : {
+      to: inputToken,
+      data: viem.encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [contractAddress, required] }),
+      value: '0',
+      description: `Approve Spritz ${contractAddress} to spend ${required.toString()} of ${inputToken}`,
+    };
+    return {
+      quoteId,
+      chainId: cfg.chainId,
+      senderAddress,
+      inputToken,
+      requiredTokenInput: required.toString(),
+      senderBalance: balance === null ? null : balance.toString(),
+      sufficientBalance: balance === null ? null : balance >= required,
+      approve,
+      payment: { to: contractAddress, data: calldata, value: '0', description: `Pay Spritz quote ${quoteId}` },
+      expiresAt: params.expiresAt || params.expiry || null,
+    };
+  }
+
   static async executeQuote(quoteId) {
     if (!viem || !privateKeyToAccount) throw new Error('viem not installed');
     const cfg = getConfig();

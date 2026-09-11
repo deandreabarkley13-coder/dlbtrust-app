@@ -13,6 +13,8 @@ process.env.THIRDWEB_SETTLEMENT_TOKEN = USDC;
 process.env.THIRDWEB_CHAIN_ID = '8453';
 process.env.DAPP_CHAIN_ID = '8453';
 process.env.DAPP_OPERATOR_ADDRESS = PAYOUT;
+process.env.DAPP_PRIVATE_KEY = '0x' + '11'.repeat(32);
+process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
 
 const pool = require('../server/integrations/bonds/pgPool');
 const { SpritzEngine } = require('../server/integrations/spritz/spritzEngine');
@@ -149,6 +151,50 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     await expect(SpritzBillPayEngine.pay({ runId: 'VPAY-3', spritzBillId: 'bill_chase', amountUsd: 250 })).rejects.toThrow(/Insufficient USDC/);
     expect(reverse).toHaveBeenCalledWith(expect.objectContaining({ journalEntryId: 'JE-ERP-2', amountUsd: 252.5, reference: 'VPAY-3' }));
     expect(saved.at(-1)).toMatchObject({ status: 'failed' });
+  });
+
+  it('live with the external Coinbase payout wallet: never signs, returns the unsigned approve+pay calldata, and confirm() books the wallet-sent tx', async () => {
+    const COINBASE = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
+    process.env.SPRITZ_BILLPAY_LIVE = 'true';
+    process.env.SPRITZ_PAYOUT_WALLET = COINBASE;
+    try {
+      expect(SpritzBillPayEngine.config()).toMatchObject({ payoutWallet: COINBASE, payoutWalletSigner: 'external', payoutWalletProvider: 'coinbase' });
+      vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({ shadow: false, committed: true, journalEntryId: 'JE-ERP-3' } as any);
+      const exec = vi.spyOn(SpritzEngine, 'executeQuote');
+      const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-GL-3' } as any);
+      stubSpritz((path) => {
+        if (path === '/v1/bills/') return BILLS;
+        if (path === '/v1/off-ramp-quotes/') return { id: 'q_cb', status: 'created', input: { amount: '252.50' }, output: { amount: '250.00' } };
+        if (path === '/v1/off-ramp-quotes/q_cb/transaction') return { type: 'evm', contractAddress: '0x' + '22'.repeat(20), calldata: '0xdeadbeef', inputToken: USDC, requiredTokenInput: '252500000' };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const out = await SpritzBillPayEngine.pay({ runId: 'VPAY-CB', vendorBillId: 'BILL-3', spritzBillId: 'bill_chase', amountUsd: 250, initiatedBy: 'ops' });
+
+      expect(exec).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ status: 'awaiting_signature', spritzQuoteId: 'q_cb', erpJournalEntryId: 'JE-ERP-3', payerWallet: COINBASE });
+      expect(out.unsignedTx).toMatchObject({ senderAddress: COINBASE, chainId: 8453, inputToken: USDC, requiredTokenInput: '252500000', payment: { to: '0x' + '22'.repeat(20), data: '0xdeadbeef' } });
+      expect(out.unsignedTx.approve).toMatchObject({ to: USDC });
+      expect(out.next).toMatch(/coinbase wallet/);
+      const txCall = calls.find(c => c.url.includes('/transaction'));
+      expect(JSON.parse(txCall!.init.body as string)).toMatchObject({ senderAddress: COINBASE });
+
+      const awaiting = saved.at(-1);
+      vi.spyOn(SpritzBillPayEngine, 'getPayment').mockResolvedValue(awaiting);
+      const txHash = '0x' + 'ab'.repeat(32);
+      const confirmed = await SpritzBillPayEngine.confirm({ paymentId: awaiting.payment_id, txHash, confirmedBy: 'trustee' });
+      expect(confirmed).toMatchObject({ status: 'settling', txHash, glJournalEntryId: 'JE-GL-3', paymentId: awaiting.payment_id, runId: 'VPAY-CB' });
+      expect(post.mock.calls[0][0].lines).toEqual([
+        expect.objectContaining({ accountCode: '5100', debitAmount: 250 }),
+        expect.objectContaining({ accountCode: '5300', debitAmount: 2.5 }),
+        expect.objectContaining({ accountCode: '1210', creditAmount: 252.5 }),
+      ]);
+
+      await expect(SpritzBillPayEngine.confirm({ paymentId: awaiting.payment_id, txHash: 'nope' })).rejects.toThrow(/txHash required/);
+    } finally {
+      process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
+    }
   });
 
   it('is idempotent on the payment run', async () => {

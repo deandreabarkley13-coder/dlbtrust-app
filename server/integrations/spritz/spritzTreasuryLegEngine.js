@@ -34,9 +34,36 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 let CanonicalFundingSource;
 try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { CanonicalFundingSource = null; }
+let ExternalWalletEngine;
+try { ({ ExternalWalletEngine } = require('../dapp/externalWalletEngine')); } catch (e) { ExternalWalletEngine = null; }
+let viem, viemChains;
+try { viem = require('viem'); viemChains = require('viem/chains'); } catch (e) { viem = null; viemChains = null; }
+
+const ERC20_BALANCE_ABI = [
+  { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+];
+
+function viemChain(chainId) {
+  if (!viemChains) return undefined;
+  return Object.values(viemChains).find(c => c && typeof c === 'object' && c.id === Number(chainId));
+}
 
 const USDC_DECIMALS = 6;
 const DEFAULT_SETTLEMENT_BANK_MATCH = 'DB NET MGMT';
+// The trust's Coinbase Spritz wallet: receives governed distributions and pays
+// Spritz quotes. Externally held, so the server prepares transactions for it to
+// sign rather than signing with DAPP_PRIVATE_KEY.
+const DEFAULT_SPRITZ_PAYOUT_WALLET = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
+
+function sameAddress(a, b) {
+  return Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+/** 'operator' when the payout wallet is DAPP_OPERATOR_ADDRESS with a server key; otherwise 'external' (Coinbase). */
+function payoutSigner(wallet, dapp) {
+  if (wallet && dapp.privateKey && sameAddress(wallet, dapp.operatorAddress)) return 'operator';
+  return 'external';
+}
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 
@@ -157,7 +184,9 @@ class SpritzTreasuryLegEngine {
       chainId: policy.chainId || dapp.chainId,
       network: SpritzEngine.chainName(policy.chainId || dapp.chainId),
       settlementToken: policy.settlementToken || dapp.usdcAddress || null,
-      payoutWallet: str('SPRITZ_PAYOUT_WALLET', dapp.operatorAddress || ''),
+      payoutWallet: str('SPRITZ_PAYOUT_WALLET', DEFAULT_SPRITZ_PAYOUT_WALLET),
+      payoutWalletSigner: payoutSigner(str('SPRITZ_PAYOUT_WALLET', DEFAULT_SPRITZ_PAYOUT_WALLET), dapp),
+      payoutWalletProvider: str('SPRITZ_PAYOUT_WALLET_PROVIDER', 'coinbase'),
       defaultRail: str('SPRITZ_PAYOUT_RAIL', 'ach_standard'),
       settlementBankAccountId: str('SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID'),
       settlementBankMatch: str('SPRITZ_SETTLEMENT_BANK_MATCH', DEFAULT_SETTLEMENT_BANK_MATCH),
@@ -255,6 +284,7 @@ class SpritzTreasuryLegEngine {
       network: cfg.network,
       settlementToken: cfg.settlementToken,
       payoutWallet: cfg.payoutWallet || null,
+      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: cfg.payoutWalletSigner === 'external' ? cfg.payoutWalletProvider : 'server' },
       fundingSource: { ...fs, kind: fs.kind || 'treasury_core_erp', bucket: defaultOwner ? defaultOwner.key : null, route: fundingRoute },
       fundingSources,
       segregation: 'coupon_income (DLB-PRB / bond_portfolio -> beneficiaries) and trust_operating (DLB-TREASURY / treasury -> trustees) are funded and paid out separately; cross-bucket sources are refused with ALLOCATION_SOURCE_MISMATCH',
@@ -474,7 +504,37 @@ class SpritzTreasuryLegEngine {
     if (!reference) throw badRequest('reference required');
 
     const release = await TrustPolicyEngine.execute({ distributionId });
+    if (cfg.payoutWalletSigner === 'external') {
+      // Coinbase (external) payout wallet: hand back the unsigned Spritz payment
+      // for the wallet to sign; confirmPayout() books it once the tx is sent.
+      const unsignedTx = await SpritzEngine.prepareQuoteTransaction(spritzQuoteId, { senderAddress: cfg.payoutWallet });
+      return {
+        status: 'awaiting_signature',
+        reference,
+        distributionId: String(distributionId),
+        release,
+        spritzQuoteId,
+        payoutWallet: cfg.payoutWallet,
+        signer: { type: 'external', provider: cfg.payoutWalletProvider },
+        unsignedTx,
+        next: `Sign ${unsignedTx.approve ? 'approve then ' : ''}payment from ${cfg.payoutWallet} in the ${cfg.payoutWalletProvider} wallet, then POST /spritz/treasury/payout/confirm { spritzQuoteId, txHash, distributionId, reference }`,
+      };
+    }
     const settlement = await SpritzEngine.executeQuote(spritzQuoteId);
+    return this._bookPayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy, release, settlement });
+  }
+
+  /** Record a Spritz payout signed by the external (Coinbase) payout wallet. */
+  static async confirmPayout({ distributionId, spritzQuoteId, txHash, reference, amountUsd, createdBy } = {}) {
+    if (!distributionId) throw badRequest('distributionId required');
+    if (!spritzQuoteId) throw badRequest('spritzQuoteId required');
+    if (!reference) throw badRequest('reference required');
+    if (!txHash || !/^0x[a-fA-F0-9]{64}$/.test(txHash)) throw badRequest('txHash required');
+    return this._bookPayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy, release: null, settlement: { txHash, quoteId: spritzQuoteId, signer: 'external' } });
+  }
+
+  static async _bookPayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy, release, settlement }) {
+    const cfg = this.config();
     const quote = await SpritzEngine.getOffRampQuote(spritzQuoteId).catch(() => null);
     const gross = num((quote && (quote.outputAmount || (quote.output && quote.output.amount))) || amountUsd);
     const fee = num(quote && (quote.feeUsd || (quote.fees && quote.fees.total)));
@@ -503,6 +563,76 @@ class SpritzTreasuryLegEngine {
       amountUsd: gross.toFixed(2),
       feeUsd: fee.toFixed(2),
       journal,
+    };
+  }
+
+  // ─── payout wallet (Coinbase Spritz wallet) ───────────────────────────────
+
+  /**
+   * Register the externally-held payout wallet (default: the trust's Coinbase
+   * Spritz wallet) in the external-wallet registry so it is a known ledger
+   * source, and report whether it is the configured Spritz payout wallet.
+   */
+  static async connectPayoutWallet({ address, provider, label, createdBy } = {}) {
+    const cfg = this.config();
+    const wallet = address || cfg.payoutWallet;
+    if (!wallet || !/^0x[a-fA-F0-9]{40}$/.test(wallet)) throw badRequest('address must be a valid EVM address');
+    if (!ExternalWalletEngine) throw conflict('ExternalWalletEngine not available', 'EXTERNAL_WALLET_UNAVAILABLE');
+    const type = provider || cfg.payoutWalletProvider || 'coinbase';
+    const registered = await ExternalWalletEngine.register({
+      type,
+      address: wallet,
+      label: label || `${type} Spritz payout wallet`,
+      createdBy,
+    });
+    return { ...(await this.payoutWalletStatus({ address: wallet })), registered };
+  }
+
+  /** Configured payout wallet, its registry entry, on-chain USDC balance and policy allow-list state. */
+  static async payoutWalletStatus({ address } = {}) {
+    const cfg = this.config();
+    const wallet = address || cfg.payoutWallet;
+    const configured = sameAddress(wallet, cfg.payoutWallet);
+    const issues = [];
+    if (!configured) issues.push(`${wallet} is not the configured SPRITZ_PAYOUT_WALLET (${cfg.payoutWallet})`);
+
+    let registry = null;
+    if (ExternalWalletEngine) {
+      try { registry = await ExternalWalletEngine.getWalletByAddress(wallet); } catch (e) { registry = null; }
+    }
+    if (!registry) issues.push('payout wallet is not registered as an external wallet; POST /spritz/wallet/connect');
+
+    let usdcBalance = null;
+    if (viem && cfg.settlementToken) {
+      try {
+        const client = viem.createPublicClient({ chain: viemChain(cfg.chainId), transport: viem.http(getConfig().rpcUrl) });
+        const raw = await client.readContract({ address: cfg.settlementToken, abi: ERC20_BALANCE_ABI, functionName: 'balanceOf', args: [wallet] });
+        usdcBalance = unitsToUsd(raw);
+      } catch (e) {
+        usdcBalance = null;
+      }
+    }
+
+    let policy = null;
+    try {
+      policy = await TrustPolicyEngine.beneficiaryStatus({ beneficiary: wallet, token: cfg.settlementToken || undefined });
+      if (!policy.allowed) issues.push('payout wallet is not an allow-listed beneficiary on the policy contract');
+    } catch (e) {
+      issues.push(`policy contract check unavailable: ${e.message}`);
+    }
+
+    return {
+      address: wallet,
+      configured,
+      signer: { type: sameAddress(wallet, cfg.payoutWallet) ? cfg.payoutWalletSigner : 'external', provider: cfg.payoutWalletProvider },
+      registry: registry ? { id: registry.id, type: registry.type, label: registry.label, createdAt: registry.created_at } : null,
+      chainId: cfg.chainId,
+      network: cfg.network,
+      settlementToken: cfg.settlementToken,
+      usdcBalance,
+      policy,
+      ready: issues.length === 0,
+      issues,
     };
   }
 
@@ -588,4 +718,4 @@ class SpritzTreasuryLegEngine {
   }
 }
 
-module.exports = { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd, bookJournal: book, defaultFundingSource };
+module.exports = { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd, bookJournal: book, defaultFundingSource, DEFAULT_SPRITZ_PAYOUT_WALLET, sameAddress };

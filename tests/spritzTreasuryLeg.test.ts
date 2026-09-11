@@ -15,13 +15,17 @@ process.env.THIRDWEB_SETTLEMENT_TOKEN = USDC;
 process.env.THIRDWEB_CHAIN_ID = '8453';
 process.env.DAPP_CHAIN_ID = '8453';
 process.env.DAPP_OPERATOR_ADDRESS = PAYOUT;
+process.env.DAPP_PRIVATE_KEY = '0x' + '11'.repeat(32);
+process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
 
 const pool = require('../server/integrations/bonds/pgPool');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { TrustPolicyEngine } = require('../server/integrations/dapp/trustPolicyEngine');
 const { CanonicalMoneyEngine } = require('../server/integrations/dapp/canonicalMoneyEngine');
 const { TrustAllocationEngine } = require('../server/integrations/dapp/trustAllocationEngine');
-const { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
+const { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd, DEFAULT_SPRITZ_PAYOUT_WALLET } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
+const { ExternalWalletEngine } = require('../server/integrations/dapp/externalWalletEngine');
+const { SpritzEngine } = require('../server/integrations/spritz/spritzEngine');
 const { OnOffRampEngine } = require('../server/integrations/dapp/onOffRampEngine');
 
 type FetchCall = { url: string; init: RequestInit };
@@ -60,6 +64,58 @@ describe('Spritz treasury leg', () => {
       return jsonResponse(out);
     }));
   }
+
+  it('defaults the payout wallet to the Coinbase Spritz wallet as an external signer, and connect registers it', async () => {
+    const COINBASE = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
+    expect(DEFAULT_SPRITZ_PAYOUT_WALLET).toBe(COINBASE);
+    delete process.env.SPRITZ_PAYOUT_WALLET;
+    try {
+      expect(SpritzTreasuryLegEngine.config()).toMatchObject({ payoutWallet: COINBASE, payoutWalletSigner: 'external', payoutWalletProvider: 'coinbase' });
+
+      const register = vi.spyOn(ExternalWalletEngine, 'register').mockResolvedValue({ id: 'EW-1', type: 'coinbase', address: COINBASE.toLowerCase(), label: 'coinbase Spritz payout wallet' } as any);
+      vi.spyOn(ExternalWalletEngine, 'getWalletByAddress').mockResolvedValue({ id: 'EW-1', type: 'coinbase', label: 'coinbase Spritz payout wallet', created_at: 'now' } as any);
+      vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+
+      const out = await SpritzTreasuryLegEngine.connectPayoutWallet({ createdBy: 'trustee' });
+      expect(register).toHaveBeenCalledWith(expect.objectContaining({ type: 'coinbase', address: COINBASE, createdBy: 'trustee' }));
+      expect(out).toMatchObject({ address: COINBASE, configured: true, signer: { type: 'external', provider: 'coinbase' }, registry: { id: 'EW-1', type: 'coinbase' }, ready: true, issues: [], registered: { id: 'EW-1' } });
+
+      await expect(SpritzTreasuryLegEngine.connectPayoutWallet({ address: 'not-an-address' })).rejects.toThrow(/valid EVM address/);
+    } finally {
+      process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
+    }
+  });
+
+  it('executePayout with the external payout wallet returns the unsigned Spritz payment instead of signing; confirmPayout books it', async () => {
+    const COINBASE = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
+    process.env.SPRITZ_PAYOUT_WALLET = COINBASE;
+    try {
+      const release = vi.spyOn(TrustPolicyEngine, 'execute').mockResolvedValue({ txHash: '0xrelease' } as any);
+      const exec = vi.spyOn(SpritzEngine, 'executeQuote');
+      const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-GL-9' } as any);
+      const mark = vi.spyOn(TrustAllocationEngine, 'markExecuted').mockResolvedValue(null as any);
+      stubSpritz((path) => {
+        if (path === '/v1/off-ramp-quotes/q_9/transaction') return { type: 'evm', contractAddress: '0x' + '22'.repeat(20), calldata: '0xbeef', inputToken: USDC, requiredTokenInput: '100000000' };
+        if (path === '/v1/off-ramp-quotes/q_9') return { id: 'q_9', status: 'created', output: { amount: '100.00' }, input: { amount: '101.00' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const out = await SpritzTreasuryLegEngine.executePayout({ distributionId: 7, spritzQuoteId: 'q_9', reference: 'REF-9', amountUsd: 100, createdBy: 'ops' });
+      expect(release).toHaveBeenCalledWith({ distributionId: 7 });
+      expect(exec).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(out).toMatchObject({ status: 'awaiting_signature', payoutWallet: COINBASE, signer: { type: 'external', provider: 'coinbase' }, unsignedTx: { senderAddress: COINBASE, payment: { data: '0xbeef' } } });
+
+      const txHash = '0x' + 'cd'.repeat(32);
+      const booked = await SpritzTreasuryLegEngine.confirmPayout({ distributionId: 7, spritzQuoteId: 'q_9', txHash, reference: 'REF-9', amountUsd: 100, createdBy: 'ops' });
+      expect(booked).toMatchObject({ status: 'settling', txHash, spritzQuoteId: 'q_9', amountUsd: '100.00' });
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(mark).toHaveBeenCalledWith('REF-9');
+      await expect(SpritzTreasuryLegEngine.confirmPayout({ distributionId: 7, spritzQuoteId: 'q_9', reference: 'REF-9', txHash: '0x12' })).rejects.toThrow(/txHash required/);
+    } finally {
+      process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
+    }
+  });
 
   it('converts between USD and 6-decimal USDC units', () => {
     expect(usdToUnits('10')).toBe(10_000_000n);
