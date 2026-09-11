@@ -95,7 +95,7 @@ const operatorAuth = requireAuth({ role: 'operator' });
 function sendError(res, err) {
   console.error('[finops]', err.message || err);
   const status = Number(err && (err.status || err.statusCode));
-  res.status(status >= 400 && status <= 599 ? status : 400).json({ success: false, error: err.message || 'FinOps error' });
+  res.status(status >= 400 && status <= 599 ? status : 400).json({ success: false, error: err.message || 'FinOps error', ...(err && err.code ? { code: err.code } : {}) });
 }
 
 function getUserId(req) {

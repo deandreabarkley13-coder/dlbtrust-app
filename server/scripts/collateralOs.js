@@ -122,7 +122,7 @@ async function main(argv = process.argv.slice(2)) {
 
 if (require.main === module) {
   main().then(() => process.exit(process.exitCode || 0)).catch((err) => {
-    console.error(`\n${err.message}`);
+    console.error(`\n${err.code ? `[${err.code}] ` : ''}${err.message}`);
     if (err.details) console.error(JSON.stringify(err.details, null, 2));
     process.exit(1);
   });
