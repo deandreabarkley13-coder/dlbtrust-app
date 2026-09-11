@@ -141,12 +141,17 @@ describe('Payout relayer (session-key account abstraction)', () => {
 
   it('predicts the trustee-admin smart account and returns an unsigned createAccount tx without broadcasting', async () => {
     const PREDICTED = '0x2222222222222222222222222222222222222222';
+    const DEPLOYER = '0x3333333333333333333333333333333333333333';
     const FACTORY = PayoutRelayerEngine.config().thirdweb.factory;
     vi.spyOn(TrustPolicyEngine, 'status').mockResolvedValue({ owner: TRUSTEE } as any);
     const client = {
       getBytecode: async ({ address }: { address: string }) => (address.toLowerCase() === FACTORY.toLowerCase() ? '0x6001' : '0x'),
       readContract: async ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
-        if (functionName === 'getAddress') { expect(args).toEqual([viem.getAddress(TRUSTEE), '0x']); return PREDICTED; }
+        if (functionName === 'getAddress') {
+          if ((args as string[])[0] === RELAYER) return DEPLOYER;
+          expect(args).toEqual([viem.getAddress(TRUSTEE), '0x']);
+          return PREDICTED;
+        }
         if (functionName === 'entrypoint') return PayoutRelayerEngine.config().entryPoint;
         throw new Error(`unexpected read ${functionName}`);
       },
@@ -158,8 +163,62 @@ describe('Payout relayer (session-key account abstraction)', () => {
     const decoded = viem.decodeFunctionData({ abi: viem.parseAbi(['function createAccount(address admin, bytes data) returns (address)']), data: prep.unsignedTx.data });
     expect(decoded).toEqual({ functionName: 'createAccount', args: [viem.getAddress(TRUSTEE), '0x'] });
     expect(prep.issues.join(' ')).toMatch(/SPRITZ_PAYOUT_WALLET/);
+    expect(prep.deployer).toMatchObject({ address: DEPLOYER, admin: RELAYER, deployed: false });
 
     await expect(PayoutRelayerEngine.prepareSmartAccount({ admin: RELAYER })).rejects.toMatchObject({ code: 'RELAYER_ADMIN_IS_RELAYER' });
     await expect(PayoutRelayerEngine.deploySmartAccount({})).rejects.toMatchObject({ code: 'RELAYER_CONFIRM_REQUIRED' });
+  });
+
+  it('falls back to a sponsored UserOp from the relayer helper account when the relayer EOA has no gas', async () => {
+    const PREDICTED = '0x2222222222222222222222222222222222222222';
+    const DEPLOYER = '0x3333333333333333333333333333333333333333';
+    const FACTORY = PayoutRelayerEngine.config().thirdweb.factory;
+    vi.spyOn(TrustPolicyEngine, 'status').mockResolvedValue({ owner: TRUSTEE } as any);
+    const deployedAfter = { value: false };
+    const client = {
+      getBalance: async () => 0n,
+      estimateFeesPerGas: async () => ({ maxFeePerGas: 100n, maxPriorityFeePerGas: 1n }),
+      getBytecode: async ({ address }: { address: string }) => {
+        if (address.toLowerCase() === FACTORY.toLowerCase()) return '0x6001';
+        if (address === PREDICTED) return deployedAfter.value ? '0x6002' : '0x';
+        return '0x';
+      },
+      readContract: async ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
+        if (functionName === 'getAddress') return (args as string[])[0] === RELAYER ? DEPLOYER : PREDICTED;
+        if (functionName === 'entrypoint') return PayoutRelayerEngine.config().entryPoint;
+        if (functionName === 'getNonce') return 0n;
+        throw new Error(`unexpected read ${functionName}`);
+      },
+    };
+    vi.spyOn(PayoutRelayerEngine as any, '_publicClient').mockReturnValue(client);
+    const { ThirdwebWalletEngine } = require('../server/integrations/dapp/thirdwebWalletEngine');
+    vi.spyOn(ThirdwebWalletEngine, 'readiness').mockReturnValue({ canSponsorGas: true });
+    const sponsor = vi.spyOn(ThirdwebWalletEngine, 'sponsorUserOperation').mockResolvedValue({ sponsored: true, paymasterAndData: '0x' + 'aa'.repeat(40) });
+    const sent: any[] = [];
+    const aa = require('viem/account-abstraction');
+    vi.spyOn(aa, 'createBundlerClient').mockReturnValue({
+      request: async ({ method, params }: { method: string; params: any[] }) => {
+        if (method === 'eth_estimateUserOperationGas') return { callGasLimit: '0x10000', verificationGasLimit: '0x20000', preVerificationGas: '0x8000' };
+        if (method === 'eth_sendUserOperation') { sent.push(params[0]); return '0x' + 'cd'.repeat(32); }
+        throw new Error(method);
+      },
+    });
+    vi.spyOn(aa, 'waitForUserOperationReceipt').mockImplementation(async () => { deployedAfter.value = true; return { success: true, receipt: { transactionHash: '0x' + 'ef'.repeat(32) } }; });
+
+    const out = await PayoutRelayerEngine.deploySmartAccount({ confirm: true });
+    expect(out).toMatchObject({ action: 'smartAccountDeployed', deployed: true, via: 'sponsored', payer: DEPLOYER, txHash: '0x' + 'ef'.repeat(32), admin: viem.getAddress(TRUSTEE) });
+    expect(sponsor).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].sender).toBe(DEPLOYER);
+    expect(sent[0].initCode.toLowerCase().startsWith(FACTORY.toLowerCase())).toBe(true);
+    expect(sent[0].paymasterAndData).toBe('0x' + 'aa'.repeat(40));
+    const exec = viem.decodeFunctionData({ abi: viem.parseAbi(['function execute(address target, uint256 value, bytes data)']), data: sent[0].callData });
+    expect(exec.args[0]).toBe(viem.getAddress(FACTORY));
+    const inner = viem.decodeFunctionData({ abi: viem.parseAbi(['function createAccount(address admin, bytes data) returns (address)']), data: exec.args[2] as `0x${string}` });
+    expect(inner.args).toEqual([viem.getAddress(TRUSTEE), '0x']);
+
+    sponsor.mockResolvedValue({ sponsored: false, reason: 'denied' });
+    deployedAfter.value = false;
+    await expect(PayoutRelayerEngine.deploySmartAccount({ confirm: true, via: 'sponsored' })).rejects.toMatchObject({ code: 'RELAYER_SPONSORSHIP_DENIED' });
   });
 });

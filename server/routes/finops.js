@@ -477,8 +477,8 @@ router.post('/spritz/relayer/account/prepare', adminAuth, writeRateLimiter(), as
 // Server wallet pays gas to deploy it; requires confirm:true. Admin stays the trustee.
 router.post('/spritz/relayer/account/deploy', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { admin, salt, confirm } = req.body || {};
-    res.json({ success: true, data: await PayoutRelayerEngine.deploySmartAccount({ admin, salt, confirm: confirm === true }) });
+    const { admin, salt, confirm, via } = req.body || {};
+    res.json({ success: true, data: await PayoutRelayerEngine.deploySmartAccount({ admin, salt, confirm: confirm === true, via }) });
   } catch (err) { sendError(res, err); }
 });
 
