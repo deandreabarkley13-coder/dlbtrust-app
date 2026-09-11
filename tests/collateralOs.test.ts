@@ -10,6 +10,9 @@ const CUSTODY = '0x3e53028cf69949f3B961ce786Baf2D4D75166562';
 process.env.TRUST_POLICY_ADDRESS = POLICY;
 process.env.DAPP_CHAIN_ID = '8453';
 process.env.COLLATERAL_CUSTODY_WALLET = CUSTODY;
+const TREASURY_TOKEN = '0x5d3192581e6f12eeecc0fd414ef5672a454f611c';
+process.env.DLB_PRB_TOKEN_ADDRESS = PRB;
+process.env.DLB_TREASURY_TOKEN_ADDRESS = TREASURY_TOKEN;
 
 const pool = require('../server/integrations/bonds/pgPool');
 const { BondTokenizationEngine } = require('../server/integrations/dapp/bondTokenizationEngine');
@@ -172,19 +175,41 @@ describe('Collateral OS lifecycle', () => {
     await pledgeMillion();
     const fund = vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockResolvedValue({ status: 'proposed', requestId: 'CM-1', proposalId: 'PROP-1', destination: POLICY, source: { sourceToken: PRB } } as any);
 
-    await expect(CollateralOsEngine.draw({ amountUsd: 700_000.01, reference: 'DRAW-BIG', createdBy: 'trustee' })).rejects.toMatchObject({ code: 'COLLATERAL_INSUFFICIENT' });
-    await expect(CollateralOsEngine.draw({ amountUsd: 10, createdBy: 'trustee' })).rejects.toMatchObject({ code: 'COLLATERAL_INVALID' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 700_000.01, reference: 'DRAW-BIG', bucket: 'trust_operating', createdBy: 'trustee' })).rejects.toMatchObject({ code: 'COLLATERAL_INSUFFICIENT' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 10, bucket: 'trust_operating', createdBy: 'trustee' })).rejects.toMatchObject({ code: 'COLLATERAL_INVALID' });
     expect(fund).not.toHaveBeenCalled();
 
-    const d = await CollateralOsEngine.draw({ amountUsd: 250_000, reference: 'DRAW-1', bucket: 'trust_operating', sourceToken: PRB, createdBy: 'trustee' });
-    expect(fund).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 250_000, reference: 'DRAW-1', bucket: 'trust_operating', sourceToken: PRB, autoApprove: false, createdBy: 'trustee' }));
+    const d = await CollateralOsEngine.draw({ amountUsd: 250_000, reference: 'DRAW-1', bucket: 'trust_operating', createdBy: 'trustee' });
+    expect(fund).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 250_000, reference: 'DRAW-1', bucket: 'trust_operating', sourceToken: TREASURY_TOKEN, sourceModule: 'treasury', autoApprove: false, createdBy: 'trustee' }));
     expect(d).toMatchObject({ status: 'proposed', amountUsd: 250_000, outstandingUsd: 250_000, requestId: 'CM-1', proposalId: 'PROP-1', destination: POLICY });
     expect(d.facility.availableUsd).toBe(450_000);
 
-    const again = await CollateralOsEngine.draw({ amountUsd: 999, reference: 'DRAW-1', createdBy: 'trustee' });
+    const again = await CollateralOsEngine.draw({ amountUsd: 999, reference: 'DRAW-1', bucket: 'trust_operating', createdBy: 'trustee' });
     expect(again).toMatchObject({ drawId: d.drawId, idempotent: true });
     expect(fund).toHaveBeenCalledTimes(1);
     expect(postJournal).not.toHaveBeenCalled();
+  });
+
+  it('keeps coupon income and trust operating segregated: cross-bucket sources are refused before any ERP proposal', async () => {
+    await pledgeMillion();
+    const fund = vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockResolvedValue({ status: 'proposed', requestId: 'CM-1', proposalId: 'P1', destination: POLICY } as any);
+
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-1', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_BUCKET_REQUIRED' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-2', bucket: 'trust_operating', sourceToken: PRB, createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH', status: 409 });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-3', bucket: 'coupon_income', sourceModule: 'treasury', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-4', bucket: 'coupon_income', sourceType: 'ledger', sourceAccountId: '1100', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-5', bucket: 'coupon_income', sourceToken: '0x00000000000000000000000000000000000000aa', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'MIX-6', bucket: 'petty_cash', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_BUCKET_UNKNOWN' });
+    expect(fund).not.toHaveBeenCalled();
+
+    const coupon = await CollateralOsEngine.draw({ amountUsd: 1_000, reference: 'CPN-1', sourceToken: PRB, createdBy: 't' });
+    expect(coupon.bucket).toBe('coupon_income');
+    expect(fund).toHaveBeenLastCalledWith(expect.objectContaining({ bucket: 'coupon_income', sourceToken: PRB, sourceModule: 'bond_portfolio' }));
+    const events = await CollateralOsEngine.events({ subjectId: coupon.drawId });
+    expect(events.find((e: any) => e.kind === 'draw_proposed')?.payload).toMatchObject({ bucket: 'coupon_income' });
+
+    await expect(CollateralOsEngine.draw({ amountUsd: 5, reference: 'CPN-1', bucket: 'trust_operating', createdBy: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_REFERENCE_CONFLICT' });
+    expect(fund).toHaveBeenCalledTimes(1);
   });
 
   it('reconcile funds checker-approved draws with DR USDC treasury / CR facility, cancels rejected ones', async () => {
@@ -193,9 +218,9 @@ describe('Collateral OS lifecycle', () => {
       .mockResolvedValueOnce({ status: 'proposed', requestId: 'CM-1', proposalId: 'P1', destination: POLICY } as any)
       .mockResolvedValueOnce({ status: 'proposed', requestId: 'CM-2', proposalId: 'P2', destination: POLICY } as any)
       .mockResolvedValueOnce({ status: 'proposed', requestId: 'CM-3', proposalId: 'P3', destination: POLICY } as any);
-    const a = await CollateralOsEngine.draw({ amountUsd: 100_000, reference: 'A', createdBy: 't' });
-    const b = await CollateralOsEngine.draw({ amountUsd: 50_000, reference: 'B', createdBy: 't' });
-    const c = await CollateralOsEngine.draw({ amountUsd: 25_000, reference: 'C', createdBy: 't' });
+    const a = await CollateralOsEngine.draw({ amountUsd: 100_000, reference: 'A', bucket: 'coupon_income', createdBy: 't' });
+    const b = await CollateralOsEngine.draw({ amountUsd: 50_000, reference: 'B', bucket: 'coupon_income', createdBy: 't' });
+    const c = await CollateralOsEngine.draw({ amountUsd: 25_000, reference: 'C', bucket: 'coupon_income', createdBy: 't' });
     db.t.canonical_money_requests.push({ id: 'CM-1', status: 'completed', amount: '100000' }, { id: 'CM-2', status: 'rejected', amount: '50000' }, { id: 'CM-3', status: 'pending_approval', amount: '25000' });
 
     const out = await CollateralOsEngine.reconcile({ postedBy: 'ops' });
@@ -224,7 +249,7 @@ describe('Collateral OS lifecycle', () => {
   it('settles a funded draw to the bank through Spritz staging then execution, and repays with the reverse journal', async () => {
     await pledgeMillion();
     vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockResolvedValue({ status: 'proposed', requestId: 'CM-1', proposalId: 'P1', destination: POLICY } as any);
-    const d = await CollateralOsEngine.draw({ amountUsd: 100_000, reference: 'DRAW-1', createdBy: 't' });
+    const d = await CollateralOsEngine.draw({ amountUsd: 100_000, reference: 'DRAW-1', bucket: 'trust_operating', createdBy: 't' });
     db.t.canonical_money_requests.push({ id: 'CM-1', status: 'completed', amount: '100000' });
     await CollateralOsEngine.reconcile({ postedBy: 'ops' });
 
@@ -232,8 +257,10 @@ describe('Collateral OS lifecycle', () => {
     const exec = vi.spyOn(SpritzTreasuryLegEngine, 'executePayout').mockResolvedValue({ status: 'executed', txHash: '0xabc', amountUsd: 100_000, feeUsd: 1.5 } as any);
 
     await expect(CollateralOsEngine.executeSettlement({ drawId: d.drawId, actor: 't' })).rejects.toMatchObject({ code: 'COLLATERAL_STATE' });
-    const settling = await CollateralOsEngine.settle({ drawId: d.drawId, purpose: 'operating', actor: 't' });
-    expect(stage).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 100_000, purpose: 'operating', reference: 'DRAW-1:SETTLE' }));
+    await expect(CollateralOsEngine.settle({ drawId: d.drawId, purpose: 'medical', actor: 't' })).rejects.toMatchObject({ code: 'ALLOCATION_PURPOSE_MISMATCH' });
+    expect(stage).not.toHaveBeenCalled();
+    const settling = await CollateralOsEngine.settle({ drawId: d.drawId, actor: 't' });
+    expect(stage).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 100_000, purpose: 'operating', bucket: 'trust_operating', reference: 'DRAW-1:SETTLE' }));
     expect(settling).toMatchObject({ status: 'settling', spritzQuoteId: 'q_1', distributionId: 'DIST-1' });
 
     const settled = await CollateralOsEngine.executeSettlement({ drawId: d.drawId, actor: 't' });
@@ -258,7 +285,7 @@ describe('Collateral OS lifecycle', () => {
   it('revalue flags a margin call when the base falls under the drawn amount and blocks new draws; release is refused while encumbered', async () => {
     const p = await pledgeMillion();
     vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockResolvedValue({ status: 'proposed', requestId: 'CM-1', proposalId: 'P1', destination: POLICY } as any);
-    const d = await CollateralOsEngine.draw({ amountUsd: 600_000, positionId: p.positionId, reference: 'DRAW-1', createdBy: 't' });
+    const d = await CollateralOsEngine.draw({ amountUsd: 600_000, positionId: p.positionId, reference: 'DRAW-1', bucket: 'coupon_income', createdBy: 't' });
     db.t.canonical_money_requests.push({ id: 'CM-1', status: 'completed', amount: '600000' });
     await CollateralOsEngine.reconcile({ postedBy: 'ops' });
 
@@ -268,7 +295,7 @@ describe('Collateral OS lifecycle', () => {
     const stressed = await CollateralOsEngine.revalue({ actor: 'ops' });
     expect(stressed).toMatchObject({ collateralUsd: 900_000, spendableUsd: 630_000, drawnUsd: 600_000, marginCall: true });
     expect(stressed.positions[0]).toMatchObject({ positionId: p.positionId, status: 'margin_call', previousValueUsd: 1_000_000, valueUsd: 900_000 });
-    await expect(CollateralOsEngine.draw({ amountUsd: 1, reference: 'DRAW-2', createdBy: 't' })).rejects.toMatchObject({ code: 'COLLATERAL_MARGIN_CALL' });
+    await expect(CollateralOsEngine.draw({ amountUsd: 1, reference: 'DRAW-2', bucket: 'coupon_income', createdBy: 't' })).rejects.toMatchObject({ code: 'COLLATERAL_MARGIN_CALL' });
 
     (ThirdwebPriceOracle.getPrice as any).mockResolvedValue({ priceUsd: 1, decimals: 6, source: 'thirdweb' });
     const recovered = await CollateralOsEngine.revalue({ actor: 'ops' });

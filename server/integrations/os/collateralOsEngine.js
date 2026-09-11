@@ -43,6 +43,7 @@ const { BondTokenizationEngine } = require('../dapp/bondTokenizationEngine');
 const { ThirdwebPriceOracle } = require('../dapp/thirdwebPriceOracle');
 const { ThirdwebServerWalletEngine } = require('../dapp/thirdwebServerWalletEngine');
 const { SpritzTreasuryLegEngine } = require('../spritz/spritzTreasuryLegEngine');
+const { TrustAllocationEngine } = require('../dapp/trustAllocationEngine');
 
 let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
@@ -359,6 +360,8 @@ const CollateralOsEngine = {
       priceOracle: { ready: oracle.ready, parFallback: cfg.parFallback },
       balanceVerification: { available: wallet.ready, required: cfg.requireVerifiedBalance },
       treasuryLeg: leg ? { ready: leg.ready, settlementBank: leg.settlementBank || null, fundingSource: leg.fundingSource || null } : null,
+      fundingSources: leg && leg.fundingSources ? leg.fundingSources : null,
+      segregation: leg && leg.segregation ? leg.segregation : null,
       advanceRates: cfg.advanceRates,
       maxUtilizationBps: cfg.maxUtilizationBps,
       gl: cfg.gl,
@@ -571,9 +574,16 @@ const CollateralOsEngine = {
     if (!cfg.enabled) throw new CollateralError('Collateral OS disabled', 'COLLATERAL_DISABLED', 503);
     const amount = usd(amountUsd, 'amountUsd');
     if (!reference) throw new CollateralError('reference required (ERP reference)', 'COLLATERAL_INVALID', 400);
+    const segregated = TrustAllocationEngine.assertFundingSource({ bucket, sourceType, sourceAccountId, sourceToken, sourceModule });
+    if (!segregated.bucket) throw new CollateralError('bucket required: coupon_income (beneficiary support from DLB-PRB coupons) or trust_operating (trustee operating from the treasury module); the two are never mixed', 'ALLOCATION_BUCKET_REQUIRED', 400);
+    bucket = segregated.bucket.key;
 
     const dup = await pool.query(`SELECT * FROM collateral_draws WHERE reference = $1`, [reference]);
-    if (dup.rows.length) return { ...mapDraw(dup.rows[0]), idempotent: true };
+    if (dup.rows.length) {
+      const prior = mapDraw(dup.rows[0]);
+      if (prior.bucket && prior.bucket !== bucket) throw new CollateralError(`reference ${reference} already drawn in ${prior.bucket}`, 'ALLOCATION_REFERENCE_CONFLICT', 409);
+      return { ...prior, idempotent: true };
+    }
 
     const facility = await this.facility();
     if (facility.marginCall) throw new CollateralError(`facility is in margin call (utilization ${facility.utilizationBps} bps > ${facility.maxUtilizationBps}); repay or pledge more before drawing`, 'COLLATERAL_MARGIN_CALL', 409, facility);
@@ -587,17 +597,17 @@ const CollateralOsEngine = {
       if (amount > room) throw new CollateralError(`draw ${amount.toFixed(2)} exceeds position ${positionId} room ${room.toFixed(2)}`, 'COLLATERAL_INSUFFICIENT', 409, { positionId, roomUsd: room });
     }
 
-    const funding = await SpritzTreasuryLegEngine.fund({ amountUsd: amount, bucket, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy: createdBy || 'collateral-os', autoApprove });
+    const funding = await SpritzTreasuryLegEngine.fund({ amountUsd: amount, bucket, ...segregated.source, reference, createdBy: createdBy || 'collateral-os', autoApprove });
 
     const drawId = newId('CDR');
     const res = await pool.query(
       `INSERT INTO collateral_draws (draw_id, position_id, amount_usd, outstanding_usd, status, reference, bucket, destination, request_id, proposal_id, created_by, metadata)
        VALUES ($1, $2, $3, $3, 'proposed', $4, $5, $6, $7, $8, $9, $10::jsonb) RETURNING *`,
-      [drawId, positionId || null, amount, reference, bucket || null, funding.destination || cfg.destination, funding.requestId ? String(funding.requestId) : null, funding.proposalId ? String(funding.proposalId) : null, createdBy || null,
+      [drawId, positionId || null, amount, reference, bucket, funding.destination || cfg.destination, funding.requestId ? String(funding.requestId) : null, funding.proposalId ? String(funding.proposalId) : null, createdBy || null,
         JSON.stringify({ ...(metadata || {}), source: funding.source || null, route: funding.route || null })]
     );
     const row = mapDraw(res.rows[0]);
-    await this._event(drawId, 'draw_proposed', createdBy, { amountUsd: amount, positionId: positionId || null, requestId: row.requestId, proposalId: row.proposalId, availableBefore: facility.availableUsd });
+    await this._event(drawId, 'draw_proposed', createdBy, { amountUsd: amount, bucket, source: funding.source || null, positionId: positionId || null, requestId: row.requestId, proposalId: row.proposalId, availableBefore: facility.availableUsd });
     return {
       ...row,
       funding,
@@ -654,7 +664,11 @@ const CollateralOsEngine = {
     await this.ensureTables();
     const d = await this.getDraw(drawId);
     assertTransition(d.status, 'settling');
-    const payout = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: d.outstandingUsd, purpose: purpose || 'operating', reference: `${d.reference}:SETTLE`, rail, memo: memo || d.reference, payoutWallet, bucket: d.bucket || undefined });
+    if (!d.bucket) throw new CollateralError(`draw ${drawId} has no allocation bucket; cannot settle without knowing whether it is coupon_income or trust_operating`, 'ALLOCATION_BUCKET_REQUIRED', 409);
+    const allocation = TrustAllocationEngine.bucket(d.bucket);
+    const settlePurpose = purpose || allocation.purposes[0];
+    if (!allocation.purposes.includes(settlePurpose)) throw new CollateralError(`purpose ${settlePurpose} is not payable from ${d.bucket} (allowed: ${allocation.purposes.join(', ')})`, 'ALLOCATION_PURPOSE_MISMATCH', 409);
+    const payout = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: d.outstandingUsd, purpose: settlePurpose, reference: `${d.reference}:SETTLE`, rail, memo: memo || d.reference, payoutWallet, bucket: d.bucket });
     await pool.query(
       `UPDATE collateral_draws SET status = 'settling', spritz_quote_id = $2, distribution_id = $3, updated_at = NOW() WHERE draw_id = $1`,
       [drawId, payout.spritzQuoteId || null, payout.distribution && (payout.distribution.distributionId || payout.distribution.id) ? String(payout.distribution.distributionId || payout.distribution.id) : null]

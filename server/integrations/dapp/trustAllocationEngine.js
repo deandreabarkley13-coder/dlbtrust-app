@@ -131,6 +131,83 @@ class TrustAllocationEngine {
     return token ? { sourceToken: token, sourceModule: b.sourceModule } : { sourceModule: b.sourceModule };
   }
 
+  /** The bucket an ERP funding source belongs to, or null when it belongs to none. */
+  static bucketForSource({ sourceToken, sourceModule } = {}) {
+    const token = lower(sourceToken);
+    const mod = String(sourceModule || '').trim();
+    return this.buckets().find((b) => (token && lower(str(b.tokenEnv)) === token) || (mod && b.sourceModule === mod)) || null;
+  }
+
+  /**
+   * Segregation guard for a funding leg: every source must belong to exactly
+   * one bucket, and a bucket may only be funded from its own source. Coupon
+   * income (DLB-PRB / bond_portfolio) never funds Trust Operating and the
+   * treasury module never funds beneficiary support. Returns the resolved
+   * bucket and source; ledger sources (sourceType+sourceAccountId) belong to
+   * no bucket and are refused whenever a bucket is in play.
+   */
+  static assertFundingSource({ bucket, sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
+    const explicit = bucket ? this.bucket(bucket) : null;
+    const owner = this.bucketForSource({ sourceToken, sourceModule });
+    const tokenOwner = sourceToken ? this.bucketForSource({ sourceToken }) : null;
+    const moduleOwner = sourceModule ? this.bucketForSource({ sourceModule }) : null;
+    if (tokenOwner && moduleOwner && tokenOwner.key !== moduleOwner.key) {
+      throw httpError(409, `sourceToken belongs to ${tokenOwner.key} but sourceModule ${sourceModule} belongs to ${moduleOwner.key}`, 'ALLOCATION_SOURCE_MISMATCH');
+    }
+    const b = explicit || owner;
+    if (!b) {
+      if (sourceType || sourceToken || sourceModule) return { bucket: null, source: { sourceType, sourceAccountId, sourceToken, sourceModule } };
+      throw httpError(400, `bucket required: ${Object.keys(BUCKETS).join(' or ')}`, 'ALLOCATION_BUCKET_REQUIRED');
+    }
+    if (sourceType || sourceAccountId) {
+      throw httpError(409, `${b.key} is funded only from its allocated source (${b.sourceModule}); ledger source ${sourceType || ''}${sourceAccountId ? ':' + sourceAccountId : ''} is not segregated`, 'ALLOCATION_SOURCE_MISMATCH');
+    }
+    if (owner && owner.key !== b.key) {
+      throw httpError(409, `${b.key} cannot be funded from ${owner.key} source (${sourceToken || sourceModule}); ${BUCKETS.coupon_income.label} and ${BUCKETS.trust_operating.label} must not mix`, 'ALLOCATION_SOURCE_MISMATCH');
+    }
+    if ((sourceToken || sourceModule) && !owner) {
+      throw httpError(409, `${sourceToken || sourceModule} is not the allocated source of ${b.key} (${b.sourceModule}${str(b.tokenEnv) ? ' / ' + str(b.tokenEnv) : ''})`, 'ALLOCATION_SOURCE_MISMATCH');
+    }
+    return { bucket: b, source: this.fundingSource(b.key) };
+  }
+
+  /**
+   * The two segregated ERP funding sources and whether each can convert to
+   * USDC for the policy contract right now (`quote` prices 1 USD through
+   * CanonicalMoneyEngine without creating anything).
+   */
+  static async fundingSources({ quote } = {}) {
+    return Promise.all(this.buckets().map(async (b) => {
+      const source = this.fundingSource(b.key);
+      const entry = {
+        bucket: b.key,
+        label: b.label,
+        erpSource: b.erpSource,
+        sourceModule: b.sourceModule,
+        sourceToken: source.sourceToken || null,
+        tokenEnv: b.tokenEnv,
+        payeeRole: b.payeeRole,
+        purposes: b.purposes,
+        configured: Boolean(source.sourceToken),
+        executable: null,
+        route: null,
+        issue: source.sourceToken ? null : `${b.tokenEnv} not configured; ${b.key} falls back to the ${b.sourceModule} ledger`,
+      };
+      if (typeof quote === 'function') {
+        try {
+          const route = await quote({ ...source, amount: '1', targetAsset: 'USDC' });
+          entry.route = route;
+          entry.executable = route.action === 'mint_and_swap' || Boolean(route.poolAddress);
+          if (!entry.executable) entry.issue = route.note || `no canonical liquidity route for ${b.key}`;
+        } catch (e) {
+          entry.executable = false;
+          entry.issue = e.message;
+        }
+      }
+      return entry;
+    }));
+  }
+
   /** Income recognised in the ERP for a bucket, in USD. */
   static async recognised(bucketKey) {
     const b = this.bucket(bucketKey);

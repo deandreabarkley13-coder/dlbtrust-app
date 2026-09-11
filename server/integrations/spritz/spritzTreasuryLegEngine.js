@@ -173,8 +173,14 @@ class SpritzTreasuryLegEngine {
     if (!cfg.network) issues.push(`chain ${cfg.chainId} has no Spritz network mapping`);
     if (!CanonicalMoneyEngine) issues.push('CanonicalMoneyEngine not available (ERP funding route)');
     const fs = cfg.fundingSource;
-    if (!fs.sourceType && !fs.sourceToken && !fs.sourceModule) {
-      issues.push('No default ERP funding source (SPRITZ_FUNDING_SOURCE_TYPE / _TOKEN / _MODULE); pass one per request');
+    const fundingSources = await TrustAllocationEngine.fundingSources({ quote: CanonicalMoneyEngine ? (q) => CanonicalMoneyEngine.quote(q) : undefined });
+    for (const s of fundingSources) {
+      if (!s.configured) issues.push(`${s.bucket} funding source: ${s.issue}`);
+      else if (s.executable === false) issues.push(`${s.bucket} funding route: ${s.issue}`);
+    }
+    const defaultOwner = TrustAllocationEngine.bucketForSource(fs);
+    if (fs.sourceType || ((fs.sourceToken || fs.sourceModule) && !defaultOwner)) {
+      issues.push('SPRITZ_FUNDING_SOURCE_* default is not a segregated bucket source; bucket-tagged funding refuses it');
     }
 
     let capabilities = [];
@@ -209,7 +215,9 @@ class SpritzTreasuryLegEngine {
       network: cfg.network,
       settlementToken: cfg.settlementToken,
       payoutWallet: cfg.payoutWallet || null,
-      fundingSource: { kind: 'treasury_core_erp', ...fs, route: fundingRoute },
+      fundingSource: { kind: 'treasury_core_erp', ...fs, bucket: defaultOwner ? defaultOwner.key : null, route: fundingRoute },
+      fundingSources,
+      segregation: 'coupon_income (DLB-PRB / bond_portfolio -> beneficiaries) and trust_operating (DLB-TREASURY / treasury -> trustees) are funded and paid out separately; cross-bucket sources are refused with ALLOCATION_SOURCE_MISMATCH',
       settlementBank,
       offramp: offramp ? { status: offramp.status } : null,
       gl: cfg.gl,
@@ -245,11 +253,10 @@ class SpritzTreasuryLegEngine {
   static async fund({ amountUsd, bucket, sourceType, sourceAccountId, sourceToken, sourceModule, reference, createdBy, autoApprove = false } = {}) {
     const cfg = this.config();
     if (!reference) throw badRequest('reference required (ERP reference)');
-    if (bucket) {
-      const allocated = TrustAllocationEngine.fundingSource(bucket);
-      sourceToken = sourceToken || allocated.sourceToken;
-      sourceModule = sourceModule || allocated.sourceModule;
-    }
+    const requested = this._fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule }, { optional: Boolean(bucket) });
+    const segregated = TrustAllocationEngine.assertFundingSource({ bucket, ...requested });
+    bucket = segregated.bucket ? segregated.bucket.key : null;
+    ({ sourceType, sourceAccountId, sourceToken, sourceModule } = segregated.source);
     const quote = await this.quoteFunding({ amountUsd, sourceType, sourceAccountId, sourceToken, sourceModule });
     if (!quote.executable) {
       throw conflict(`ERP funding route is not executable: ${quote.route.note || 'no canonical liquidity pool'}`, 'ERP_FUNDING_ROUTE_UNAVAILABLE');
@@ -263,7 +270,7 @@ class SpritzTreasuryLegEngine {
       amount: quote.amountUsd,
       targetAsset: 'USDC',
       recipient: cfg.policyAddress,
-      title: `Fund TrustDistributionPolicy ${quote.amountUsd} USDC from ERP reserve [${reference}]`,
+      title: `Fund TrustDistributionPolicy ${quote.amountUsd} USDC from ${bucket || 'ERP reserve'} [${reference}]`,
       createdBy: createdBy || 'spritz-treasury-leg',
       autoApprove,
     });
@@ -272,7 +279,7 @@ class SpritzTreasuryLegEngine {
       requestId: proposal.requestId,
       proposalId: proposal.proposalId,
       reference,
-      bucket: bucket || null,
+      bucket,
       source: quote.source,
       destination: cfg.policyAddress,
       chainId: cfg.chainId,
@@ -448,14 +455,17 @@ class SpritzTreasuryLegEngine {
 
   // ─── helpers ───────────────────────────────────────────────────────────────
 
-  static _fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule } = {}) {
+  static _fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule } = {}, { optional = false } = {}) {
     const cfg = this.config().fundingSource;
-    const source = {
-      sourceType: sourceType || cfg.sourceType || undefined,
-      sourceAccountId: sourceAccountId || cfg.sourceAccountId || undefined,
-      sourceToken: sourceToken || cfg.sourceToken || undefined,
-      sourceModule: sourceModule || cfg.sourceModule || undefined,
+    const explicit = Boolean(sourceType || sourceAccountId || sourceToken || sourceModule);
+    const source = explicit ? { sourceType, sourceAccountId, sourceToken, sourceModule } : {
+      sourceType: cfg.sourceType || undefined,
+      sourceAccountId: cfg.sourceAccountId || undefined,
+      sourceToken: cfg.sourceToken || undefined,
+      sourceModule: cfg.sourceModule || undefined,
     };
+    for (const k of Object.keys(source)) if (!source[k]) source[k] = undefined;
+    if (optional && !explicit) return {};
     if (!source.sourceType && !source.sourceToken && !source.sourceModule) {
       throw badRequest('ERP funding source required: sourceType+sourceAccountId (ledger), sourceToken, or sourceModule', 'ERP_FUNDING_SOURCE_REQUIRED');
     }

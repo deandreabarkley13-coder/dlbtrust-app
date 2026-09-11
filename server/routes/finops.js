@@ -95,7 +95,7 @@ const operatorAuth = requireAuth({ role: 'operator' });
 function sendError(res, err) {
   console.error('[finops]', err.message || err);
   const status = Number(err && (err.status || err.statusCode));
-  res.status(status >= 400 && status <= 599 ? status : 400).json({ success: false, error: err.message || 'FinOps error' });
+  res.status(status >= 400 && status <= 599 ? status : 400).json({ success: false, error: err.message || 'FinOps error', ...(err && err.code ? { code: err.code } : {}) });
 }
 
 function getUserId(req) {
@@ -343,6 +343,11 @@ router.get('/spritz/treasury/settlement-bank', operatorAuth, async (req, res) =>
 // Allocation buckets: coupon income -> beneficiaries, Trust Operating -> trustees.
 router.get('/spritz/treasury/allocations', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await TrustAllocationEngine.summaries() }); } catch (err) { sendError(res, err); }
+});
+
+// The two segregated ERP funding sources (coupon_income vs trust_operating) and their USDC routes.
+router.get('/spritz/treasury/funding-sources', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAllocationEngine.fundingSources({ quote: (q) => CanonicalMoneyEngine.quote(q) }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/treasury/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
