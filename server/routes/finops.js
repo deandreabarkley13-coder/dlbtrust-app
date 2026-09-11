@@ -7,6 +7,7 @@ const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAc
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
+const { SpritzFiatFundingEngine } = require('../integrations/spritz/spritzFiatFundingEngine');
 const { SpritzBillPayEngine } = require('../integrations/spritz/spritzBillPayEngine');
 const { PayoutRelayerEngine } = require('../integrations/dapp/payoutRelayerEngine');
 const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
@@ -500,6 +501,57 @@ router.post('/spritz/relayer/session-key/submit', adminAuth, writeRateLimiter(),
 
 router.get('/spritz/treasury/funding-legs', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.listFundingLegs({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Fiat funding: ERP-originated credit push -> Spritz auto-ramp -> USDC on the policy ──
+
+router.get('/spritz/fiat-funding/readiness', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/fiat-funding/account', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.account() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/fiat-funding/account', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SpritzFiatFundingEngine.ensureAccount() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/fiat-funding/estimate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.estimate({ amountUsd: (req.body || {}).amountUsd }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/fiat-funding', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.list({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/fiat-funding', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amountUsd, bucket, reference, rail, memo } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    res.status(201).json({ success: true, data: await SpritzFiatFundingEngine.fund({ amountUsd, bucket, reference, rail, memo, createdBy }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/fiat-funding/:reference/send', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.send({ reference: req.params.reference }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/fiat-funding/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzFiatFundingEngine.reconcile() }); } catch (err) { sendError(res, err); }
+});
+
+// Straight-through: ERP -> (fiat credit push -> Spritz auto-ramp -> USDC) -> policy -> payout -> Spritz rails, one reference.
+router.post('/spritz/treasury/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amountUsd, bucket, purpose, reference, rail, memo, billId, bankAccountId, fundingRail, transmit } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    const data = await SpritzTreasuryLegEngine.settle({ amountUsd, bucket, purpose, reference, rail, memo, billId, bankAccountId, fundingRail, createdBy, transmit: transmit === true });
+    res.status(data.status === 'failed' ? 409 : 200).json({ success: data.status !== 'failed', data });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/wallet/connect', operatorAuth, writeRateLimiter(), async (req, res) => {

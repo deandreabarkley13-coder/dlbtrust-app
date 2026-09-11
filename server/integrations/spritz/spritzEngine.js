@@ -202,6 +202,39 @@ class SpritzEngine {
     return spritzRequest('POST', '/v1/deposits/direct', { preparationId }, { headers: { 'Idempotency-Key': idempotencyKey } });
   }
 
+  // ─── Auto-ramp accounts: virtual bank accounts (ACH / wire credit push in,
+  // USDC auto-converted to a wallet address) and the on-ramp records they produce.
+
+  static async listAutoRampAccounts() {
+    return spritzRequest('GET', '/v1/auto-ramp-accounts/');
+  }
+
+  static async getAutoRampAccount(accountId) {
+    if (!accountId) throw new Error('accountId required');
+    return spritzRequest('GET', `/v1/auto-ramp-accounts/${accountId}`);
+  }
+
+  static async createAutoRampAccount({ address, network = 'base', token = 'USDC' } = {}) {
+    if (!address) throw new Error('address required');
+    const net = String(network).toLowerCase();
+    if (!SUPPORTED_CHAINS.includes(net)) throw new Error(`Unsupported auto-ramp network: ${network}`);
+    return spritzRequest('POST', '/v1/auto-ramp-accounts/', { address, network: net, token: String(token).toUpperCase() });
+  }
+
+  static async estimateAutoRampDeposit(accountId, { amount } = {}) {
+    if (!accountId) throw new Error('accountId required');
+    return spritzRequest('GET', `/v1/auto-ramp-accounts/${accountId}/estimate?amount=${encodeURIComponent(toUsdString(amount))}`);
+  }
+
+  static async listOnRamps() {
+    return spritzRequest('GET', '/v1/on-ramps/');
+  }
+
+  static async getOnRamp(onRampId) {
+    if (!onRampId) throw new Error('onRampId required');
+    return spritzRequest('GET', `/v1/on-ramps/${onRampId}`);
+  }
+
   static async listDeposits() {
     return spritzRequest('GET', '/v1/deposits/');
   }

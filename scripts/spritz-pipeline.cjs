@@ -16,6 +16,13 @@
  *       Payout wallet registry / balance / allow-list state.
  *   node scripts/spritz-pipeline.cjs relayer | grant | account
  *       Session-key relayer state, trustee grant typed data, payout smart account.
+ *   node scripts/spritz-pipeline.cjs funding [--ensure-account] [--reconcile]
+ *       ERP fiat credit push -> Spritz auto-ramp readiness, deposit instructions,
+ *       recorded fundings; --ensure-account opens the auto-ramp account.
+ *   node scripts/spritz-pipeline.cjs fund --amount=USD --reference=REF --bucket=B [--rail=ach|wire] [--send --confirm]
+ *       Originate the ERP credit push; --send --confirm transmits it.
+ *   node scripts/spritz-pipeline.cjs settle --amount=USD --purpose=P --reference=REF --bucket=B [--rail=..] [--bill=..] [--transmit --confirm]
+ *       Straight-through run: advances one reference as far as governance allows.
  *
  * Env: DLBTRUST_BASE_URL (default http://localhost:3002), ADMIN_SECRET_TOKEN.
  */
@@ -136,7 +143,61 @@ async function account() {
   data.next.forEach((n, i) => console.log(`${i + 1}. ${n}`));
 }
 
-const commands = { status, allowlist, wallet, rails, payout, relayer, grant, account };
+function printFunding(f) {
+  console.log(`${f.status.padEnd(16)} ${f.reference} ${usd(f.amountUsd)} via ${f.rail} transfer ${f.transferId || '-'} (${f.transferStatus || '-'}) on-ramp ${f.onRampId || '-'}${f.error ? ` error: ${f.error}` : ''}`);
+}
+
+/** ERP fiat credit push -> Spritz auto-ramp -> USDC on the policy contract. */
+async function funding() {
+  if (process.argv.includes('--ensure-account')) {
+    const a = await call('/api/finops/spritz/fiat-funding/account', { method: 'POST' });
+    console.log(`auto-ramp account ${a.id} ${a.status}${a.created ? ' (created)' : ''} -> ${a.token} on ${a.network} at ${a.address}`);
+  }
+  const r = await call('/api/finops/spritz/fiat-funding/readiness');
+  console.log(`fiat funding ${r.ready ? 'READY' : 'BLOCKED'} (${r.direction}, default rail ${r.defaultRail})`);
+  for (const i of r.issues) console.log(`- ${i}`);
+  if (r.erp) console.log(`ERP ${r.erp.system} cash ${r.erp.cashAccountCode} -> ${r.erp.assetAccountCode} live=${r.erp.live}`);
+  for (const c of r.capabilities || []) console.log(`capability ${c.method}: ${c.status}${c.requirements.length ? ' ' + c.requirements.map((q) => `${q.type} ${q.status}${q.actionUrl ? ' ' + q.actionUrl : ''}`).join('; ') : ''}`);
+  if (r.autoRampAccount && r.autoRampAccount.depositInstructions) {
+    const d = r.autoRampAccount.depositInstructions;
+    console.log(`deposit to ${d.bankName} routing ${d.bankRoutingNumber} account ••••${String(d.bankAccountNumber || '').slice(-4)} rails ${d.paymentRails.join(', ')}`);
+  }
+  if (r.collateral) console.log(`collateral OS gate ${r.collateral.gated ? 'on' : 'off'}${r.collateral.availableUsd !== undefined ? ` available ${usd(r.collateral.availableUsd)} of ${usd(r.collateral.spendableUsd)}` : ` (${r.collateral.reason})`}`);
+  const list = process.argv.includes('--reconcile')
+    ? (await call('/api/finops/spritz/fiat-funding/reconcile', { method: 'POST' })).fundings
+    : await call('/api/finops/spritz/fiat-funding');
+  console.log(`${list.length} funding(s)`);
+  list.forEach(printFunding);
+}
+
+async function fund() {
+  const send = process.argv.includes('--send');
+  if (send && !process.argv.includes('--confirm')) throw new Error('--send transmits a real ERP credit push; add --confirm');
+  const data = await call('/api/finops/spritz/fiat-funding', {
+    method: 'POST',
+    body: { amountUsd: arg('amount'), reference: arg('reference'), bucket: arg('bucket'), rail: arg('rail'), memo: arg('memo') },
+  });
+  console.log(`${data.status} ${data.reference}: ${usd(data.amountUsd)} via ${data.rail} from ERP ${data.source ? data.source.account : data.sourceAccount}${data.idempotent ? ' (existing)' : ''}`);
+  if (data.transfer) console.log(`transfer ${data.transfer.id} ${data.transfer.status}`);
+  if (data.next) console.log(data.next);
+  if (send) {
+    const sent = await call(`/api/finops/spritz/fiat-funding/${encodeURIComponent(data.reference)}/send`, { method: 'POST' });
+    printFunding(sent);
+  }
+}
+
+async function settle() {
+  const transmit = process.argv.includes('--transmit');
+  if (transmit && !process.argv.includes('--confirm')) throw new Error('--transmit sends a real ERP credit push; add --confirm');
+  const data = await call('/api/finops/spritz/treasury/settle', {
+    method: 'POST',
+    body: { amountUsd: arg('amount'), purpose: arg('purpose'), reference: arg('reference'), bucket: arg('bucket'), rail: arg('rail'), billId: arg('bill'), bankAccountId: arg('bank'), memo: arg('memo'), fundingRail: arg('funding-rail'), transmit },
+  });
+  for (const t of data.trail) console.log(`${t.ok ? 'OK     ' : 'BLOCKED'} ${t.stage}: ${t.detail}`);
+  console.log(`${data.status.toUpperCase()} at ${data.stage}: ${data.detail}`);
+}
+
+const commands = { status, allowlist, wallet, rails, payout, relayer, grant, account, funding, fund, settle };
 const cmd = process.argv[2] || 'status';
 if (!commands[cmd]) {
   console.error(`unknown command ${cmd}; expected one of ${Object.keys(commands).join(', ')}`);
