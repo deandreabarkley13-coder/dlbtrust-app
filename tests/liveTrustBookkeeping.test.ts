@@ -750,8 +750,9 @@ describe('live trust activity sync', () => {
 
 describe('coupon period sync', () => {
   it('books registered coupon periods to coupon cash (1020), never operating cash (1030)', async () => {
-    const period = { id: 250, bond_id: 1, amount: '500000.00', transaction_date: '2024-08-28', bond_code: 'DLB-PRB' };
+    const period = { id: 250, bond_id: 1, amount: '500000.00', transaction_date: '2024-08-28', bond_code: 'DLB-PRB', face_value: '100000000.00', payment_freq: 'semi-annual' };
     vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (sql.includes("transaction_type = 'coupon_accrual'") && sql.includes("'operating_allocation'")) return { rows: [] };
       if (sql.includes("transaction_type = 'coupon_accrual'")) return { rows: [period] };
       if (sql.includes('FROM trust_accounts WHERE account_code')) return { rows: [{ balance: '1000.00' }] };
       return { rows: [] };
@@ -773,6 +774,30 @@ describe('coupon period sync', () => {
       expect.objectContaining({ accountCode: '4100', creditAmount: 499000 }),
     ]);
     expect(call.lines.some((l: { accountCode: string }) => l.accountCode === '1030')).toBe(false);
+  });
+
+  it('releases 2%/yr of face from corpus into operating cash (1030) per period, split operating/investment', async () => {
+    const period = { id: 250, bond_id: 1, transaction_date: '2024-08-28', bond_code: 'DLB-PRB', face_value: '100000000.00', payment_freq: 'semi-annual' };
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (sql.includes("'operating_allocation'")) return { rows: [period] };
+      return { rows: [] };
+    });
+    vi.spyOn(DataBridge, '_ensureAccount').mockResolvedValue(undefined);
+    vi.spyOn(DataBridge, '_logSync').mockResolvedValue(undefined);
+    const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry')
+      .mockResolvedValue({ entry_id: 'JRN-OPS-250' });
+
+    const result = await DataBridge.syncBondsToAccounting();
+
+    expect(result).toMatchObject({ synced: 1, failed: 0 });
+    const call = post.mock.calls[0][0];
+    expect(call).toMatchObject({ referenceType: 'operating_allocation', referenceId: '250', postToFineract: false });
+    expect(call.lines).toEqual([
+      expect.objectContaining({ accountCode: '1030', debitAmount: 500000, memo: 'Operating cost allocation DLB-PRB' }),
+      expect.objectContaining({ accountCode: '1030', debitAmount: 500000, memo: 'Investment allocation DLB-PRB' }),
+      expect.objectContaining({ accountCode: '3000', creditAmount: 1000000 }),
+    ]);
+    expect(call.lines.some((l: { accountCode: string }) => l.accountCode === '1020')).toBe(false);
   });
 });
 

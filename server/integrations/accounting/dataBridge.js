@@ -52,6 +52,15 @@ var ACCOUNTS = {
   STABLECOIN_ASSET:  '1210',
 };
 
+// Trust-operating allocation per bond terms: an annual % of face value released
+// from corpus into OPERATING_CASH (1030) each coupon period, split between
+// operating cost and investment. Coupon cash (1020) is never the source.
+var OPERATING_ALLOCATION = {
+  annualRate: parseFloat(process.env.TRUST_OPERATING_ALLOCATION_ANNUAL_RATE || '0.02'),
+  operatingShare: parseFloat(process.env.TRUST_OPERATING_ALLOCATION_OPERATING_SHARE || '0.5'),
+};
+var PERIODS_PER_YEAR = { monthly: 12, quarterly: 4, 'semi-annual': 2, annual: 1 };
+
 class DataBridge {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -241,6 +250,46 @@ class DataBridge {
           errors.push({ couponPeriodId: per.id, bondId: per.bond_code, error: err.message });
         }
       }
+
+      // Trust-operating allocation for each elapsed coupon period (2%/yr of face by default)
+      var allocPeriods = await pool.query(`
+        SELECT bt.id, bt.bond_id, bt.transaction_date, b.bond_name AS bond_code,
+               b.face_value, b.payment_freq
+        FROM bond_transactions bt
+        JOIN bonds b ON b.id = bt.bond_id
+        WHERE bt.transaction_type = 'coupon_accrual'
+          AND bt.transaction_date <= CURRENT_DATE
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_type = 'operating_allocation'
+              AND je.reference_id = CAST(bt.id AS TEXT)
+              AND je.status = 'posted'
+          )
+        ORDER BY bt.transaction_date ASC
+        LIMIT 100
+      `);
+
+      for (var a = 0; a < allocPeriods.rows.length; a++) {
+        var ap = allocPeriods.rows[a];
+        try {
+          var freq = PERIODS_PER_YEAR[ap.payment_freq];
+          var allocAmount = freq
+            ? Math.round(parseFloat(ap.face_value) * OPERATING_ALLOCATION.annualRate / freq * 100) / 100
+            : 0;
+          if (allocAmount < 0.01) { skipped++; continue; }
+          await DataBridge._postOperatingAllocation({
+            amount: allocAmount,
+            entryDate: ap.transaction_date,
+            bondCode: ap.bond_code,
+            bondId: ap.bond_id,
+            referenceId: String(ap.id),
+          });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ allocationPeriodId: ap.id, bondId: ap.bond_code, error: err.message });
+        }
+      }
     } catch (outerErr) {
       errors.push({ phase: 'query', error: outerErr.message });
     }
@@ -248,6 +297,39 @@ class DataBridge {
     await DataBridge._logSync(syncId, 'bond_to_accounting', 'bonds', 'trust_accounting', synced, skipped, failed, errors);
 
     return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+  }
+
+  /**
+   * Release the per-period trust-operating allocation from corpus into
+   * OPERATING_CASH (1030): Dr OPERATING_CASH (operating + investment halves);
+   * Cr TRUST_CORPUS. Never touches COUPON_CASH (1020).
+   */
+  static async _postOperatingAllocation({ amount, entryDate, bondCode, bondId, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureAccount(ACCOUNTS.OPERATING_CASH, 'Trust Operating Cash — Trustees', 'asset', 'cash');
+    await DataBridge._ensureAccount(ACCOUNTS.TRUST_CORPUS, 'Trust Corpus', 'equity');
+
+    var operatingAmount = Math.round(amount * OPERATING_ALLOCATION.operatingShare * 100) / 100;
+    var investmentAmount = Math.round((amount - operatingAmount) * 100) / 100;
+    var lines = [];
+    if (operatingAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.OPERATING_CASH, debitAmount: operatingAmount, creditAmount: 0, memo: 'Operating cost allocation ' + bondCode });
+    }
+    if (investmentAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.OPERATING_CASH, debitAmount: investmentAmount, creditAmount: 0, memo: 'Investment allocation ' + bondCode });
+    }
+    lines.push({ accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: amount, memo: 'Corpus release — operating allocation ' + bondCode });
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Trust operating allocation (' + (OPERATING_ALLOCATION.annualRate * 100) + '%/yr of face) — ' + bondCode,
+      lines: lines,
+      referenceType: 'operating_allocation',
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
   }
 
   /**
