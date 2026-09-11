@@ -748,6 +748,34 @@ describe('live trust activity sync', () => {
   });
 });
 
+describe('coupon period sync', () => {
+  it('books registered coupon periods to coupon cash (1020), never operating cash (1030)', async () => {
+    const period = { id: 250, bond_id: 1, amount: '500000.00', transaction_date: '2024-08-28', bond_code: 'DLB-PRB' };
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (sql.includes("transaction_type = 'coupon_accrual'")) return { rows: [period] };
+      if (sql.includes('FROM trust_accounts WHERE account_code')) return { rows: [{ balance: '1000.00' }] };
+      return { rows: [] };
+    });
+    vi.spyOn(DataBridge, '_ensureAccount').mockResolvedValue(undefined);
+    vi.spyOn(DataBridge, '_logSync').mockResolvedValue(undefined);
+    const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry')
+      .mockResolvedValue({ entry_id: 'JRN-CPN-250' });
+
+    const result = await DataBridge.syncBondsToAccounting();
+
+    expect(result).toMatchObject({ synced: 1, failed: 0 });
+    expect(post).toHaveBeenCalledTimes(1);
+    const call = post.mock.calls[0][0];
+    expect(call).toMatchObject({ referenceType: 'coupon_period', referenceId: '250', bondId: 1, postToFineract: false });
+    expect(call.lines).toEqual([
+      expect.objectContaining({ accountCode: '1020', debitAmount: 500000 }),
+      expect.objectContaining({ accountCode: '1200', creditAmount: 1000 }),
+      expect.objectContaining({ accountCode: '4100', creditAmount: 499000 }),
+    ]);
+    expect(call.lines.some((l: { accountCode: string }) => l.accountCode === '1030')).toBe(false);
+  });
+});
+
 describe('live bookkeeping summary', () => {
   it('surfaces inactive synchronization modules as top-level warnings', async () => {
     vi.spyOn(DataBridge, 'syncWiresToAccounting').mockResolvedValue({

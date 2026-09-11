@@ -183,43 +183,17 @@ class DataBridge {
       for (var j = 0; j < coupons.rows.length; j++) {
         var cpn = coupons.rows[j];
         try {
-          await DataBridge._ensureAccount(ACCOUNTS.COUPON_INCOME, 'Coupon Income', 'income');
-
-          var couponAmount = parseFloat(cpn.amount_cents || cpn.coupon_amount || 0);
+          var couponAmount = parseFloat(cpn.amount_cents || cpn.coupon_amount || cpn.amount || 0);
           if (cpn.amount_cents) couponAmount = couponAmount / 100;
 
           if (couponAmount > 0) {
-            // Fetch accrued interest balance to cap the credit
-            var accruedResult = await pool.query(
-              'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
-              [ACCOUNTS.ACCRUED_INTEREST]
-            );
-            var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
-            var settleAmount = Math.min(couponAmount, Math.max(accruedBalance, 0));
-            var excessAmount = couponAmount - settleAmount;
-
-            var couponLines = [
-              { accountCode: ACCOUNTS.COUPON_CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
-            ];
-            if (settleAmount > 0) {
-              couponLines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
-            }
-            if (excessAmount > 0.001) {
-              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: excessAmount, memo: 'Coupon income (excess over accrued)' });
-            }
-            if (settleAmount <= 0) {
-              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: couponAmount, memo: 'Coupon income ' + cpn.bond_code });
-            }
-
-            await TrustAccountingEngine.postJournalEntry({
+            await DataBridge._postCouponReceipt({
+              amount: couponAmount,
               entryDate: cpn.coupon_date || cpn.created_at,
-              description: 'Coupon payment received — ' + cpn.bond_code,
-              lines: couponLines,
+              bondCode: cpn.bond_code,
+              bondId: cpn.bond_id,
               referenceType: 'coupon_payment',
               referenceId: String(cpn.id),
-              bondId: cpn.bond_id,
-              postedBy: 'data_bridge',
-              postToFineract: false,
             });
             synced++;
           } else {
@@ -230,6 +204,43 @@ class DataBridge {
           errors.push({ couponId: cpn.id, bondId: cpn.bond_code, error: err.message });
         }
       }
+
+      // Sync coupon periods registered from bond terms (BondStatementEngine.registerCoupons)
+      var periods = await pool.query(`
+        SELECT bt.id, bt.bond_id, bt.amount, bt.transaction_date, b.bond_name AS bond_code
+        FROM bond_transactions bt
+        JOIN bonds b ON b.id = bt.bond_id
+        WHERE bt.transaction_type = 'coupon_accrual'
+          AND bt.transaction_date <= CURRENT_DATE
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_type = 'coupon_period'
+              AND je.reference_id = CAST(bt.id AS TEXT)
+              AND je.status = 'posted'
+          )
+        ORDER BY bt.transaction_date ASC
+        LIMIT 100
+      `);
+
+      for (var k = 0; k < periods.rows.length; k++) {
+        var per = periods.rows[k];
+        try {
+          var periodAmount = parseFloat(per.amount);
+          if (periodAmount <= 0) { skipped++; continue; }
+          await DataBridge._postCouponReceipt({
+            amount: periodAmount,
+            entryDate: per.transaction_date,
+            bondCode: per.bond_code,
+            bondId: per.bond_id,
+            referenceType: 'coupon_period',
+            referenceId: String(per.id),
+          });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ couponPeriodId: per.id, bondId: per.bond_code, error: err.message });
+        }
+      }
     } catch (outerErr) {
       errors.push({ phase: 'query', error: outerErr.message });
     }
@@ -237,6 +248,46 @@ class DataBridge {
     await DataBridge._logSync(syncId, 'bond_to_accounting', 'bonds', 'trust_accounting', synced, skipped, failed, errors);
 
     return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+  }
+
+  /**
+   * Book a coupon receipt into the segregated coupon cash bucket (1020):
+   * Dr COUPON_CASH; Cr ACCRUED_INTEREST up to the outstanding accrual, the
+   * remainder Cr COUPON_INCOME. Never touches OPERATING_CASH (1030).
+   */
+  static async _postCouponReceipt({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPON_INCOME, 'Coupon Income', 'income');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPON_CASH, 'Coupon Income Cash — Beneficiary Support', 'asset', 'cash');
+
+    var accruedResult = await pool.query(
+      'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
+      [ACCOUNTS.ACCRUED_INTEREST]
+    );
+    var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
+    var settleAmount = Math.min(amount, Math.max(accruedBalance, 0));
+    var excessAmount = amount - settleAmount;
+
+    var lines = [
+      { accountCode: ACCOUNTS.COUPON_CASH, debitAmount: amount, creditAmount: 0, memo: 'Coupon received ' + bondCode },
+    ];
+    if (settleAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
+    }
+    if (excessAmount > 0.001) {
+      lines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: excessAmount, memo: 'Coupon income ' + bondCode });
+    }
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon payment received — ' + bondCode,
+      lines: lines,
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1786,9 +1837,12 @@ class DataBridge {
     catch (e) { results.trustActivity = { error: e.message }; }
 
     if (!isDryRun) {
+      try { results.bonds = await DataBridge.syncBondsToAccounting(); }
+      catch (e) { results.bonds = { error: e.message }; }
       try { results.bill = await DataBridge.syncBILLToAccounting(); }
       catch (e) { results.bill = { error: e.message }; }
     } else {
+      results.bonds = { skipped: true, reason: 'bond sync has no dry-run mode' };
       results.bill = { skipped: true, reason: 'BILL sync has no dry-run mode' };
     }
 
@@ -1808,10 +1862,13 @@ class DataBridge {
       + (results.trustActivity.posted || 0)
       + (results.trustActivity.linksRepaired || 0)
       + (results.bill.synced || 0)
+      + (results.bonds.synced || 0)
       + (results.fineractPush ? (results.fineractPush.synced || 0) : 0);
     var failed = (results.wires.failed || 0)
       + (results.trustActivity.failed || 0)
       + (results.bill.failed || 0)
+      + (results.bonds.failed || 0)
+      + (results.bonds.error ? 1 : 0)
       + (results.fineractPush ? (results.fineractPush.failed || 0) : 0)
       + (results.wires.error ? 1 : 0)
       + (results.trustActivity.error ? 1 : 0)
