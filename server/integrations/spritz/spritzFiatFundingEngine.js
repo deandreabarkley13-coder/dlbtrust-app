@@ -33,6 +33,12 @@ let CanonicalFundingSource;
 try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { CanonicalFundingSource = null; }
 let BankTransferEngine;
 try { ({ BankTransferEngine } = require('../dapp/bankTransferEngine')); } catch (e) { BankTransferEngine = null; }
+let SystemSettings;
+try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
+let AS2Partners;
+try { ({ AS2Partners } = require('../ach/as2Partners')); } catch (e) { AS2Partners = null; }
+let PartnerBankRails;
+try { ({ PartnerBankRails } = require('../rails/partnerBankRails')); } catch (e) { PartnerBankRails = null; }
 
 const TABLE = 'spritz_fiat_fundings';
 const STATUSES = ['prepared', 'submitted', 'awaiting_payment', 'processing', 'completed', 'failed', 'cancelled'];
@@ -248,12 +254,17 @@ class SpritzFiatFundingEngine {
         issues.push(e.message);
       }
     }
+    const channels = await Promise.all(Object.keys(RAILS).map((rail) => this.originationChannel(rail)));
+    for (const ch of channels) {
+      if (!ch.ready) issues.push(`${ch.rail} origination: ${ch.detail}`);
+    }
     const collateral = await this.collateralHeadroom(0);
     return {
       provider: 'spritz-fiat-funding',
       direction: 'erp_credit_push',
       ready: issues.length === 0,
       issues,
+      originationChannels: channels,
       policyContract: cfg.policyAddress,
       chainId: cfg.chainId,
       network: cfg.network,
@@ -267,6 +278,37 @@ class SpritzFiatFundingEngine {
       collateral,
       gl: cfg.gl,
     };
+  }
+
+  /**
+   * The bank-network channel an ERP credit push would actually leave through.
+   * ACH without an ODFI channel self-transmits the NACHA file back to this app
+   * and still reports `transmitted`, so it must be refused rather than trusted.
+   */
+  static async originationChannel(rail) {
+    const key = String(rail || '').toLowerCase();
+    const out = { rail: key, ready: false, channel: null, detail: null };
+    if (!RAILS[key]) return { ...out, detail: 'unsupported rail' };
+    let mode = 'production';
+    try { if (SystemSettings) mode = await SystemSettings.getMode(); } catch (e) { /* settings table unavailable */ }
+    if (mode !== 'production') return { ...out, detail: `system mode is ${mode}; bank transmission requires production` };
+    if (key === 'ach') {
+      if (str('ACH_MFT_CHANNEL')) return { ...out, ready: true, channel: 'mft', detail: `MFT channel ${str('ACH_MFT_CHANNEL')}` };
+      let endpoint = null;
+      try { if (SystemSettings) endpoint = await SystemSettings.get('bank_endpoint'); } catch (e) { /* unavailable */ }
+      if (endpoint && endpoint !== 'direct') return { ...out, ready: true, channel: 'bank_endpoint', detail: `ODFI endpoint ${endpoint}` };
+      let partner = null;
+      try { if (AS2Partners) partner = await AS2Partners.getDefaultPartnerConfig(); } catch (e) { /* no partner table */ }
+      const partnerUrl = partner && (partner.apiBaseUrl || partner.partnerUrl);
+      if (partner && partnerUrl && partnerUrl !== 'direct') return { ...out, ready: true, channel: 'as2_partner', detail: `AS2 partner ${partner.partnerId || partner.partnerName}` };
+      if (str('ACH_SFTP_URL')) return { ...out, ready: true, channel: 'sftp', detail: 'bank NACHA SFTP drop' };
+      return { ...out, detail: 'no ODFI channel (ACH_MFT_CHANNEL, bank_endpoint setting, AS2 partner or ACH_SFTP_URL); transmission would only self-post the NACHA file' };
+    }
+    if (PartnerBankRails && PartnerBankRails.isConfigured()) return { ...out, ready: true, channel: 'partner_bank', detail: `partner bank ${str('PARTNER_BANK_PROVIDER')}` };
+    let wireEndpoint = null;
+    try { if (SystemSettings) wireEndpoint = await SystemSettings.getWireEndpoint(); } catch (e) { /* unavailable */ }
+    if (wireEndpoint) return { ...out, ready: true, channel: 'wire_endpoint', detail: `wire endpoint ${wireEndpoint}` };
+    return { ...out, detail: 'no wire channel (PARTNER_BANK_* or wire_endpoint setting)' };
   }
 
   static async ensureAccount() {
@@ -387,6 +429,8 @@ class SpritzFiatFundingEngine {
     if (row.status !== 'prepared') return { ...row, idempotent: true };
     if (!row.transferId) throw conflict(`fiat funding ${reference} has no originated transfer`, 'FIAT_FUNDING_NO_TRANSFER');
     if (!BankTransferEngine) throw conflict('BankTransferEngine not available', 'ERP_ORIGINATION_UNAVAILABLE');
+    const channel = await this.originationChannel(row.rail);
+    if (!channel.ready) throw conflict(`${row.rail} credit push cannot reach the bank network: ${channel.detail}`, 'ERP_ORIGINATION_CHANNEL_MISSING');
     const sent = await BankTransferEngine.sendPushCredit(row.transferId);
     const failed = ['failed', 'cancelled'].includes(sent.status);
     const status = failed ? 'failed' : (sent.status === 'manual_pending' ? 'prepared' : 'submitted');

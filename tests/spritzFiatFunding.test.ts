@@ -91,6 +91,25 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
     vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({ committed: true, shadow: false, entryId: 'je_1' });
     vi.spyOn(BankTransferEngine, 'pushCredit').mockResolvedValue({ transfer_id: 'BTO-1', status: 'initiated', ach_batch_id: 'ach_1' });
     vi.spyOn(BankTransferEngine, 'sendPushCredit').mockResolvedValue({ transfer_id: 'BTO-1', status: 'completed' });
+    delete process.env.ACH_MFT_CHANNEL;
+    delete process.env.ACH_SFTP_URL;
+  });
+
+  it('refuses to transmit ACH without an ODFI channel (self-posting the NACHA file is not a bank submission)', async () => {
+    stubSpritz(() => [ACCOUNT]);
+    vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'active', active: true, requirements: [] });
+    await SpritzFiatFundingEngine.fund({ amountUsd: 50, bucket: 'trust_operating', reference: 'REF-odfi' });
+    await expect(SpritzFiatFundingEngine.send({ reference: 'REF-odfi' })).rejects.toMatchObject({ code: 'ERP_ORIGINATION_CHANNEL_MISSING' });
+    expect(BankTransferEngine.sendPushCredit).not.toHaveBeenCalled();
+    expect((await SpritzFiatFundingEngine.get('REF-odfi')).status).toBe('prepared');
+
+    const readiness = await SpritzFiatFundingEngine.readiness();
+    expect(readiness.originationChannels.find((c: any) => c.rail === 'ach')).toMatchObject({ ready: false, channel: null });
+    expect(readiness.issues.some((i: string) => /ach origination: no ODFI channel/.test(i))).toBe(true);
+
+    process.env.ACH_MFT_CHANNEL = 'odfi-nacha';
+    expect(await SpritzFiatFundingEngine.originationChannel('ach')).toMatchObject({ ready: true, channel: 'mft' });
+    expect(await SpritzFiatFundingEngine.originationChannel('wire')).toMatchObject({ ready: false });
   });
 
   afterEach(() => { vi.unstubAllGlobals(); });
@@ -171,6 +190,7 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
     vi.spyOn(TrustPolicyEngine, 'status').mockResolvedValue({ treasury: { token: USDC, balance: '0', available: '0' } });
     await SpritzFiatFundingEngine.fund({ amountUsd: 250, bucket: 'trust_operating', reference: 'REF-4' });
 
+    process.env.ACH_MFT_CHANNEL = 'odfi-nacha';
     const sent = await SpritzFiatFundingEngine.send({ reference: 'REF-4' });
     expect(sent.status).toBe('submitted');
     expect(BankTransferEngine.sendPushCredit).toHaveBeenCalledWith('BTO-1');
