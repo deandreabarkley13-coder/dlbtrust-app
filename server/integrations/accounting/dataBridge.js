@@ -29,6 +29,11 @@ var { FixedIncomeDataService } = require('../bonds/fixedIncomeDataService');
 // Account code constants (matching trust chart of accounts)
 var ACCOUNTS = {
   CASH:              '1000',
+  // Segregated funding buckets (trustAllocationEngine): coupon receipts land in
+  // COUPON_CASH and may only support beneficiaries; OPERATING_CASH funds trustee
+  // operating. Never journal between the two.
+  COUPON_CASH:       '1020',
+  OPERATING_CASH:    '1030',
   BILL_CASH:         '1050',
   BOND_INVESTMENTS:  '1100',
   ACCRUED_INTEREST:  '1200',
@@ -94,6 +99,8 @@ class DataBridge {
 
     // Ensure BILL Cash account exists in the chart of accounts
     await DataBridge._ensureAccount(ACCOUNTS.BILL_CASH, 'BILL Cash Account', 'asset', 'cash');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPON_CASH, 'Coupon Income Cash — Beneficiary Support', 'asset', 'cash');
+    await DataBridge._ensureAccount(ACCOUNTS.OPERATING_CASH, 'Trust Operating Cash — Trustees', 'asset', 'cash');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -192,7 +199,7 @@ class DataBridge {
             var excessAmount = couponAmount - settleAmount;
 
             var couponLines = [
-              { accountCode: ACCOUNTS.CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
+              { accountCode: ACCOUNTS.COUPON_CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
             ];
             if (settleAmount > 0) {
               couponLines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
@@ -2150,4 +2157,4 @@ class DataBridge {
   }
 }
 
-module.exports = { DataBridge };
+module.exports = { DataBridge, ACCOUNTS };
