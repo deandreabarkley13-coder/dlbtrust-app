@@ -21,7 +21,7 @@
  * contract's on-chain USDC balance is read back.
  */
 
-const { SpritzEngine } = require('./spritzEngine');
+const { SpritzEngine, SUPPORTED_RAILS } = require('./spritzEngine');
 const { TrustPolicyEngine } = require('../dapp/trustPolicyEngine');
 const { getConfig } = require('../dapp/config');
 const { TrustAllocationEngine } = require('../dapp/trustAllocationEngine');
@@ -223,6 +223,42 @@ class SpritzTreasuryLegEngine {
       accountNumberLast4: match.accountNumberLast4 || null,
       status: match.status || null,
       supportedRails: match.supportedRails || [],
+    };
+  }
+
+  /**
+   * Credit-push settlement rails available right now. Value always leaves the
+   * ERP as USDC through the policy contract; fiat only appears at settlement,
+   * when Spritz credits the settlement bank (ACH / same-day / RTP / wire) or
+   * pays a linked bill. No bank is ever debited.
+   */
+  static async settlementRails() {
+    const cfg = this.config();
+    const [capabilities, bank, bills] = await Promise.all([
+      SpritzEngine.capabilities().catch(() => []),
+      this.settlementBank().catch(() => null),
+      SpritzEngine.listBills ? SpritzEngine.listBills().catch(() => []) : Promise.resolve([]),
+    ]);
+    const payable = (Array.isArray(bills) ? bills : []).filter(b => b && b.status === 'active' && !b.unpayableCode);
+    const cap = (method) => (capabilities || []).find(c => c.product === 'crypto_to_fiat' && (c.method === method || new RegExp(method, 'i').test(String(c.name || ''))));
+    const bankCap = cap('ach_credit') || cap('bank');
+    const billCap = cap('bill');
+    const rails = [];
+    if (bank) {
+      const supported = (bank.supportedRails && bank.supportedRails.length ? bank.supportedRails : [cfg.defaultRail]).filter(r => SUPPORTED_RAILS.includes(r) && r !== 'bill_pay');
+      for (const rail of supported) {
+        rails.push({ rail, direction: 'credit_push', destination: 'bank', accountId: bank.id, label: `${bank.institution || 'bank'} ••••${bank.accountNumberLast4 || ''}`, status: bankCap ? bankCap.status : 'unknown', default: rail === cfg.defaultRail });
+      }
+    }
+    for (const bill of payable) {
+      rails.push({ rail: 'bill_pay', direction: 'credit_push', destination: 'bill', accountId: bill.id, label: bill.name || (bill.institution && bill.institution.name) || bill.id, status: billCap ? billCap.status : 'unknown', default: !bank && payable.length === 1 });
+    }
+    return {
+      source: { kind: 'erp_canonical_gl', account: cfg.fundingSource.sourceAccountId, asset: 'USDC', via: cfg.policyAddress },
+      payoutWallet: cfg.payoutWallet,
+      rails,
+      active: rails.filter(r => r.status === 'active' || r.status === 'unknown'),
+      default: rails.find(r => r.default) || rails[0] || null,
     };
   }
 
@@ -448,9 +484,13 @@ class SpritzTreasuryLegEngine {
     const destination = await this._settlementDestination({ bankAccountId, billId });
     const bank = destination.kind === 'bank' ? destination.bank : null;
 
-    const allocation = await TrustAllocationEngine.assertPayout({ bucket, payoutWallet: wallet, purpose, amountUsd, reference });
-
     const payoutRail = destination.kind === 'bill' ? 'bill_pay' : (rail || cfg.defaultRail);
+    if (!SUPPORTED_RAILS.includes(payoutRail)) throw badRequest(`unsupported settlement rail ${payoutRail}`, 'SPRITZ_RAIL_UNSUPPORTED');
+    if (bank && bank.supportedRails && bank.supportedRails.length && !bank.supportedRails.includes(payoutRail)) {
+      throw conflict(`settlement bank ${bank.id} does not support rail ${payoutRail} (supports ${bank.supportedRails.join(', ')})`, 'SPRITZ_RAIL_NOT_SUPPORTED_BY_BANK');
+    }
+
+    const allocation = await TrustAllocationEngine.assertPayout({ bucket, payoutWallet: wallet, purpose, amountUsd, reference });
     const quote = await SpritzEngine.createOffRampQuote({
       accountId: destination.accountId,
       amount: Number(amountUsd).toFixed(2),
@@ -696,24 +736,26 @@ class SpritzTreasuryLegEngine {
   static async pipeline({ limit = 20 } = {}) {
     const cfg = this.config();
     const settle = (p) => p.then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
-    const [readiness, policy, payoutWallet, buckets, funding, payouts] = await Promise.all([
+    const [readiness, policy, payoutWallet, buckets, funding, payouts, rails] = await Promise.all([
       settle(this.readiness()),
       settle(TrustPolicyEngine.status()),
       settle(this.payoutWalletStatus()),
       settle(TrustAllocationEngine.summaries()),
       settle(this.listFundingLegs({ limit })),
       settle(this.listPayouts({ limit })),
+      settle(this.settlementRails()),
     ]);
     const errors = [];
     const pick = (label, r, fallback = null) => { if (!r.ok) errors.push(`${label}: ${r.error}`); return r.ok ? r.value : fallback; };
     const rd = pick('treasury leg', readiness);
     const pw = pick('payout wallet', payoutWallet);
     const pol = pick('policy contract', policy);
+    const rl = pick('settlement rails', rails);
     const stages = [
       { key: 'erp', label: 'Treasury-Core ERP (canonical GL)', ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false)), detail: rd ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}` : null },
       { key: 'policy', label: 'Trust distribution policy (on-chain)', ok: Boolean(pol && pol.live && !pol.paused), detail: pol ? `${cfg.policyAddress} chain ${cfg.chainId}${pol.paused ? ' PAUSED' : ''}` : null },
       { key: 'payoutWallet', label: 'Spritz payout wallet (Coinbase)', ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
-      { key: 'spritz', label: 'Spritz off-ramp / Bill Pay', ok: Boolean(rd && rd.settlementDestinations && rd.settlementDestinations.default), detail: rd && rd.settlementDestinations ? `bank ${rd.settlementDestinations.bank}, bills ${rd.settlementDestinations.bills}` : null },
+      { key: 'spritz', label: 'Spritz credit push (crypto -> fiat at settlement)', ok: Boolean(rl && rl.active.length), detail: rl ? (rl.rails.length ? rl.rails.map(r => `${r.rail}${r.destination === 'bill' ? ' -> ' + r.label : ''} [${r.status}]`).join(', ') : 'no settlement bank or payable bill linked') : null },
     ];
     return {
       asOf: new Date().toISOString(),
@@ -725,6 +767,7 @@ class SpritzTreasuryLegEngine {
         payoutWallet: cfg.payoutWallet, payoutWalletSigner: cfg.payoutWalletSigner, gl: cfg.gl, fundingSource: cfg.fundingSource,
       },
       readiness: rd,
+      rails: rl,
       policy: pol,
       payoutWallet: pw,
       buckets: pick('allocation buckets', buckets, []),

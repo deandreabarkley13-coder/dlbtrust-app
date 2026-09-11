@@ -72,7 +72,29 @@ async function wallet() {
   console.log(JSON.stringify(await call('/api/finops/spritz/wallet'), null, 2));
 }
 
-const commands = { status, allowlist, wallet };
+/** Credit-push rails available at settlement (ERP -> USDC -> Spritz -> bank / bill). */
+async function rails() {
+  const data = await call('/api/finops/spritz/treasury/rails');
+  console.log(`Source: ${data.source.kind} ${data.source.account} -> USDC via policy ${data.source.via}; payout wallet ${data.payoutWallet}`);
+  if (!data.rails.length) { console.log('No settlement bank or payable bill linked in Spritz.'); return; }
+  for (const r of data.rails) console.log(`${r.default ? '*' : ' '} ${r.rail.padEnd(14)} -> ${r.destination} ${r.label} (${r.accountId}) [${r.status}]`);
+}
+
+/**
+ * Stage a governed payout: policy contract -> payout wallet -> Spritz credit push.
+ *   --amount 100 --purpose beneficiary_support --reference REF-1 --bucket coupon_income [--rail rtp | --bill <billId>]
+ */
+async function payout() {
+  const data = await call('/api/finops/spritz/treasury/payout/stage', {
+    method: 'POST',
+    body: { amountUsd: arg('amount'), purpose: arg('purpose'), reference: arg('reference'), bucket: arg('bucket'), rail: arg('rail'), billId: arg('bill'), bankAccountId: arg('bank'), memo: arg('memo') },
+  });
+  console.log(`${data.status} ${data.reference}: ${data.amountUsd} USD via ${data.rail} -> ${data.destination.kind} ${data.destination.accountId}`);
+  console.log(`distribution ${data.distribution && (data.distribution.distributionId || data.distribution.id)} quote ${data.spritzQuoteId}`);
+  console.log(data.next);
+}
+
+const commands = { status, allowlist, wallet, rails, payout };
 const cmd = process.argv[2] || 'status';
 if (!commands[cmd]) {
   console.error(`unknown command ${cmd}; expected one of ${Object.keys(commands).join(', ')}`);

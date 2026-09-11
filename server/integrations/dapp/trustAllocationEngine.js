@@ -64,6 +64,7 @@ const CANONICAL_SOURCE_TYPES = new Set(['canonical', 'erp', 'core_banking_canoni
 
 const TABLE = 'trust_allocation_payouts';
 let tableReady = false;
+let tableCreating = null;
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function lower(a) { return String(a || '').toLowerCase(); }
@@ -91,6 +92,11 @@ function policyPayees() {
 
 async function ensureTable() {
   if (tableReady || !pool) return;
+  if (!tableCreating) tableCreating = createTable().catch((e) => { tableCreating = null; throw e; });
+  await tableCreating;
+}
+
+async function createTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${TABLE} (
       reference        TEXT PRIMARY KEY,

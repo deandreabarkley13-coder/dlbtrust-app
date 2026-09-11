@@ -374,6 +374,42 @@ describe('Spritz treasury leg', () => {
     expect(out).toMatchObject({ status: 'proposed', bucket: 'coupon_income', spritzQuoteId: 'q_1', quantityUnits: '100500000', settlementBank: { id: 'ba_dbnet' }, distribution: { distributionId: '7' } });
   });
 
+  it('lists credit-push settlement rails from the ERP canonical GL through USDC to the settlement bank and payable bills, never a debit', async () => {
+    stubSpritz((path) => {
+      if (path === '/v1/users/me') return { capabilities: [{ product: 'crypto_to_fiat', method: 'ach_credit', name: 'Bank payouts', status: 'active' }, { product: 'crypto_to_fiat', method: 'bill_pay', name: 'Bill Pay', status: 'active' }] };
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/bills/') return [{ id: 'bill_1', name: 'Duke Energy', status: 'active' }, { id: 'bill_2', name: 'Closed card', status: 'inactive' }];
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const out = await SpritzTreasuryLegEngine.settlementRails();
+
+    expect(out.source).toMatchObject({ kind: 'erp_canonical_gl', account: '1000', asset: 'USDC', via: POLICY });
+    expect(out.rails.map((r: any) => [r.rail, r.destination, r.accountId, r.status])).toEqual([
+      ['ach_standard', 'bank', 'ba_dbnet', 'active'],
+      ['rtp', 'bank', 'ba_dbnet', 'active'],
+      ['bill_pay', 'bill', 'bill_1', 'active'],
+    ]);
+    expect(out.rails.every((r: any) => r.direction === 'credit_push')).toBe(true);
+    expect(out.default).toMatchObject({ rail: 'ach_standard', destination: 'bank' });
+    expect(calls.some(c => /deposits|funding-sources/.test(c.url))).toBe(false);
+  });
+
+  it('refuses a settlement rail the settlement bank does not support', async () => {
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+    const propose = vi.spyOn(TrustPolicyEngine, 'propose');
+    stubSpritz((path) => {
+      if (path === '/v1/bank-accounts/') return BANKS;
+      throw new Error(`unexpected ${path}`);
+    });
+
+    await expect(SpritzTreasuryLegEngine.stagePayout({ amountUsd: 100, purpose: 'distribution', reference: 'PAY-3', rail: 'wire' }))
+      .rejects.toMatchObject({ status: 409, code: 'SPRITZ_RAIL_NOT_SUPPORTED_BY_BANK' });
+    expect(propose).not.toHaveBeenCalled();
+    expect(calls.some(c => c.url.endsWith('/v1/off-ramp-quotes/'))).toBe(false);
+  });
+
   it('prepareAllowlistPayoutWallet encodes owner-only setBeneficiary/setBeneficiaryLimits for the trustee owner without submitting', async () => {
     const OWNER = '0xD7Fa15572dc6553FEaC54E2304E42dce82443cb0';
     vi.spyOn(TrustPolicyEngine, 'owner').mockResolvedValue(OWNER);

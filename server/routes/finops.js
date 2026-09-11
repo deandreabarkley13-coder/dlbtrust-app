@@ -453,6 +453,11 @@ router.get('/spritz/treasury/payouts', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.listPayouts({ bucket: req.query.bucket, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/spritz/treasury/rails', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.settlementRails() }); } catch (err) { sendError(res, err); }
+});
+
 router.get('/spritz/treasury/funding-legs', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.listFundingLegs({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
 });
