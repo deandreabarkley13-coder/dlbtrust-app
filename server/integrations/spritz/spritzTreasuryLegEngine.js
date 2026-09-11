@@ -38,6 +38,9 @@ let ExternalWalletEngine;
 try { ({ ExternalWalletEngine } = require('../dapp/externalWalletEngine')); } catch (e) { ExternalWalletEngine = null; }
 let PayoutRelayerEngine;
 try { ({ PayoutRelayerEngine } = require('../dapp/payoutRelayerEngine')); } catch (e) { PayoutRelayerEngine = null; }
+function loadFiatFunding() {
+  try { return require('./spritzFiatFundingEngine').SpritzFiatFundingEngine; } catch (e) { return null; }
+}
 let viem, viemChains;
 try { viem = require('viem'); viemChains = require('viem/chains'); } catch (e) { viem = null; viemChains = null; }
 
@@ -741,6 +744,79 @@ class SpritzTreasuryLegEngine {
   }
 
   /**
+   * Straight-through settlement: one idempotent call per ERP reference that
+   * advances the run as far as governance allows and reports where it stopped.
+   *
+   *   1. policy contract holds >= amount USDC available?
+   *      no  -> ERP fiat credit push to the Spritz auto-ramp account
+   *             (SpritzFiatFundingEngine.fund / send), stop at `funding`.
+   *   2. payout staged for the reference? no -> stagePayout (quote + proposal).
+   *   3. distribution approved by the checker? no -> stop at `approval`.
+   *   4. release delay elapsed?           no -> stop at `timelock`.
+   *   5. executePayout: policy -> payout wallet -> Spritz credit push.
+   *
+   * Nothing is auto-approved and no step is skipped; re-running the same
+   * reference resumes from the recorded state.
+   */
+  static async settle({ amountUsd, bucket, purpose, reference, rail, memo, billId, bankAccountId, fundingRail, createdBy, transmit = false } = {}) {
+    if (!reference) throw badRequest('reference required');
+    const amount = Number(amountUsd);
+    if (!Number.isFinite(amount) || amount <= 0) throw badRequest('amountUsd must be a positive number');
+    const cfg = this.config();
+    const trail = [];
+    const stop = (stage, status, detail, extra = {}) => ({ reference, amountUsd: amount.toFixed(2), stage, status, detail, trail, ...extra });
+
+    const policy = await TrustPolicyEngine.status({ token: cfg.settlementToken || undefined });
+    const available = BigInt(policy.treasury.available || '0');
+    const needed = usdToUnits(amount);
+    trail.push({ stage: 'policy', ok: available >= needed, detail: `available ${unitsToUsd(available)} USDC, need ${amount.toFixed(2)}` });
+
+    if (available < needed) {
+      const Fiat = loadFiatFunding();
+      if (!Fiat) throw conflict('SpritzFiatFundingEngine not available', 'FIAT_FUNDING_UNAVAILABLE');
+      const fundingRef = `${reference}-fund`;
+      let funding = await Fiat.get(fundingRef);
+      if (!funding) {
+        const shortfall = Number(unitsToUsd(needed - available));
+        funding = await Fiat.fund({ amountUsd: Math.ceil(shortfall * 100) / 100, bucket, reference: fundingRef, rail: fundingRail, createdBy, memo });
+        trail.push({ stage: 'funding', ok: true, detail: `ERP credit push ${funding.amountUsd} via ${funding.rail} originated (${funding.status})` });
+      }
+      if (transmit && funding.status === 'prepared') {
+        funding = await Fiat.send({ reference: fundingRef });
+        trail.push({ stage: 'funding', ok: funding.status !== 'failed', detail: `credit push transmitted (${funding.status})` });
+      }
+      if (funding.status === 'failed') return stop('funding', 'failed', funding.error || 'ERP credit push failed', { funding });
+      return stop('funding', 'blocked', funding.status === 'prepared'
+        ? 'ERP credit push originated; transmit it (settle with transmit=true) and wait for the Spritz on-ramp to land USDC on the policy contract'
+        : `ERP credit push ${funding.status}; waiting for the Spritz on-ramp to land USDC on the policy contract`, { funding });
+    }
+
+    let payout = (await TrustAllocationEngine.listPayouts({ limit: 500 })).find((p) => p.reference === reference) || null;
+    if (!payout) {
+      const staged = await this.stagePayout({ amountUsd: amount, purpose, reference, rail, memo, billId, bankAccountId, bucket });
+      trail.push({ stage: 'stage', ok: true, detail: `distribution proposed, Spritz quote ${staged.spritzQuoteId}` });
+      return stop('approval', 'blocked', 'checker must approve the distribution on the policy contract', { payout: staged });
+    }
+    if (payout.status === 'executed' || payout.status === 'settled') return stop('settled', 'completed', 'payout already executed', { payout });
+
+    const distribution = payout.distributionId
+      ? await TrustPolicyEngine.distribution(payout.distributionId)
+      : await TrustPolicyEngine.findByReference(reference);
+    if (!distribution) return stop('approval', 'blocked', 'distribution not found on the policy contract yet', { payout });
+    trail.push({ stage: 'distribution', ok: true, detail: `#${distribution.distributionId} ${distribution.status}, ${distribution.approvals} approval(s)` });
+    if (distribution.status === 'executed') return stop('settled', 'completed', 'distribution executed on chain', { payout, distribution });
+    if (distribution.status === 'cancelled') return stop('approval', 'failed', 'distribution cancelled', { payout, distribution });
+    if (distribution.status !== 'approved') return stop('approval', 'blocked', 'checker must approve the distribution on the policy contract', { payout, distribution });
+    if (distribution.releasableAt && new Date(distribution.releasableAt) > new Date()) {
+      return stop('timelock', 'blocked', `release delay: executable at ${distribution.releasableAt}`, { payout, distribution });
+    }
+    if (!payout.spritzQuoteId) return stop('execute', 'failed', 'no Spritz quote recorded for this payout', { payout, distribution });
+    const executed = await this.executePayout({ distributionId: distribution.distributionId, spritzQuoteId: payout.spritzQuoteId, reference, amountUsd: amount, createdBy });
+    trail.push({ stage: 'execute', ok: true, detail: `executePayout ${executed.status || 'submitted'}` });
+    return stop('execute', executed.status === 'settled' ? 'completed' : 'submitted', 'policy released to the payout wallet; Spritz credit push submitted', { payout, distribution, execution: executed });
+  }
+
+  /**
    * One live snapshot of the Treasury-Core ERP -> policy contract -> Spritz
    * pipeline: funding route, canonical buckets, policy contract, payout wallet,
    * settlement destinations, and the most recent legs in each direction.
@@ -748,7 +824,8 @@ class SpritzTreasuryLegEngine {
   static async pipeline({ limit = 20 } = {}) {
     const cfg = this.config();
     const settle = (p) => p.then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
-    const [readiness, policy, payoutWallet, buckets, funding, payouts, rails, relayer] = await Promise.all([
+    const Fiat = loadFiatFunding();
+    const [readiness, policy, payoutWallet, buckets, funding, payouts, rails, relayer, fiat, fiatFundings] = await Promise.all([
       settle(this.readiness()),
       settle(TrustPolicyEngine.status()),
       settle(this.payoutWalletStatus()),
@@ -757,6 +834,8 @@ class SpritzTreasuryLegEngine {
       settle(this.listPayouts({ limit })),
       settle(this.settlementRails()),
       settle(PayoutRelayerEngine ? PayoutRelayerEngine.status() : Promise.resolve(null)),
+      settle(Fiat ? Fiat.readiness() : Promise.resolve(null)),
+      settle(Fiat ? Fiat.list({ limit }) : Promise.resolve([])),
     ]);
     const errors = [];
     const pick = (label, r, fallback = null) => { if (!r.ok) errors.push(`${label}: ${r.error}`); return r.ok ? r.value : fallback; };
@@ -765,8 +844,19 @@ class SpritzTreasuryLegEngine {
     const pol = pick('policy contract', policy);
     const rl = pick('settlement rails', rails);
     const relay = pick('payout relayer', relayer);
+    const ff = pick('fiat funding', fiat);
     const stages = [
       { key: 'erp', label: 'Treasury-Core ERP (canonical GL)', ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false)), detail: rd ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}` : null },
+      {
+        key: 'fiatFunding',
+        label: 'ERP credit push -> Spritz auto-ramp (fiat in, USDC to policy)',
+        ok: Boolean(ff && ff.ready),
+        detail: ff
+          ? (ff.ready
+            ? `auto-ramp ${ff.autoRampAccount.id} ${ff.autoRampAccount.depositInstructions ? `${ff.autoRampAccount.depositInstructions.bankName} ••••${String(ff.autoRampAccount.depositInstructions.bankAccountNumber || '').slice(-4)}` : ''} via ${ff.defaultRail}`
+            : ff.issues.join('; '))
+          : null,
+      },
       { key: 'policy', label: 'Trust distribution policy (on-chain)', ok: Boolean(pol && pol.live && !pol.paused), detail: pol ? `${cfg.policyAddress} chain ${cfg.chainId}${pol.paused ? ' PAUSED' : ''}` : null },
       { key: 'payoutWallet', label: 'Spritz payout wallet (Coinbase)', ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
       {
@@ -793,6 +883,8 @@ class SpritzTreasuryLegEngine {
       readiness: rd,
       rails: rl,
       relayer: relay,
+      fiatFunding: ff,
+      fiatFundings: pick('fiat fundings', fiatFundings, []),
       policy: pol,
       payoutWallet: pw,
       buckets: pick('allocation buckets', buckets, []),
