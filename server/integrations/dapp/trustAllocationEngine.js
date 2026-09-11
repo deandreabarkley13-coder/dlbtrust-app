@@ -254,9 +254,25 @@ class TrustAllocationEngine {
     return route.action === 'erp_treasury' || route.action === 'mint_and_swap' || Boolean(route.poolAddress);
   }
 
-  /** Income recognised in the ERP for a bucket, in USD. */
+  /**
+   * Income recognised into the bucket to date. When the bucket has a canonical
+   * GL cash account (1020 / 1030, mirrored in Fineract) this is the gross
+   * debits ever posted to it — coupon periods, paid coupons and operating
+   * allocations booked by the DataBridge — so headroom tracks the books.
+   */
   static async recognised(bucketKey) {
     const b = this.bucket(bucketKey);
+    const gl = this.glAccountCode(b.key);
+    if (gl && pool) {
+      const { rows } = await pool.query(
+        `SELECT COALESCE(SUM(jl.debit_amount), 0) AS total
+           FROM trust_journal_lines jl
+           JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+          WHERE jl.account_code = $1 AND je.status = 'posted'
+            AND je.reference_type IN ('coupon_period', 'coupon_payment', 'operating_allocation')`, [gl]
+      ).catch(() => ({ rows: [] }));
+      if (rows.length) return Number((rows[0] && rows[0].total) || 0);
+    }
     if (b.erpSource === 'coupon_payments') {
       if (!pool) return 0;
       const bondId = Number(MODULES.bond_portfolio.sourceAccountId);

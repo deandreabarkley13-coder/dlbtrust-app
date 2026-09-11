@@ -437,7 +437,13 @@ class OperationalUtilitiesEngine {
     if (!dataBridge || !dataBridge.DataBridge) throw new Error('data bridge unavailable');
     const fullSync = await dataBridge.DataBridge.runFullSync();
     const report = await dataBridge.DataBridge.getReconciliationReport();
-    return { fullSync, report };
+    let fixedIncome = null;
+    const fixedIncomeMod = safeRequire('../os/fixedIncomeDistributionEngine');
+    if (fixedIncomeMod && fixedIncomeMod.FixedIncomeDistributionEngine) {
+      try { fixedIncome = await fixedIncomeMod.FixedIncomeDistributionEngine.runCycle({ actor: 'reconcile_all' }); }
+      catch (e) { fixedIncome = { error: e.message }; }
+    }
+    return { fullSync, report, fixedIncome };
   }
 
   static async _runBondAccrual() {
