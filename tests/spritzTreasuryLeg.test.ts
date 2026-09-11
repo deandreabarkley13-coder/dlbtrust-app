@@ -373,4 +373,24 @@ describe('Spritz treasury leg', () => {
     expect(propose).toHaveBeenCalledWith(expect.objectContaining({ beneficiary: PAYOUT, quantity: '100500000', purpose: 'distribution', reference: 'PAY-2' }));
     expect(out).toMatchObject({ status: 'proposed', bucket: 'coupon_income', spritzQuoteId: 'q_1', quantityUnits: '100500000', settlementBank: { id: 'ba_dbnet' }, distribution: { distributionId: '7' } });
   });
+
+  it('prepareAllowlistPayoutWallet encodes owner-only setBeneficiary/setBeneficiaryLimits for the trustee owner without submitting', async () => {
+    const OWNER = '0xD7Fa15572dc6553FEaC54E2304E42dce82443cb0';
+    vi.spyOn(TrustPolicyEngine, 'owner').mockResolvedValue(OWNER);
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: false, frozen: false, remainingPeriodAllowance: {} } as any);
+    const write = vi.spyOn(TrustPolicyEngine as any, '_write');
+
+    const out = await SpritzTreasuryLegEngine.prepareAllowlistPayoutWallet({ maxPerDistributionUsd: '500', periodCapUsd: '2000', periodSeconds: 2592000 });
+
+    expect(write).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ owner: OWNER, beneficiary: PAYOUT, token: USDC, alreadyAllowed: false, serverWalletIsOwner: false, chainId: 8453 });
+    expect(out.txs.map((t: any) => t.action)).toEqual(['setBeneficiary', 'setBeneficiaryLimits']);
+    for (const tx of out.txs) {
+      expect(tx.from).toBe(OWNER);
+      expect(tx.to).toBe(POLICY);
+      expect(tx.data).toMatch(/^0x[0-9a-f]+$/i);
+    }
+    expect(out.txs[1].call.params).toEqual([PAYOUT, USDC, '500000000', '2000000000', 2592000]);
+    expect(JSON.stringify(out)).toBeTruthy();
+  });
 });

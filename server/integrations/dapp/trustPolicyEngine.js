@@ -572,6 +572,47 @@ class TrustPolicyEngine {
     };
   }
 
+  static async owner() {
+    return toText(await this._read(SIG.owner, []));
+  }
+
+  /**
+   * Encode `onlyOwner` setters as unsigned transactions for the contract owner
+   * (trustee governance) to sign in its own wallet. The server wallet does not
+   * own the contract after hand-off, so it cannot submit these itself.
+   */
+  static async prepareOwnerCalls(calls) {
+    const cfg = this._contract();
+    if (!viem || !viem.encodeFunctionData || !viem.parseAbi) throw new Error('viem is required to encode owner calls');
+    const owner = await this.owner();
+    const txs = calls.map(({ action, method, params }) => ({
+      action,
+      from: owner,
+      to: cfg.address,
+      chainId: cfg.chainId,
+      value: '0x0',
+      data: viem.encodeFunctionData({ abi: viem.parseAbi([method]), args: params }),
+      call: { contractAddress: cfg.address, method, params: params.map((p) => (typeof p === 'bigint' ? p.toString() : p)) },
+    }));
+    return { owner, contract: cfg.address, chainId: cfg.chainId, serverWalletIsOwner: !!cfg.serverWallet && cfg.serverWallet.toLowerCase() === String(owner).toLowerCase(), txs };
+  }
+
+  /** Unsigned owner transactions that allow-list a beneficiary and set its per-token ceilings. */
+  static async prepareBeneficiaryAllowlist({ beneficiary, token, maxPerDistribution = '0', periodCap = '0', periodSeconds = 0 } = {}) {
+    if (!isAddress(beneficiary)) throw badRequest('beneficiary must be a valid address');
+    const cfg = this.getConfig();
+    const asset = token === null || token === undefined || token === '' ? cfg.settlementToken : token;
+    if (!isAddress(asset)) throw badRequest('token must be a valid address');
+    return this.prepareOwnerCalls([
+      { action: 'setBeneficiary', method: SIG.setBeneficiary, params: [beneficiary, true] },
+      {
+        action: 'setBeneficiaryLimits',
+        method: SIG.setBeneficiaryLimits,
+        params: [beneficiary, asset, toBigInt(maxPerDistribution, 'maxPerDistribution'), toBigInt(periodCap, 'periodCap'), Number(periodSeconds) || 0],
+      },
+    ]);
+  }
+
   /** Whether a beneficiary/token pair could be paid right now, and its remaining headroom. */
   static async beneficiaryStatus({ beneficiary, token } = {}) {
     const cfg = this._contract();

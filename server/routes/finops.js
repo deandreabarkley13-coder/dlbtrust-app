@@ -92,6 +92,13 @@ try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e)
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
+const adminAuth = requireAuth({ role: 'admin' });
+
+// Collateral OS depends on the Spritz treasury leg, so load it lazily.
+async function loadCollateralOs() {
+  const { CollateralOsEngine } = require('../integrations/os/collateralOsEngine');
+  return CollateralOsEngine;
+}
 
 function sendError(res, err) {
   console.error('[finops]', err.message || err);
@@ -404,6 +411,50 @@ router.post('/spritz/treasury/payout/confirm', operatorAuth, writeRateLimiter(),
 // ─── Spritz payout wallet (Coinbase) ─────────────────────────────────────────
 router.get('/spritz/wallet', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.payoutWalletStatus({ address: req.query.address }) }); } catch (err) { sendError(res, err); }
+});
+
+// Unsigned owner txs allow-listing the payout wallet on the policy contract (nothing submitted).
+router.post('/spritz/wallet/allowlist/prepare', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { address, maxPerDistributionUsd, periodCapUsd, periodSeconds } = req.body || {};
+    res.json({ success: true, data: await SpritzTreasuryLegEngine.prepareAllowlistPayoutWallet({ address, maxPerDistributionUsd, periodCapUsd, periodSeconds }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// Live snapshot of the Treasury-Core ERP -> policy contract -> Spritz pipeline,
+// plus Collateral OS and Bill Pay, for the unified dashboard.
+router.get('/spritz/pipeline', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const limit = Number(req.query.limit) || 20;
+    const settle = (p) => p.then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
+    const [pipeline, collateral, billPay] = await Promise.all([
+      SpritzTreasuryLegEngine.pipeline({ limit }),
+      settle(loadCollateralOs().then((eng) => eng.status())),
+      settle(SpritzBillPayEngine.listPayments({ limit })),
+    ]);
+    if (!collateral.ok) pipeline.errors.push(`collateral os: ${collateral.error}`);
+    if (!billPay.ok) pipeline.errors.push(`bill pay: ${billPay.error}`);
+    const cos = collateral.ok ? collateral.value : null;
+    pipeline.stages.push({
+      key: 'collateralOs',
+      label: 'Collateral OS (pledge -> draw -> settle)',
+      ok: Boolean(cos && cos.readiness && cos.readiness.ready),
+      detail: cos ? (cos.readiness.ready ? `${cos.facility.openDraws || 0} open draws, ${(cos.facility.byPosition || []).length} positions` : (cos.readiness.issues || []).join('; ')) : null,
+    });
+    pipeline.ready = pipeline.stages.every((s) => s.ok) && pipeline.errors.length === 0;
+    pipeline.collateralOs = cos;
+    pipeline.billPayments = billPay.ok ? billPay.value : [];
+    res.json({ success: true, data: pipeline });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/treasury/payouts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.listPayouts({ bucket: req.query.bucket, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/treasury/funding-legs', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.listFundingLegs({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/wallet/connect', operatorAuth, writeRateLimiter(), async (req, res) => {
