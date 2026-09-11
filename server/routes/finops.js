@@ -387,7 +387,30 @@ router.post('/spritz/treasury/payout/execute', operatorAuth, writeRateLimiter(),
     const { distributionId, spritzQuoteId, reference, amountUsd } = req.body || {};
     const createdBy = req.user && (req.user.username || req.user.id);
     const data = await SpritzTreasuryLegEngine.executePayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy });
+    res.status(data.status === 'awaiting_signature' ? 202 : 200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// External (Coinbase) payout wallet signed the prepared Spritz payment: book it.
+router.post('/spritz/treasury/payout/confirm', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { distributionId, spritzQuoteId, txHash, reference, amountUsd } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    const data = await SpritzTreasuryLegEngine.confirmPayout({ distributionId, spritzQuoteId, txHash, reference, amountUsd, createdBy });
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz payout wallet (Coinbase) ─────────────────────────────────────────
+router.get('/spritz/wallet', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzTreasuryLegEngine.payoutWalletStatus({ address: req.query.address }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/wallet/connect', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { address, provider, label } = req.body || {};
+    const createdBy = req.user && (req.user.username || req.user.id);
+    res.json({ success: true, data: await SpritzTreasuryLegEngine.connectPayoutWallet({ address, provider, label, createdBy }) });
   } catch (err) { sendError(res, err); }
 });
 
@@ -497,6 +520,14 @@ router.get('/spritz/bill-pay/payments/:id', operatorAuth, async (req, res) => {
 
 router.post('/spritz/bill-pay/payments/:id/refresh', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await SpritzBillPayEngine.refresh(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bill-pay/payments/:id/confirm', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { txHash } = req.body || {};
+    const confirmedBy = req.user && (req.user.username || req.user.id);
+    res.json({ success: true, data: await SpritzBillPayEngine.confirm({ paymentId: req.params.id, txHash, confirmedBy }) });
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Spritz Cards ────────────────────────────────────────────────────────────

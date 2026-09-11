@@ -15,6 +15,11 @@
  * Dr bill expense (+ Dr Spritz fee) / Cr USDC treasury. Live movement needs
  * SPRITZ_BILLPAY_LIVE=true and CANONICAL_FUNDING_LIVE=true; otherwise the
  * quote is created and the full plan is recorded as a shadow run.
+ *
+ * When the payout wallet is externally held (the trust's Coinbase Spritz
+ * wallet, the default) the server never signs: a live run stops at
+ * `awaiting_signature` with the unsigned approve/payment calls, and
+ * confirm({ paymentId, txHash }) books it once the wallet has sent them.
  */
 
 const { SpritzEngine } = require('./spritzEngine');
@@ -79,6 +84,8 @@ class SpritzBillPayEngine {
       chainId: leg.chainId,
       settlementToken: leg.settlementToken,
       payoutWallet: leg.payoutWallet,
+      payoutWalletSigner: leg.payoutWalletSigner,
+      payoutWalletProvider: leg.payoutWalletProvider,
       fundingSource: {
         kind: 'treasury_core_erp',
         system: (erp && erp.system) || 'fineract',
@@ -112,7 +119,7 @@ class SpritzBillPayEngine {
         erp_cash_account TEXT,
         erp_journal_entry_id TEXT,
         gl_journal_entry_id TEXT,
-        status TEXT NOT NULL DEFAULT 'shadow' CHECK (status IN ('shadow','quoted','funded','settling','completed','failed')),
+        status TEXT NOT NULL DEFAULT 'shadow' CHECK (status IN ('shadow','quoted','funded','awaiting_signature','settling','completed','failed')),
         payer_wallet TEXT,
         memo TEXT,
         metadata JSONB DEFAULT '{}',
@@ -121,6 +128,9 @@ class SpritzBillPayEngine {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await pool.query('ALTER TABLE spritz_bill_payments DROP CONSTRAINT IF EXISTS spritz_bill_payments_status_check');
+    await pool.query(`ALTER TABLE spritz_bill_payments ADD CONSTRAINT spritz_bill_payments_status_check
+      CHECK (status IN ('shadow','quoted','funded','awaiting_signature','settling','completed','failed'))`);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_spritz_bill_payments_bill ON spritz_bill_payments(spritz_bill_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_spritz_bill_payments_status ON spritz_bill_payments(status)');
   }
@@ -152,6 +162,7 @@ class SpritzBillPayEngine {
       fundingSource: cfg.fundingSource,
       gl: cfg.gl,
       payoutWallet: cfg.payoutWallet || null,
+      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: cfg.payoutWalletSigner === 'external' ? cfg.payoutWalletProvider : 'server' },
       network: cfg.network,
       billPay: capability ? { status: capability.status } : null,
       bills,
@@ -274,9 +285,22 @@ class SpritzBillPayEngine {
       return this._result(row);
     }
 
-    // 2. Pay the quote on-chain from the treasury payout wallet (USDC -> Spritz -> biller).
+    // 2. Pay the quote on-chain from the payout wallet (USDC -> Spritz -> biller).
     let settlement;
     try {
+      if (cfg.payoutWalletSigner === 'external') {
+        const unsignedTx = await SpritzEngine.prepareQuoteTransaction(quoted.quoteId, { senderAddress: cfg.payoutWallet });
+        const row = await this._save({
+          ...base,
+          status: 'awaiting_signature',
+          metadata: { ...base.metadata, unsignedTx, signer: { type: 'external', provider: cfg.payoutWalletProvider } },
+        });
+        return {
+          ...this._result(row),
+          unsignedTx,
+          next: `Sign ${unsignedTx.approve ? 'approve then ' : ''}payment from ${cfg.payoutWallet} in the ${cfg.payoutWalletProvider} wallet, then POST /spritz/bill-pay/payments/${paymentId}/confirm { txHash }`,
+        };
+      }
       settlement = await SpritzEngine.executeQuote(quoted.quoteId);
     } catch (err) {
       // Never leave the ERP short: put the draw back before failing.
@@ -288,20 +312,26 @@ class SpritzBillPayEngine {
       throw err;
     }
 
-    // 3. Book the bill: Dr expense (+ Dr fee) / Cr USDC treasury.
+    const row = await this._settle({ base, quoted, gross, settlement, initiatedBy });
+    return this._result(row);
+  }
+
+  /** Book a paid quote (Dr expense (+ Dr fee) / Cr USDC treasury) and mark the payment settling. */
+  static async _settle({ base, quoted, gross, settlement, initiatedBy }) {
+    const cfg = this.config();
+    const amount = quoted.amountUsd;
     const journal = await bookJournal({
       referenceType: REFERENCE_TYPE,
       referenceId: quoted.quoteId,
-      description: `Spritz Bill Pay ${amount.toFixed(2)} USD to ${quoted.bill.name || quoted.bill.id} [${runId}]`,
+      description: `Spritz Bill Pay ${amount.toFixed(2)} USD to ${quoted.bill.name || quoted.bill.id} [${base.runId}]`,
       lines: [
         { accountCode: cfg.gl.expenseAccount, debitAmount: amount, creditAmount: 0, description: `Bill ${quoted.bill.name || quoted.bill.id} paid via Spritz Bill Pay` },
         ...(quoted.feeUsd > 0 ? [{ accountCode: cfg.gl.feeAccount, debitAmount: quoted.feeUsd, creditAmount: 0, description: 'Spritz Bill Pay fee' }] : []),
-        { accountCode: cfg.fundingSource.assetAccountCode, debitAmount: 0, creditAmount: gross, description: `USDC sent from treasury wallet ${cfg.payoutWallet}` },
+        { accountCode: cfg.fundingSource.assetAccountCode, debitAmount: 0, creditAmount: gross, description: `USDC sent from payout wallet ${base.payerWallet || cfg.payoutWallet}` },
       ],
       postedBy: initiatedBy,
     });
-
-    const row = await this._save({
+    return this._save({
       ...base,
       status: 'settling',
       txHash: settlement && settlement.txHash || null,
@@ -309,7 +339,27 @@ class SpritzBillPayEngine {
       glJournalEntryId: journal && journal.entryId || null,
       metadata: { ...base.metadata, settlement, journal },
     });
-    return this._result(row);
+  }
+
+  /** The external (Coinbase) payout wallet has sent the prepared transaction: record and book it. */
+  static async confirm({ paymentId, txHash, confirmedBy = 'operator' } = {}) {
+    if (!txHash || !/^0x[a-fA-F0-9]{64}$/.test(String(txHash))) throw badRequest('txHash required');
+    const row = await this.getPayment({ paymentId });
+    if (!row) throw badRequest(`Spritz bill payment not found: ${paymentId}`, 'NOT_FOUND');
+    if (row.status !== 'awaiting_signature') {
+      if (row.tx_hash && String(row.tx_hash).toLowerCase() === String(txHash).toLowerCase()) return { ...this._result(row), idempotent: true };
+      throw conflict(`Spritz bill payment ${paymentId} is ${row.status}, not awaiting a signature`, 'NOT_AWAITING_SIGNATURE');
+    }
+    const m = meta(row);
+    const base = {
+      paymentId: row.payment_id, runId: row.run_id, vendorBillId: row.vendor_bill_id, spritzBillId: row.spritz_bill_id, spritzQuoteId: row.spritz_quote_id,
+      amountUsd: num(row.amount_usd), feeUsd: num(row.fee_usd), erpCashAccount: row.erp_cash_account, erpJournalEntryId: row.erp_journal_entry_id,
+      payerWallet: row.payer_wallet, memo: row.memo, createdBy: row.created_by, metadata: { ...m, confirmedBy, confirmedAt: new Date().toISOString() },
+    };
+    const quoted = { quoteId: row.spritz_quote_id, amountUsd: base.amountUsd, feeUsd: base.feeUsd, bill: m.bill || { id: row.spritz_bill_id } };
+    const gross = +(base.amountUsd + base.feeUsd).toFixed(2);
+    const saved = await this._settle({ base, quoted, gross, settlement: { txHash, quoteId: row.spritz_quote_id, signer: 'external' }, initiatedBy: confirmedBy });
+    return this._result(saved);
   }
 
   /** Refresh a settling payment from the Spritz quote / off-ramp status. */
@@ -365,6 +415,7 @@ class SpritzBillPayEngine {
       glJournalEntryId: row.gl_journal_entry_id || null,
       status: row.status,
       shadow: row.status === 'shadow',
+      unsignedTx: row.status === 'awaiting_signature' ? (m.unsignedTx || null) : undefined,
       payerWallet: row.payer_wallet || null,
       memo: row.memo || null,
       metadata: m,
