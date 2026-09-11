@@ -115,6 +115,10 @@ async function spritzRequest(method, path, body, options = {}) {
     headers['x-spritz-key'] = apiKey();
     const proxyAuth = str('SPRITZ_PROXY_AUTH');
     if (proxyAuth) headers['Authorization'] = proxyAuth;
+    if (hasIntegratorCreds()) {
+      const signed = await hmacSign(method, url, body !== undefined ? JSON.stringify(body) : undefined);
+      if (signed) Object.assign(headers, signed);
+    }
   } else if (hasIntegratorCreds()) {
     const signed = await hmacSign(method, url, body !== undefined ? JSON.stringify(body) : undefined);
     if (signed) Object.assign(headers, signed);
