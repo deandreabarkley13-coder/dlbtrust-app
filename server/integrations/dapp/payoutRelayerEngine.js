@@ -86,6 +86,9 @@ const PERMISSION_TYPES = {
 // Same default as SpritzTreasuryLegEngine (the Coinbase payout wallet).
 const DEFAULT_PAYOUT_WALLET = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
 const DEFAULT_SESSION_SECONDS = 30 * 24 * 3600;
+// Salt of the relayer-admin'd helper account used to pay for deployments via
+// sponsored UserOperations when the relayer EOA holds no native gas.
+const DEPLOYER_SALT = 'dlbtrust-payout-deployer';
 const REQ_VALIDITY_SECONDS = 3600;
 
 function str(name, def = '') { return (process.env[name] || def).toString().trim(); }
@@ -188,6 +191,7 @@ class PayoutRelayerEngine {
       issues.push(`factory entrypoint ${factoryEntryPoint} differs from configured THIRDWEB_ENTRY_POINT ${cfg.entryPoint}`);
     }
     if (!same(address, cfg.smartAccount)) issues.push(`SPRITZ_PAYOUT_WALLET is ${cfg.smartAccount}; set it to ${address} once deployed`);
+    const deployer = deployed || !isAddress(cfg.relayer) ? null : await this.deployerAccount(cfg).catch(() => null);
 
     return jsonSafe({
       action: deployed ? 'smartAccountDeployed' : 'deploySmartAccount',
@@ -200,6 +204,7 @@ class PayoutRelayerEngine {
       deployed,
       configured: same(address, cfg.smartAccount),
       issues,
+      deployer,
       unsignedTx: deployed ? null : {
         to: viem.getAddress(factory),
         value: '0',
@@ -208,7 +213,7 @@ class PayoutRelayerEngine {
         description: `AccountFactory.createAccount(${adminAddr}, ${data}) → ${address}`,
       },
       next: [
-        deployed ? `account ${address} is deployed` : `broadcast unsignedTx from any funded wallet (or POST /api/finops/spritz/relayer/account/deploy { confirm: true } to send it from the server wallet)`,
+        deployed ? `account ${address} is deployed` : `broadcast unsignedTx from any funded wallet (or POST /api/finops/spritz/relayer/account/deploy { confirm: true } to send it from the server wallet${deployer ? `, gas-sponsored via helper account ${deployer.address} when the wallet holds no ETH` : ''})`,
         `set SPRITZ_PAYOUT_WALLET=${address} and restart`,
         `trustee owner allow-lists ${address} on TrustDistributionPolicy (POST /api/finops/spritz/wallet/allowlist/prepare { address })`,
         `trustee admin signs the session-key grant for relayer ${cfg.relayer || '(unset)'} (POST /api/finops/spritz/relayer/session-key/prepare)`,
@@ -220,8 +225,13 @@ class PayoutRelayerEngine {
    * Broadcast factory.createAccount from the server/relayer key. Requires an
    * explicit `confirm: true`; the sender only pays gas and gains no control
    * over the account (admin is the trustee).
+   *
+   * `via`: 'eoa' sends a plain tx from the relayer EOA; 'sponsored' routes
+   * the same createAccount call through a relayer-admin'd helper thirdweb
+   * Account as a gas-sponsored UserOperation (no native balance needed);
+   * 'auto' (default) picks 'eoa' when the relayer holds gas, else 'sponsored'.
    */
-  static async deploySmartAccount({ admin, salt, confirm = false } = {}) {
+  static async deploySmartAccount({ admin, salt, confirm = false, via = 'auto' } = {}) {
     if (confirm !== true) throw badRequest('confirm: true is required to broadcast the deployment', 'RELAYER_CONFIRM_REQUIRED');
     const cfg = this.config();
     if (!cfg.relayerKey) throw conflict('no server signing key (SPRITZ_RELAYER_PRIVATE_KEY / DAPP_PRIVATE_KEY) to pay deployment gas', 'RELAYER_NO_KEY');
@@ -229,6 +239,13 @@ class PayoutRelayerEngine {
     if (prepared.deployed) return { ...prepared, txHash: null, broadcast: false };
     const client = this._publicClient(cfg);
     const account = accounts.privateKeyToAccount(cfg.relayerKey);
+    let route = String(via || 'auto').toLowerCase();
+    if (!['auto', 'eoa', 'sponsored'].includes(route)) throw badRequest(`via must be auto|eoa|sponsored, got ${via}`);
+    if (route === 'auto') {
+      const balance = await client.getBalance({ address: account.address }).catch(() => 0n);
+      route = balance > 0n ? 'eoa' : 'sponsored';
+    }
+    if (route === 'sponsored') return this._deploySponsored({ cfg, client, prepared, account });
     const wallet = viem.createWalletClient({ account, chain: viemChain(cfg.chainId), transport: viem.http(cfg.rpcUrl) });
     const txHash = await wallet.sendTransaction({ to: prepared.unsignedTx.to, data: prepared.unsignedTx.data, value: 0n });
     const receipt = await client.waitForTransactionReceipt({ hash: txHash });
@@ -246,6 +263,97 @@ class PayoutRelayerEngine {
       txHash,
       status: receipt.status,
       payer: account.address,
+      via: 'eoa',
+    });
+  }
+
+  /** Helper thirdweb Account admin'd by the relayer key; only ever used to pay for deployments. */
+  static async deployerAccount(cfg = this.config()) {
+    if (!isAddress(cfg.relayer)) throw conflict('relayer address unknown', 'RELAYER_NO_KEY');
+    const client = this._publicClient(cfg);
+    const factory = viem.getAddress(cfg.thirdweb.factory);
+    const relayer = viem.getAddress(cfg.relayer);
+    const data = saltHex(DEPLOYER_SALT);
+    const address = viem.getAddress(await client.readContract({ address: factory, abi: FACTORY_ABI, functionName: 'getAddress', args: [relayer, data] }));
+    const code = await client.getBytecode({ address }).catch(() => null);
+    return { address, admin: relayer, factory, salt: data, deployed: Boolean(code && code !== '0x') };
+  }
+
+  /**
+   * factory.createAccount(trustee) executed by the relayer's helper account as
+   * ONE sponsored UserOperation (helper initCode included when it is not yet
+   * deployed). The relayer key signs only as admin of the helper; the payout
+   * account's admin is still the trustee.
+   */
+  static async _deploySponsored({ cfg, client, prepared, account }) {
+    if (!aa) throw conflict('viem/account-abstraction is required', 'RELAYER_UNAVAILABLE');
+    if (!ThirdwebWalletEngine.readiness().canSponsorGas) {
+      throw conflict(`relayer ${account.address} has no native balance on chain ${cfg.chainId} and thirdweb gas sponsorship is not live; fund it or set THIRDWEB_GAS_SPONSORSHIP_LIVE=true with THIRDWEB_SECRET_KEY`, 'RELAYER_NO_GAS');
+    }
+    const deployer = await this.deployerAccount(cfg);
+    const sender = deployer.address;
+    const nonce = await client.readContract({ address: cfg.entryPoint, abi: ENTRY_POINT_ABI, functionName: 'getNonce', args: [sender, 0n] });
+    const initCode = deployer.deployed
+      ? '0x'
+      : viem.concatHex([deployer.factory, viem.encodeFunctionData({ abi: FACTORY_ABI, functionName: 'createAccount', args: [deployer.admin, deployer.salt] })]);
+    const callData = viem.encodeFunctionData({
+      abi: ACCOUNT_ABI,
+      functionName: 'execute',
+      args: [viem.getAddress(prepared.unsignedTx.to), 0n, prepared.unsignedTx.data],
+    });
+    const fees = await client.estimateFeesPerGas().catch(() => ({ maxFeePerGas: 100000000n, maxPriorityFeePerGas: 1000000n }));
+    const userOp = {
+      sender,
+      nonce,
+      initCode,
+      callData,
+      callGasLimit: 600000n,
+      verificationGasLimit: deployer.deployed ? 300000n : 900000n,
+      preVerificationGas: 80000n,
+      maxFeePerGas: fees.maxFeePerGas,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      paymasterAndData: '0x',
+      signature: '0x' + 'ff'.repeat(65),
+    };
+    const rpcOp = () => aa.formatUserOperationRequest(userOp);
+    const bundler = aa.createBundlerClient({ chain: viemChain(cfg.chainId), client, transport: viem.http(cfg.bundlerUrl, { timeout: 60000 }) });
+    const est = await bundler.request({ method: 'eth_estimateUserOperationGas', params: [rpcOp(), cfg.entryPoint] }).catch(() => null);
+    if (est) {
+      userOp.callGasLimit = BigInt(est.callGasLimit);
+      userOp.verificationGasLimit = BigInt(est.verificationGasLimit);
+      userOp.preVerificationGas = BigInt(est.preVerificationGas);
+    }
+    const sponsorship = await ThirdwebWalletEngine.sponsorUserOperation(rpcOp());
+    if (!sponsorship || !sponsorship.paymasterAndData) {
+      throw conflict(`thirdweb declined to sponsor the deployment from ${sender}: ${(sponsorship && sponsorship.reason) || 'no paymasterAndData'}. Add ${sender} to THIRDWEB_POLICY_ALLOWED_SENDERS or fund relayer ${account.address}.`, 'RELAYER_SPONSORSHIP_DENIED');
+    }
+    userOp.paymasterAndData = sponsorship.paymasterAndData;
+    if (sponsorship.callGasLimit) userOp.callGasLimit = BigInt(sponsorship.callGasLimit);
+    if (sponsorship.verificationGasLimit) userOp.verificationGasLimit = BigInt(sponsorship.verificationGasLimit);
+    if (sponsorship.preVerificationGas) userOp.preVerificationGas = BigInt(sponsorship.preVerificationGas);
+    const userOpHash = aa.getUserOperationHash({ chainId: cfg.chainId, entryPointAddress: cfg.entryPoint, entryPointVersion: '0.6', userOperation: userOp });
+    userOp.signature = await account.signMessage({ message: { raw: userOpHash } });
+    const submitted = await bundler.request({ method: 'eth_sendUserOperation', params: [rpcOp(), cfg.entryPoint] });
+    const receipt = await aa.waitForUserOperationReceipt(bundler, { hash: submitted, timeout: 180000 });
+    const txHash = receipt.receipt.transactionHash || null;
+    const code = await client.getBytecode({ address: prepared.address }).catch(() => null);
+    const deployed = Boolean(code && code !== '0x');
+    if (!deployed) {
+      throw conflict(`sponsored createAccount userOp ${submitted} (tx ${txHash}) ${receipt.success === false ? 'failed;' : 'mined but'} no code at ${prepared.address}`, 'RELAYER_ACCOUNT_DEPLOY_FAILED');
+    }
+    return jsonSafe({
+      ...prepared,
+      action: 'smartAccountDeployed',
+      deployed,
+      unsignedTx: null,
+      broadcast: true,
+      txHash,
+      userOpHash: submitted,
+      status: receipt.success === false ? 'reverted' : 'success',
+      payer: sender,
+      via: 'sponsored',
+      sponsored: true,
+      deployer,
     });
   }
 

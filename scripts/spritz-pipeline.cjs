@@ -128,7 +128,7 @@ async function account() {
   const body = { admin: arg('admin'), salt: arg('salt') };
   const deploy = process.argv.includes('--deploy');
   if (deploy && !process.argv.includes('--confirm')) throw new Error('--deploy broadcasts a transaction; add --confirm');
-  const data = await call(`/api/finops/spritz/relayer/account/${deploy ? 'deploy' : 'prepare'}`, { method: 'POST', body: deploy ? { ...body, confirm: true } : body });
+  const data = await call(`/api/finops/spritz/relayer/account/${deploy ? 'deploy' : 'prepare'}`, { method: 'POST', body: deploy ? { ...body, confirm: true, via: arg('via') } : body });
   console.log(`${data.action}: ${data.address} (chain ${data.chainId}, factory ${data.factory}) admin ${data.admin} deployed ${data.deployed} configured ${data.configured}`);
   if (data.txHash) console.log(`tx ${data.txHash} status ${data.status} paid by ${data.payer}`);
   for (const i of data.issues) console.log(`- ${i}`);
