@@ -56,6 +56,15 @@ describe('Payout relayer (session-key account abstraction)', () => {
     expect(st.issues.join(' ')).toMatch(/EOA/);
   });
 
+  it('treats an EIP-7702 delegated EOA (Coinbase) as not a thirdweb smart account', async () => {
+    const delegate = '0x7702cb554e6bfb442cb743a7df23154544a7176c';
+    vi.spyOn(PayoutRelayerEngine as any, '_publicClient').mockReturnValue(fakeClient({}, `0xef0100${delegate.slice(2)}`));
+    const st = await PayoutRelayerEngine.status();
+    expect(st).toMatchObject({ enabled: true, isSmartAccount: false, ready: false });
+    expect(st.eip7702Delegate.toLowerCase()).toBe(delegate);
+    expect(st.issues.join(' ')).toMatch(/EIP-7702/);
+  });
+
   it('is ready only for an active, scoped, in-window, non-admin session key on the settlement token', async () => {
     const now = Math.floor(Date.now() / 1000);
     const reads = {

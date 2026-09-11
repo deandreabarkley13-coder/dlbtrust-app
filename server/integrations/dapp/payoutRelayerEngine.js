@@ -172,9 +172,13 @@ class PayoutRelayerEngine {
     try { client = this._publicClient(cfg); } catch (e) { issues.push(e.message); return out; }
 
     const code = await client.getBytecode({ address: cfg.smartAccount }).catch(() => null);
-    out.isSmartAccount = Boolean(code && code !== '0x');
+    const delegated7702 = Boolean(code && /^0xef0100/i.test(code));
+    out.isSmartAccount = Boolean(code && code !== '0x') && !delegated7702;
+    out.eip7702Delegate = delegated7702 ? viem.getAddress(`0x${code.slice(8, 48)}`) : null;
     if (!out.isSmartAccount) {
-      issues.push(`payout wallet ${cfg.smartAccount} has no contract code: it is an EOA (Coinbase), not a smart account. Deploy a thirdweb Account with the trustee as admin and point SPRITZ_PAYOUT_WALLET at it.`);
+      issues.push(delegated7702
+        ? `payout wallet ${cfg.smartAccount} is an EOA with an EIP-7702 delegation to ${out.eip7702Delegate} (Coinbase), not a thirdweb Account: it cannot hold an AccountPermissions session key. Deploy a thirdweb Account with the trustee as admin and point SPRITZ_PAYOUT_WALLET at it.`
+        : `payout wallet ${cfg.smartAccount} has no contract code: it is an EOA (Coinbase), not a smart account. Deploy a thirdweb Account with the trustee as admin and point SPRITZ_PAYOUT_WALLET at it.`);
       return out;
     }
     try {
