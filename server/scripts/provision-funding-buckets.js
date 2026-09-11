@@ -5,6 +5,8 @@
  *
  *   1020  Coupon Income Cash — beneficiary support   -> coupon_income
  *   1030  Trust Operating Cash — trustees            -> trust_operating
+ *   1025  Coupon Income — Treasury Wallet USDC       -> coupon_income (Spritz on-ramp)
+ *   1035  Trust Operating — Treasury Wallet USDC     -> trust_operating (Spritz on-ramp)
  *
  * Each account is created in the local chart (trust_accounts), mirrored as a
  * DETAIL asset account in Fineract, and mapped in fineract_gl_mappings so
@@ -32,6 +34,8 @@ const FINERACT_DETAIL = GL_USAGE_DETAIL;
 const BUCKET_ACCOUNTS = [
   { bucket: 'coupon_income', code: ACCOUNTS.COUPON_CASH, name: 'Coupon Income Cash — Beneficiary Support' },
   { bucket: 'trust_operating', code: ACCOUNTS.OPERATING_CASH, name: 'Trust Operating Cash — Trustees' },
+  { bucket: 'coupon_income', code: ACCOUNTS.COUPON_WALLET_USDC, name: 'Coupon Income — Treasury Wallet USDC', wallet: true },
+  { bucket: 'trust_operating', code: ACCOUNTS.OPERATING_WALLET_USDC, name: 'Trust Operating — Treasury Wallet USDC', wallet: true },
 ];
 
 async function ensureLocal(acct, dryRun) {
@@ -111,13 +115,17 @@ async function main() {
       mapping = await ensureMapping(acct, fineract.id, dryRun);
       console.log(`       mapping ${mapping.created ? 'written' : 'exists'}`);
     }
-    summary.push({ bucket: acct.bucket, code: acct.code, env: TrustAllocationEngine.bucket(acct.bucket).glEnv, fineractGlId: fineract.id, configured: TrustAllocationEngine.glAccountCode(acct.bucket) === acct.code });
+    const b = TrustAllocationEngine.bucket(acct.bucket);
+    summary.push(acct.wallet
+      ? { bucket: acct.bucket, code: acct.code, env: b.walletGlEnv, fineractGlId: fineract.id, configured: TrustAllocationEngine.walletGlAccountCode(acct.bucket) === acct.code }
+      : { bucket: acct.bucket, code: acct.code, env: b.glEnv, fineractGlId: fineract.id, configured: TrustAllocationEngine.glAccountCode(acct.bucket) === acct.code });
   }
 
   console.log('\n[buckets] Runtime configuration:');
   for (const s of summary) {
     console.log(`  ${s.env}=${s.code}${s.configured ? '  (set)' : '  (NOT SET — add to the runtime env)'}`);
   }
+  console.log(`\n[buckets] Wallet accounts ${ACCOUNTS.COUPON_WALLET_USDC}/${ACCOUNTS.OPERATING_WALLET_USDC} hold bucket cash the Spritz on-ramp converted to USDC in the treasury wallet (defaults apply when the env is unset).`);
   console.log(`\n[buckets] Segregation: ${BUCKET_ACCOUNTS[0].code} funds beneficiaries only, ${BUCKET_ACCOUNTS[1].code} funds trustee operating only; cross-bucket use is refused with ALLOCATION_SOURCE_MISMATCH.`);
   return summary;
 }

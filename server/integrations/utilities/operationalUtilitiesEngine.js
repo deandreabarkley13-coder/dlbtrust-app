@@ -443,7 +443,13 @@ class OperationalUtilitiesEngine {
       try { fixedIncome = await fixedIncomeMod.FixedIncomeDistributionEngine.runCycle({ actor: 'reconcile_all' }); }
       catch (e) { fixedIncome = { error: e.message }; }
     }
-    return { fullSync, report, fixedIncome };
+    let spritzOnRamp = null;
+    const onRampMod = safeRequire('../spritz/spritzOnRampEngine');
+    if (onRampMod && onRampMod.SpritzOnRampEngine) {
+      try { spritzOnRamp = await onRampMod.SpritzOnRampEngine.reconcile(); }
+      catch (e) { spritzOnRamp = { error: e.message }; }
+    }
+    return { fullSync, report, fixedIncome, spritzOnRamp };
   }
 
   static async _runBondAccrual() {

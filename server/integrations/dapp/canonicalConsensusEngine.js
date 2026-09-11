@@ -680,6 +680,10 @@ class CanonicalConsensusEngine {
         if (!CapitalFundEngine) throw new Error('CapitalFundEngine not available');
         return CapitalFundEngine.executeFund(proposal.payload && proposal.payload.fundId);
       }
+      case 'spritz_on_ramp': {
+        const { SpritzOnRampEngine } = require('../spritz/spritzOnRampEngine');
+        return SpritzOnRampEngine._execute(proposal);
+      }
       case 'treasury_on_ramp': {
         const { TreasuryOnRampBridgeEngine } = require('./treasuryOnRampBridgeEngine');
         if (!TreasuryOnRampBridgeEngine) throw new Error('TreasuryOnRampBridgeEngine not available');
