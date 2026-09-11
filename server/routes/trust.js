@@ -5,7 +5,7 @@
  *
  *   GET  /mandate                      the canonical mandate every component reads
  *   GET  /control-plane                mandate + component readiness + unified snapshot + pipeline + gaps
- *   GET  /control-plane/readiness      config-only readiness (no ledger reads)
+ *   GET  /control-plane/readiness      config-only readiness (no ledger reads); ?full=true evaluates the Spritz leg against the Spritz API
  *   GET  /control-plane/pipeline       pipeline stages and gaps only
  *   POST /control-plane/evaluate       { amountUsd, requesterRole?, purpose? } → mandate decision (no side effects)
  *
@@ -48,17 +48,19 @@ router.get('/control-plane', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/control-plane/readiness', operatorAuth, (req, res) => {
+// ?full=true also evaluates the Spritz leg against the Spritz API (settlement bank, capabilities, funding routes).
+router.get('/control-plane/readiness', operatorAuth, async (req, res) => {
   try {
-    res.json({ success: true, data: TrustControlPlaneEngine.readiness() });
+    const full = String(req.query.full || '').toLowerCase() === 'true';
+    if (full) res.set('Cache-Control', 'no-store');
+    res.json({ success: true, data: full ? await TrustControlPlaneEngine.readinessFull() : TrustControlPlaneEngine.readiness() });
   } catch (err) { sendError(res, err); }
 });
 
 router.get('/control-plane/pipeline', operatorAuth, async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store');
-    const readiness = TrustControlPlaneEngine.readiness();
-    const snapshot = await TrustControlPlaneEngine.snapshot();
+    const [readiness, snapshot] = await Promise.all([TrustControlPlaneEngine.readinessFull(), TrustControlPlaneEngine.snapshot()]);
     const pipeline = TrustControlPlaneEngine.evaluatePipeline(readiness, snapshot);
     res.json({ success: true, data: { mandate: readiness.mandate, ...pipeline, generatedAt: new Date().toISOString() } });
   } catch (err) { sendError(res, err); }

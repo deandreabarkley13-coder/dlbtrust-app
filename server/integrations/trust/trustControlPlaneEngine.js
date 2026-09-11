@@ -6,6 +6,7 @@
  * One read model over every component the trust runs on — Fineract (canonical
  * cash/GL), the trust sub-ledger, fixed income, the private trust company
  * (custodian) and issuer engines, thirdweb, Hyperledger Fabric/FireFly, the
+ * Spritz treasury leg (ERP -> USDC -> policy contract -> fiat off-ramp), the
  * distribution queue and the deployment targets — evaluated against the Trust
  * Mandate. Nothing here is authoritative for a balance; it only compares the
  * authorities against each other and against the mandate, and reports every
@@ -61,6 +62,8 @@ class TrustControlPlaneEngine {
       ThirdwebTreasuryFundingEngine: load('../dapp/thirdwebTreasuryFundingEngine', 'ThirdwebTreasuryFundingEngine'),
       FabricLedgerEngine: load('../hyperledger/fabricLedgerEngine', 'FabricLedgerEngine'),
       FireflyEngine: load('../hyperledger/fireflyEngine', 'FireflyEngine'),
+      SpritzTreasuryLegEngine: load('../spritz/spritzTreasuryLegEngine', 'SpritzTreasuryLegEngine'),
+      TrustPolicyEngine: load('../dapp/trustPolicyEngine', 'TrustPolicyEngine'),
     };
     return this.__deps;
   }
@@ -135,24 +138,109 @@ class TrustControlPlaneEngine {
       })
       : unavailable('firefly', 'FireflyEngine module not loadable');
 
+    components.spritz = d.SpritzTreasuryLegEngine
+      ? this._wrap('spritz', () => this._spritzFromConfig(d.SpritzTreasuryLegEngine.config()))
+      : unavailable('spritz', 'SpritzTreasuryLegEngine module not loadable');
+
     components.northflank = this._northflank();
     components.vm = this._vm();
 
+    return this._assemble(components);
+  }
+
+  /**
+   * readiness() plus the Spritz leg evaluated against the Spritz API and the
+   * ERP funding routes (settlement bank, capabilities, funding-source
+   * executability) — the same issues GET /api/finops/spritz/treasury/readiness
+   * reports, so they surface in the aggregate gaps.
+   */
+  static async readinessFull() {
+    const d = this._deps();
+    const base = this.readiness();
+    if (!d.SpritzTreasuryLegEngine || !base.components.spritz.available) return base;
+    const components = { ...base.components };
+    const r = await attempt(() => d.SpritzTreasuryLegEngine.readiness());
+    components.spritz = r.ok
+      ? { component: 'spritz', available: true, ...this._spritzFromReadiness(r.value) }
+      : { ...components.spritz, ready: false, issues: [...components.spritz.issues, `readiness failed: ${r.error}`] };
+    return this._assemble(components);
+  }
+
+  static _assemble(components) {
     const gaps = [];
     for (const [key, c] of Object.entries(components)) {
       if (!c.available) gaps.push({ component: key, severity: 'high', gap: c.issues[0] });
       else if (!c.ready) gaps.push({ component: key, severity: 'medium', gap: `${key} not ready: ${(c.issues || []).join('; ') || 'see issues'}` });
     }
-    const liveRails = ['thirdweb', 'firefly'].filter((k) => components[k].mode === 'live');
+    const liveRails = ['thirdweb', 'firefly', 'spritz'].filter((k) => components[k].mode === 'live');
     if (!liveRails.length) gaps.push({ component: 'settlement', severity: 'info', gap: 'no settlement rail is live; transfers run in shadow mode' });
 
     return {
       mandate: getMandate(),
       components,
-      live: { fabric: components.fabric.mode === 'live', firefly: components.firefly.mode === 'live', thirdweb: components.thirdweb.mode === 'live', fineract: components.fineract.mode === 'live' },
+      live: {
+        fabric: components.fabric.mode === 'live',
+        firefly: components.firefly.mode === 'live',
+        thirdweb: components.thirdweb.mode === 'live',
+        fineract: components.fineract.mode === 'live',
+        spritz: components.spritz.mode === 'live',
+      },
       gaps,
       ready: gaps.every((g) => g.severity === 'info'),
       generatedAt: new Date().toISOString(),
+    };
+  }
+
+  static _spritzMode(fundingSource) {
+    const d = this._deps();
+    const policyLive = d.TrustPolicyEngine ? Boolean(d.TrustPolicyEngine.getConfig().live) : false;
+    return Boolean(fundingSource && fundingSource.live) && policyLive ? 'live' : 'shadow';
+  }
+
+  /** Config-only view of the Spritz leg (no network): what is set, not whether Spritz will accept it. */
+  static _spritzFromConfig(cfg) {
+    const issues = [];
+    if (!(process.env.SPRITZ_API_KEY || '').trim()) issues.push('SPRITZ_API_KEY not configured');
+    if (!cfg.policyAddress) issues.push('TRUST_POLICY_ADDRESS not configured');
+    if (!cfg.network) issues.push(`chain ${cfg.chainId} has no Spritz network mapping`);
+    if (!cfg.payoutWallet) issues.push('SPRITZ_PAYOUT_WALLET not configured');
+    return {
+      ready: issues.length === 0,
+      mode: this._spritzMode(cfg.fundingSource),
+      authority: 'fiat settlement (Spritz off-ramp / bill pay), booked to the trust GL',
+      evaluated: 'config',
+      policyContract: cfg.policyAddress || null,
+      chainId: cfg.chainId,
+      network: cfg.network || null,
+      payoutWallet: cfg.payoutWallet || null,
+      payoutWalletSigner: cfg.payoutWalletSigner,
+      fundingSource: { kind: cfg.fundingSource.kind, sourceAccountId: cfg.fundingSource.sourceAccountId || null, live: Boolean(cfg.fundingSource.live) },
+      glBookingEnabled: Boolean(cfg.gl && cfg.gl.bookingEnabled),
+      issues,
+    };
+  }
+
+  /** SpritzTreasuryLegEngine.readiness() mapped into the component shape. */
+  static _spritzFromReadiness(r) {
+    const fs = r.fundingSource || {};
+    return {
+      ready: Boolean(r.ready),
+      mode: this._spritzMode(fs),
+      authority: 'fiat settlement (Spritz off-ramp / bill pay), booked to the trust GL',
+      evaluated: 'spritz-api',
+      policyContract: r.policyContract || null,
+      chainId: r.chainId,
+      network: r.network || null,
+      payoutWallet: r.payoutWallet || null,
+      payoutWalletSigner: r.payoutWalletSigner ? r.payoutWalletSigner.type : null,
+      fundingSource: { kind: fs.kind || null, sourceAccountId: fs.sourceAccountId || null, bucket: fs.bucket || null, live: Boolean(fs.live), executable: fs.route ? fs.route.executable !== false : null },
+      fundingSources: (r.fundingSources || []).map((s) => ({ bucket: s.bucket, configured: Boolean(s.configured), executable: s.executable !== false, issue: s.issue || null })),
+      settlementDestinations: r.settlementDestinations || null,
+      settlementBank: r.settlementBank ? { id: r.settlementBank.id, institution: r.settlementBank.institution, last4: r.settlementBank.accountNumberLast4, status: r.settlementBank.status } : null,
+      offramp: r.offramp ? r.offramp.status : null,
+      billPay: r.billPay ? r.billPay.status : null,
+      glBookingEnabled: Boolean(r.gl && r.gl.bookingEnabled),
+      issues: r.issues || [],
     };
   }
 
@@ -426,10 +514,16 @@ class TrustControlPlaneEngine {
 
     // 6. settle
     {
-      const rails = { thirdweb: c.thirdweb.mode, firefly: c.firefly.mode, thirdwebCanSend: Boolean(c.thirdweb.canSend), fireflyCanTransfer: Boolean(c.firefly.canTransfer) };
+      const spritz = c.spritz || unavailable('spritz', 'not evaluated');
+      const rails = {
+        thirdweb: c.thirdweb.mode, firefly: c.firefly.mode, spritz: spritz.mode,
+        thirdwebCanSend: Boolean(c.thirdweb.canSend), fireflyCanTransfer: Boolean(c.firefly.canTransfer),
+        spritzCanSettle: Boolean(spritz.available && spritz.ready && spritz.mode === 'live'),
+      };
       const g = [];
-      if (!c.thirdweb.available && !c.firefly.available) g.push({ severity: 'high', gap: 'no settlement rail available' });
-      else if (!rails.thirdwebCanSend && !rails.fireflyCanTransfer) g.push({ severity: 'info', gap: 'no settlement rail can move value live; distributions settle in shadow mode' });
+      if (!c.thirdweb.available && !c.firefly.available && !spritz.available) g.push({ severity: 'high', gap: 'no settlement rail available' });
+      else if (!rails.thirdwebCanSend && !rails.fireflyCanTransfer && !rails.spritzCanSettle) g.push({ severity: 'info', gap: 'no settlement rail can move value live; distributions settle in shadow mode' });
+      if (spritz.available && !spritz.ready) g.push({ severity: 'medium', gap: `Spritz fiat leg not ready: ${(spritz.issues || []).join('; ')}` });
       stage('settle', g.some((x) => x.severity !== 'info') ? 'gap' : 'ok', rails, g);
     }
 
@@ -495,8 +589,7 @@ class TrustControlPlaneEngine {
 
   /** Everything: mandate, component readiness, unified snapshot, pipeline stages, gaps. */
   static async controlPlane() {
-    const readiness = this.readiness();
-    const snapshot = await this.snapshot();
+    const [readiness, snapshot] = await Promise.all([this.readinessFull(), this.snapshot()]);
     const pipeline = this.evaluatePipeline(readiness, snapshot);
     const gaps = [...readiness.gaps.map((g) => ({ stage: null, ...g })), ...pipeline.gaps];
     return {
