@@ -47,6 +47,8 @@ const BUCKETS = {
     purposes: ['distribution', 'medical', 'education', 'housing'],
     erpSource: 'coupon_payments',
     glEnv: 'COUPON_INCOME_GL_ACCOUNT_CODE',
+    walletGlEnv: 'COUPON_INCOME_WALLET_GL_ACCOUNT_CODE',
+    walletGlDefault: '1025',
   },
   trust_operating: {
     key: 'trust_operating',
@@ -57,6 +59,8 @@ const BUCKETS = {
     purposes: ['operating', 'trustee_fee'],
     erpSource: 'treasury_module',
     glEnv: 'TRUST_OPERATING_GL_ACCOUNT_CODE',
+    walletGlEnv: 'TRUST_OPERATING_WALLET_GL_ACCOUNT_CODE',
+    walletGlDefault: '1035',
   },
 };
 
@@ -141,6 +145,16 @@ class TrustAllocationEngine {
   }
 
   /**
+   * GL account holding the bucket's cash once the Spritz on-ramp has converted
+   * it to USDC in the treasury wallet (1025 / 1035). One per bucket so the
+   * wallet leg stays segregated; it is a valid canonical source of its bucket.
+   */
+  static walletGlAccountCode(bucketKey) {
+    const b = this.bucket(bucketKey);
+    return str(b.walletGlEnv, b.walletGlDefault) || null;
+  }
+
+  /**
    * ERP funding source for a bucket: the bucket's canonical GL account when
    * configured, else the module token deployed on Base, else the module ledger.
    */
@@ -159,7 +173,8 @@ class TrustAllocationEngine {
     const gl = isCanonical(sourceType) ? String(sourceAccountId || '').trim() : '';
     return this.buckets().find((b) => (token && lower(str(b.tokenEnv)) === token)
       || (mod && b.sourceModule === mod)
-      || (gl && str(b.glEnv) && str(b.glEnv) === gl)) || null;
+      || (gl && str(b.glEnv) && str(b.glEnv) === gl)
+      || (gl && this.walletGlAccountCode(b.key) === gl)) || null;
   }
 
   /**

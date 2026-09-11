@@ -31,6 +31,7 @@
     "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
     "trust:collateral": "node server/scripts/collateralOs.js",
     "trust:fixed-income": "node server/scripts/fixedIncomeDistribution.js",
+    "trust:spritz-onramp": "node server/scripts/spritzOnRamp.js",
     "trust:funding-buckets": "node server/scripts/provision-funding-buckets.js",
     "db:init": "tsx src/server/db/init.ts",
     "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
