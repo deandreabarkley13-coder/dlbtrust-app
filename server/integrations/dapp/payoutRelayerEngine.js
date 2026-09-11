@@ -138,6 +138,13 @@ class PayoutRelayerEngine {
     return viem.createPublicClient({ chain: viemChain(cfg.chainId), transport: viem.http(cfg.rpcUrl) });
   }
 
+  /** thirdweb bundler client; the bundler rejects requests without the project's x-secret-key / x-client-id. */
+  static _bundler(cfg, client) {
+    const headers = ThirdwebWalletEngine._headers(cfg.thirdweb);
+    delete headers['Content-Type'];
+    return aa.createBundlerClient({ chain: viemChain(cfg.chainId), client, transport: viem.http(cfg.bundlerUrl, { timeout: 60000, fetchOptions: { headers } }) });
+  }
+
   static _read(client, cfg, functionName, args = []) {
     return client.readContract({ address: cfg.smartAccount, abi: ACCOUNT_ABI, functionName, args });
   }
@@ -316,7 +323,7 @@ class PayoutRelayerEngine {
       signature: '0x' + 'ff'.repeat(65),
     };
     const rpcOp = () => aa.formatUserOperationRequest(userOp);
-    const bundler = aa.createBundlerClient({ chain: viemChain(cfg.chainId), client, transport: viem.http(cfg.bundlerUrl, { timeout: 60000 }) });
+    const bundler = this._bundler(cfg, client);
     const est = await bundler.request({ method: 'eth_estimateUserOperationGas', params: [rpcOp(), cfg.entryPoint] }).catch(() => null);
     if (est) {
       userOp.callGasLimit = BigInt(est.callGasLimit);
@@ -555,7 +562,7 @@ class PayoutRelayerEngine {
     };
     const rpcOp = () => aa.formatUserOperationRequest(userOp);
 
-    const bundler = aa.createBundlerClient({ chain: viemChain(cfg.chainId), client, transport: viem.http(cfg.bundlerUrl, { timeout: 60000 }) });
+    const bundler = this._bundler(cfg, client);
     const est = await bundler.request({ method: 'eth_estimateUserOperationGas', params: [rpcOp(), cfg.entryPoint] });
     if (est) {
       userOp.callGasLimit = BigInt(est.callGasLimit);
