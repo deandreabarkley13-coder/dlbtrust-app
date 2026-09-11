@@ -29,6 +29,7 @@
     "trust:control-plane": "node server/scripts/trustControlPlaneWire.js",
     "trust:token-rail": "node server/scripts/trustTokenRailWire.js",
     "trust:bond-redemption": "node server/scripts/bondRedemptionOs.js",
+    "trust:collateral": "node server/scripts/collateralOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
     "db:migrate-json-state": "node server/scripts/migrateJsonStateToPostgres.js",
