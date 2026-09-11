@@ -231,6 +231,8 @@ class SpritzFiatFundingEngine {
     const cfg = this.config();
     const issues = [];
     if (!str('SPRITZ_API_KEY')) issues.push('SPRITZ_API_KEY not configured');
+    const integratorCreds = Boolean(str('SPRITZ_INTEGRATOR_KEY') && str('SPRITZ_INTEGRATOR_SECRET'));
+    if (!integratorCreds) issues.push('SPRITZ_INTEGRATOR_KEY/SPRITZ_INTEGRATOR_SECRET not configured (auto-ramp endpoints reject user API-key auth; request integrator credentials from Spritz)');
     if (!cfg.policyAddress) issues.push('TRUST_POLICY_ADDRESS not configured');
     if (!cfg.network) issues.push(`chain ${cfg.chainId} has no Spritz network mapping`);
     if (!RAILS[cfg.defaultRail]) issues.push(`SPRITZ_FIAT_FUNDING_RAIL=${cfg.defaultRail} is not ach or wire`);
