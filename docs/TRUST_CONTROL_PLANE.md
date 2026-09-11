@@ -4,7 +4,13 @@ One place that says who the platform acts for, which system is the authority
 for each kind of fact, and whether the beneficiary-support pipeline is actually
 wired end to end — across Fineract (treasury core), the Postgres sub-ledger,
 fixed income, the private trust company / issuer engines, thirdweb, Hyperledger
-Fabric + FireFly, Northflank and the GCP VM.
+Fabric + FireFly, the Spritz treasury leg (ERP -> USDC -> policy contract ->
+fiat off-ramp / bill pay), Northflank and the GCP VM.
+
+`components.spritz` is `live` only when both `CANONICAL_FUNDING_LIVE=true` (the
+ERP draw moves) and `TRUST_POLICY_LIVE=true` (the policy contract is written);
+its issues are the ones `GET /api/finops/spritz/treasury/readiness` reports and
+flow into the aggregate `gaps` and the `settle` stage.
 
 The software expresses the intended operating model. Legal fiduciary, custodial,
 issuer and licensing status come from the trust instrument, bank/custody
@@ -51,7 +57,7 @@ never assumed to agree — it is reported as `unavailable` with a high-severity 
 | --- | --- | --- |
 | GET | `/api/trust/mandate` | operator |
 | GET | `/api/trust/control-plane` | operator — readiness + snapshot + pipeline + gaps |
-| GET | `/api/trust/control-plane/readiness` | operator — config only, no DB |
+| GET | `/api/trust/control-plane/readiness` | operator — config only, no DB; `?full=true` also evaluates the Spritz leg against the Spritz API |
 | GET | `/api/trust/control-plane/pipeline` | operator |
 | POST | `/api/trust/control-plane/evaluate` | operator — `{ amountUsd, requesterRole?, purpose? }`, side-effect free |
 
