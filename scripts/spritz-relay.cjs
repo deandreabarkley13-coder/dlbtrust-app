@@ -6,7 +6,13 @@ const https = require('https');
 const PORT = process.env.PORT || 9000;
 const TARGET = process.env.SPRITZ_RELAY_TARGET || 'https://platform.spritz.finance';
 
+const RELAY_AUTH = process.env.RELAY_AUTH || '';
+
 const server = http.createServer((req, res) => {
+  if (RELAY_AUTH && req.headers['authorization'] !== RELAY_AUTH) {
+    res.writeHead(401).end('Unauthorized');
+    return;
+  }
   const targetUrl = new URL(req.url, TARGET);
   const apiKey = req.headers['x-spritz-key'];
   const headers = { ...req.headers, host: targetUrl.host };
