@@ -1,0 +1,26 @@
+{
+  "name": "dlbtrust-fineract",
+  "description": "Apache Fineract core-banking GL (Treasury-Core ERP). Private only: reached by dlbtrust-app at http://dlbtrust-fineract:8443/fineract-provider/api/v1",
+  "billing": {
+    "deploymentPlan": "nf-compute-100-2"
+  },
+  "deployment": {
+    "instances": 1,
+    "external": {
+      "imagePath": "apache/fineract:latest"
+    },
+    "storage": {
+      "ephemeralStorage": {
+        "storageSize": 1024
+      }
+    }
+  },
+  "ports": [
+    {
+      "name": "api",
+      "internalPort": 8443,
+      "public": false,
+      "protocol": "HTTP"
+    }
+  ]
+}

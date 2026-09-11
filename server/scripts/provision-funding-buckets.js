@@ -21,13 +21,13 @@
 'use strict';
 
 const path = require('path');
-const { FineractClient } = require(path.join(__dirname, '..', 'integrations', 'fineract', 'fineractClient'));
+const { FineractClient, GL_USAGE_DETAIL } = require(path.join(__dirname, '..', 'integrations', 'fineract', 'fineractClient'));
 const { ACCOUNTS } = require(path.join(__dirname, '..', 'integrations', 'accounting', 'dataBridge'));
 const { TrustAllocationEngine } = require(path.join(__dirname, '..', 'integrations', 'dapp', 'trustAllocationEngine'));
 const pool = require(path.join(__dirname, '..', 'integrations', 'bonds', 'pgPool'));
 
 const FINERACT_ASSET = 1;
-const FINERACT_DETAIL = 2;
+const FINERACT_DETAIL = GL_USAGE_DETAIL;
 
 const BUCKET_ACCOUNTS = [
   { bucket: 'coupon_income', code: ACCOUNTS.COUPON_CASH, name: 'Coupon Income Cash — Beneficiary Support' },
@@ -48,8 +48,10 @@ async function ensureLocal(acct, dryRun) {
 
 async function ensureFineract(acct, existing, dryRun) {
   const found = existing.find((a) => a.glCode === acct.code);
-  if (found) return { created: false, id: found.id };
-  if (dryRun) return { created: true, id: null };
+  const postable = found && found.usage && Number(found.usage.id) === FINERACT_DETAIL;
+  if (found && postable) return { created: false, id: found.id };
+  if (dryRun) return { created: true, id: null, repaired: Boolean(found) };
+  if (found) await FineractClient.deleteGLAccount(found.id);
   const result = await FineractClient.createGLAccount({
     name: acct.name,
     glCode: acct.code,
@@ -57,7 +59,7 @@ async function ensureFineract(acct, existing, dryRun) {
     usage: FINERACT_DETAIL,
     description: `Segregated funding bucket ${acct.bucket}: ${acct.name}`,
   });
-  return { created: true, id: result.resourceId || result.id };
+  return { created: true, id: result.resourceId || result.id, repaired: Boolean(found) };
 }
 
 async function ensureMapping(acct, fineractGlId, dryRun) {
@@ -105,7 +107,7 @@ async function main() {
     let mapping = { created: false };
     if (fineractOk) {
       fineract = await ensureFineract(acct, fineractAccounts, dryRun);
-      console.log(`       fineract GL ${fineract.created ? 'created' : 'exists'}${fineract.id !== null ? ` (id ${fineract.id})` : ''}`);
+      console.log(`       fineract GL ${fineract.created ? 'created' : fineract.repaired ? 'exists, set to DETAIL (postable)' : 'exists'}${fineract.id !== null ? ` (id ${fineract.id})` : ''}`);
       mapping = await ensureMapping(acct, fineract.id, dryRun);
       console.log(`       mapping ${mapping.created ? 'written' : 'exists'}`);
     }

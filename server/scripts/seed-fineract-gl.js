@@ -17,7 +17,7 @@
 'use strict';
 
 const path = require('path');
-const { FineractClient } = require(path.join(__dirname, '..', 'integrations', 'fineract', 'fineractClient'));
+const { FineractClient, GL_USAGE_DETAIL } = require(path.join(__dirname, '..', 'integrations', 'fineract', 'fineractClient'));
 const pool = require(path.join(__dirname, '..', 'integrations', 'bonds', 'pgPool'));
 
 // Fineract type codes: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=INCOME, 5=EXPENSE
@@ -63,9 +63,12 @@ async function seedFineractGL() {
   for (const acct of trustAccounts) {
     const glCode = acct.account_code;
 
-    if (existingCodes.has(glCode)) {
-      // Find the existing Fineract account ID
-      const existing = existingAccounts.find(a => a.glCode === glCode);
+    const existing = existingCodes.has(glCode) ? existingAccounts.find(a => a.glCode === glCode) : null;
+    if (existing && !(existing.usage && Number(existing.usage.id) === GL_USAGE_DETAIL)) {
+      // HEADER accounts cannot receive postings; Fineract refuses a usage change, so recreate.
+      await FineractClient.deleteGLAccount(existing.id);
+      console.log(`  [recreate] ${glCode} ${acct.account_name} — was HEADER, deleted id ${existing.id}`);
+    } else if (existing) {
       console.log(`  [skip] ${glCode} ${acct.account_name} — already exists (id: ${existing.id})`);
       mappings.push({
         trustAccountCode: glCode,
@@ -88,7 +91,7 @@ async function seedFineractGL() {
         name: acct.account_name,
         glCode,
         type: fineractType,
-        usage: 2, // DETAIL (postable)
+        usage: GL_USAGE_DETAIL,
         description: `Trust account: ${acct.account_name} (${acct.sub_type || acct.account_type})`,
       });
 
