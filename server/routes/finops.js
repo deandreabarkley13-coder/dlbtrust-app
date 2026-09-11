@@ -568,7 +568,15 @@ router.get('/spritz/bills', operatorAuth, async (req, res) => {
 });
 
 router.post('/spritz/bills/activate', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.status(201).json({ success: true, data: await SpritzEngine.activateBills(req.body) }); } catch (err) { sendError(res, err); }
+  try {
+    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const clientContext = {
+      clientIp: forwarded || req.ip || (req.socket && req.socket.remoteAddress) || '',
+      userAgent: req.headers['user-agent'],
+      platform: 'web',
+    };
+    res.status(201).json({ success: true, data: await SpritzEngine.activateBills({ ...req.body, clientContext }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/spritz/bills/:id/verify', operatorAuth, writeRateLimiter(), async (req, res) => {

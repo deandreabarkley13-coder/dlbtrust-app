@@ -83,6 +83,21 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     expect(r.issues).toEqual([]);
   });
 
+  it('activates Bill Pay with the operator consent and client context Spritz requires', async () => {
+    stubSpritz((path) => {
+      if (path === '/v1/bills/activate') return { status: 'verification_required', activationId: 'act_1' };
+      throw new Error(`unexpected ${path}`);
+    });
+    const r = await SpritzEngine.activateBills({ clientContext: { clientIp: '203.0.113.7', userAgent: 'vitest', sessionId: 'sess_1' } });
+    expect(r).toMatchObject({ status: 'verification_required', activationId: 'act_1' });
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.consent).toMatchObject({ termsText: expect.any(String), termsTextVersion: expect.any(String), acceptedAt: expect.any(String) });
+    expect(body.clientContext).toEqual({ clientIp: '203.0.113.7', platform: 'web', userAgent: 'vitest', sessionId: 'sess_1' });
+
+    await expect(SpritzEngine.activateBills({})).rejects.toMatchObject({ status: 400 });
+    expect(calls).toHaveLength(1);
+  });
+
   it('quotes a linked bill on the bill_pay rail and refuses unpayable bills', async () => {
     stubSpritz((path) => {
       if (path === '/v1/bills/') return BILLS;

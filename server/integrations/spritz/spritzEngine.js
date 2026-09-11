@@ -395,13 +395,18 @@ class SpritzEngine {
     return spritzRequest('GET', '/v1/bills/');
   }
 
-  static async activateBills({ termsText, termsTextVersion, acceptedAt } = {}) {
+  static async activateBills({ termsText, termsTextVersion, acceptedAt, clientContext } = {}) {
     const consent = {
       termsText: termsText || str('SPRITZ_BILLPAY_TERMS', 'I agree to the Spritz bill pay terms.'),
       termsTextVersion: termsTextVersion || str('SPRITZ_BILLPAY_TERMS_VERSION', '2026-01-01'),
       acceptedAt: acceptedAt || new Date().toISOString(),
     };
-    return spritzRequest('POST', '/v1/bills/activate', { consent });
+    const ctx = clientContext || {};
+    if (!ctx.clientIp) throw Object.assign(new Error('clientContext.clientIp required (the consenting operator\'s IP)'), { status: 400 });
+    const context = { clientIp: ctx.clientIp, platform: ctx.platform || 'web' };
+    if (ctx.userAgent) context.userAgent = ctx.userAgent;
+    if (ctx.sessionId) context.sessionId = ctx.sessionId;
+    return spritzRequest('POST', '/v1/bills/activate', { consent, clientContext: context });
   }
 
   static async startBillVerification(activationId) {
