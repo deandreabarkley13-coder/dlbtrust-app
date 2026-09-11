@@ -14,6 +14,8 @@
  *       signs the printed calldata.
  *   node scripts/spritz-pipeline.cjs wallet
  *       Payout wallet registry / balance / allow-list state.
+ *   node scripts/spritz-pipeline.cjs relayer | grant | account
+ *       Session-key relayer state, trustee grant typed data, payout smart account.
  *
  * Env: DLBTRUST_BASE_URL (default http://localhost:3002), ADMIN_SECRET_TOKEN.
  */
@@ -117,7 +119,24 @@ async function grant() {
   console.log(JSON.stringify(data.typedData, null, 2));
 }
 
-const commands = { status, allowlist, wallet, rails, payout, relayer, grant };
+/**
+ * Predict / deploy the thirdweb payout smart account (trustee = admin).
+ *   account [--admin=0x..] [--salt=..]          read-only: address + unsigned createAccount tx
+ *   account --deploy --confirm                   server wallet pays gas and broadcasts
+ */
+async function account() {
+  const body = { admin: arg('admin'), salt: arg('salt') };
+  const deploy = process.argv.includes('--deploy');
+  if (deploy && !process.argv.includes('--confirm')) throw new Error('--deploy broadcasts a transaction; add --confirm');
+  const data = await call(`/api/finops/spritz/relayer/account/${deploy ? 'deploy' : 'prepare'}`, { method: 'POST', body: deploy ? { ...body, confirm: true } : body });
+  console.log(`${data.action}: ${data.address} (chain ${data.chainId}, factory ${data.factory}) admin ${data.admin} deployed ${data.deployed} configured ${data.configured}`);
+  if (data.txHash) console.log(`tx ${data.txHash} status ${data.status} paid by ${data.payer}`);
+  for (const i of data.issues) console.log(`- ${i}`);
+  if (data.unsignedTx) console.log(JSON.stringify(data.unsignedTx, null, 2));
+  data.next.forEach((n, i) => console.log(`${i + 1}. ${n}`));
+}
+
+const commands = { status, allowlist, wallet, rails, payout, relayer, grant, account };
 const cmd = process.argv[2] || 'status';
 if (!commands[cmd]) {
   console.error(`unknown command ${cmd}; expected one of ${Object.keys(commands).join(', ')}`);

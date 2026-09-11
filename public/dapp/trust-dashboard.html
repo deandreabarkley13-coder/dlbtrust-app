@@ -1011,6 +1011,11 @@
       <div class="form-row">
         <div class="form-group"><label>Session length (days)</label><input id="grant-days" type="number" min="1" step="1" placeholder="30" /></div>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <button class="btn btn-sec btn-sm" onclick="prepareAccount()">Predict smart account</button>
+        <button class="btn btn-sec btn-sm" id="account-deploy-btn" onclick="deployAccount()" disabled>Deploy with connected wallet</button>
+      </div>
+      <div id="account-status" class="muted" style="margin-bottom:8px;"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-gold btn-sm" onclick="prepareGrant()">Prepare session-key grant</button>
         <button class="btn btn-sec btn-sm" id="grant-sign-btn" onclick="signGrant()" disabled>Sign as admin &amp; submit</button>
@@ -1019,6 +1024,38 @@
       <div id="grant-status" class="muted" style="margin-top:8px;"></div>
       <pre id="grant-typed" class="muted" style="white-space:pre-wrap;word-break:break-all;display:none;"></pre>
     </div>`;
+  }
+
+  async function prepareAccount() {
+    const status = el('account-status');
+    try {
+      status.textContent = 'Predicting…';
+      const res = await api('/api/finops/spritz/relayer/account/prepare', { method: 'POST', body: JSON.stringify({}) });
+      pipeline.account = res.data;
+      const d = res.data;
+      status.textContent = `${d.deployed ? 'Deployed' : 'Not deployed'} thirdweb account ${d.address} (admin ${d.admin}, factory ${d.factory}). ` + (d.issues.length ? d.issues.join('; ') + '. ' : '') + d.next.join(' → ');
+      el('account-deploy-btn').disabled = d.deployed || !window.ethereum;
+      if (!d.deployed && !window.ethereum) status.textContent += ' No browser wallet detected; use `spritz-pipeline.cjs account --deploy --confirm` to pay gas from the server wallet.';
+    } catch (e) {
+      status.textContent = 'Predict failed: ' + e.message;
+    }
+  }
+
+  async function deployAccount() {
+    const status = el('account-status');
+    const a = pipeline.account;
+    if (!a || a.deployed || !a.unsignedTx || !window.ethereum) return;
+    try {
+      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      const chainHex = '0x' + Number(a.chainId).toString(16);
+      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* may already be on chain */ }
+      status.textContent = `Confirm createAccount in your wallet (gas only; admin stays ${a.admin})…`;
+      const txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from, to: a.unsignedTx.to, data: a.unsignedTx.data, value: '0x0' }] });
+      status.textContent = `Deployment sent: ${txHash}. Then set SPRITZ_PAYOUT_WALLET=${a.address}, allow-list it, and grant the session key.`;
+      setTimeout(prepareAccount, 15000);
+    } catch (e) {
+      status.textContent = 'Deploy failed: ' + (e.message || e);
+    }
   }
 
   async function prepareGrant(revoke) {
