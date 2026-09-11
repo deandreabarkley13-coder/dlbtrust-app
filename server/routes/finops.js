@@ -345,6 +345,11 @@ router.get('/spritz/treasury/allocations', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await TrustAllocationEngine.summaries() }); } catch (err) { sendError(res, err); }
 });
 
+// The two segregated ERP funding sources (coupon_income vs trust_operating) and their USDC routes.
+router.get('/spritz/treasury/funding-sources', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAllocationEngine.fundingSources({ quote: (q) => CanonicalMoneyEngine.quote(q) }) }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/spritz/treasury/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const postedBy = req.user && (req.user.username || req.user.id);

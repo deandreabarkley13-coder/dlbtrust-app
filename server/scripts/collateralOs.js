@@ -21,7 +21,7 @@
  *   node server/scripts/collateralOs.js positions [--status pledged]
  *   node server/scripts/collateralOs.js pledge --token DLB-PRB|<tokenId>|0x... [--quantity 1000000] [--wallet 0x...] [--class bond_token] [--advance-bps 7000] [--reference PLEDGE-1] --by trustee@example.com
  *   node server/scripts/collateralOs.js revalue [--by ops@example.com]
- *   node server/scripts/collateralOs.js draw --amount 250000 --reference DRAW-2026-001 --by trustee@example.com [--position COL-...] [--bucket trust_operating] [--source-token 0x...] [--source-module treasury] [--auto-approve]
+ *   node server/scripts/collateralOs.js draw --amount 250000 --reference DRAW-2026-001 --by trustee@example.com [--position COL-...] --bucket coupon_income|trust_operating (funded only from its own segregated source) [--auto-approve]
  *   node server/scripts/collateralOs.js reconcile [--by ops@example.com]
  *   node server/scripts/collateralOs.js draws [--status funded]
  *   node server/scripts/collateralOs.js settle --draw CDR-... --by trustee@example.com [--purpose operating] [--rail ach_standard] [--memo ...]

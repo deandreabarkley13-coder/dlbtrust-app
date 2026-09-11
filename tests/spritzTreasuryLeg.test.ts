@@ -20,6 +20,7 @@ const pool = require('../server/integrations/bonds/pgPool');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { TrustPolicyEngine } = require('../server/integrations/dapp/trustPolicyEngine');
 const { CanonicalMoneyEngine } = require('../server/integrations/dapp/canonicalMoneyEngine');
+const { TrustAllocationEngine } = require('../server/integrations/dapp/trustAllocationEngine');
 const { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
 const { OnOffRampEngine } = require('../server/integrations/dapp/onOffRampEngine');
 
@@ -79,6 +80,49 @@ describe('Spritz treasury leg', () => {
     expect(propose).toHaveBeenCalledWith(expect.objectContaining({ sourceToken: PRB, amount: '10.00', targetAsset: 'USDC', recipient: POLICY, autoApprove: false }));
     expect(out).toMatchObject({ status: 'proposed', requestId: 'CM-1', proposalId: 'PROP-1', destination: POLICY, chainId: 8453 });
     expect(calls).toHaveLength(0);
+  });
+
+  it('segregates coupon income from trust operating: a bucket is funded only from its own source, and the source pins the bucket', async () => {
+    const TREASURY = '0x5d3192581e6f12eeecc0fd414ef5672a454f611c';
+    process.env.DLB_PRB_TOKEN_ADDRESS = PRB;
+    process.env.DLB_TREASURY_TOKEN_ADDRESS = TREASURY;
+    process.env.SPRITZ_FUNDING_SOURCE_TYPE = 'treasury';
+    process.env.SPRITZ_FUNDING_SOURCE_ACCOUNT = 'TRS-1';
+    try {
+      const quote = vi.spyOn(CanonicalMoneyEngine, 'quote').mockResolvedValue({ action: 'mint_and_swap' } as any);
+      const propose = vi.spyOn(CanonicalMoneyEngine, 'propose').mockResolvedValue({ requestId: 'CM-1', proposalId: 'PROP-1', route: {} } as any);
+
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'coupon_income', sourceToken: TREASURY, reference: 'MIX-1' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH', status: 409 });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'trust_operating', sourceModule: 'bond_portfolio', reference: 'MIX-2' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'trust_operating', sourceType: 'treasury', sourceAccountId: 'TRS-1', reference: 'MIX-3' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, sourceToken: PRB, sourceModule: 'treasury', reference: 'MIX-4' })).rejects.toMatchObject({ code: 'ALLOCATION_SOURCE_MISMATCH' });
+      expect(quote).not.toHaveBeenCalled();
+      expect(propose).not.toHaveBeenCalled();
+
+      // Bucket alone resolves its own source; the SPRITZ_FUNDING_SOURCE_* default is not consulted.
+      const coupon = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, bucket: 'coupon_income', reference: 'CPN-1' });
+      expect(coupon).toMatchObject({ bucket: 'coupon_income', source: { sourceToken: PRB, sourceModule: 'bond_portfolio' } });
+      expect(propose).toHaveBeenLastCalledWith(expect.objectContaining({ sourceToken: PRB, sourceModule: 'bond_portfolio', sourceType: undefined, title: expect.stringContaining('coupon_income') }));
+
+      // A bucket source alone pins the bucket.
+      const operating = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, sourceToken: TREASURY, reference: 'OPS-1' });
+      expect(operating).toMatchObject({ bucket: 'trust_operating', source: { sourceToken: TREASURY, sourceModule: 'treasury' } });
+
+      // Un-bucketed ledger funding still works from the configured default.
+      const ledger = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, reference: 'LEDGER-1' });
+      expect(ledger).toMatchObject({ bucket: null, source: { sourceType: 'treasury', sourceAccountId: 'TRS-1' } });
+
+      const sources = await TrustAllocationEngine.fundingSources({ quote: (q: any) => CanonicalMoneyEngine.quote(q) });
+      expect(sources).toEqual([
+        expect.objectContaining({ bucket: 'coupon_income', sourceToken: PRB, sourceModule: 'bond_portfolio', configured: true, executable: true, payeeRole: 'beneficiary' }),
+        expect.objectContaining({ bucket: 'trust_operating', sourceToken: TREASURY, sourceModule: 'treasury', configured: true, executable: true, payeeRole: 'trustee' }),
+      ]);
+    } finally {
+      delete process.env.DLB_PRB_TOKEN_ADDRESS;
+      delete process.env.DLB_TREASURY_TOKEN_ADDRESS;
+      delete process.env.SPRITZ_FUNDING_SOURCE_TYPE;
+      delete process.env.SPRITZ_FUNDING_SOURCE_ACCOUNT;
+    }
   });
 
   it('refuses to fund when the ERP route has no canonical liquidity', async () => {
