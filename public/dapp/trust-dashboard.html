@@ -930,6 +930,8 @@
     const pw = p.payoutWallet || {};
     const rd = p.readiness || {};
     const cos = p.collateralOs || {};
+    const rails = (p.rails && p.rails.rails) || [];
+    const railBadges = rails.map((r) => `<span class="badge ${r.status === 'active' ? 'approved' : (r.status === 'unknown' ? '' : 'rejected')}">${escHtml(r.rail)}${r.destination === 'bill' ? ' → ' + escHtml(r.label) : ''}${r.default ? ' (default)' : ''}</span>`).join(' ');
     const usdcUnits = (u) => Number(u || 0) / 1e6;
     const buckets = (p.buckets || []).map((b) => `<div class="badge">${escHtml(b.label || b.bucket)}: recognised ${fmtUsd(b.recognisedUsd)} · staged ${fmtUsd(b.stagedUsd)} · headroom ${fmtUsd(b.headroomUsd)}</div>`).join(' ');
     const legs = (p.fundingLegs || []).slice(0, 5).map((l) => `<tr><td>fund</td><td>${escHtml(l.sourceType || l.sourceModule || '')} ${escHtml(l.sourceAccount || l.sourceToken || '')}</td><td>${fmtUsd(l.amount)}</td><td><span class="badge">${escHtml(l.status)}</span></td><td>${new Date(l.createdAt).toLocaleString()}</td></tr>`)
@@ -939,10 +941,11 @@
       <div class="grid">
         <div class="stat-card"><div class="label">Policy contract USDC</div><div class="value">${pol.treasury ? fmtUsd(usdcUnits(pol.treasury.available)) : '—'}</div><div class="sub">${shortAddr(pol.contract)} · owner ${shortAddr(pol.owner)}${pol.paused ? ' · PAUSED' : ''}</div></div>
         <div class="stat-card"><div class="label">Payout wallet USDC</div><div class="value">${pw.usdcBalance != null ? fmtUsd(pw.usdcBalance) : '—'}</div><div class="sub">${shortAddr(pw.address)} · ${pw.policy && pw.policy.allowed ? 'allow-listed' : 'NOT allow-listed'}</div></div>
-        <div class="stat-card"><div class="label">Spritz settlement</div><div class="value">${rd.settlementBank ? escHtml(rd.settlementBank.institution || rd.settlementBank.label || 'bank') : (rd.settlementDestinations && rd.settlementDestinations.bills ? rd.settlementDestinations.bills + ' bill(s)' : '—')}</div><div class="sub">${rd.settlementBank ? '••••' + escHtml(rd.settlementBank.accountNumberLast4 || '') + ' · ' + escHtml(rd.settlementBank.status || '') : 'no bank linked'}</div></div>
+        <div class="stat-card"><div class="label">Spritz credit push</div><div class="value">${rd.settlementBank ? escHtml(rd.settlementBank.institution || rd.settlementBank.label || 'bank') : (rd.settlementDestinations && rd.settlementDestinations.bills ? rd.settlementDestinations.bills + ' bill(s)' : '—')}</div><div class="sub">${rd.settlementBank ? '••••' + escHtml(rd.settlementBank.accountNumberLast4 || '') + ' · ' + escHtml(rd.settlementBank.status || '') : 'no bank linked'} · ${rails.length} rail(s)</div></div>
         <div class="stat-card"><div class="label">Collateral OS</div><div class="value">${cos.facility ? fmtUsd(cos.facility.availableUsd) : '—'}</div><div class="sub">${cos.facility ? (cos.facility.openDraws || 0) + ' open draws · ' + fmtUsd(cos.facility.drawnUsd) + ' drawn of ' + fmtUsd(cos.facility.spendableUsd) : 'unavailable'}</div></div>
       </div>
       <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${buckets}</div>
+      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span class="muted" style="font-size:.75rem;">ERP ${escHtml((p.rails && p.rails.source && p.rails.source.account) || '')} → USDC → credit push:</span>${railBadges || '<span class="muted">no settlement rails linked</span>'}</div>
       ${legs.length ? `<table class="table" style="margin-top:10px;"><thead><tr><th>Leg</th><th>Route</th><th>Amount</th><th>Status</th><th>When</th></tr></thead><tbody>${legs.join('')}</tbody></table>` : '<p class="muted" style="margin-top:8px;">No funding or payout legs recorded yet.</p>'}`;
 
     const allow = el('pipeline-allowlist');

@@ -668,7 +668,7 @@ const CollateralOsEngine = {
   },
 
   /** Settle a funded draw to the DB NET MGMT bank through the Spritz off-ramp. */
-  async settle({ drawId, purpose, rail, memo, payoutWallet, actor } = {}) {
+  async settle({ drawId, purpose, rail, memo, payoutWallet, bankAccountId, billId, actor } = {}) {
     await this.ensureTables();
     const d = await this.getDraw(drawId);
     assertTransition(d.status, 'settling');
@@ -676,12 +676,12 @@ const CollateralOsEngine = {
     const allocation = TrustAllocationEngine.bucket(d.bucket);
     const settlePurpose = purpose || allocation.purposes[0];
     if (!allocation.purposes.includes(settlePurpose)) throw new CollateralError(`purpose ${settlePurpose} is not payable from ${d.bucket} (allowed: ${allocation.purposes.join(', ')})`, 'ALLOCATION_PURPOSE_MISMATCH', 409);
-    const payout = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: d.outstandingUsd, purpose: settlePurpose, reference: `${d.reference}:SETTLE`, rail, memo: memo || d.reference, payoutWallet, bucket: d.bucket });
+    const payout = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: d.outstandingUsd, purpose: settlePurpose, reference: `${d.reference}:SETTLE`, rail, memo: memo || d.reference, payoutWallet, bankAccountId, billId, bucket: d.bucket });
     await pool.query(
       `UPDATE collateral_draws SET status = 'settling', spritz_quote_id = $2, distribution_id = $3, updated_at = NOW() WHERE draw_id = $1`,
       [drawId, payout.spritzQuoteId || null, payout.distribution && (payout.distribution.distributionId || payout.distribution.id) ? String(payout.distribution.distributionId || payout.distribution.id) : null]
     );
-    await this._event(drawId, 'draw_settling', actor, { spritzQuoteId: payout.spritzQuoteId, settlementBank: payout.settlementBank, amountUsd: payout.amountUsd });
+    await this._event(drawId, 'draw_settling', actor, { spritzQuoteId: payout.spritzQuoteId, rail: payout.rail, destination: payout.destination, settlementBank: payout.settlementBank, amountUsd: payout.amountUsd });
     return { ...(await this.getDraw(drawId)), payout, next: 'checker approves the distribution; after the release delay call executeSettlement({ drawId }).' };
   },
 
