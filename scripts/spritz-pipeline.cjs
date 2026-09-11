@@ -158,6 +158,7 @@ async function funding() {
   for (const i of r.issues) console.log(`- ${i}`);
   if (r.erp) console.log(`ERP ${r.erp.system} cash ${r.erp.cashAccountCode} -> ${r.erp.assetAccountCode} live=${r.erp.live}`);
   for (const c of r.capabilities || []) console.log(`capability ${c.method}: ${c.status}${c.requirements.length ? ' ' + c.requirements.map((q) => `${q.type} ${q.status}${q.actionUrl ? ' ' + q.actionUrl : ''}`).join('; ') : ''}`);
+  for (const ch of r.originationChannels || []) console.log(`${ch.rail} bank channel: ${ch.ready ? ch.channel : 'MISSING'} — ${ch.detail}`);
   if (r.autoRampAccount && r.autoRampAccount.depositInstructions) {
     const d = r.autoRampAccount.depositInstructions;
     console.log(`deposit to ${d.bankName} routing ${d.bankRoutingNumber} account ••••${String(d.bankAccountNumber || '').slice(-4)} rails ${d.paymentRails.join(', ')}`);
