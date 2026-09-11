@@ -174,6 +174,18 @@ function defaultFundingSource() {
   };
 }
 
+/** Spritz crypto_to_fiat capability for a payout method (`ach_credit` bank payouts, `bill_pay`). */
+function capabilityFor(capabilities, method) {
+  const list = Array.isArray(capabilities) ? capabilities : [];
+  const match = (re) => list.find(c => c && c.product === 'crypto_to_fiat' && (c.method === method || re.test(String(c.method || c.name || ''))));
+  return (method === 'ach_credit' ? match(/ach|bank/i) : match(/bill/i)) || null;
+}
+
+/** A capability Spritz has not reported as anything other than active is usable. */
+function capabilityUsable(cap) {
+  return !cap || !cap.status || cap.status === 'active';
+}
+
 function bankMatches(account, needle) {
   const hay = [account.label, account.accountHolderName, account.name, account.institution && account.institution.name]
     .filter(Boolean).join(' ').toLowerCase();
@@ -245,25 +257,26 @@ class SpritzTreasuryLegEngine {
       SpritzEngine.listBills ? SpritzEngine.listBills().catch(() => []) : Promise.resolve([]),
     ]);
     const payable = (Array.isArray(bills) ? bills : []).filter(b => b && b.status === 'active' && !b.unpayableCode);
-    const cap = (method) => (capabilities || []).find(c => c.product === 'crypto_to_fiat' && (c.method === method || new RegExp(method, 'i').test(String(c.name || ''))));
-    const bankCap = cap('ach_credit') || cap('bank');
-    const billCap = cap('bill');
+    const bankCap = capabilityFor(capabilities, 'ach_credit');
+    const billCap = capabilityFor(capabilities, 'bill_pay');
+    const bankUsable = Boolean(bank) && capabilityUsable(bankCap) && cfg.defaultRail !== 'bill_pay';
     const rails = [];
     if (bank) {
       const supported = (bank.supportedRails && bank.supportedRails.length ? bank.supportedRails : [cfg.defaultRail]).filter(r => SUPPORTED_RAILS.includes(r) && r !== 'bill_pay');
       for (const rail of supported) {
-        rails.push({ rail, direction: 'credit_push', destination: 'bank', accountId: bank.id, label: `${bank.institution || 'bank'} ••••${bank.accountNumberLast4 || ''}`, status: bankCap ? bankCap.status : 'unknown', default: rail === cfg.defaultRail });
+        rails.push({ rail, direction: 'credit_push', destination: 'bank', accountId: bank.id, label: `${bank.institution || 'bank'} ••••${bank.accountNumberLast4 || ''}`, status: bankCap ? bankCap.status : 'unknown', default: bankUsable && rail === cfg.defaultRail });
       }
     }
     for (const bill of payable) {
-      rails.push({ rail: 'bill_pay', direction: 'credit_push', destination: 'bill', accountId: bill.id, label: bill.name || (bill.institution && bill.institution.name) || bill.id, status: billCap ? billCap.status : 'unknown', default: !bank && payable.length === 1 });
+      rails.push({ rail: 'bill_pay', direction: 'credit_push', destination: 'bill', accountId: bill.id, label: bill.name || (bill.institution && bill.institution.name) || bill.id, status: billCap ? billCap.status : 'unknown', default: !bankUsable && payable.length === 1 });
     }
     return {
       source: { kind: 'erp_canonical_gl', account: cfg.fundingSource.sourceAccountId, asset: 'USDC', via: cfg.policyAddress },
       payoutWallet: cfg.payoutWallet,
       rails,
       active: rails.filter(r => r.status === 'active' || r.status === 'unknown'),
-      default: rails.find(r => r.default) || rails[0] || null,
+      default: rails.find(r => r.default) || rails.find(r => r.status === 'active' || r.status === 'unknown') || rails[0] || null,
+      capabilities: { achCredit: bankCap ? bankCap.status : null, billPay: billCap ? billCap.status : null },
     };
   }
 
@@ -301,10 +314,17 @@ class SpritzTreasuryLegEngine {
         issues.push('No Spritz settlement destination: link a bill (Spritz Bill Pay) — the trust has no bank account');
       }
     }
-    const offramp = capabilities.find(c => c.product === 'crypto_to_fiat' && c.method === 'ach_credit');
-    if (settlementBank && offramp && offramp.status !== 'active') issues.push(`Spritz ACH payout is ${offramp.status}`);
-    const billPay = capabilities.find(c => c.product === 'crypto_to_fiat' && /bill/i.test(String(c.method || c.name || '')));
-    if (billPay && billPay.status !== 'active') issues.push(`Spritz Bill Pay is ${billPay.status}`);
+    const offramp = capabilityFor(capabilities, 'ach_credit');
+    const billPay = capabilityFor(capabilities, 'bill_pay');
+    const notes = [];
+    const billPayUsable = payableBills.length > 0 && capabilityUsable(billPay);
+    const bankUsable = Boolean(settlementBank) && capabilityUsable(offramp) && cfg.defaultRail !== 'bill_pay';
+    if (settlementBank && offramp && offramp.status !== 'active') {
+      // ACH origination not yet enabled on the Spritz user: payouts settle
+      // through Bill Pay when a bill is linked, otherwise the leg is blocked.
+      (billPayUsable ? notes : issues).push(`Spritz ACH payout is ${offramp.status}${billPayUsable ? '; payouts settle through Spritz Bill Pay' : ''}`);
+    }
+    if (billPay && billPay.status !== 'active') (bankUsable ? notes : issues).push(`Spritz Bill Pay is ${billPay.status}`);
 
     let fundingRoute = null;
     if (CanonicalMoneyEngine && (fs.sourceType || fs.sourceToken || fs.sourceModule)) {
@@ -333,10 +353,11 @@ class SpritzTreasuryLegEngine {
       settlementDestinations: {
         bank: settlementBank ? 1 : 0,
         bills: payableBills.length,
-        default: settlementBank ? 'bank' : (payableBills.length ? 'bill' : null),
+        default: bankUsable ? 'bank' : (payableBills.length ? 'bill' : (settlementBank ? 'bank' : null)),
       },
       offramp: offramp ? { status: offramp.status } : null,
       billPay: billPay ? { status: billPay.status } : null,
+      notes,
       gl: cfg.gl,
     };
   }
@@ -486,7 +507,7 @@ class SpritzTreasuryLegEngine {
     }
     if (gate.frozen) throw conflict(`payout wallet ${wallet} is frozen on the policy contract`, 'PAYOUT_WALLET_FROZEN');
 
-    const destination = await this._settlementDestination({ bankAccountId, billId });
+    const destination = await this._settlementDestination({ bankAccountId, billId, rail });
     const bank = destination.kind === 'bank' ? destination.bank : null;
 
     const payoutRail = destination.kind === 'bill' ? 'bill_pay' : (rail || cfg.defaultRail);
@@ -897,10 +918,11 @@ class SpritzTreasuryLegEngine {
 
   /**
    * Where a payout settles: an explicit linked Spritz bill (`billId`), else
-   * the settlement bank when one is linked, else the single payable bill.
+   * the settlement bank when one is linked and Spritz has ACH payouts active
+   * (and SPRITZ_PAYOUT_RAIL is not `bill_pay`), else the single payable bill.
    * A `bankAccountId` other than the settlement bank is always refused.
    */
-  static async _settlementDestination({ bankAccountId, billId } = {}) {
+  static async _settlementDestination({ bankAccountId, billId, rail } = {}) {
     const cfg = this.config();
     if (billId) {
       const bills = await SpritzEngine.listBills();
@@ -915,10 +937,20 @@ class SpritzTreasuryLegEngine {
         throw conflict(`bankAccountId ${bankAccountId} is not the settlement bank (${bank ? bank.id : 'none linked'}); Spritz payouts settle only to ${cfg.settlementBankMatch} or a linked bill`, 'SPRITZ_SETTLEMENT_BANK_MISMATCH');
       }
     }
-    if (bank) return { kind: 'bank', accountId: bank.id, bank };
+    const wantsBillPay = (rail || cfg.defaultRail) === 'bill_pay';
+    let achCap = null;
+    if (bank && !bankAccountId && !wantsBillPay) {
+      achCap = capabilityFor(await SpritzEngine.capabilities().catch(() => []), 'ach_credit');
+    }
+    const bankUsable = Boolean(bank) && (Boolean(bankAccountId) || (!wantsBillPay && capabilityUsable(achCap)));
+    if (bankUsable) return { kind: 'bank', accountId: bank.id, bank };
     const bills = (await SpritzEngine.listBills().catch(() => []) || []).filter(b => b && b.status === 'active' && !b.unpayableCode);
     if (bills.length === 1) return this._settlementDestination({ billId: bills[0].id });
-    if (bills.length > 1) throw badRequest(`billId required: ${bills.length} payable Spritz bills are linked and the trust has no settlement bank`, 'SPRITZ_BILL_ID_REQUIRED');
+    const why = bank
+      ? (wantsBillPay ? 'SPRITZ_PAYOUT_RAIL=bill_pay' : `Spritz ACH payout is ${achCap.status}`)
+      : 'the trust has no settlement bank';
+    if (bills.length > 1) throw badRequest(`billId required: ${bills.length} payable Spritz bills are linked and ${why}`, 'SPRITZ_BILL_ID_REQUIRED');
+    if (bank) throw conflict(`Spritz ACH payout is ${achCap ? achCap.status : 'not the configured rail'} and no payable bill is linked: activate Spritz Bill Pay and link a bill (POST /spritz/bills/activate)`, 'SPRITZ_ACH_NOT_ACTIVE');
     throw conflict('No Spritz settlement destination: the trust has no bank account and no payable bill is linked (activate Spritz Bill Pay)', 'SPRITZ_SETTLEMENT_DESTINATION_REQUIRED');
   }
 

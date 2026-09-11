@@ -395,6 +395,52 @@ describe('Spritz treasury leg', () => {
     expect(calls.some(c => /deposits|funding-sources/.test(c.url))).toBe(false);
   });
 
+  it('routes payouts through the Bill Pay endpoint while Spritz ACH origination is not active, even with a settlement bank linked', async () => {
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    const CAPS = { capabilities: [{ product: 'crypto_to_fiat', method: 'ach_credit', name: 'Bank payouts', status: 'pending' }, { product: 'crypto_to_fiat', method: 'bill_pay', name: 'Bill Pay', status: 'active' }] };
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (/FROM coupon_payments/.test(sql)) return { rows: [{ total: '83333.33' }], rowCount: 1 } as any;
+      return { rows: [], rowCount: 0 } as any;
+    });
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+    vi.spyOn(TrustPolicyEngine, 'propose').mockResolvedValue({ distributionId: '8', status: 'proposed' } as any);
+    stubSpritz((path) => {
+      if (path === '/v1/users/me') return CAPS;
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/bills/') return [{ id: 'bill_1', name: 'Duke Energy', status: 'active' }];
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_bp', requiredTokenInput: '100500000' };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const rails = await SpritzTreasuryLegEngine.settlementRails();
+    expect(rails.default).toMatchObject({ rail: 'bill_pay', destination: 'bill', accountId: 'bill_1' });
+    expect(rails.active.map((r: any) => r.rail)).toEqual(['bill_pay']);
+    expect(rails.capabilities).toEqual({ achCredit: 'pending', billPay: 'active' });
+
+    const out = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: 100, purpose: 'distribution', reference: 'PAY-BP' });
+    const quote = calls.find(c => c.url.endsWith('/v1/off-ramp-quotes/'))!;
+    expect(JSON.parse(quote.init.body as string)).toMatchObject({ accountId: 'bill_1', rail: 'bill_pay', amount: '100.00' });
+    expect(out).toMatchObject({ rail: 'bill_pay', settlementBank: null, destination: { kind: 'bill', accountId: 'bill_1' } });
+  });
+
+  it('readiness does not block on inactive ACH origination when Bill Pay is active with a payable bill', async () => {
+    vi.spyOn(TrustAllocationEngine, 'fundingSources').mockResolvedValue([] as any);
+    vi.spyOn(CanonicalMoneyEngine, 'quote').mockResolvedValue({ executable: true } as any);
+    vi.spyOn(TrustAllocationEngine, 'routeExecutable').mockReturnValue(true);
+    stubSpritz((path) => {
+      if (path === '/v1/users/me') return { capabilities: [{ product: 'crypto_to_fiat', method: 'ach_credit', name: 'Bank payouts', status: 'pending' }, { product: 'crypto_to_fiat', method: 'bill_pay', name: 'Bill Pay', status: 'active' }] };
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/bills/') return [{ id: 'bill_1', name: 'Duke Energy', status: 'active' }];
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const out = await SpritzTreasuryLegEngine.readiness();
+    expect(out.issues).toEqual([]);
+    expect(out.notes).toEqual(['Spritz ACH payout is pending; payouts settle through Spritz Bill Pay']);
+    expect(out.settlementDestinations).toMatchObject({ bank: 1, bills: 1, default: 'bill' });
+    expect(out).toMatchObject({ offramp: { status: 'pending' }, billPay: { status: 'active' } });
+  });
+
   it('refuses a settlement rail the settlement bank does not support', async () => {
     process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
     vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
