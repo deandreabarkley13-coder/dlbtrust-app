@@ -196,6 +196,8 @@ describe('Payout relayer (session-key account abstraction)', () => {
     const sponsor = vi.spyOn(ThirdwebWalletEngine, 'sponsorUserOperation').mockResolvedValue({ sponsored: true, paymasterAndData: '0x' + 'aa'.repeat(40) });
     const sent: any[] = [];
     const aa = require('viem/account-abstraction');
+    process.env.THIRDWEB_SECRET_KEY = 'tw-secret-test';
+    const httpSpy = vi.spyOn(viem, 'http');
     vi.spyOn(aa, 'createBundlerClient').mockReturnValue({
       request: async ({ method, params }: { method: string; params: any[] }) => {
         if (method === 'eth_estimateUserOperationGas') return { callGasLimit: '0x10000', verificationGasLimit: '0x20000', preVerificationGas: '0x8000' };
@@ -208,6 +210,8 @@ describe('Payout relayer (session-key account abstraction)', () => {
     const out = await PayoutRelayerEngine.deploySmartAccount({ confirm: true });
     expect(out).toMatchObject({ action: 'smartAccountDeployed', deployed: true, via: 'sponsored', payer: DEPLOYER, txHash: '0x' + 'ef'.repeat(32), admin: viem.getAddress(TRUSTEE) });
     expect(sponsor).toHaveBeenCalledTimes(1);
+    expect(httpSpy).toHaveBeenCalledWith(PayoutRelayerEngine.config().bundlerUrl, expect.objectContaining({ fetchOptions: { headers: { 'x-secret-key': 'tw-secret-test' } } }));
+    delete process.env.THIRDWEB_SECRET_KEY;
     expect(sent).toHaveLength(1);
     expect(sent[0].sender).toBe(DEPLOYER);
     expect(sent[0].initCode.toLowerCase().startsWith(FACTORY.toLowerCase())).toBe(true);
