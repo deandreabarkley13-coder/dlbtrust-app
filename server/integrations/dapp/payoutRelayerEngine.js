@@ -233,10 +233,15 @@ class PayoutRelayerEngine {
     const txHash = await wallet.sendTransaction({ to: prepared.unsignedTx.to, data: prepared.unsignedTx.data, value: 0n });
     const receipt = await client.waitForTransactionReceipt({ hash: txHash });
     const code = await client.getBytecode({ address: prepared.address }).catch(() => null);
+    const deployed = Boolean(code && code !== '0x');
+    if (!deployed) {
+      throw conflict(`createAccount tx ${txHash} ${receipt.status === 'success' ? 'mined but' : 'reverted;'} no code at ${prepared.address}`, 'RELAYER_ACCOUNT_DEPLOY_FAILED');
+    }
     return jsonSafe({
       ...prepared,
       action: 'smartAccountDeployed',
-      deployed: Boolean(code && code !== '0x'),
+      deployed,
+      unsignedTx: null,
       broadcast: true,
       txHash,
       status: receipt.status,

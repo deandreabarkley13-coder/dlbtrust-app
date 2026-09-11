@@ -1048,7 +1048,9 @@
     try {
       const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
       const chainHex = '0x' + Number(a.chainId).toString(16);
-      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* may already be on chain */ }
+      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] });
+      const onChain = await window.ethereum.request({ method: 'eth_chainId' });
+      if (Number(onChain) !== Number(a.chainId)) throw new Error(`wallet is on chain ${Number(onChain)}, expected ${a.chainId}`);
       status.textContent = `Confirm createAccount in your wallet (gas only; admin stays ${a.admin})…`;
       const txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from, to: a.unsignedTx.to, data: a.unsignedTx.data, value: '0x0' }] });
       status.textContent = `Deployment sent: ${txHash}. Then set SPRITZ_PAYOUT_WALLET=${a.address}, allow-list it, and grant the session key.`;
