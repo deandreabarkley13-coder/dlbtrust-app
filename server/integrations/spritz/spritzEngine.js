@@ -108,7 +108,7 @@ async function spritzRequest(method, path, body, options = {}) {
     'User-Agent': 'dlbtrust-spritz-engine/1.0',
     Origin: process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run',
   };
-  if (options.useUserJwt) {
+  if (options.useUserJwt && hasIntegratorCreds()) {
     const token = await getIntegratorToken();
     headers['Authorization'] = `Bearer ${token}`;
   } else if (useProxy()) {
@@ -460,6 +460,12 @@ class SpritzEngine {
 
   static async listCards() {
     return spritzRequest('GET', '/v1/cards/', undefined, { useUserJwt: true });
+  }
+
+  /** Off-ramp quote loading a Spritz card program balance (rail `card_deposit`). */
+  static async createCardDepositQuote({ cardId, amount, chain, tokenAddress, amountMode = 'output' } = {}) {
+    if (!cardId) throw new Error('cardId required');
+    return this.createOffRampQuote({ accountId: cardId, amount, chain, tokenAddress, amountMode, rail: 'card_deposit' });
   }
 
   static async getCardBalance() {
