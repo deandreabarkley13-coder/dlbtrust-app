@@ -695,6 +695,13 @@ router.get('/spritz/cards/balance', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SpritzEngine.getCardBalance() }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/spritz/cards/:id/fund-quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, chain, tokenAddress, amountMode } = req.body || {};
+    res.status(201).json({ success: true, data: await SpritzEngine.createCardDepositQuote({ cardId: req.params.id, amount, chain, tokenAddress, amountMode }) });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/spritz/cards/:id/status', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await SpritzEngine.updateCardStatus(req.params.id, req.body.status) }); } catch (err) { sendError(res, err); }
 });
