@@ -94,7 +94,30 @@ async function payout() {
   console.log(data.next);
 }
 
-const commands = { status, allowlist, wallet, rails, payout };
+/** Session-key relayer state for the payout smart account. */
+async function relayer() {
+  const data = await call('/api/finops/spritz/relayer');
+  console.log(`mode ${data.mode} ready ${data.ready} | account ${data.smartAccount} | relayer ${data.relayer} (key: ${data.relayerHasKey}) | sponsorship ${data.gasSponsorship}`);
+  if (data.session) console.log(`session active ${data.session.active} targets ${data.session.approvedTargets.join(', ')} expires in ${data.session.expiresInSeconds}s`);
+  for (const i of data.issues) console.log(`- ${i}`);
+}
+
+/**
+ * Prepare the one-time EIP-712 session-key grant for the trustee admin to sign.
+ *   [--days 30] [--targets 0x..,0x..] [--revoke]
+ */
+async function grant() {
+  const days = Number(arg('days', '0'));
+  const data = await call('/api/finops/spritz/relayer/session-key/prepare', {
+    method: 'POST',
+    body: { durationSeconds: days ? days * 86400 : undefined, approvedTargets: arg('targets') ? arg('targets').split(',') : undefined, revoke: process.argv.includes('--revoke') },
+  });
+  console.log(`${data.action} on ${data.smartAccount} (chain ${data.chainId}) for signer ${data.signer}; admins: ${data.admins.join(', ') || 'unknown'}`);
+  console.log(data.instructions);
+  console.log(JSON.stringify(data.typedData, null, 2));
+}
+
+const commands = { status, allowlist, wallet, rails, payout, relayer, grant };
 const cmd = process.argv[2] || 'status';
 if (!commands[cmd]) {
   console.error(`unknown command ${cmd}; expected one of ${Object.keys(commands).join(', ')}`);
