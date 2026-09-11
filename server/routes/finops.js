@@ -8,6 +8,7 @@ const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngin
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
 const { SpritzBillPayEngine } = require('../integrations/spritz/spritzBillPayEngine');
+const { PayoutRelayerEngine } = require('../integrations/dapp/payoutRelayerEngine');
 const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
@@ -456,6 +457,29 @@ router.get('/spritz/treasury/payouts', operatorAuth, async (req, res) => {
 router.get('/spritz/treasury/rails', operatorAuth, async (req, res) => {
   res.set('Cache-Control', 'no-store');
   try { res.json({ success: true, data: await SpritzTreasuryLegEngine.settlementRails() }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Payout relayer: session-key smart account for repeated payout signing ──
+
+router.get('/spritz/relayer', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await PayoutRelayerEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// EIP-712 grant for the payout-account admin (trustee) to sign; nothing is sent.
+router.post('/spritz/relayer/session-key/prepare', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { signer, approvedTargets, durationSeconds, revoke } = req.body || {};
+    res.json({ success: true, data: await PayoutRelayerEngine.prepareSessionKeyGrant({ signer, approvedTargets, durationSeconds, revoke: Boolean(revoke) }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// Relayer submits the admin-signed grant on chain.
+router.post('/spritz/relayer/session-key/submit', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { request, signature } = req.body || {};
+    res.json({ success: true, data: await PayoutRelayerEngine.submitSessionKeyGrant({ request, signature }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/spritz/treasury/funding-legs', operatorAuth, async (req, res) => {

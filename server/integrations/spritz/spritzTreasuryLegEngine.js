@@ -36,6 +36,8 @@ let CanonicalFundingSource;
 try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { CanonicalFundingSource = null; }
 let ExternalWalletEngine;
 try { ({ ExternalWalletEngine } = require('../dapp/externalWalletEngine')); } catch (e) { ExternalWalletEngine = null; }
+let PayoutRelayerEngine;
+try { ({ PayoutRelayerEngine } = require('../dapp/payoutRelayerEngine')); } catch (e) { PayoutRelayerEngine = null; }
 let viem, viemChains;
 try { viem = require('viem'); viemChains = require('viem/chains'); } catch (e) { viem = null; viemChains = null; }
 
@@ -545,9 +547,19 @@ class SpritzTreasuryLegEngine {
 
     const release = await TrustPolicyEngine.execute({ distributionId });
     if (cfg.payoutWalletSigner === 'external') {
+      const unsignedTx = await SpritzEngine.prepareQuoteTransaction(spritzQuoteId, { senderAddress: cfg.payoutWallet });
+      if (PayoutRelayerEngine && PayoutRelayerEngine.enabled) {
+        // Smart-account payout wallet: the scoped session key relays the
+        // payment as a sponsored UserOperation, then it is booked like any
+        // other settled payout.
+        const relayed = await PayoutRelayerEngine.relayPayout({ unsignedTx, reference });
+        return this._bookPayout({
+          distributionId, spritzQuoteId, reference, amountUsd, createdBy, release,
+          settlement: { txHash: relayed.txHash, userOpHash: relayed.userOpHash, quoteId: spritzQuoteId, signer: 'session_key', relayer: relayed.signer.relayer },
+        });
+      }
       // Coinbase (external) payout wallet: hand back the unsigned Spritz payment
       // for the wallet to sign; confirmPayout() books it once the tx is sent.
-      const unsignedTx = await SpritzEngine.prepareQuoteTransaction(spritzQuoteId, { senderAddress: cfg.payoutWallet });
       return {
         status: 'awaiting_signature',
         reference,
@@ -736,7 +748,7 @@ class SpritzTreasuryLegEngine {
   static async pipeline({ limit = 20 } = {}) {
     const cfg = this.config();
     const settle = (p) => p.then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
-    const [readiness, policy, payoutWallet, buckets, funding, payouts, rails] = await Promise.all([
+    const [readiness, policy, payoutWallet, buckets, funding, payouts, rails, relayer] = await Promise.all([
       settle(this.readiness()),
       settle(TrustPolicyEngine.status()),
       settle(this.payoutWalletStatus()),
@@ -744,6 +756,7 @@ class SpritzTreasuryLegEngine {
       settle(this.listFundingLegs({ limit })),
       settle(this.listPayouts({ limit })),
       settle(this.settlementRails()),
+      settle(PayoutRelayerEngine ? PayoutRelayerEngine.status() : Promise.resolve(null)),
     ]);
     const errors = [];
     const pick = (label, r, fallback = null) => { if (!r.ok) errors.push(`${label}: ${r.error}`); return r.ok ? r.value : fallback; };
@@ -751,10 +764,21 @@ class SpritzTreasuryLegEngine {
     const pw = pick('payout wallet', payoutWallet);
     const pol = pick('policy contract', policy);
     const rl = pick('settlement rails', rails);
+    const relay = pick('payout relayer', relayer);
     const stages = [
       { key: 'erp', label: 'Treasury-Core ERP (canonical GL)', ok: Boolean(rd && rd.fundingSource && (!rd.fundingSource.route || rd.fundingSource.route.executable !== false)), detail: rd ? `${rd.fundingSource.system || rd.fundingSource.sourceType} ${rd.fundingSource.sourceAccountId} -> ${cfg.gl.treasuryAccount}` : null },
       { key: 'policy', label: 'Trust distribution policy (on-chain)', ok: Boolean(pol && pol.live && !pol.paused), detail: pol ? `${cfg.policyAddress} chain ${cfg.chainId}${pol.paused ? ' PAUSED' : ''}` : null },
       { key: 'payoutWallet', label: 'Spritz payout wallet (Coinbase)', ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
+      {
+        key: 'signer',
+        label: 'Payout signing (session-key relayer or external wallet)',
+        ok: Boolean(relay && (relay.ready || (!relay.enabled && pw && pw.ready))),
+        detail: relay
+          ? (relay.enabled
+            ? (relay.ready ? `relayer ${relay.relayer} session key on ${relay.smartAccount}, expires in ${Math.round((relay.session.expiresInSeconds || 0) / 86400)}d` : relay.issues.join('; '))
+            : `manual: each payout signed in the ${cfg.payoutWalletProvider} wallet (enable SPRITZ_PAYOUT_RELAYER=session_key for repeated signing)`)
+          : null,
+      },
       { key: 'spritz', label: 'Spritz credit push (crypto -> fiat at settlement)', ok: Boolean(rl && rl.active.length), detail: rl ? (rl.rails.length ? rl.rails.map(r => `${r.rail}${r.destination === 'bill' ? ' -> ' + r.label : ''} [${r.status}]`).join(', ') : 'no settlement bank or payable bill linked') : null },
     ];
     return {
@@ -768,6 +792,7 @@ class SpritzTreasuryLegEngine {
       },
       readiness: rd,
       rails: rl,
+      relayer: relay,
       policy: pol,
       payoutWallet: pw,
       buckets: pick('allocation buckets', buckets, []),

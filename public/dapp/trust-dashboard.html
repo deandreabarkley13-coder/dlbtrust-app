@@ -141,6 +141,7 @@
           <div id="pipeline-stages" class="muted" style="margin-top:10px;">Loading…</div>
           <div id="pipeline-detail" style="margin-top:10px;"></div>
           <div id="pipeline-allowlist" style="margin-top:10px;"></div>
+          <div id="pipeline-relayer" style="margin-top:10px;"></div>
         </div>
 
         <div class="workflow">
@@ -893,7 +894,7 @@
 
   const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const shortAddr = (a) => (a && a.length > 12 ? a.slice(0, 6) + '…' + a.slice(-4) : (a || '—'));
-  const pipeline = { loading: false, data: null, prepared: null };
+  const pipeline = { loading: false, data: null, prepared: null, grant: null };
 
   async function loadPipeline() {
     if (pipeline.loading) return;
@@ -948,6 +949,8 @@
       <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span class="muted" style="font-size:.75rem;">ERP ${escHtml((p.rails && p.rails.source && p.rails.source.account) || '')} → USDC → credit push:</span>${railBadges || '<span class="muted">no settlement rails linked</span>'}</div>
       ${legs.length ? `<table class="table" style="margin-top:10px;"><thead><tr><th>Leg</th><th>Route</th><th>Amount</th><th>Status</th><th>When</th></tr></thead><tbody>${legs.join('')}</tbody></table>` : '<p class="muted" style="margin-top:8px;">No funding or payout legs recorded yet.</p>'}`;
 
+    renderRelayer(p.relayer);
+
     const allow = el('pipeline-allowlist');
     if (pw.policy && pw.policy.allowed) {
       allow.innerHTML = '';
@@ -990,6 +993,76 @@
       if (!window.ethereum) status.textContent += ' No browser wallet detected — paste the calldata into the owner wallet.';
     } catch (e) {
       status.textContent = 'Prepare failed: ' + e.message;
+    }
+  }
+
+  function renderRelayer(relay) {
+    const box = el('pipeline-relayer');
+    if (!box) return;
+    if (!relay) { box.innerHTML = ''; return; }
+    const summary = el('relayer-summary');
+    const text = relay.enabled
+      ? (relay.ready ? `Session-key relayer ${relay.relayer} active on ${relay.smartAccount}` : 'Relayer enabled but not ready: ' + relay.issues.join('; '))
+      : 'Repeated signing off: each payout is signed by hand in the external wallet. Set SPRITZ_PAYOUT_WALLET to a thirdweb smart account (trustee = admin) and SPRITZ_PAYOUT_RELAYER=session_key.';
+    if (summary) { summary.textContent = text; return; }
+    box.innerHTML = `<div class="panel">
+      <strong style="font-size:.85rem;">Payout relayer (account abstraction)</strong>
+      <p class="muted" id="relayer-summary" style="margin:6px 0;">${escHtml(text)}</p>
+      <div class="form-row">
+        <div class="form-group"><label>Session length (days)</label><input id="grant-days" type="number" min="1" step="1" placeholder="30" /></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-gold btn-sm" onclick="prepareGrant()">Prepare session-key grant</button>
+        <button class="btn btn-sec btn-sm" id="grant-sign-btn" onclick="signGrant()" disabled>Sign as admin &amp; submit</button>
+        <button class="btn btn-sec btn-sm" onclick="prepareGrant(true)">Prepare revoke</button>
+      </div>
+      <div id="grant-status" class="muted" style="margin-top:8px;"></div>
+      <pre id="grant-typed" class="muted" style="white-space:pre-wrap;word-break:break-all;display:none;"></pre>
+    </div>`;
+  }
+
+  async function prepareGrant(revoke) {
+    const status = el('grant-status');
+    try {
+      status.textContent = 'Preparing…';
+      const days = Number(el('grant-days').value);
+      const res = await api('/api/finops/spritz/relayer/session-key/prepare', { method: 'POST', body: JSON.stringify({ durationSeconds: days > 0 ? days * 86400 : undefined, revoke: Boolean(revoke) }) });
+      pipeline.grant = res.data;
+      const pre = el('grant-typed');
+      pre.style.display = 'block';
+      pre.textContent = JSON.stringify({ action: res.data.action, signer: res.data.signer, scope: res.data.scope, admins: res.data.admins }, null, 2);
+      status.textContent = res.data.instructions;
+      el('grant-sign-btn').disabled = !window.ethereum;
+      if (!window.ethereum) status.textContent += ' No browser wallet detected.';
+    } catch (e) {
+      status.textContent = 'Prepare failed: ' + e.message;
+    }
+  }
+
+  async function signGrant() {
+    const status = el('grant-status');
+    const g = pipeline.grant;
+    if (!g || !window.ethereum) return;
+    try {
+      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (g.admins.length && !g.admins.some((a) => String(a).toLowerCase() === String(from).toLowerCase())) {
+        status.textContent = `Connected wallet ${from} is not an admin of ${g.smartAccount} (${g.admins.join(', ')}); switch accounts.`;
+        return;
+      }
+      const chainHex = '0x' + Number(g.chainId).toString(16);
+      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* may already be on chain */ }
+      status.textContent = 'Sign the session-key grant in your wallet…';
+      const typed = JSON.parse(JSON.stringify(g.typedData));
+      typed.types.EIP712Domain = [
+        { name: 'name', type: 'string' }, { name: 'version', type: 'string' }, { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' },
+      ];
+      const signature = await window.ethereum.request({ method: 'eth_signTypedData_v4', params: [from, JSON.stringify(typed)] });
+      status.textContent = 'Submitting grant via relayer…';
+      const res = await api('/api/finops/spritz/relayer/session-key/submit', { method: 'POST', body: JSON.stringify({ request: g.request, signature }) });
+      status.textContent = `${g.action} submitted: ${res.data.txHash} (${res.data.status}) — re-checking…`;
+      setTimeout(loadPipeline, 5000);
+    } catch (e) {
+      status.textContent = 'Grant failed: ' + (e.message || e);
     }
   }
 
