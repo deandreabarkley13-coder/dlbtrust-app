@@ -39,7 +39,15 @@ try {
 let viemChains;
 try { viemChains = require('viem/chains'); } catch (e) { viemChains = null; }
 
-const { ThirdwebWalletEngine, ENTRY_POINT_V0_6 } = require('./thirdwebWalletEngine');
+const { ThirdwebWalletEngine, ENTRY_POINT_V0_6, saltHex } = require('./thirdwebWalletEngine');
+const { TrustPolicyEngine } = require('./trustPolicyEngine');
+
+// thirdweb AccountFactory (contracts/prebuilts/account/non-upgradeable/AccountFactory.sol).
+const FACTORY_ABI = viem && viem.parseAbi ? viem.parseAbi([
+  'function getAddress(address admin, bytes data) view returns (address)',
+  'function createAccount(address admin, bytes data) returns (address)',
+  'function entrypoint() view returns (address)',
+]) : [];
 
 // thirdweb Account (AccountCore + AccountPermissions) — verified against
 // thirdweb-dev/contracts `contracts/extension/upgradeable/AccountPermissions.sol`
@@ -85,7 +93,7 @@ function num(name, def) { const n = Number(process.env[name]); return Number.isF
 function same(a, b) { return Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase(); }
 function badRequest(message, code = 'BAD_REQUEST') { return Object.assign(new Error(message), { status: 400, code }); }
 function conflict(message, code) { return Object.assign(new Error(message), { status: 409, code }); }
-function isAddress(a) { return Boolean(viem && viem.isAddress && a && viem.isAddress(a)); }
+function isAddress(a) { return Boolean(viem && viem.isAddress && a && viem.isAddress(a, { strict: false })); }
 function jsonSafe(v) { return JSON.parse(JSON.stringify(v, (k, x) => (typeof x === 'bigint' ? x.toString() : x))); }
 
 function viemChain(chainId) {
@@ -138,6 +146,107 @@ class PayoutRelayerEngine {
       if (isAddress(t)) set.set(t.toLowerCase(), viem.getAddress(t));
     }
     return [...set.values()];
+  }
+
+  /** Policy-contract owner (trustee) — the only sensible default admin for the payout account. */
+  static async _trusteeAdmin() {
+    try {
+      const st = await TrustPolicyEngine.status();
+      return st && isAddress(st.owner) ? viem.getAddress(st.owner) : '';
+    } catch (e) { return ''; }
+  }
+
+  /**
+   * Counterfactual thirdweb Account for the payout leg, with the trustee as
+   * sole admin. Read-only: returns the predicted address, whether it is
+   * already deployed, and the unsigned factory.createAccount tx any funded
+   * wallet may broadcast (the factory is permissionless; only `admin`
+   * controls the resulting account). Nothing is signed or sent here.
+   */
+  static async prepareSmartAccount({ admin, salt } = {}) {
+    const cfg = this.config();
+    const trustee = admin || await this._trusteeAdmin();
+    if (!isAddress(trustee)) throw badRequest('admin (trustee wallet) address required; policy owner could not be read', 'RELAYER_ADMIN_REQUIRED');
+    const adminAddr = viem.getAddress(trustee);
+    if (same(adminAddr, cfg.relayer)) throw conflict('the relayer key must not be the account admin; admin is the trustee wallet', 'RELAYER_ADMIN_IS_RELAYER');
+    const factory = cfg.thirdweb.factory;
+    if (!isAddress(factory)) throw conflict('THIRDWEB_ACCOUNT_FACTORY is not a valid address', 'RELAYER_FACTORY_INVALID');
+    const data = saltHex(salt !== undefined ? salt : cfg.thirdweb.accountSalt);
+    const client = this._publicClient(cfg);
+
+    const factoryCode = await client.getBytecode({ address: factory }).catch(() => null);
+    if (!factoryCode || factoryCode === '0x') throw conflict(`no AccountFactory deployed at ${factory} on chain ${cfg.chainId}`, 'RELAYER_FACTORY_MISSING');
+    const [predicted, factoryEntryPoint] = await Promise.all([
+      client.readContract({ address: factory, abi: FACTORY_ABI, functionName: 'getAddress', args: [adminAddr, data] }),
+      client.readContract({ address: factory, abi: FACTORY_ABI, functionName: 'entrypoint' }).catch(() => null),
+    ]);
+    const address = viem.getAddress(predicted);
+    const code = await client.getBytecode({ address }).catch(() => null);
+    const deployed = Boolean(code && code !== '0x');
+    const issues = [];
+    if (factoryEntryPoint && !same(factoryEntryPoint, cfg.entryPoint)) {
+      issues.push(`factory entrypoint ${factoryEntryPoint} differs from configured THIRDWEB_ENTRY_POINT ${cfg.entryPoint}`);
+    }
+    if (!same(address, cfg.smartAccount)) issues.push(`SPRITZ_PAYOUT_WALLET is ${cfg.smartAccount}; set it to ${address} once deployed`);
+
+    return jsonSafe({
+      action: deployed ? 'smartAccountDeployed' : 'deploySmartAccount',
+      chainId: cfg.chainId,
+      factory: viem.getAddress(factory),
+      entryPoint: cfg.entryPoint,
+      admin: adminAddr,
+      salt: data,
+      address,
+      deployed,
+      configured: same(address, cfg.smartAccount),
+      issues,
+      unsignedTx: deployed ? null : {
+        to: viem.getAddress(factory),
+        value: '0',
+        chainId: cfg.chainId,
+        data: viem.encodeFunctionData({ abi: FACTORY_ABI, functionName: 'createAccount', args: [adminAddr, data] }),
+        description: `AccountFactory.createAccount(${adminAddr}, ${data}) → ${address}`,
+      },
+      next: [
+        deployed ? `account ${address} is deployed` : `broadcast unsignedTx from any funded wallet (or POST /api/finops/spritz/relayer/account/deploy { confirm: true } to send it from the server wallet)`,
+        `set SPRITZ_PAYOUT_WALLET=${address} and restart`,
+        `trustee owner allow-lists ${address} on TrustDistributionPolicy (POST /api/finops/spritz/wallet/allowlist/prepare { address })`,
+        `trustee admin signs the session-key grant for relayer ${cfg.relayer || '(unset)'} (POST /api/finops/spritz/relayer/session-key/prepare)`,
+      ],
+    });
+  }
+
+  /**
+   * Broadcast factory.createAccount from the server/relayer key. Requires an
+   * explicit `confirm: true`; the sender only pays gas and gains no control
+   * over the account (admin is the trustee).
+   */
+  static async deploySmartAccount({ admin, salt, confirm = false } = {}) {
+    if (confirm !== true) throw badRequest('confirm: true is required to broadcast the deployment', 'RELAYER_CONFIRM_REQUIRED');
+    const cfg = this.config();
+    if (!cfg.relayerKey) throw conflict('no server signing key (SPRITZ_RELAYER_PRIVATE_KEY / DAPP_PRIVATE_KEY) to pay deployment gas', 'RELAYER_NO_KEY');
+    const prepared = await this.prepareSmartAccount({ admin, salt });
+    if (prepared.deployed) return { ...prepared, txHash: null, broadcast: false };
+    const client = this._publicClient(cfg);
+    const account = accounts.privateKeyToAccount(cfg.relayerKey);
+    const wallet = viem.createWalletClient({ account, chain: viemChain(cfg.chainId), transport: viem.http(cfg.rpcUrl) });
+    const txHash = await wallet.sendTransaction({ to: prepared.unsignedTx.to, data: prepared.unsignedTx.data, value: 0n });
+    const receipt = await client.waitForTransactionReceipt({ hash: txHash });
+    const code = await client.getBytecode({ address: prepared.address }).catch(() => null);
+    const deployed = Boolean(code && code !== '0x');
+    if (!deployed) {
+      throw conflict(`createAccount tx ${txHash} ${receipt.status === 'success' ? 'mined but' : 'reverted;'} no code at ${prepared.address}`, 'RELAYER_ACCOUNT_DEPLOY_FAILED');
+    }
+    return jsonSafe({
+      ...prepared,
+      action: 'smartAccountDeployed',
+      deployed,
+      unsignedTx: null,
+      broadcast: true,
+      txHash,
+      status: receipt.status,
+      payer: account.address,
+    });
   }
 
   /**

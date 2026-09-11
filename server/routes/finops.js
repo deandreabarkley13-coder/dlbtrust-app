@@ -466,6 +466,22 @@ router.get('/spritz/relayer', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await PayoutRelayerEngine.status() }); } catch (err) { sendError(res, err); }
 });
 
+// Counterfactual thirdweb Account (trustee admin) for the payout leg + unsigned createAccount tx.
+router.post('/spritz/relayer/account/prepare', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { admin, salt } = req.body || {};
+    res.json({ success: true, data: await PayoutRelayerEngine.prepareSmartAccount({ admin, salt }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// Server wallet pays gas to deploy it; requires confirm:true. Admin stays the trustee.
+router.post('/spritz/relayer/account/deploy', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { admin, salt, confirm } = req.body || {};
+    res.json({ success: true, data: await PayoutRelayerEngine.deploySmartAccount({ admin, salt, confirm: confirm === true }) });
+  } catch (err) { sendError(res, err); }
+});
+
 // EIP-712 grant for the payout-account admin (trustee) to sign; nothing is sent.
 router.post('/spritz/relayer/session-key/prepare', adminAuth, writeRateLimiter(), async (req, res) => {
   try {

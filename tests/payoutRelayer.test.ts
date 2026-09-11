@@ -138,4 +138,28 @@ describe('Payout relayer (session-key account abstraction)', () => {
     expect(book).not.toHaveBeenCalled();
     expect(manual).toMatchObject({ status: 'awaiting_signature', signer: { type: 'external' } });
   });
+
+  it('predicts the trustee-admin smart account and returns an unsigned createAccount tx without broadcasting', async () => {
+    const PREDICTED = '0x2222222222222222222222222222222222222222';
+    const FACTORY = PayoutRelayerEngine.config().thirdweb.factory;
+    vi.spyOn(TrustPolicyEngine, 'status').mockResolvedValue({ owner: TRUSTEE } as any);
+    const client = {
+      getBytecode: async ({ address }: { address: string }) => (address.toLowerCase() === FACTORY.toLowerCase() ? '0x6001' : '0x'),
+      readContract: async ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
+        if (functionName === 'getAddress') { expect(args).toEqual([viem.getAddress(TRUSTEE), '0x']); return PREDICTED; }
+        if (functionName === 'entrypoint') return PayoutRelayerEngine.config().entryPoint;
+        throw new Error(`unexpected read ${functionName}`);
+      },
+    };
+    vi.spyOn(PayoutRelayerEngine as any, '_publicClient').mockReturnValue(client);
+    const prep = await PayoutRelayerEngine.prepareSmartAccount();
+    expect(prep).toMatchObject({ action: 'deploySmartAccount', admin: viem.getAddress(TRUSTEE), address: PREDICTED, deployed: false, configured: false, factory: viem.getAddress(FACTORY) });
+    expect(prep.unsignedTx).toMatchObject({ to: viem.getAddress(FACTORY), value: '0', chainId: 8453 });
+    const decoded = viem.decodeFunctionData({ abi: viem.parseAbi(['function createAccount(address admin, bytes data) returns (address)']), data: prep.unsignedTx.data });
+    expect(decoded).toEqual({ functionName: 'createAccount', args: [viem.getAddress(TRUSTEE), '0x'] });
+    expect(prep.issues.join(' ')).toMatch(/SPRITZ_PAYOUT_WALLET/);
+
+    await expect(PayoutRelayerEngine.prepareSmartAccount({ admin: RELAYER })).rejects.toMatchObject({ code: 'RELAYER_ADMIN_IS_RELAYER' });
+    await expect(PayoutRelayerEngine.deploySmartAccount({})).rejects.toMatchObject({ code: 'RELAYER_CONFIRM_REQUIRED' });
+  });
 });
