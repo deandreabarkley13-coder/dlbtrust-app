@@ -156,7 +156,16 @@ class BondStatementEngine {
         );
       }
       await client.query('COMMIT');
-      return { bondId: bond.id, registered, skipped: sched.rows.length - 1 - registered.length, accruedInterest: accrued, lastAccrualDate: lastAccrual };
+      let accounting = null;
+      if (registered.length) {
+        try {
+          const { DataBridge } = require('../accounting/dataBridge');
+          accounting = await DataBridge.syncBondsToAccounting();
+        } catch (err) {
+          accounting = { error: err.message };
+        }
+      }
+      return { bondId: bond.id, registered, skipped: sched.rows.length - 1 - registered.length, accruedInterest: accrued, lastAccrualDate: lastAccrual, accounting };
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;

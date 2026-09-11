@@ -52,6 +52,15 @@ var ACCOUNTS = {
   STABLECOIN_ASSET:  '1210',
 };
 
+// Trust-operating allocation per bond terms: an annual % of face value released
+// from corpus into OPERATING_CASH (1030) each coupon period, split between
+// operating cost and investment. Coupon cash (1020) is never the source.
+var OPERATING_ALLOCATION = {
+  annualRate: parseFloat(process.env.TRUST_OPERATING_ALLOCATION_ANNUAL_RATE || '0.02'),
+  operatingShare: parseFloat(process.env.TRUST_OPERATING_ALLOCATION_OPERATING_SHARE || '0.5'),
+};
+var PERIODS_PER_YEAR = { monthly: 12, quarterly: 4, 'semi-annual': 2, annual: 1 };
+
 class DataBridge {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -183,43 +192,17 @@ class DataBridge {
       for (var j = 0; j < coupons.rows.length; j++) {
         var cpn = coupons.rows[j];
         try {
-          await DataBridge._ensureAccount(ACCOUNTS.COUPON_INCOME, 'Coupon Income', 'income');
-
-          var couponAmount = parseFloat(cpn.amount_cents || cpn.coupon_amount || 0);
+          var couponAmount = parseFloat(cpn.amount_cents || cpn.coupon_amount || cpn.amount || 0);
           if (cpn.amount_cents) couponAmount = couponAmount / 100;
 
           if (couponAmount > 0) {
-            // Fetch accrued interest balance to cap the credit
-            var accruedResult = await pool.query(
-              'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
-              [ACCOUNTS.ACCRUED_INTEREST]
-            );
-            var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
-            var settleAmount = Math.min(couponAmount, Math.max(accruedBalance, 0));
-            var excessAmount = couponAmount - settleAmount;
-
-            var couponLines = [
-              { accountCode: ACCOUNTS.COUPON_CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
-            ];
-            if (settleAmount > 0) {
-              couponLines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
-            }
-            if (excessAmount > 0.001) {
-              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: excessAmount, memo: 'Coupon income (excess over accrued)' });
-            }
-            if (settleAmount <= 0) {
-              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: couponAmount, memo: 'Coupon income ' + cpn.bond_code });
-            }
-
-            await TrustAccountingEngine.postJournalEntry({
+            await DataBridge._postCouponReceipt({
+              amount: couponAmount,
               entryDate: cpn.coupon_date || cpn.created_at,
-              description: 'Coupon payment received — ' + cpn.bond_code,
-              lines: couponLines,
+              bondCode: cpn.bond_code,
+              bondId: cpn.bond_id,
               referenceType: 'coupon_payment',
               referenceId: String(cpn.id),
-              bondId: cpn.bond_id,
-              postedBy: 'data_bridge',
-              postToFineract: false,
             });
             synced++;
           } else {
@@ -230,6 +213,83 @@ class DataBridge {
           errors.push({ couponId: cpn.id, bondId: cpn.bond_code, error: err.message });
         }
       }
+
+      // Sync coupon periods registered from bond terms (BondStatementEngine.registerCoupons)
+      var periods = await pool.query(`
+        SELECT bt.id, bt.bond_id, bt.amount, bt.transaction_date, b.bond_name AS bond_code
+        FROM bond_transactions bt
+        JOIN bonds b ON b.id = bt.bond_id
+        WHERE bt.transaction_type = 'coupon_accrual'
+          AND bt.transaction_date <= CURRENT_DATE
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_type = 'coupon_period'
+              AND je.reference_id = CAST(bt.id AS TEXT)
+              AND je.status = 'posted'
+          )
+        ORDER BY bt.transaction_date ASC
+        LIMIT 100
+      `);
+
+      for (var k = 0; k < periods.rows.length; k++) {
+        var per = periods.rows[k];
+        try {
+          var periodAmount = parseFloat(per.amount);
+          if (periodAmount <= 0) { skipped++; continue; }
+          await DataBridge._postCouponReceipt({
+            amount: periodAmount,
+            entryDate: per.transaction_date,
+            bondCode: per.bond_code,
+            bondId: per.bond_id,
+            referenceType: 'coupon_period',
+            referenceId: String(per.id),
+          });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ couponPeriodId: per.id, bondId: per.bond_code, error: err.message });
+        }
+      }
+
+      // Trust-operating allocation for each elapsed coupon period (2%/yr of face by default)
+      var allocPeriods = await pool.query(`
+        SELECT bt.id, bt.bond_id, bt.transaction_date, b.bond_name AS bond_code,
+               b.face_value, b.payment_freq
+        FROM bond_transactions bt
+        JOIN bonds b ON b.id = bt.bond_id
+        WHERE bt.transaction_type = 'coupon_accrual'
+          AND bt.transaction_date <= CURRENT_DATE
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_type = 'operating_allocation'
+              AND je.reference_id = CAST(bt.id AS TEXT)
+              AND je.status = 'posted'
+          )
+        ORDER BY bt.transaction_date ASC
+        LIMIT 100
+      `);
+
+      for (var a = 0; a < allocPeriods.rows.length; a++) {
+        var ap = allocPeriods.rows[a];
+        try {
+          var freq = PERIODS_PER_YEAR[ap.payment_freq];
+          var allocAmount = freq
+            ? Math.round(parseFloat(ap.face_value) * OPERATING_ALLOCATION.annualRate / freq * 100) / 100
+            : 0;
+          if (allocAmount < 0.01) { skipped++; continue; }
+          await DataBridge._postOperatingAllocation({
+            amount: allocAmount,
+            entryDate: ap.transaction_date,
+            bondCode: ap.bond_code,
+            bondId: ap.bond_id,
+            referenceId: String(ap.id),
+          });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ allocationPeriodId: ap.id, bondId: ap.bond_code, error: err.message });
+        }
+      }
     } catch (outerErr) {
       errors.push({ phase: 'query', error: outerErr.message });
     }
@@ -237,6 +297,79 @@ class DataBridge {
     await DataBridge._logSync(syncId, 'bond_to_accounting', 'bonds', 'trust_accounting', synced, skipped, failed, errors);
 
     return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+  }
+
+  /**
+   * Release the per-period trust-operating allocation from corpus into
+   * OPERATING_CASH (1030): Dr OPERATING_CASH (operating + investment halves);
+   * Cr TRUST_CORPUS. Never touches COUPON_CASH (1020).
+   */
+  static async _postOperatingAllocation({ amount, entryDate, bondCode, bondId, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureAccount(ACCOUNTS.OPERATING_CASH, 'Trust Operating Cash — Trustees', 'asset', 'cash');
+    await DataBridge._ensureAccount(ACCOUNTS.TRUST_CORPUS, 'Trust Corpus', 'equity');
+
+    var operatingAmount = Math.round(amount * OPERATING_ALLOCATION.operatingShare * 100) / 100;
+    var investmentAmount = Math.round((amount - operatingAmount) * 100) / 100;
+    var lines = [];
+    if (operatingAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.OPERATING_CASH, debitAmount: operatingAmount, creditAmount: 0, memo: 'Operating cost allocation ' + bondCode });
+    }
+    if (investmentAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.OPERATING_CASH, debitAmount: investmentAmount, creditAmount: 0, memo: 'Investment allocation ' + bondCode });
+    }
+    lines.push({ accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: amount, memo: 'Corpus release — operating allocation ' + bondCode });
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Trust operating allocation (' + (OPERATING_ALLOCATION.annualRate * 100) + '%/yr of face) — ' + bondCode,
+      lines: lines,
+      referenceType: 'operating_allocation',
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
+  }
+
+  /**
+   * Book a coupon receipt into the segregated coupon cash bucket (1020):
+   * Dr COUPON_CASH; Cr ACCRUED_INTEREST up to the outstanding accrual, the
+   * remainder Cr COUPON_INCOME. Never touches OPERATING_CASH (1030).
+   */
+  static async _postCouponReceipt({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPON_INCOME, 'Coupon Income', 'income');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPON_CASH, 'Coupon Income Cash — Beneficiary Support', 'asset', 'cash');
+
+    var accruedResult = await pool.query(
+      'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
+      [ACCOUNTS.ACCRUED_INTEREST]
+    );
+    var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
+    var settleAmount = Math.min(amount, Math.max(accruedBalance, 0));
+    var excessAmount = amount - settleAmount;
+
+    var lines = [
+      { accountCode: ACCOUNTS.COUPON_CASH, debitAmount: amount, creditAmount: 0, memo: 'Coupon received ' + bondCode },
+    ];
+    if (settleAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
+    }
+    if (excessAmount > 0.001) {
+      lines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: excessAmount, memo: 'Coupon income ' + bondCode });
+    }
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon payment received — ' + bondCode,
+      lines: lines,
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1786,9 +1919,12 @@ class DataBridge {
     catch (e) { results.trustActivity = { error: e.message }; }
 
     if (!isDryRun) {
+      try { results.bonds = await DataBridge.syncBondsToAccounting(); }
+      catch (e) { results.bonds = { error: e.message }; }
       try { results.bill = await DataBridge.syncBILLToAccounting(); }
       catch (e) { results.bill = { error: e.message }; }
     } else {
+      results.bonds = { skipped: true, reason: 'bond sync has no dry-run mode' };
       results.bill = { skipped: true, reason: 'BILL sync has no dry-run mode' };
     }
 
@@ -1808,10 +1944,13 @@ class DataBridge {
       + (results.trustActivity.posted || 0)
       + (results.trustActivity.linksRepaired || 0)
       + (results.bill.synced || 0)
+      + (results.bonds.synced || 0)
       + (results.fineractPush ? (results.fineractPush.synced || 0) : 0);
     var failed = (results.wires.failed || 0)
       + (results.trustActivity.failed || 0)
       + (results.bill.failed || 0)
+      + (results.bonds.failed || 0)
+      + (results.bonds.error ? 1 : 0)
       + (results.fineractPush ? (results.fineractPush.failed || 0) : 0)
       + (results.wires.error ? 1 : 0)
       + (results.trustActivity.error ? 1 : 0)
