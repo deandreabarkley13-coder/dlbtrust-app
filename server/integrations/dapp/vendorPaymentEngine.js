@@ -10,17 +10,29 @@
  * Bills portal address (MELIO_PAY_BILLS_EMAIL); the live Melio API is only used
  * when MELIO_USE_API=true. Direct wire/ACH/Open Banking rails remain available
  * only when a bank endpoint is explicitly configured.
+ *
+ * `spritz_bill_pay` settles a bill through Spritz Bill Pay funded straight from
+ * the Treasury-Core Banking ERP canonical GL (SpritzBillPayEngine); the trust
+ * has no bank account so no source cash account is involved.
  */
 
 const pool = require('../bonds/pgPool');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
 
-let BankTransferEngine, OpenBankingEngine, WireOriginationEngine, MelioEngine;
+const RAILS = ['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay'];
+const RAIL_SQL = RAILS.map((r) => `'${r}'`).join(',');
+
+let BankTransferEngine, OpenBankingEngine, WireOriginationEngine, MelioEngine, SpritzBillPayEngine;
 function loadDeps() {
   try { ({ BankTransferEngine } = require('./bankTransferEngine')); } catch (e) { BankTransferEngine = null; }
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ WireOriginationEngine } = require('./wireOriginationEngine')); } catch (e) { WireOriginationEngine = null; }
   try { ({ MelioEngine } = require('../os/osEngine')); } catch (e) { MelioEngine = null; }
+  try { ({ SpritzBillPayEngine } = require('../spritz/spritzBillPayEngine')); } catch (e) { SpritzBillPayEngine = null; }
+}
+
+function spritzBillPayLive() {
+  return String(process.env.SPRITZ_BILLPAY_LIVE || 'false') === 'true';
 }
 
 // Melio only moves money through its API when MELIO_USE_API is on; otherwise the
@@ -81,7 +93,7 @@ class VendorPaymentEngine {
         vendor_id TEXT NOT NULL REFERENCES vendor_payees(vendor_id),
         amount_cents BIGINT NOT NULL,
         currency TEXT DEFAULT 'USD',
-        rail TEXT NOT NULL DEFAULT 'melio' CHECK (rail IN ('melio','bank_transfer','wire','ach','open_banking','web_payment')),
+        rail TEXT NOT NULL DEFAULT 'melio' CHECK (rail IN (${RAIL_SQL})),
         source_cash_account_id TEXT,
         transfer_id TEXT,
         payment_id TEXT,
@@ -96,11 +108,13 @@ class VendorPaymentEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_payment_runs_status ON vendor_payment_runs(status)`);
     await pool.query('ALTER TABLE vendor_bills ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
     await pool.query('ALTER TABLE vendor_payment_runs ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
-    // Allow the Melio rail on databases created before it existed.
+    // Allow newer rails on databases created before they existed.
     await pool.query('ALTER TABLE vendor_payment_runs DROP CONSTRAINT IF EXISTS vendor_payment_runs_rail_check');
     await pool.query(`ALTER TABLE vendor_payment_runs ADD CONSTRAINT vendor_payment_runs_rail_check
-      CHECK (rail IN ('melio','bank_transfer','wire','ach','open_banking','web_payment'))`);
+      CHECK (rail IN (${RAIL_SQL}))`);
   }
+
+  static get RAILS() { return [...RAILS]; }
 
   static async createVendor({ name, email, phone, accountNumber, routingNumber, bankName, accountType = 'checking', country = 'US', address, metadata } = {}) {
     if (!name) throw new Error('name required');
@@ -197,7 +211,7 @@ class VendorPaymentEngine {
     }
   }
 
-  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'melio', webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
+  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'melio', spritzBillId: requestedSpritzBillId, webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
     if (!billId) throw new Error('billId required');
     await this.ensureTables();
     await this._assertConsensusApproval(billId, consensusProposalId);
@@ -210,8 +224,10 @@ class VendorPaymentEngine {
     if (!vendor) throw new Error(`Vendor not found: ${bill.vendor_id}`);
 
     // A manual-upload Melio bill produces a CSV for the portal; no funds leave
-    // the platform programmatically, so it is screened as an export.
-    const complianceAction = rail === 'melio' && !melioUsesApi() ? 'export' : 'execute';
+    // the platform programmatically, so it is screened as an export. A shadow
+    // Spritz Bill Pay run only quotes and records the plan, likewise.
+    const complianceAction = (rail === 'melio' && !melioUsesApi()) || (rail === 'spritz_bill_pay' && !spritzBillPayLive())
+      ? 'export' : 'execute';
     const compliance = await PaymentComplianceGate.screenVendorPayment({
       vendor,
       amount: bill.amount_cents / 100,
@@ -232,6 +248,22 @@ class VendorPaymentEngine {
       // payment processor: we hand it the bill and it moves the money.
       payment = await this._payViaMelio({ bill, vendor, runId, memo, sourceCashAccountId });
       status = payment.status === 'completed' ? 'completed' : 'initiated';
+    } else if (rail === 'spritz_bill_pay') {
+      if (!SpritzBillPayEngine) throw new Error('SpritzBillPayEngine not available');
+      // Treasury-Core ERP canonical GL -> USDC -> Spritz Bill Pay -> biller.
+      const spritzBillId = requestedSpritzBillId || SpritzBillPayEngine.spritzBillIdFor({ bill, vendor });
+      if (!spritzBillId) throw new Error('Vendor or bill metadata must carry spritzBillId (linked Spritz bill) for the spritz_bill_pay rail');
+      payment = await SpritzBillPayEngine.pay({
+        runId,
+        vendorBillId: billId,
+        spritzBillId,
+        amountUsd: bill.amount_cents / 100,
+        memo: memo || bill.memo,
+        initiatedBy,
+      });
+      status = payment.status === 'completed' ? 'completed'
+        : payment.status === 'failed' ? 'failed'
+          : payment.status === 'shadow' ? 'pending' : 'initiated';
     } else if (rail === 'bank_transfer' && BankTransferEngine) {
       // Create a bank account record for the vendor
       const bankAccount = await BankTransferEngine.createBankAccount({

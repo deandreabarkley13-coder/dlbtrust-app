@@ -4,12 +4,16 @@
  * SpritzTreasuryLegEngine — the Spritz leg of the treasury-core ERP and the
  * governed smart accounts on Base.
  *
- *   fund:   Treasury-Core ERP reserve (ledger source or module/bond token such
- *           as DLB-PRB / DLB-TREASURY) --(CanonicalMoneyEngine, maker/checker
- *           consensus)--> USDC on Base delivered to the TrustDistributionPolicy
- *           contract. No bank account is ever debited.
+ *   fund:   Treasury-Core Banking ERP canonical GL (default; `sourceType:
+ *           canonical` + the CanonicalFundingSource cash account) or a
+ *           module/bond token such as DLB-PRB / DLB-TREASURY --(CanonicalMoneyEngine,
+ *           maker/checker consensus)--> USDC on Base delivered to the
+ *           TrustDistributionPolicy contract. The trust has no bank account:
+ *           nothing is ever debited outside the ERP.
  *   payout: policy contract --(governed distribution)--> payout wallet
- *           --(Spritz off-ramp)--> settlement bank (DB NET MGMT).
+ *           --(Spritz off-ramp)--> a Spritz destination: a linked bill
+ *           (rail `bill_pay`, see SpritzBillPayEngine) or, when one is
+ *           linked, a settlement bank account.
  *
  * Every leg is booked as a double-entry journal in the trust GL
  * (TrustAccountingEngine) keyed by the ERP request / Spritz quote id so a
@@ -28,6 +32,8 @@ let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
+let CanonicalFundingSource;
+try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { CanonicalFundingSource = null; }
 
 const USDC_DECIMALS = 6;
 const DEFAULT_SETTLEMENT_BANK_MATCH = 'DB NET MGMT';
@@ -111,6 +117,31 @@ async function book({ referenceType, referenceId, description, lines, postedBy }
   }
 }
 
+/**
+ * The ERP funding source Spritz legs draw from when the caller names none:
+ * SPRITZ_FUNDING_SOURCE_* when set, otherwise the Treasury-Core Banking ERP
+ * canonical GL cash account (CanonicalFundingSource).
+ */
+function defaultFundingSource() {
+  const explicit = {
+    sourceType: str('SPRITZ_FUNDING_SOURCE_TYPE'),
+    sourceAccountId: str('SPRITZ_FUNDING_SOURCE_ACCOUNT'),
+    sourceToken: str('SPRITZ_FUNDING_SOURCE_TOKEN'),
+    sourceModule: str('SPRITZ_FUNDING_SOURCE_MODULE'),
+  };
+  if (explicit.sourceType || explicit.sourceToken || explicit.sourceModule) return { ...explicit, kind: 'configured' };
+  const erp = CanonicalFundingSource ? CanonicalFundingSource.getConfig() : null;
+  return {
+    sourceType: 'canonical',
+    sourceAccountId: (erp && erp.cashAccountCode) || str('CANONICAL_FUNDING_CASH_ACCOUNT_CODE', '1000'),
+    sourceToken: '',
+    sourceModule: explicit.sourceModule,
+    kind: 'treasury_core_erp',
+    system: erp ? erp.system : 'fineract',
+    live: Boolean(erp && erp.live),
+  };
+}
+
 function bankMatches(account, needle) {
   const hay = [account.label, account.accountHolderName, account.name, account.institution && account.institution.name]
     .filter(Boolean).join(' ').toLowerCase();
@@ -130,21 +161,22 @@ class SpritzTreasuryLegEngine {
       defaultRail: str('SPRITZ_PAYOUT_RAIL', 'ach_standard'),
       settlementBankAccountId: str('SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID'),
       settlementBankMatch: str('SPRITZ_SETTLEMENT_BANK_MATCH', DEFAULT_SETTLEMENT_BANK_MATCH),
-      fundingSource: {
-        sourceType: str('SPRITZ_FUNDING_SOURCE_TYPE'),
-        sourceAccountId: str('SPRITZ_FUNDING_SOURCE_ACCOUNT'),
-        sourceToken: str('SPRITZ_FUNDING_SOURCE_TOKEN'),
-        sourceModule: str('SPRITZ_FUNDING_SOURCE_MODULE'),
-      },
+      // The trust holds no bank account; a settlement bank is only used when
+      // one is actually linked on the Spritz user. Bills are the default
+      // destination.
+      settlementBankRequired: str('SPRITZ_SETTLEMENT_BANK_REQUIRED', 'false').toLowerCase() === 'true',
+      fundingSource: defaultFundingSource(),
       gl: glConfig(),
     };
   }
 
   /**
-   * The DB NET MGMT bank account on the Spritz user: the only place the
-   * off-ramp settles to. Resolved by id when pinned, otherwise by name match.
+   * The settlement bank account on the Spritz user, if one is linked: the only
+   * bank the off-ramp may settle to. Resolved by id when pinned, otherwise by
+   * name match. Returns null when the Spritz user has no such account (the
+   * trust has no bank account of its own) unless `required`.
    */
-  static async settlementBank() {
+  static async settlementBank({ required = false } = {}) {
     const cfg = this.config();
     const accounts = await SpritzEngine.listBankAccounts();
     const list = Array.isArray(accounts) ? accounts : [];
@@ -152,7 +184,8 @@ class SpritzTreasuryLegEngine {
     if (cfg.settlementBankAccountId) match = list.find(b => b.id === cfg.settlementBankAccountId) || null;
     if (!match) match = list.find(b => bankMatches(b, cfg.settlementBankMatch) && (!b.status || /active/i.test(String(b.status)))) || null;
     if (!match) {
-      throw conflict(`No Spritz settlement bank account matching "${cfg.settlementBankMatch}"; set SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID`, 'SPRITZ_SETTLEMENT_BANK_NOT_FOUND');
+      if (!required) return null;
+      throw conflict(`No Spritz settlement bank account matching "${cfg.settlementBankMatch}"; the trust has no bank account — pay through a linked Spritz bill (billId) or set SPRITZ_SETTLEMENT_BANK_ACCOUNT_ID`, 'SPRITZ_SETTLEMENT_BANK_NOT_FOUND');
     }
     return {
       id: match.id,
@@ -179,22 +212,29 @@ class SpritzTreasuryLegEngine {
       else if (s.executable === false) issues.push(`${s.bucket} funding route: ${s.issue}`);
     }
     const defaultOwner = TrustAllocationEngine.bucketForSource(fs);
-    if ((fs.sourceType || fs.sourceToken || fs.sourceModule) && !defaultOwner) {
+    if (fs.kind === 'configured' && !defaultOwner) {
       issues.push('SPRITZ_FUNDING_SOURCE_* default is not a segregated bucket source; bucket-tagged funding refuses it');
     }
 
     let capabilities = [];
     let settlementBank = null;
+    let payableBills = [];
     if (str('SPRITZ_API_KEY')) {
       try {
         capabilities = await SpritzEngine.capabilities();
-        settlementBank = await this.settlementBank();
+        settlementBank = await this.settlementBank({ required: cfg.settlementBankRequired });
+        payableBills = (await SpritzEngine.listBills().catch(() => []) || []).filter(b => b && b.status === 'active' && !b.unpayableCode);
       } catch (e) {
         issues.push(e.message);
       }
+      if (!settlementBank && payableBills.length === 0) {
+        issues.push('No Spritz settlement destination: link a bill (Spritz Bill Pay) — the trust has no bank account');
+      }
     }
     const offramp = capabilities.find(c => c.product === 'crypto_to_fiat' && c.method === 'ach_credit');
-    if (offramp && offramp.status !== 'active') issues.push(`Spritz ACH payout is ${offramp.status}`);
+    if (settlementBank && offramp && offramp.status !== 'active') issues.push(`Spritz ACH payout is ${offramp.status}`);
+    const billPay = capabilities.find(c => c.product === 'crypto_to_fiat' && /bill/i.test(String(c.method || c.name || '')));
+    if (billPay && billPay.status !== 'active') issues.push(`Spritz Bill Pay is ${billPay.status}`);
 
     let fundingRoute = null;
     if (CanonicalMoneyEngine && (fs.sourceType || fs.sourceToken || fs.sourceModule)) {
@@ -215,11 +255,17 @@ class SpritzTreasuryLegEngine {
       network: cfg.network,
       settlementToken: cfg.settlementToken,
       payoutWallet: cfg.payoutWallet || null,
-      fundingSource: { kind: 'treasury_core_erp', ...fs, bucket: defaultOwner ? defaultOwner.key : null, route: fundingRoute },
+      fundingSource: { ...fs, kind: fs.kind || 'treasury_core_erp', bucket: defaultOwner ? defaultOwner.key : null, route: fundingRoute },
       fundingSources,
       segregation: 'coupon_income (DLB-PRB / bond_portfolio -> beneficiaries) and trust_operating (DLB-TREASURY / treasury -> trustees) are funded and paid out separately; cross-bucket sources are refused with ALLOCATION_SOURCE_MISMATCH',
       settlementBank,
+      settlementDestinations: {
+        bank: settlementBank ? 1 : 0,
+        bills: payableBills.length,
+        default: settlementBank ? 'bank' : (payableBills.length ? 'bill' : null),
+      },
       offramp: offramp ? { status: offramp.status } : null,
+      billPay: billPay ? { status: billPay.status } : null,
       gl: cfg.gl,
     };
   }
@@ -356,7 +402,7 @@ class SpritzTreasuryLegEngine {
    * The quote is created first so the amount the checker approves is the
    * amount Spritz will consume.
    */
-  static async stagePayout({ amountUsd, purpose, reference, rail, memo, payoutWallet, bankAccountId, bucket } = {}) {
+  static async stagePayout({ amountUsd, purpose, reference, rail, memo, payoutWallet, bankAccountId, billId, bucket } = {}) {
     const cfg = this.config();
     if (!reference) throw badRequest('reference required');
     const wallet = payoutWallet || cfg.payoutWallet;
@@ -369,21 +415,20 @@ class SpritzTreasuryLegEngine {
     }
     if (gate.frozen) throw conflict(`payout wallet ${wallet} is frozen on the policy contract`, 'PAYOUT_WALLET_FROZEN');
 
-    const bank = await this.settlementBank();
-    if (bankAccountId && bankAccountId !== bank.id) {
-      throw conflict(`bankAccountId ${bankAccountId} is not the settlement bank (${bank.id}); Spritz payouts settle only to ${cfg.settlementBankMatch}`, 'SPRITZ_SETTLEMENT_BANK_MISMATCH');
-    }
+    const destination = await this._settlementDestination({ bankAccountId, billId });
+    const bank = destination.kind === 'bank' ? destination.bank : null;
 
     const allocation = await TrustAllocationEngine.assertPayout({ bucket, payoutWallet: wallet, purpose, amountUsd, reference });
 
+    const payoutRail = destination.kind === 'bill' ? 'bill_pay' : (rail || cfg.defaultRail);
     const quote = await SpritzEngine.createOffRampQuote({
-      accountId: bank.id,
+      accountId: destination.accountId,
       amount: Number(amountUsd).toFixed(2),
       chain: cfg.network,
       tokenAddress: cfg.settlementToken || undefined,
       amountMode: 'output',
-      rail: rail || cfg.defaultRail,
-      memo: memo || reference,
+      rail: payoutRail,
+      memo: destination.kind === 'bank' ? (memo || reference) : undefined,
     });
     const required = quote.requiredTokenInput || quote.inputAmount || (quote.input && quote.input.amount) || null;
     const quantity = required !== null ? BigInt(String(required)) : usdToUnits(amountUsd);
@@ -407,9 +452,10 @@ class SpritzTreasuryLegEngine {
       bucket: allocation.key,
       payoutWallet: wallet,
       settlementBank: bank,
+      destination,
       amountUsd: Number(amountUsd).toFixed(2),
       quantityUnits: quantity.toString(),
-      rail: rail || cfg.defaultRail,
+      rail: payoutRail,
       spritzQuoteId: quote.id || null,
       spritzQuote: quote,
       distribution: proposal,
@@ -461,6 +507,33 @@ class SpritzTreasuryLegEngine {
   }
 
   // ─── helpers ───────────────────────────────────────────────────────────────
+
+  /**
+   * Where a payout settles: an explicit linked Spritz bill (`billId`), else
+   * the settlement bank when one is linked, else the single payable bill.
+   * A `bankAccountId` other than the settlement bank is always refused.
+   */
+  static async _settlementDestination({ bankAccountId, billId } = {}) {
+    const cfg = this.config();
+    if (billId) {
+      const bills = await SpritzEngine.listBills();
+      const bill = (Array.isArray(bills) ? bills : []).find(b => b && b.id === billId);
+      if (!bill) throw conflict(`Spritz bill ${billId} is not linked on this account`, 'SPRITZ_BILL_NOT_FOUND');
+      if (bill.status !== 'active' || bill.unpayableCode) throw conflict(`Spritz bill ${billId} is ${bill.unpayableCode || bill.status}, not payable`, 'SPRITZ_BILL_NOT_PAYABLE');
+      return { kind: 'bill', accountId: bill.id, bill: { id: bill.id, name: bill.name || null, type: bill.type || null, institution: (bill.institution && bill.institution.name) || null, accountNumberLast4: bill.accountNumberLast4 || null } };
+    }
+    const bank = await this.settlementBank();
+    if (bankAccountId) {
+      if (!bank || bankAccountId !== bank.id) {
+        throw conflict(`bankAccountId ${bankAccountId} is not the settlement bank (${bank ? bank.id : 'none linked'}); Spritz payouts settle only to ${cfg.settlementBankMatch} or a linked bill`, 'SPRITZ_SETTLEMENT_BANK_MISMATCH');
+      }
+    }
+    if (bank) return { kind: 'bank', accountId: bank.id, bank };
+    const bills = (await SpritzEngine.listBills().catch(() => []) || []).filter(b => b && b.status === 'active' && !b.unpayableCode);
+    if (bills.length === 1) return this._settlementDestination({ billId: bills[0].id });
+    if (bills.length > 1) throw badRequest(`billId required: ${bills.length} payable Spritz bills are linked and the trust has no settlement bank`, 'SPRITZ_BILL_ID_REQUIRED');
+    throw conflict('No Spritz settlement destination: the trust has no bank account and no payable bill is linked (activate Spritz Bill Pay)', 'SPRITZ_SETTLEMENT_DESTINATION_REQUIRED');
+  }
 
   static _fundingSource({ sourceType, sourceAccountId, sourceToken, sourceModule } = {}, { optional = false } = {}) {
     const cfg = this.config().fundingSource;
@@ -515,4 +588,4 @@ class SpritzTreasuryLegEngine {
   }
 }
 
-module.exports = { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd };
+module.exports = { SpritzTreasuryLegEngine, usdToUnits, unitsToUsd, bookJournal: book, defaultFundingSource };

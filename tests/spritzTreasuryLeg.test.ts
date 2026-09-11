@@ -172,9 +172,40 @@ describe('Spritz treasury leg', () => {
     expect(propose).not.toHaveBeenCalled();
   });
 
-  it('requires an ERP funding source', async () => {
-    await expect(SpritzTreasuryLegEngine.fund({ amountUsd: 10, reference: 'FUND-3' }))
-      .rejects.toMatchObject({ code: 'ERP_FUNDING_SOURCE_REQUIRED' });
+  it('defaults the funding source to the Treasury-Core ERP canonical GL cash account, never a bank', async () => {
+    const quote = vi.spyOn(CanonicalMoneyEngine, 'quote').mockResolvedValue({ action: 'erp_treasury', sourceType: 'canonical', sourceAccountId: '1000', amount: '10.00', targetAsset: 'USDC', live: false } as any);
+    const propose = vi.spyOn(CanonicalMoneyEngine, 'propose').mockResolvedValue({ requestId: 'CM-3', proposalId: 'PROP-3', route: { action: 'erp_treasury' } } as any);
+    stubSpritz(() => { throw new Error('Spritz must not be called for funding'); });
+
+    expect(SpritzTreasuryLegEngine.config().fundingSource).toMatchObject({ kind: 'treasury_core_erp', sourceType: 'canonical', sourceAccountId: '1000' });
+    const out = await SpritzTreasuryLegEngine.fund({ amountUsd: 10, reference: 'FUND-3', createdBy: 'ops' });
+
+    expect(quote).toHaveBeenCalledWith(expect.objectContaining({ sourceType: 'canonical', sourceAccountId: '1000' }));
+    expect(propose).toHaveBeenCalledWith(expect.objectContaining({ sourceType: 'canonical', sourceAccountId: '1000', recipient: POLICY }));
+    expect(out).toMatchObject({ requestId: 'CM-3', source: expect.objectContaining({ sourceType: 'canonical', sourceAccountId: '1000' }) });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('stages a payout to a linked Spritz bill on the bill_pay rail when the trust has no settlement bank', async () => {
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (/FROM coupon_payments/.test(sql)) return { rows: [{ total: '83333.33' }], rowCount: 1 } as any;
+      return { rows: [], rowCount: 0 } as any;
+    });
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+    vi.spyOn(TrustPolicyEngine, 'propose').mockResolvedValue({ distributionId: '9', status: 'proposed' } as any);
+    stubSpritz((path) => {
+      if (path === '/v1/bank-accounts/') return [];
+      if (path === '/v1/bills/') return [{ id: 'bill_1', status: 'active', name: 'Chase Sapphire', type: 'credit_card', institution: { name: 'Chase' }, accountNumberLast4: '1234' }];
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_bill', requiredTokenInput: '101000000' };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const out = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: 100, purpose: 'distribution', reference: 'PAY-BILL' });
+
+    const quote = calls.find(c => c.url.endsWith('/v1/off-ramp-quotes/'))!;
+    expect(JSON.parse(quote.init.body as string)).toMatchObject({ accountId: 'bill_1', rail: 'bill_pay', amount: '100.00', chain: 'base' });
+    expect(out).toMatchObject({ rail: 'bill_pay', settlementBank: null, destination: { kind: 'bill', bill: { id: 'bill_1', institution: 'Chase' } }, spritzQuoteId: 'q_bill' });
   });
 
   it('returns the existing request for a repeated reference instead of re-proposing', async () => {
