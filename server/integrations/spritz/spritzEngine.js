@@ -339,6 +339,33 @@ class SpritzEngine {
     return spritzRequest('DELETE', `/v1/bills/${billId}`);
   }
 
+  static async getBill(billId) {
+    if (!billId) throw new Error('billId required');
+    const bills = await this.listBills();
+    return (Array.isArray(bills) ? bills : []).find(b => b && b.id === billId) || null;
+  }
+
+  static async listRemovedBills() {
+    return spritzRequest('GET', '/v1/bills/removed');
+  }
+
+  static async restoreBill(billId) {
+    if (!billId) throw new Error('billId required');
+    return spritzRequest('POST', `/v1/bills/${billId}/restore`);
+  }
+
+  static async updateBillAccountNumber(billId, accountNumber) {
+    if (!billId) throw new Error('billId required');
+    if (!/^ev:/.test(String(accountNumber))) throw new Error('accountNumber must be Evervault-encrypted (ev:...)');
+    return spritzRequest('POST', `/v1/bills/${billId}/account-number`, { accountNumber });
+  }
+
+  /** Off-ramp quote paying a linked Spritz bill (rail `bill_pay`). */
+  static async createBillPayQuote({ billId, amount, chain, tokenAddress, amountMode = 'output' } = {}) {
+    if (!billId) throw new Error('billId required');
+    return this.createOffRampQuote({ accountId: billId, amount, chain, tokenAddress, amountMode, rail: 'bill_pay' });
+  }
+
   static async getIntegratorToken() {
     return getIntegratorToken();
   }

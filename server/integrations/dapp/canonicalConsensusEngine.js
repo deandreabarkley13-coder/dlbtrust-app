@@ -184,8 +184,11 @@ class CanonicalConsensusEngine {
       if (!Number.isFinite(Number(payload.amount)) || Number(payload.amount) <= 0) {
         throw new Error('vendor_bill amount must be positive');
       }
-      if (!['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment'].includes(String(payload.rail || 'melio'))) {
+      if (!['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay'].includes(String(payload.rail || 'melio'))) {
         throw new Error('vendor_bill rail is not supported');
+      }
+      if (String(payload.rail) === 'spritz_bill_pay' && !(payload.spritzBillId || (payload.vendor && payload.vendor.metadata && (payload.vendor.metadata.spritzBillId || payload.vendor.metadata.spritz_bill_id)))) {
+        throw new Error('vendor_bill on spritz_bill_pay requires spritzBillId (linked Spritz bill)');
       }
       return { batch: false, count: 1, direct: true };
     }
@@ -226,6 +229,7 @@ class CanonicalConsensusEngine {
         consensusProposalId: proposalId,
         sourceCashAccountId: payload.sourceCashAccountId || payload.source_cash_account_id,
         rail: payload.rail,
+        spritzBillId: payload.spritzBillId,
         webPaymentAdapter: payload.webPaymentAdapter,
         openBankingConnector: payload.openBankingConnector,
         memo: payload.memo,

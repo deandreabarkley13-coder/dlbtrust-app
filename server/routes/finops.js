@@ -7,6 +7,7 @@ const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAc
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
+const { SpritzBillPayEngine } = require('../integrations/spritz/spritzBillPayEngine');
 const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
@@ -375,8 +376,8 @@ router.post('/spritz/treasury/fund', operatorAuth, writeRateLimiter(), async (re
 
 router.post('/spritz/treasury/payout/stage', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket } = req.body || {};
-    const data = await SpritzTreasuryLegEngine.stagePayout({ bankAccountId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket });
+    const { bankAccountId, billId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket } = req.body || {};
+    const data = await SpritzTreasuryLegEngine.stagePayout({ bankAccountId, billId, amountUsd, purpose, reference, rail, memo, payoutWallet, bucket });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -409,6 +410,93 @@ router.post('/spritz/bills/:id/verify-submit', operatorAuth, writeRateLimiter(),
 
 router.delete('/spritz/bills/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await SpritzEngine.deleteBill(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bills/removed', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listRemovedBills() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/:id/restore', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.restoreBill(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// Bill Pay settlement: Treasury-Core ERP canonical GL -> USDC -> Spritz bill_pay -> biller.
+router.get('/spritz/bill-pay/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzBillPayEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bill-pay/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await SpritzBillPayEngine.quote({ spritzBillId: req.body.spritzBillId || req.body.billId, amountUsd: req.body.amountUsd || req.body.amount }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// Stage a vendor bill on the spritz_bill_pay rail: maker/checker approval then
+// VendorPaymentEngine -> SpritzBillPayEngine settles it from the ERP.
+router.post('/spritz/bill-pay/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const spritzBillId = req.body.spritzBillId || req.body.billId;
+    if (!spritzBillId) return res.status(400).json({ success: false, error: 'spritzBillId required' });
+    const spritzBill = await SpritzBillPayEngine.getPayableBill(spritzBillId);
+    let bill = req.body.vendorBillId ? await VendorPaymentEngine.getBill(req.body.vendorBillId) : null;
+    if (req.body.vendorBillId && !bill) return res.status(404).json({ success: false, error: 'Vendor bill not found' });
+    let vendor = bill ? await VendorPaymentEngine.getVendor(bill.vendor_id) : null;
+    if (!bill) {
+      // No vendor bill yet: register the biller as a vendor payee and the bill in the pipeline.
+      const amount = Number(req.body.amountUsd || req.body.amount || (spritzBill.liability && (spritzBill.liability.amountDue || spritzBill.liability.statementBalance)));
+      if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, error: 'amountUsd required' });
+      const vendors = await VendorPaymentEngine.listVendors({ status: 'active', limit: 500 });
+      vendor = vendors.find(v => v.metadata && (v.metadata.spritzBillId === spritzBillId)) || null;
+      if (!vendor) {
+        vendor = await VendorPaymentEngine.createVendor({
+          name: req.body.vendorName || `${spritzBill.institution || 'Biller'} ${spritzBill.name || ''}`.trim(),
+          email: req.body.vendorEmail,
+          country: 'US',
+          metadata: { spritzBillId, spritzBill: { type: spritzBill.type, institution: spritzBill.institution, accountNumberLast4: spritzBill.accountNumberLast4 }, source: 'spritz_bill_pay' },
+        });
+      }
+      bill = await VendorPaymentEngine.createBill({
+        vendorId: vendor.vendor_id,
+        amount,
+        dueDate: req.body.dueDate || (spritzBill.liability && spritzBill.liability.nextPaymentDueDate) || undefined,
+        memo: req.body.memo || `Spritz Bill Pay ${spritzBill.name || spritzBillId}`,
+        metadata: { spritzBillId, source: 'spritz_bill_pay' },
+      });
+    }
+    if (!vendor) return res.status(404).json({ success: false, error: 'Vendor not found' });
+    const data = await CanonicalConsensusEngine.createProposal({
+      title: req.body.title || `Pay ${spritzBill.name || spritzBillId} via Spritz Bill Pay (${bill.bill_id})`,
+      description: req.body.description || bill.memo,
+      category: 'vendor_bill',
+      createdBy: getUserEmail(req),
+      payload: {
+        vendorPaymentBillId: bill.bill_id,
+        amount: Number(bill.amount_cents) / 100,
+        vendor,
+        rail: 'spritz_bill_pay',
+        spritzBillId,
+        fundingSource: SpritzBillPayEngine.config().fundingSource,
+        memo: req.body.memo || bill.memo,
+      },
+    });
+    res.status(202).json({ success: true, data, bill, spritzBill, requiresApprovals: ['maker', 'checker'] });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bill-pay/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzBillPayEngine.listPayments({ status: req.query.status, spritzBillId: req.query.spritzBillId, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bill-pay/payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const row = await SpritzBillPayEngine.getPayment({ paymentId: req.params.id });
+    if (!row) return res.status(404).json({ success: false, error: 'Spritz bill payment not found' });
+    res.json({ success: true, data: SpritzBillPayEngine._result(row) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bill-pay/payments/:id/refresh', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzBillPayEngine.refresh(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 // ─── Spritz Cards ────────────────────────────────────────────────────────────
@@ -2512,6 +2600,7 @@ router.post('/vendor-bills/:id/pay', operatorAuth, async (req, res) => {
         vendor,
         sourceCashAccountId: req.body.sourceCashAccountId || req.body.source_cash_account_id,
         rail: req.body.rail || 'melio',
+        spritzBillId: req.body.spritzBillId || req.body.spritz_bill_id,
         webPaymentAdapter: req.body.webPaymentAdapter || req.body.web_payment_adapter,
         openBankingConnector: req.body.openBankingConnector || req.body.open_banking_connector,
         memo: req.body.memo || bill.memo,
