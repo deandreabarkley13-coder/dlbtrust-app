@@ -138,6 +138,29 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
     expect(JSON.parse(String(post!.init.body))).toEqual({ address: POLICY, network: 'base', token: 'USDC' });
   });
 
+  it('SPRITZ_AUTO_RAMP_DESTINATION overrides the policy contract as the conversion wallet and is flagged as ungoverned', async () => {
+    const WALLET = '0xA0f8C3d9e4fE7F531968b11f1Ce298F56483040F';
+    process.env.SPRITZ_AUTO_RAMP_DESTINATION = WALLET;
+    try {
+      stubSpritz((path, init) => {
+        if (path === '/v1/auto-ramp-accounts/' && init.method === 'POST') return { ...ACCOUNT, id: 'ar_wallet', address: WALLET.toLowerCase() };
+        return [ACCOUNT];
+      });
+      expect(await SpritzFiatFundingEngine.account()).toBeNull();
+      const created = await SpritzFiatFundingEngine.account({ ensure: true });
+      expect(created.id).toBe('ar_wallet');
+      const post = calls.find((c) => c.init.method === 'POST');
+      expect(JSON.parse(String(post!.init.body))).toEqual({ address: WALLET, network: 'base', token: 'USDC' });
+
+      vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'active', active: true, requirements: [] });
+      const readiness = await SpritzFiatFundingEngine.readiness();
+      expect(readiness).toMatchObject({ destination: WALLET, destinationIsPolicy: false, policyContract: POLICY });
+      expect(readiness.warnings.some((w: string) => /outside TrustDistributionPolicy governance/.test(w))).toBe(true);
+    } finally {
+      delete process.env.SPRITZ_AUTO_RAMP_DESTINATION;
+    }
+  });
+
   it('fails closed when the Spritz fiat_to_crypto capability needs terms acceptance', async () => {
     stubSpritz((path) => (path.startsWith('/v1/users/capabilities') || /capabilit/.test(path) ? CAPS_TERMS : [ACCOUNT]));
     vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'requirements_needed', active: false, requirements: [{ type: 'terms_acceptance', status: 'pending', actionUrl: 'https://spritz.example/terms' }] });

@@ -156,6 +156,8 @@ async function funding() {
   const r = await call('/api/finops/spritz/fiat-funding/readiness');
   console.log(`fiat funding ${r.ready ? 'READY' : 'BLOCKED'} (${r.direction}, default rail ${r.defaultRail})`);
   for (const i of r.issues) console.log(`- ${i}`);
+  for (const w of r.warnings || []) console.log(`! ${w}`);
+  console.log(`auto-ramp destination ${r.destination} (${r.network} ${r.token})${r.destinationIsPolicy ? ' = policy contract' : ''}`);
   if (r.erp) console.log(`ERP ${r.erp.system} cash ${r.erp.cashAccountCode} -> ${r.erp.assetAccountCode} live=${r.erp.live}`);
   for (const c of r.capabilities || []) console.log(`capability ${c.method}: ${c.status}${c.requirements.length ? ' ' + c.requirements.map((q) => `${q.type} ${q.status}${q.actionUrl ? ' ' + q.actionUrl : ''}`).join('; ') : ''}`);
   for (const ch of r.originationChannels || []) console.log(`${ch.rail} bank channel: ${ch.ready ? ch.channel : 'MISSING'} — ${ch.detail}`);

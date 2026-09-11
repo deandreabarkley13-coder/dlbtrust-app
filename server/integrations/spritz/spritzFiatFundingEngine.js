@@ -122,8 +122,12 @@ function loadCollateralOs() {
 class SpritzFiatFundingEngine {
   static config() {
     const leg = loadLeg().config();
+    const destination = str('SPRITZ_AUTO_RAMP_DESTINATION') || leg.policyAddress || null;
     return {
       policyAddress: leg.policyAddress,
+      // Wallet the auto-ramp converts fiat into: the policy contract (governed) unless overridden.
+      destination,
+      destinationIsPolicy: Boolean(destination && leg.policyAddress && sameAddress(destination, leg.policyAddress)),
       chainId: leg.chainId,
       network: leg.network,
       token: 'USDC',
@@ -161,21 +165,21 @@ class SpritzFiatFundingEngine {
    */
   static async account({ ensure = false } = {}) {
     const cfg = this.config();
-    if (!cfg.policyAddress) throw conflict('TRUST_POLICY_ADDRESS not configured', 'TRUST_POLICY_NOT_CONFIGURED');
+    if (!cfg.destination) throw conflict('SPRITZ_AUTO_RAMP_DESTINATION / TRUST_POLICY_ADDRESS not configured', 'TRUST_POLICY_NOT_CONFIGURED');
     if (!cfg.network) throw badRequest(`chain ${cfg.chainId} is not a Spritz network`);
     const list = await SpritzEngine.listAutoRampAccounts();
     const accounts = Array.isArray(list) ? list : (list && Array.isArray(list.data) ? list.data : []);
-    const matches = (a) => sameAddress(a.address, cfg.policyAddress)
+    const matches = (a) => sameAddress(a.address, cfg.destination)
       && String(a.network || '').toLowerCase() === cfg.network
       && String(a.token || '').toUpperCase() === cfg.token;
     let match = cfg.autoRampAccountId ? accounts.find((a) => a.id === cfg.autoRampAccountId) || null : null;
     if (match && !matches(match)) {
-      throw conflict(`SPRITZ_AUTO_RAMP_ACCOUNT_ID ${match.id} converts to ${match.address} on ${match.network}, not the policy contract ${cfg.policyAddress} on ${cfg.network}`, 'AUTO_RAMP_ACCOUNT_MISMATCH');
+      throw conflict(`SPRITZ_AUTO_RAMP_ACCOUNT_ID ${match.id} converts to ${match.address} on ${match.network}, not the destination ${cfg.destination} on ${cfg.network}`, 'AUTO_RAMP_ACCOUNT_MISMATCH');
     }
     if (!match) match = accounts.find(matches) || null;
     let created = false;
     if (!match && ensure) {
-      match = await SpritzEngine.createAutoRampAccount({ address: cfg.policyAddress, network: cfg.network, token: cfg.token });
+      match = await SpritzEngine.createAutoRampAccount({ address: cfg.destination, network: cfg.network, token: cfg.token });
       created = true;
     }
     if (!match) return null;
@@ -203,7 +207,7 @@ class SpritzFiatFundingEngine {
   static async estimate({ amountUsd } = {}) {
     const amount = usd(amountUsd);
     const account = await this.account();
-    if (!account) throw conflict('no Spritz auto-ramp account for the policy contract; call account({ ensure: true }) first', 'AUTO_RAMP_ACCOUNT_MISSING');
+    if (!account) throw conflict(`no Spritz auto-ramp account for ${this.config().destination}; call account({ ensure: true }) first`, 'AUTO_RAMP_ACCOUNT_MISSING');
     const estimate = await SpritzEngine.estimateAutoRampDeposit(account.id, { amount });
     return { accountId: account.id, amountUsd: amount.toFixed(2), estimate };
   }
@@ -233,7 +237,9 @@ class SpritzFiatFundingEngine {
     if (!str('SPRITZ_API_KEY')) issues.push('SPRITZ_API_KEY not configured');
     const integratorCreds = Boolean(str('SPRITZ_INTEGRATOR_KEY') && str('SPRITZ_INTEGRATOR_SECRET'));
     if (!integratorCreds) issues.push('SPRITZ_INTEGRATOR_KEY/SPRITZ_INTEGRATOR_SECRET not configured (auto-ramp endpoints reject user API-key auth; request integrator credentials from Spritz)');
-    if (!cfg.policyAddress) issues.push('TRUST_POLICY_ADDRESS not configured');
+    if (!cfg.destination) issues.push('SPRITZ_AUTO_RAMP_DESTINATION / TRUST_POLICY_ADDRESS not configured');
+    const warnings = [];
+    if (cfg.destination && !cfg.destinationIsPolicy) warnings.push(`auto-ramp destination ${cfg.destination} is not the policy contract: converted USDC lands outside TrustDistributionPolicy governance`);
     if (!cfg.network) issues.push(`chain ${cfg.chainId} has no Spritz network mapping`);
     if (!RAILS[cfg.defaultRail]) issues.push(`SPRITZ_FIAT_FUNDING_RAIL=${cfg.defaultRail} is not ach or wire`);
     if (!CanonicalFundingSource) issues.push('CanonicalFundingSource (Treasury-Core ERP) not available');
@@ -243,14 +249,14 @@ class SpritzFiatFundingEngine {
 
     let capabilities = [];
     let account = null;
-    if (str('SPRITZ_API_KEY') && cfg.policyAddress && cfg.network) {
+    if (str('SPRITZ_API_KEY') && cfg.destination && cfg.network) {
       try {
         capabilities = await Promise.all(Object.keys(RAILS).map((rail) => this.capability(rail)));
         for (const c of capabilities) {
           if (!c.active) issues.push(`Spritz fiat_to_crypto ${c.method} is ${c.status}${c.requirements.length ? ` (${c.requirements.map((r) => `${r.type || 'requirement'}${r.actionUrl ? ' ' + r.actionUrl : ''}`).join('; ')})` : ''}`);
         }
         account = await this.account();
-        if (!account) issues.push(`no Spritz auto-ramp account converting to the policy contract ${cfg.policyAddress} (create one with ensureAccount)`);
+        if (!account) issues.push(`no Spritz auto-ramp account converting to ${cfg.destination} (create one with ensureAccount)`);
         else if (!account.active) issues.push(`Spritz auto-ramp account ${account.id} is ${account.status}`);
       } catch (e) {
         issues.push(e.message);
@@ -266,8 +272,11 @@ class SpritzFiatFundingEngine {
       direction: 'erp_credit_push',
       ready: issues.length === 0,
       issues,
+      warnings,
       originationChannels: channels,
       policyContract: cfg.policyAddress,
+      destination: cfg.destination,
+      destinationIsPolicy: cfg.destinationIsPolicy,
       chainId: cfg.chainId,
       network: cfg.network,
       token: cfg.token,
