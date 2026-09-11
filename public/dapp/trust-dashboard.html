@@ -948,7 +948,7 @@
     const allow = el('pipeline-allowlist');
     if (pw.policy && pw.policy.allowed) {
       allow.innerHTML = '';
-    } else {
+    } else if (!el('allow-status')) {
       allow.innerHTML = `<div class="panel">
         <strong style="font-size:.85rem;">Payout wallet not allow-listed on the policy contract</strong>
         <p class="muted" style="margin:6px 0;">Only the contract owner (${escHtml(pol.owner || 'trustee governance wallet')}) can call setBeneficiary / setBeneficiaryLimits. Prepare the transactions here and sign them from the owner wallet.</p>
