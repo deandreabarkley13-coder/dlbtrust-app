@@ -320,7 +320,7 @@ describe('Spritz treasury leg', () => {
     expect(propose).not.toHaveBeenCalled();
   });
 
-  it('routes erp_policy_funding ramp proposals through the leg and rejects Spritz as an on-ramp', async () => {
+  it('routes erp_policy_funding ramp proposals through the leg and Spritz on-ramps through SpritzBuyEngine', async () => {
     const fund = vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockResolvedValue({ status: 'proposed', requestId: 'CM-2' } as any);
     const out = await OnOffRampEngine._executeProvider({
       id: 'PROP-1',
@@ -329,11 +329,14 @@ describe('Spritz treasury leg', () => {
     expect(fund).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: '25', sourceToken: PRB, reference: 'REF-1' }));
     expect(out).toMatchObject({ requestId: 'CM-2' });
 
-    await expect(OnOffRampEngine._executeProvider({ id: 'PROP-2', payload: { direction: 'onramp', provider: 'spritz', amount: '25' } }))
-      .rejects.toMatchObject({ code: 'SPRITZ_NOT_A_FUNDING_SOURCE' });
+    const { SpritzBuyEngine } = require('../server/integrations/spritz/spritzBuyEngine');
+    const buy = vi.spyOn(SpritzBuyEngine, 'buy').mockResolvedValue({ status: 'shadow', requestId: 'BUY-1' } as any);
+    const bought = await OnOffRampEngine._executeProvider({ id: 'PROP-2', payload: { direction: 'onramp', provider: 'spritz', amount: '25' } });
+    expect(buy).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: '25' }));
+    expect(bought).toMatchObject({ requestId: 'BUY-1' });
 
     const providers = await OnOffRampEngine.providers();
-    expect(providers.find((p: any) => p.id === 'spritz').directions).toEqual(['offramp']);
+    expect(providers.find((p: any) => p.id === 'spritz').directions).toEqual(['offramp', 'onramp']);
     expect(providers.find((p: any) => p.id === 'erp_policy_funding')).toBeTruthy();
   });
 
