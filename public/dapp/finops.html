@@ -222,6 +222,9 @@
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
+    { key:'yield-vault-os', name:'Yield Vault OS', desc:'Distribute bond interest, LP fees and reserve surplus pro-rata in DLB-PTCUSD', stat:'', endpoint:null, action:'openYieldVaultOsPanel' },
+    { key:'amm-os', name:'AMM OS (StableSwap)', desc:'DLB-PTCUSD / canonical StableSwap pool with automatic peg rebalancing', stat:'', endpoint:null, action:'openAmmOsPanel' },
+    { key:'floor-redemption-os', name:'Floor Redemption OS', desc:'Canonical reserve honouring a $1 floor; arbitrage defends the peg', stat:'', endpoint:null, action:'openFloorRedemptionOsPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'finance-operating', name:'Finance Operating Server', desc:'Unified command/response layer for cash, treasury, payments, and AI FinOps operations', stat:'', endpoint:null, action:'openFinanceOperatingPanel' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
@@ -1812,6 +1815,253 @@
       }
       await loadRedemptionGateway();
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── OS Engine panels (Yield Vault / AMM / Floor Redemption) ─────────────────
+  function osStatus(id, msg, isErr) {
+    const d = el(id);
+    if (!d) return;
+    d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  function osModeBadge(s) {
+    const mode = (s && s.mode) || 'shadow';
+    const issues = (s && s.readiness && s.readiness.issues) || [];
+    return '<div style="margin-bottom:12px;"><strong>Mode:</strong> ' + mode + (s && s.enabled === false ? ' (disabled)' : '') +
+      (issues.length ? '<br><span class="muted">Readiness: ' + issues.join('; ') + '</span>' : '<br><span class="muted">Readiness: ok</span>') + '</div>';
+  }
+
+  function osActionsList(rows, render) {
+    if (!rows || !rows.length) return '<p class="muted">No actions recorded yet.</p>';
+    return rows.map(r => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">' + render(r) + '</div>').join('');
+  }
+
+  function openYieldVaultOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Yield Vault OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading yield vault…</div>';
+    loadYieldVaultOs();
+  }
+
+  async function loadYieldVaultOs() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/yield-vault-os');
+      const s = res.data || {};
+      const src = s.sources || {};
+      const avail = src.available || {};
+      body.innerHTML =
+        '<div class="muted" style="margin-bottom:12px;">Real trust income — bond accrued interest, LP yield and vault reserve surplus — distributed pro-rata to LP positions and DLB-PTCUSD holders. Shadow mode records every allocation without moving tokens.</div>' +
+        '<div id="yvo-status" class="status hidden"></div>' +
+        osModeBadge(s) +
+        '<div style="margin-bottom:12px;">' +
+          '<strong>Payout asset:</strong> ' + (s.payoutAsset || 'DLB-PTCUSD') + ' — LP share ' + (s.lpShareBps || 0) / 100 + '%<br>' +
+          '<strong>Distributable:</strong> $' + Number(src.distributable || 0).toLocaleString(undefined, {maximumFractionDigits: 2}) +
+          ' <span class="muted">(bond ' + Number(avail.bond_interest || 0).toFixed(2) + ' · LP ' + Number(avail.lp_yield || 0).toFixed(2) + ' · reserve ' + Number(avail.reserve_surplus || 0).toFixed(2) + ')</span><br>' +
+          '<strong>Distributed:</strong> live $' + Number((s.totals || {}).liveDistributed || 0).toFixed(2) + ' · shadow $' + Number((s.totals || {}).shadowDistributed || 0).toFixed(2) +
+        '</div>' +
+        '<div class="approval-actions"><button class="btn btn-sec" onclick="yieldVaultOsPlan()">Preview Plan</button><button class="btn" style="margin-left:8px;" onclick="yieldVaultOsCycle()">Run Cycle</button></div>' +
+        '<div id="yvo-plan" style="margin-top:12px;"></div>' +
+        '<h3 style="font-size:14px;margin:16px 0 8px;">Recent Cycles</h3>' +
+        osActionsList(s.recentCycles, c => c.id + ' <em>' + c.status + '</em> ' + c.mode + ' — $' + Number(c.distributed || 0).toFixed(2) + ' ' + c.payout_asset);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function yieldVaultOsPlan() {
+    osStatus('yvo-status', 'Computing plan…');
+    try {
+      const res = await api('/api/finops/yield-vault-os/plan');
+      const p = res.data || {};
+      el('yvo-plan').innerHTML = '<strong>Plan (' + p.mode + '):</strong> $' + Number(p.total || 0).toFixed(2) + (p.reason ? ' — ' + p.reason : '') +
+        osActionsList(p.allocations, a => a.class + ' ' + a.recipient.slice(0, 10) + '… → $' + Number(a.amount).toFixed(4));
+      osStatus('yvo-status', 'Plan ready: ' + (p.allocations || []).length + ' allocations', false);
+    } catch(e) { osStatus('yvo-status', e.message, true); }
+  }
+
+  async function yieldVaultOsCycle() {
+    osStatus('yvo-status', 'Running yield cycle…');
+    try {
+      const res = await api('/api/finops/yield-vault-os/cycle', { method:'POST' });
+      const d = res.data || {};
+      osStatus('yvo-status', d.skipped ? 'Skipped: ' + d.reason : 'Cycle ' + d.cycle.id + ' ' + d.cycle.status + ' — $' + Number(d.cycle.distributed || 0).toFixed(2), false);
+      await loadYieldVaultOs();
+    } catch(e) { osStatus('yvo-status', e.message, true); }
+  }
+
+  function openAmmOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'AMM OS (StableSwap)';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading AMM…</div>';
+    loadAmmOs();
+  }
+
+  async function loadAmmOs() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/amm-os');
+      const s = res.data || {};
+      const snap = s.snapshot || {};
+      const pool = s.pool || {};
+      const rsv = snap.reserves || {};
+      body.innerHTML =
+        '<div class="muted" style="margin-bottom:12px;">StableSwap pool for DLB-PTCUSD / ' + (s.canonicalAsset || 'USDC') + '. The engine watches the pool price against $1 and swaps the operator\'s surplus side back in when it leaves the peg band.</div>' +
+        '<div id="amm-status" class="status hidden"></div>' +
+        osModeBadge(s) +
+        '<div style="margin-bottom:12px;">' +
+          '<strong>Pool:</strong> ' + (pool.pool_address || 'not deployed') + '<br>' +
+          '<strong>A / fee:</strong> ' + (snap.A || s.amplification) + ' / ' + (snap.feeBps != null ? snap.feeBps : s.feeBps) + ' bps — band ±' + s.pegBandBps + ' bps<br>' +
+          (snap.exists && !snap.error
+            ? ('<strong>Price:</strong> $' + Number(snap.price || 0).toFixed(6) + ' (' + (snap.deviationBps > 0 ? '+' : '') + snap.deviationBps + ' bps) — ' +
+              (snap.outOfBand ? '<span class="err">out of band → ' + snap.action + ' ' + Number(snap.amountInFormatted || 0).toFixed(2) + ' ' + snap.tokenIn + '</span>' : 'in band') + '<br>' +
+              '<strong>Reserves:</strong> ' + Number(rsv.trustFormatted || 0).toFixed(2) + ' DLB-PTCUSD / ' + Number(rsv.canonicalFormatted || 0).toFixed(2) + ' ' + s.canonicalAsset + ' — virtual price ' + Number(snap.virtualPrice || 0).toFixed(6))
+            : '<span class="muted">No pool snapshot' + (snap.error ? ': ' + snap.error : '') + '</span>') +
+        '</div>' +
+        '<div class="approval-actions"><button class="btn" onclick="ammOsDeploy()">Ensure Pool</button><button class="btn btn-sec" style="margin-left:8px;" onclick="ammOsRebalance()">Rebalance</button><button class="btn btn-sec" style="margin-left:8px;" onclick="ammOsCycle()">Run Cycle</button></div>' +
+        '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+          '<h3 style="margin:0 0 10px; font-size:14px;">Quote</h3>' +
+          '<div class="token-bar"><input id="amm-quote-token" placeholder="tokenIn" value="DLB-PTCUSD" /></div>' +
+          '<div class="token-bar"><input id="amm-quote-amount" placeholder="amountIn" value="100" /></div>' +
+          '<div class="approval-actions"><button class="btn btn-sec" onclick="ammOsQuote()">Get Quote</button></div>' +
+          '<div id="amm-quote" style="margin-top:8px;font-size:13px;"></div>' +
+        '</div>' +
+        '<h3 style="font-size:14px;margin:16px 0 8px;">Recent Actions</h3>' +
+        osActionsList(s.recentActions, a => a.kind + ' <em>' + a.status + '</em> ' + a.mode + (a.token_in ? ' — ' + a.token_in + ' in ' + a.amount_in : '') + (a.tx_hash ? ' tx ' + a.tx_hash.slice(0, 12) + '…' : ''));
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ammOsDeploy() {
+    osStatus('amm-status', 'Ensuring StableSwap pool…');
+    try {
+      const res = await api('/api/finops/amm-os/deploy', { method:'POST', body: JSON.stringify({}) });
+      const d = res.data || {};
+      osStatus('amm-status', d.created ? 'Pool deployed at ' + d.pool.pool_address : d.pool ? 'Pool exists: ' + d.pool.pool_address : 'Shadow plan recorded (no deployment)', false);
+      await loadAmmOs();
+    } catch(e) { osStatus('amm-status', e.message, true); }
+  }
+
+  async function ammOsRebalance() {
+    osStatus('amm-status', 'Evaluating rebalance…');
+    try {
+      const res = await api('/api/finops/amm-os/rebalance', { method:'POST', body: JSON.stringify({}) });
+      const d = res.data || {};
+      osStatus('amm-status', 'Rebalance: ' + d.status + (d.action ? ' — ' + d.action.tokenIn + ' in ' + d.action.amountIn : ''), d.status === 'awaiting_funds');
+      await loadAmmOs();
+    } catch(e) { osStatus('amm-status', e.message, true); }
+  }
+
+  async function ammOsCycle() {
+    osStatus('amm-status', 'Running AMM cycle…');
+    try {
+      const res = await api('/api/finops/amm-os/cycle', { method:'POST' });
+      const d = res.data || {};
+      osStatus('amm-status', d.skipped ? 'Skipped: ' + d.reason : 'Cycle done: ' + (d.rebalanced || {}).status, false);
+      await loadAmmOs();
+    } catch(e) { osStatus('amm-status', e.message, true); }
+  }
+
+  async function ammOsQuote() {
+    try {
+      const tokenIn = el('amm-quote-token').value.trim();
+      const amountIn = el('amm-quote-amount').value.trim();
+      const res = await api('/api/finops/amm-os/quote?tokenIn=' + encodeURIComponent(tokenIn) + '&amountIn=' + encodeURIComponent(amountIn));
+      const q = res.data || {};
+      el('amm-quote').textContent = q.amountIn + ' ' + q.tokenIn + ' → ' + Number(q.amountOut).toFixed(6) + ' ' + q.tokenOut + ' (fee ' + Number(q.fee).toFixed(6) + ', slippage ' + q.slippageBps + ' bps)';
+    } catch(e) { el('amm-quote').innerHTML = '<span class="status err">' + e.message + '</span>'; }
+  }
+
+  function openFloorRedemptionOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Floor Redemption OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading floor redemption…</div>';
+    loadFloorRedemptionOs();
+  }
+
+  async function loadFloorRedemptionOs() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/floor-redemption-os');
+      const s = res.data || {};
+      const c = s.contract || {};
+      const cov = s.coverage || null;
+      const chain = s.chain || {};
+      const amm = s.amm || {};
+      body.innerHTML =
+        '<div class="muted" style="margin-bottom:12px;">Owner-funded ' + (s.reserveAsset || 'USDC') + ' reserve that redeems DLB-PTCUSD at a fixed floor. When the AMM prices the token below the floor, the arbitrage cycle buys on the AMM and redeems here, capturing the spread and pulling the peg back. Canonical funds are never fabricated — a short reserve reports <code>awaiting_funds</code>.</div>' +
+        '<div id="fro-status" class="status hidden"></div>' +
+        osModeBadge(s) +
+        '<div style="margin-bottom:12px;">' +
+          '<strong>Contract:</strong> ' + (c.contract_address || 'not deployed') + '<br>' +
+          '<strong>Floor:</strong> $' + Number(chain.floorPrice != null ? chain.floorPrice : s.floorPrice || 1).toFixed(4) + (chain.paused ? ' <span class="err">paused</span>' : '') + '<br>' +
+          (cov ? ('<strong>Coverage:</strong> ' + (cov.coverageBps / 100).toFixed(2) + '% — reserve ' + Number(cov.reserve).toFixed(2) + ' ' + s.reserveAsset + ' vs supply ' + Number(cov.supply).toFixed(2) + ' DLB-PTCUSD' + (cov.fullyCovered ? '' : ' (shortfall ' + Number(cov.shortfall).toFixed(2) + ')') + '<br>') : '') +
+          (chain.totalRedeemed != null ? '<strong>Redeemed:</strong> ' + Number(chain.totalRedeemed).toFixed(2) + ' DLB-PTCUSD → ' + Number(chain.totalPaidOut).toFixed(2) + ' ' + s.reserveAsset + '<br>' : '') +
+          (amm.poolAddress ? '<strong>AMM price:</strong> $' + Number(amm.price || 0).toFixed(6) + ' (' + amm.deviationBps + ' bps) — arb threshold ' + s.minSpreadBps + ' bps' : '<span class="muted">AMM pool not deployed</span>') +
+        '</div>' +
+        '<div class="approval-actions"><button class="btn" onclick="floorOsDeploy()">Deploy Contract</button><button class="btn btn-sec" style="margin-left:8px;" onclick="floorOsArb()">Run Arb Cycle</button></div>' +
+        '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+          '<h3 style="margin:0 0 10px; font-size:14px;">Fund Reserve</h3>' +
+          '<div class="token-bar"><input id="fro-fund-amount" placeholder="' + (s.reserveAsset || 'USDC') + ' amount (blank = coverage shortfall)" /></div>' +
+          '<div class="approval-actions"><button class="btn" onclick="floorOsFund()">Fund Reserve</button></div>' +
+        '</div>' +
+        '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+          '<h3 style="margin:0 0 10px; font-size:14px;">Redeem at Floor</h3>' +
+          '<div class="token-bar"><input id="fro-redeem-amount" placeholder="DLB-PTCUSD amount" /></div>' +
+          '<div class="token-bar"><input id="fro-redeem-to" placeholder="recipient (default operator)" /></div>' +
+          '<div class="approval-actions"><button class="btn btn-sec" onclick="floorOsRedeem()">Redeem</button></div>' +
+        '</div>' +
+        '<h3 style="font-size:14px;margin:16px 0 8px;">Recent Actions</h3>' +
+        osActionsList(s.recentActions, a => a.kind + ' <em>' + a.status + '</em> ' + a.mode + (a.spread_bps != null ? ' — spread ' + a.spread_bps + ' bps' : '') + (a.error ? ' — ' + a.error : ''));
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function floorOsDeploy() {
+    osStatus('fro-status', 'Deploying FloorPriceRedemption…');
+    try {
+      const res = await api('/api/finops/floor-redemption-os/deploy', { method:'POST', body: JSON.stringify({}) });
+      const d = res.data || {};
+      osStatus('fro-status', d.deployed ? 'Deployed at ' + d.contract.contract_address : d.contract ? 'Contract exists: ' + d.contract.contract_address : 'Shadow plan recorded (no deployment)', false);
+      await loadFloorRedemptionOs();
+    } catch(e) { osStatus('fro-status', e.message, true); }
+  }
+
+  async function floorOsFund() {
+    osStatus('fro-status', 'Funding reserve…');
+    try {
+      const amount = el('fro-fund-amount').value.trim();
+      const res = await api('/api/finops/floor-redemption-os/fund', { method:'POST', body: JSON.stringify(amount ? { amount } : {}) });
+      const d = res.data || {};
+      const onramp = d.onRampOperation ? ' (on-ramp ' + (d.onRampOperation.operationId || d.onRampOperation.id || '') + ' proposed)' : '';
+      osStatus('fro-status', 'Fund: ' + d.status + (d.status === 'awaiting_funds' ? ' — ' + d.error + onramp : d.amount != null ? ' — ' + d.amount + ' ' + (d.asset || '') : ''), d.status === 'awaiting_funds');
+      await loadFloorRedemptionOs();
+    } catch(e) { osStatus('fro-status', e.message, true); }
+  }
+
+  async function floorOsRedeem() {
+    osStatus('fro-status', 'Redeeming at floor…');
+    try {
+      const amount = el('fro-redeem-amount').value.trim();
+      const to = el('fro-redeem-to').value.trim();
+      const res = await api('/api/finops/floor-redemption-os/redeem', { method:'POST', body: JSON.stringify({ amount, to }) });
+      const d = res.data || {};
+      osStatus('fro-status', 'Redeem: ' + d.status + (d.canonicalOut != null ? ' — ' + d.canonicalOut + ' out' : '') + (d.error ? ' — ' + d.error : ''), d.status === 'awaiting_funds');
+      await loadFloorRedemptionOs();
+    } catch(e) { osStatus('fro-status', e.message, true); }
+  }
+
+  async function floorOsArb() {
+    osStatus('fro-status', 'Running arbitrage cycle…');
+    try {
+      const res = await api('/api/finops/floor-redemption-os/cycle', { method:'POST' });
+      const d = res.data || {};
+      const p = d.plan || {};
+      osStatus('fro-status', 'Arb: ' + d.status + (p.spreadBps != null ? ' — spread ' + p.spreadBps + ' bps' : '') + (p.profit != null ? ', profit ' + Number(p.profit).toFixed(4) : '') + (p.reason ? ' (' + p.reason + ')' : '') + (d.error ? ' — ' + d.error : ''), d.status === 'awaiting_funds');
+      await loadFloorRedemptionOs();
+    } catch(e) { osStatus('fro-status', e.message, true); }
   }
 
   // ─── Canonical Liquidity panel ───────────────────────────────────────────────

@@ -459,12 +459,16 @@ class InternalMarketMakerEngine {
     return (await query(sql, params)).rows;
   }
 
-  static async accrueYield({ poolAddress, apyBps } = {}) {
+  /**
+   * Accrue LP yield on every position of a pool. With `payout: true` the
+   * accrued balance is then settled on-chain in DLB-PTCUSD (see payoutAccruedYield).
+   */
+  static async accrueYield({ poolAddress, apyBps, payout = false, shadow } = {}) {
     if (!query) throw new Error('Postgres not available');
     const pool = await this.getPool(poolAddress);
     if (!pool) throw new Error('Pool not found');
     const rate = apyBps || pool.apy_bps || 0;
-    if (rate <= 0) return { updated: 0 };
+    if (rate <= 0) return { updated: 0, paid: [] };
     const positions = await query('SELECT * FROM market_maker_positions WHERE pool_id = $1', [pool.id]);
     let updated = 0;
     for (const pos of positions.rows) {
@@ -476,7 +480,51 @@ class InternalMarketMakerEngine {
       await query('UPDATE market_maker_positions SET accrued_yield = $1, updated_at = NOW() WHERE id = $2', [newAccrued, pos.id]);
       updated++;
     }
-    return { updated };
+    if (!payout) return { updated, paid: [] };
+    const settled = await this.payoutAccruedYield({ poolAddress: pool.pool_address || pool.id, shadow });
+    return { updated, ...settled };
+  }
+
+  /**
+   * Settle `market_maker_positions.accrued_yield` (18-decimal raw units of the
+   * pool's DLB-PTCUSD side) to each holder on-chain. Positions above
+   * `minPayoutRaw` are transferred via PtcStablecoinEngine and zeroed; in
+   * shadow mode the ledger is left untouched and the intended transfers are
+   * returned. Shadow follows DAPP_SHADOW unless overridden.
+   */
+  static async payoutAccruedYield({ poolAddress, shadow, minPayoutRaw = '1000000000000' } = {}) {
+    if (!query) throw new Error('Postgres not available');
+    const cfg = this.getConfig();
+    const isShadow = shadow === undefined ? cfg.dappShadow !== false : Boolean(shadow);
+    const pool = await this.getPool(poolAddress);
+    if (!pool) throw new Error('Pool not found');
+    const positions = await query('SELECT * FROM market_maker_positions WHERE pool_id = $1', [pool.id]);
+    const min = BigInt(String(minPayoutRaw));
+    const paid = [];
+    for (const pos of positions.rows) {
+      const raw = BigInt(String(pos.accrued_yield || '0').split('.')[0] || '0');
+      if (raw < min) continue;
+      const amount = viem ? viem.formatUnits(raw, 18) : String(Number(raw) / 1e18);
+      const entry = { positionId: pos.id, holder: pos.holder, amountRaw: String(raw), amount, mode: isShadow ? 'shadow' : 'live', txHash: null };
+      if (isShadow) { paid.push(entry); continue; }
+      if (!PtcStablecoinEngine) throw new Error('PtcStablecoinEngine not available');
+      try {
+        const res = await this._withLowFees(() => PtcStablecoinEngine.transfer({ to: pos.holder, amount }));
+        entry.txHash = res.txHash || null;
+        await query(
+          `UPDATE market_maker_positions
+              SET accrued_yield = '0',
+                  metadata = metadata || $1::jsonb,
+                  updated_at = NOW()
+            WHERE id = $2`,
+          [safeJson({ lastYieldPayout: { amountRaw: String(raw), txHash: entry.txHash, at: new Date().toISOString() } }), pos.id]
+        );
+      } catch (e) {
+        entry.error = e.message;
+      }
+      paid.push(entry);
+    }
+    return { mode: isShadow ? 'shadow' : 'live', paid };
   }
 }
 

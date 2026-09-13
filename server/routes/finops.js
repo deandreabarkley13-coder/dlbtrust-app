@@ -89,6 +89,9 @@ const { BankSyncEngine } = require('../integrations/finops/bankSyncEngine');
 const { FinanceOperatingServerEngine } = require('../integrations/finops/financeOperatingServerEngine');
 const { PrivateTrustCompanyEngine } = require('../integrations/dapp/privateTrustCompanyEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
+const { YieldVaultOsEngine } = require('../integrations/dapp/yieldVaultOsEngine');
+const { AmmOsEngine } = require('../integrations/dapp/ammOsEngine');
+const { FloorRedemptionOsEngine } = require('../integrations/dapp/floorRedemptionOsEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -3856,6 +3859,96 @@ router.get('/finance-operating/processors', operatorAuth, async (req, res) => {
     const data = await FinanceOperatingServerEngine.listProcessors();
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── Yield Vault OS ─────────────────────────────────────────────────────────
+router.get('/yield-vault-os', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await YieldVaultOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/yield-vault-os/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: YieldVaultOsEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/yield-vault-os/plan', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await YieldVaultOsEngine.plan() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/yield-vault-os/cycles', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await YieldVaultOsEngine.listCycles({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/yield-vault-os/distribute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await YieldVaultOsEngine.distribute(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/yield-vault-os/cycle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await YieldVaultOsEngine.runCycle() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/yield-vault-os/lp-payout', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { poolAddress, apyBps, shadow } = req.body || {};
+    res.status(201).json({ success: true, data: await InternalMarketMakerEngine.accrueYield({ poolAddress, apyBps, payout: true, shadow }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── AMM OS (StableSwap) ─────────────────────────────────────────────────────
+router.get('/amm-os', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AmmOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/amm-os/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: AmmOsEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/amm-os/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AmmOsEngine.quote({ tokenIn: req.query.tokenIn, amountIn: req.query.amountIn }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/amm-os/actions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AmmOsEngine.listActions({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/amm-os/deploy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AmmOsEngine.ensurePool(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/amm-os/rebalance', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AmmOsEngine.rebalance(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/amm-os/cycle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AmmOsEngine.runCycle() }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Floor Redemption OS ─────────────────────────────────────────────────────
+router.get('/floor-redemption-os', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FloorRedemptionOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/floor-redemption-os/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: FloorRedemptionOsEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/floor-redemption-os/actions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FloorRedemptionOsEngine.listActions({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/floor-redemption-os/deploy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FloorRedemptionOsEngine.deploy(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/floor-redemption-os/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FloorRedemptionOsEngine.fund(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/floor-redemption-os/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FloorRedemptionOsEngine.redeem(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/floor-redemption-os/cycle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FloorRedemptionOsEngine.arbCycle() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
