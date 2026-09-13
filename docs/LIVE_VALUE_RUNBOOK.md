@@ -53,6 +53,32 @@ Optional guard rails worth setting before the first live send:
 `THIRDWEB_SERVER_WALLET_MAX_QUANTITY` (smallest units), `TREASURY_TOPUP_MAX_USD`,
 `THIRDWEB_SERVER_WALLET_MIN_GAS_WEI`.
 
+### 1a. Production state (Northflank `dlbtrust-app`)
+
+Everything above is applied. Notes that differ from the defaults in this document:
+
+- The pinned wallet in production is `DLBT-FTC` at
+  `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` on Base (`8453`), not the
+  `dlbtrust-treasury` example wallet.
+- `TREASURY_TOPUP_HOLD_ACCOUNT_ID=1000` (`trust` / Trust Cash & Equivalents),
+  chosen from `GET /api/dapp/source-of-funds` because it is `funding_eligible`
+  with a positive `available_balance_cents`.
+- `TRUST_POLICY_ENFORCED=true` in production (a `TRUST_POLICY_ADDRESS` is set),
+  so direct `server-wallet/send` is refused with `409 TRUST_POLICY_ENFORCED` even
+  though readiness reports `canSend: true` — value must go through the
+  TrustDistributionPolicy maker/checker path (§5). Set it to `false` only if the
+  trustee explicitly wants direct sends.
+- The service also carries **service-level** runtime environment variables that
+  take precedence over the `dlbtrust-runtime` secret group. `STABLECOIN_MODE` and
+  `STABLECOIN_NETWORK` had to be changed there as well
+  (`POST /v1/projects/dlbtrust/services/dlbtrust-app/runtime-environment`, merged,
+  never a partial body); if a group change does not show up in
+  `/api/os/smart-router/status` after a restart, check the service-level env.
+- Secret-group changes are not picked up until the service restarts
+  (`POST /v1/projects/dlbtrust/services/dlbtrust-app/restart`).
+- Treasury wallet balance is still 0 ETH / 0 USDC: the first top-up plus Base ETH
+  for gas is the remaining prerequisite before any outbound send.
+
 `SMART_ROUTER_LIVE=true` on its own only changes `status.mode` to `live`; `deliver`
 still refuses every rail whose own gate is closed (`Rail <rail> is not live or not
 available`). With the table above applied, `route` reports `canExecute: true` for
