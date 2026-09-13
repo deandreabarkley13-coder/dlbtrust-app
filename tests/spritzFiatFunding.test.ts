@@ -89,6 +89,10 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
     stubDb();
     vi.spyOn(CollateralOsEngine, 'facility').mockResolvedValue({ spendableUsd: 0, drawnUsd: 0, availableUsd: 0, byPosition: [] });
     vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({ committed: true, shadow: false, entryId: 'je_1' });
+    vi.spyOn(CanonicalFundingSource, 'position').mockResolvedValue({
+      accountCode: '1000', glAccountId: 68, canonicalBalanceCents: 100_000_00, ledgerBalanceCents: 100_000_00, driftCents: 0,
+      availableBalanceCents: 100_000_00, fundingEligible: true, segregationStatus: 'available', segregationReason: null, degraded: null, live: true,
+    });
     vi.spyOn(BankTransferEngine, 'pushCredit').mockResolvedValue({ transfer_id: 'BTO-1', status: 'initiated', ach_batch_id: 'ach_1' });
     vi.spyOn(BankTransferEngine, 'sendPushCredit').mockResolvedValue({ transfer_id: 'BTO-1', status: 'completed' });
     delete process.env.ACH_MFT_CHANNEL;
@@ -113,6 +117,30 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
   });
 
   afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reads the live Fineract cash position: an overdrawn/drifted canonical account or unreachable core blocks readiness', async () => {
+    stubSpritz(() => [ACCOUNT]);
+    vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'active', active: true, requirements: [] });
+
+    let readiness = await SpritzFiatFundingEngine.readiness();
+    expect(readiness.erpPosition).toMatchObject({ ok: true, accountCode: '1000', canonicalUsd: 100000, availableUsd: 100000 });
+    expect(readiness.issues.some((i: string) => /ERP canonical cash/.test(i))).toBe(false);
+
+    vi.spyOn(CanonicalFundingSource, 'position').mockResolvedValue({
+      accountCode: '1000', glAccountId: 68, canonicalBalanceCents: -592749476, ledgerBalanceCents: 0, driftCents: 592749476,
+      availableBalanceCents: 0, fundingEligible: false, segregationStatus: 'restricted',
+      segregationReason: 'sub-ledger and canonical GL differ by $5927494.76 — reconcile before funding', degraded: null, live: true,
+    });
+    readiness = await SpritzFiatFundingEngine.readiness();
+    expect(readiness.ready).toBe(false);
+    expect(readiness.erpPosition).toMatchObject({ ok: false, canonicalUsd: -5927494.76, availableUsd: 0, driftUsd: 5927494.76 });
+    expect(readiness.issues.some((i: string) => /ERP canonical cash: fineract 1000 canonical balance \$-5927494\.76 .* no spendable cash booked in the core/.test(i))).toBe(true);
+
+    vi.spyOn(CanonicalFundingSource, 'position').mockRejectedValue(new Error('ECONNREFUSED dlbtrust-fineract:8443'));
+    readiness = await SpritzFiatFundingEngine.readiness();
+    expect(readiness.erpPosition).toMatchObject({ ok: false, canonicalUsd: null, availableUsd: 0 });
+    expect(readiness.issues.some((i: string) => /fineract unreachable: ECONNREFUSED/.test(i))).toBe(true);
+  });
 
   it('finds the auto-ramp account converting to the policy contract and refuses a mismatched pin', async () => {
     stubSpritz(() => [{ ...ACCOUNT, id: 'ar_other', address: PAYOUT }, ACCOUNT]);
