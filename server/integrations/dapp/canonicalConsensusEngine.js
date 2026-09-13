@@ -190,6 +190,12 @@ class CanonicalConsensusEngine {
       if (String(payload.rail) === 'spritz_bill_pay' && !(payload.spritzBillId || (payload.vendor && payload.vendor.metadata && (payload.vendor.metadata.spritzBillId || payload.vendor.metadata.spritz_bill_id)))) {
         throw new Error('vendor_bill on spritz_bill_pay requires spritzBillId (linked Spritz bill)');
       }
+      if (payload.fundingMode !== undefined && !['erp', 'treasury_wallet'].includes(String(payload.fundingMode))) {
+        throw new Error('vendor_bill fundingMode must be erp or treasury_wallet');
+      }
+      if (payload.fundingMode === 'treasury_wallet' && String(payload.rail) !== 'spritz_bill_pay') {
+        throw new Error('vendor_bill fundingMode treasury_wallet is only supported on the spritz_bill_pay rail');
+      }
       return { batch: false, count: 1, direct: true };
     }
     if (!MelioEngine) throw new Error('MelioEngine not available');
@@ -230,6 +236,7 @@ class CanonicalConsensusEngine {
         sourceCashAccountId: payload.sourceCashAccountId || payload.source_cash_account_id,
         rail: payload.rail,
         spritzBillId: payload.spritzBillId,
+        fundingMode: payload.fundingMode,
         webPaymentAdapter: payload.webPaymentAdapter,
         openBankingConnector: payload.openBankingConnector,
         memo: payload.memo,

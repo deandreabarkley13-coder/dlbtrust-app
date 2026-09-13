@@ -20,6 +20,15 @@
  * wallet, the default) the server never signs: a live run stops at
  * `awaiting_signature` with the unsigned approve/payment calls, and
  * confirm({ paymentId, txHash }) books it once the wallet has sent them.
+ *
+ * Funding modes (`fundingMode`):
+ *   erp             (default) draw ERP cash into USDC treasury at pay time.
+ *   treasury_wallet the payout wallet already holds the USDC — e.g. a thirdweb
+ *                   Bridge top-up that was booked Dr USDC treasury / Cr cash
+ *                   when it settled. No ERP draw is posted (that would credit
+ *                   cash twice); the wallet balance is checked against the
+ *                   gross quote instead, and settlement books only
+ *                   Dr expense (+ fee) / Cr USDC treasury.
  */
 
 const { SpritzEngine } = require('./spritzEngine');
@@ -32,6 +41,7 @@ try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource'
 
 const PAYABLE_STATUS = 'active';
 const REFERENCE_TYPE = 'spritz_bill_pay';
+const FUNDING_MODES = ['erp', 'treasury_wallet'];
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 
@@ -46,6 +56,12 @@ function conflict(message, code) {
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeFundingMode(mode) {
+  const m = String(mode || 'erp').toLowerCase();
+  if (!FUNDING_MODES.includes(m)) throw badRequest(`fundingMode must be one of ${FUNDING_MODES.join(', ')}`, 'FUNDING_MODE_INVALID');
+  return m;
 }
 
 function meta(row) {
@@ -246,8 +262,9 @@ class SpritzBillPayEngine {
    * Settle one vendor bill through Spritz Bill Pay from the ERP. Idempotent on
    * `runId`: a replay returns the recorded payment.
    */
-  static async pay({ runId, vendorBillId, spritzBillId, amountUsd, memo, initiatedBy = 'system' } = {}) {
+  static async pay({ runId, vendorBillId, spritzBillId, amountUsd, memo, fundingMode, initiatedBy = 'system' } = {}) {
     if (!runId) throw badRequest('runId required');
+    const mode = normalizeFundingMode(fundingMode);
     const cfg = this.config();
     await this.ensureTables();
     const existing = await this.getPayment({ runId });
@@ -259,25 +276,34 @@ class SpritzBillPayEngine {
     const paymentId = existing ? existing.payment_id : `SBP-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const description = memo || `Spritz Bill Pay ${quoted.bill.name || quoted.bill.id} (${vendorBillId || runId})`;
 
-    // 1. Treasury-Core ERP draw: Dr USDC treasury / Cr ERP cash (shadow plan when not live).
-    if (!CanonicalFundingSource) throw conflict('CanonicalFundingSource (Treasury-Core ERP) not available', 'ERP_UNAVAILABLE');
-    const funding = await CanonicalFundingSource.commit({
-      amountUsd: gross,
-      reference: runId,
-      referenceType: `${REFERENCE_TYPE}_funding`,
-      memo: `ERP ${cfg.fundingSource.cashAccountCode} -> ${gross} USDC for ${description}`,
-      cashAccountCode: cfg.fundingSource.cashAccountCode,
-      assetAccountCode: cfg.fundingSource.assetAccountCode,
-      postedBy: initiatedBy,
-      purpose: 'spritz bill pay',
-    });
+    // 1. Funding. ERP mode draws Dr USDC treasury / Cr ERP cash (shadow plan when
+    //    not live); treasury_wallet mode only proves the wallet already holds it.
+    let funding;
+    let fundingSource;
+    if (mode === 'treasury_wallet') {
+      funding = await this._treasuryWalletFunding({ gross });
+      fundingSource = { kind: 'treasury_wallet', wallet: cfg.payoutWallet, assetAccountCode: cfg.fundingSource.assetAccountCode, cashAccountCode: null, live: true };
+    } else {
+      if (!CanonicalFundingSource) throw conflict('CanonicalFundingSource (Treasury-Core ERP) not available', 'ERP_UNAVAILABLE');
+      funding = await CanonicalFundingSource.commit({
+        amountUsd: gross,
+        reference: runId,
+        referenceType: `${REFERENCE_TYPE}_funding`,
+        memo: `ERP ${cfg.fundingSource.cashAccountCode} -> ${gross} USDC for ${description}`,
+        cashAccountCode: cfg.fundingSource.cashAccountCode,
+        assetAccountCode: cfg.fundingSource.assetAccountCode,
+        postedBy: initiatedBy,
+        purpose: 'spritz bill pay',
+      });
+      fundingSource = cfg.fundingSource;
+    }
 
     const live = cfg.live && funding.committed === true;
     const base = {
       paymentId, runId, vendorBillId: vendorBillId || null, spritzBillId: quoted.bill.id, spritzQuoteId: quoted.quoteId,
-      amountUsd: amount, feeUsd: quoted.feeUsd, erpCashAccount: cfg.fundingSource.cashAccountCode,
+      amountUsd: amount, feeUsd: quoted.feeUsd, erpCashAccount: fundingSource.cashAccountCode,
       erpJournalEntryId: funding.journalEntryId || null, payerWallet: cfg.payoutWallet || null, memo: description, createdBy: initiatedBy,
-      metadata: { bill: quoted.bill, quote: { id: quoted.quoteId, status: quoted.status, inputUsd: quoted.inputUsd, expiresAt: quoted.expiresAt }, funding, network: cfg.network, fundingSource: cfg.fundingSource },
+      metadata: { bill: quoted.bill, quote: { id: quoted.quoteId, status: quoted.status, inputUsd: quoted.inputUsd, expiresAt: quoted.expiresAt }, funding, fundingMode: mode, network: cfg.network, fundingSource },
     };
 
     if (!live) {
@@ -317,6 +343,29 @@ class SpritzBillPayEngine {
 
     const row = await this._settle({ base, quoted, gross, settlement, initiatedBy });
     return this._result(row);
+  }
+
+  /**
+   * treasury_wallet funding: the payout wallet must already hold the gross
+   * quote in USDC. Nothing is posted here — the USDC was booked into the
+   * treasury asset account when it arrived (thirdweb Bridge top-up, Spritz
+   * buy, …), and settlement credits that same account.
+   */
+  static async _treasuryWalletFunding({ gross }) {
+    const cfg = this.config();
+    if (!cfg.payoutWallet) throw conflict('SPRITZ_PAYOUT_WALLET not configured', 'PAYOUT_WALLET_MISSING');
+    let balanceUsd = null;
+    try {
+      balanceUsd = await SpritzTreasuryLegEngine.payoutWalletUsdcBalance({ address: cfg.payoutWallet });
+    } catch (e) {
+      throw conflict(`payout wallet ${cfg.payoutWallet} balance unavailable: ${e.message}`, 'PAYOUT_WALLET_BALANCE_UNAVAILABLE');
+    }
+    const available = balanceUsd === null ? null : num(balanceUsd);
+    if (available === null) throw conflict(`payout wallet ${cfg.payoutWallet} balance unavailable (no settlement token / RPC / thirdweb API)`, 'PAYOUT_WALLET_BALANCE_UNAVAILABLE');
+    if (available + 1e-9 < gross) {
+      throw conflict(`payout wallet ${cfg.payoutWallet} holds ${available.toFixed(2)} USDC, quote needs ${gross.toFixed(2)}`, 'PAYOUT_WALLET_UNDERFUNDED');
+    }
+    return { committed: true, mode: 'treasury_wallet', wallet: cfg.payoutWallet, availableUsd: available, requiredUsd: gross, journalEntryId: null };
   }
 
   /** Book a paid quote (Dr expense (+ Dr fee) / Cr USDC treasury) and mark the payment settling. */
@@ -413,6 +462,7 @@ class SpritzBillPayEngine {
       txHash: row.tx_hash || null,
       amountUsd: num(row.amount_usd),
       feeUsd: num(row.fee_usd),
+      fundingMode: m.fundingMode || 'erp',
       fundingSource: m.fundingSource || { kind: 'treasury_core_erp', cashAccountCode: row.erp_cash_account },
       erpJournalEntryId: row.erp_journal_entry_id || null,
       glJournalEntryId: row.gl_journal_entry_id || null,
@@ -426,4 +476,4 @@ class SpritzBillPayEngine {
   }
 }
 
-module.exports = { SpritzBillPayEngine, summarizeBill };
+module.exports = { SpritzBillPayEngine, summarizeBill, FUNDING_MODES };

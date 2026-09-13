@@ -211,7 +211,7 @@ class VendorPaymentEngine {
     }
   }
 
-  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'melio', spritzBillId: requestedSpritzBillId, webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
+  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'melio', spritzBillId: requestedSpritzBillId, fundingMode, webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
     if (!billId) throw new Error('billId required');
     await this.ensureTables();
     await this._assertConsensusApproval(billId, consensusProposalId);
@@ -259,6 +259,7 @@ class VendorPaymentEngine {
         spritzBillId,
         amountUsd: bill.amount_cents / 100,
         memo: memo || bill.memo,
+        fundingMode,
         initiatedBy,
       });
       status = payment.status === 'completed' ? 'completed'

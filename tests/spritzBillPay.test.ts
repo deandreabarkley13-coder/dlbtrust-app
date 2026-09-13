@@ -19,6 +19,7 @@ process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
 const pool = require('../server/integrations/bonds/pgPool');
 const { SpritzEngine } = require('../server/integrations/spritz/spritzEngine');
 const { SpritzBillPayEngine } = require('../server/integrations/spritz/spritzBillPayEngine');
+const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
 const { CanonicalFundingSource } = require('../server/integrations/fineract/canonicalFundingSource');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { VendorPaymentEngine } = require('../server/integrations/dapp/vendorPaymentEngine');
@@ -229,6 +230,74 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     }
   });
 
+  it('treasury_wallet mode: checks the payout wallet USDC, skips the ERP draw, and books Dr expense + fee / Cr USDC treasury only', async () => {
+    process.env.SPRITZ_BILLPAY_LIVE = 'true';
+    const commit = vi.spyOn(CanonicalFundingSource, 'commit');
+    const balance = vi.spyOn(SpritzTreasuryLegEngine, 'payoutWalletUsdcBalance').mockResolvedValue('1000.00');
+    vi.spyOn(SpritzEngine, 'executeQuote').mockResolvedValue({ txHash: '0xtw', quoteId: 'q_tw' } as any);
+    const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-GL-TW' } as any);
+    stubSpritz((path) => {
+      if (path === '/v1/bills/') return BILLS;
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_tw', status: 'created', input: { amount: '252.50' }, output: { amount: '250.00' } };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const out = await SpritzBillPayEngine.pay({ runId: 'VPAY-TW', vendorBillId: 'BILL-TW', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'treasury_wallet', initiatedBy: 'ops' });
+
+    expect(commit).not.toHaveBeenCalled();
+    expect(balance).toHaveBeenCalledWith({ address: PAYOUT });
+    expect(out).toMatchObject({ status: 'settling', txHash: '0xtw', erpJournalEntryId: null, glJournalEntryId: 'JE-GL-TW', fundingMode: 'treasury_wallet', fundingSource: { kind: 'treasury_wallet', wallet: PAYOUT, assetAccountCode: '1210' } });
+    expect(out.metadata.funding).toMatchObject({ committed: true, mode: 'treasury_wallet', availableUsd: 1000, requiredUsd: 252.5 });
+    expect(post.mock.calls[0][0].lines).toEqual([
+      expect.objectContaining({ accountCode: '5100', debitAmount: 250, creditAmount: 0 }),
+      expect.objectContaining({ accountCode: '5300', debitAmount: 2.5, creditAmount: 0 }),
+      expect.objectContaining({ accountCode: '1210', debitAmount: 0, creditAmount: 252.5 }),
+    ]);
+    expect(saved.at(-1).erp_cash_account).toBeNull();
+  });
+
+  it('treasury_wallet mode: refuses an underfunded wallet before quoting on-chain and never touches the ERP', async () => {
+    process.env.SPRITZ_BILLPAY_LIVE = 'true';
+    const commit = vi.spyOn(CanonicalFundingSource, 'commit');
+    const reverse = vi.spyOn(CanonicalFundingSource, 'reverse');
+    vi.spyOn(SpritzTreasuryLegEngine, 'payoutWalletUsdcBalance').mockResolvedValue('100.00');
+    const exec = vi.spyOn(SpritzEngine, 'executeQuote');
+    stubSpritz((path) => {
+      if (path === '/v1/bills/') return BILLS;
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_short', status: 'created', input: { amount: '252.50' }, output: { amount: '250.00' } };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    await expect(SpritzBillPayEngine.pay({ runId: 'VPAY-SHORT', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'treasury_wallet' }))
+      .rejects.toMatchObject({ code: 'PAYOUT_WALLET_UNDERFUNDED', status: 409 });
+    expect(commit).not.toHaveBeenCalled();
+    expect(reverse).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(0);
+
+    vi.spyOn(SpritzTreasuryLegEngine, 'payoutWalletUsdcBalance').mockResolvedValue(null);
+    await expect(SpritzBillPayEngine.pay({ runId: 'VPAY-NOBAL', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'treasury_wallet' }))
+      .rejects.toMatchObject({ code: 'PAYOUT_WALLET_BALANCE_UNAVAILABLE' });
+    await expect(SpritzBillPayEngine.pay({ runId: 'VPAY-BAD', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'coinbase' }))
+      .rejects.toMatchObject({ code: 'FUNDING_MODE_INVALID', status: 400 });
+  });
+
+  it('treasury_wallet mode: a failed on-chain settlement does not reverse anything in the ERP', async () => {
+    process.env.SPRITZ_BILLPAY_LIVE = 'true';
+    const reverse = vi.spyOn(CanonicalFundingSource, 'reverse');
+    vi.spyOn(SpritzTreasuryLegEngine, 'payoutWalletUsdcBalance').mockResolvedValue('1000');
+    vi.spyOn(SpritzEngine, 'executeQuote').mockRejectedValue(new Error('reverted'));
+    stubSpritz((path) => {
+      if (path === '/v1/bills/') return BILLS;
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_rev', status: 'created', input: { amount: '252.50' }, output: { amount: '250.00' } };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    await expect(SpritzBillPayEngine.pay({ runId: 'VPAY-REV', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'treasury_wallet' })).rejects.toThrow(/reverted/);
+    expect(reverse).not.toHaveBeenCalled();
+    expect(saved.at(-1)).toMatchObject({ status: 'failed' });
+  });
+
   it('is idempotent on the payment run', async () => {
     vi.spyOn(SpritzBillPayEngine, 'getPayment').mockResolvedValue({ payment_id: 'SBP-1', run_id: 'VPAY-1', spritz_bill_id: 'bill_chase', amount_usd: '250', fee_usd: '2.5', status: 'shadow', metadata: {} } as any);
     stubSpritz(() => { throw new Error('Spritz must not be called on replay'); });
@@ -250,10 +319,10 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     const screen = vi.spyOn(PaymentComplianceGate, 'screenVendorPayment').mockResolvedValue({ screeningId: 'SCR-1', status: 'clear' } as any);
     const pay = vi.spyOn(SpritzBillPayEngine, 'pay').mockResolvedValue({ paymentId: 'SBP-9', status: 'shadow', spritzQuoteId: 'q_9' } as any);
 
-    const out = await VendorPaymentEngine.payBill({ billId: 'BILL-9', consensusProposalId: 'PROP-9', rail: 'spritz_bill_pay', initiatedBy: 'checker' });
+    const out = await VendorPaymentEngine.payBill({ billId: 'BILL-9', consensusProposalId: 'PROP-9', rail: 'spritz_bill_pay', fundingMode: 'treasury_wallet', initiatedBy: 'checker' });
 
     expect(screen).toHaveBeenCalledWith(expect.objectContaining({ rail: 'spritz_bill_pay', action: 'export', reference: 'BILL-9' }));
-    expect(pay).toHaveBeenCalledWith(expect.objectContaining({ vendorBillId: 'BILL-9', spritzBillId: 'bill_chase', amountUsd: 250, initiatedBy: 'checker' }));
+    expect(pay).toHaveBeenCalledWith(expect.objectContaining({ vendorBillId: 'BILL-9', spritzBillId: 'bill_chase', amountUsd: 250, fundingMode: 'treasury_wallet', initiatedBy: 'checker' }));
     expect(rows.runs[0]).toEqual(expect.arrayContaining(['BILL-9', 'spritz_bill_pay', 'SBP-9', 'pending', 'SCR-1']));
     expect(out).toMatchObject({ billId: 'BILL-9', status: 'pending', payment: { paymentId: 'SBP-9' } });
     expect(VendorPaymentEngine.RAILS).toContain('spritz_bill_pay');
@@ -263,5 +332,16 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     const base = { vendorPaymentBillId: 'BILL-1', amount: 100, vendor: { name: 'Chase' } };
     expect(() => CanonicalConsensusEngine._validateVendorBillPayload({ ...base, rail: 'spritz_bill_pay' })).toThrow(/spritzBillId/);
     expect(CanonicalConsensusEngine._validateVendorBillPayload({ ...base, rail: 'spritz_bill_pay', spritzBillId: 'bill_chase' })).toMatchObject({ direct: true });
+  });
+
+  it('consensus accepts fundingMode treasury_wallet only on the spritz_bill_pay rail and hands it to VendorPaymentEngine', async () => {
+    const base = { vendorPaymentBillId: 'BILL-1', amount: 100, vendor: { name: 'Chase' }, spritzBillId: 'bill_chase' };
+    expect(CanonicalConsensusEngine._validateVendorBillPayload({ ...base, rail: 'spritz_bill_pay', fundingMode: 'treasury_wallet' })).toMatchObject({ direct: true });
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({ ...base, rail: 'spritz_bill_pay', fundingMode: 'wallet' })).toThrow(/fundingMode/);
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({ ...base, rail: 'melio', fundingMode: 'treasury_wallet' })).toThrow(/spritz_bill_pay rail/);
+
+    const payBill = vi.spyOn(VendorPaymentEngine, 'payBill').mockResolvedValue({ runId: 'VPAY-X' } as any);
+    await CanonicalConsensusEngine._executeVendorBill({ ...base, rail: 'spritz_bill_pay', fundingMode: 'treasury_wallet' }, 'PROP-X');
+    expect(payBill).toHaveBeenCalledWith(expect.objectContaining({ billId: 'BILL-1', consensusProposalId: 'PROP-X', rail: 'spritz_bill_pay', fundingMode: 'treasury_wallet' }));
   });
 });
