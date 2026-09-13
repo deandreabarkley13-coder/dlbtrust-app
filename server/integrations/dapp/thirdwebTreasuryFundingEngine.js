@@ -80,7 +80,11 @@ async function ensureTables() {
       requested_by TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
+    );
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS book_of_record TEXT;
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS journal_entry_id TEXT;
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS fineract_transaction_id TEXT;
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS booked_at TIMESTAMPTZ;
   `).catch((e) => { tablesReady = null; throw e; });
   return tablesReady;
 }
@@ -278,11 +282,11 @@ class ThirdwebTreasuryFundingEngine {
     const status = latest.status || record.status;
     const hash = (latest.transactions || []).map((t) => t.transactionHash).find(Boolean) || record.transactionHash;
 
-    let booked = record.booked;
-    if (status === 'COMPLETED' && !booked) {
-      booked = await this._book(record);
+    const patch = { status, transactionHash: hash, booked: record.booked };
+    if (status === 'COMPLETED' && !record.booked) {
+      Object.assign(patch, await this._book(record));
     }
-    return this._updateTopUp(record.id, { status, transactionHash: hash, booked });
+    return this._updateTopUp(record.id, patch);
   }
 
   /**
@@ -304,7 +308,14 @@ class ThirdwebTreasuryFundingEngine {
         postedBy: 'thirdweb-treasury-funding-engine',
         purpose: 'treasury top-up',
       });
-      return Boolean(result.committed);
+      if (!result.committed) return { booked: false };
+      return {
+        booked: true,
+        bookOfRecord: 'fineract',
+        journalEntryId: result.journalEntryId || null,
+        fineractTransactionId: result.fineractTransactionId || null,
+        bookedAt: new Date(),
+      };
     }
     await SourceOfFundsAdapter._fundSourceToTreasury({
       sourceType: record.sourceType,
@@ -312,8 +323,14 @@ class ThirdwebTreasuryFundingEngine {
       paymentId: record.id,
       amountCents: toCents(record.amountFiat),
     });
-    await this._postJournal(record);
-    return true;
+    const journal = await this._postJournal(record);
+    return {
+      booked: true,
+      bookOfRecord: 'trust_ledger',
+      journalEntryId: (journal && (journal.entry_id || journal.entryId || journal.id)) || null,
+      fineractTransactionId: null,
+      bookedAt: new Date(),
+    };
   }
 
   static async _postJournal(record) {
@@ -404,9 +421,11 @@ class ThirdwebTreasuryFundingEngine {
     }
     await pool.query(
       `UPDATE thirdweb_treasury_topups
-          SET status = $2, transaction_hash = $3, booked = $4, updated_at = NOW()
+          SET status = $2, transaction_hash = $3, booked = $4, book_of_record = $5,
+              journal_entry_id = $6, fineract_transaction_id = $7, booked_at = $8, updated_at = NOW()
         WHERE id = $1`,
-      [topUpId, next.status, next.transactionHash, next.booked]
+      [topUpId, next.status, next.transactionHash, next.booked, next.bookOfRecord || null,
+        next.journalEntryId || null, next.fineractTransactionId || null, next.bookedAt || null]
     );
     return next;
   }
@@ -427,6 +446,10 @@ class ThirdwebTreasuryFundingEngine {
       sourceAccountId: row.source_account_id,
       status: row.status,
       booked: row.booked,
+      bookOfRecord: row.book_of_record || null,
+      journalEntryId: row.journal_entry_id || null,
+      fineractTransactionId: row.fineract_transaction_id || null,
+      bookedAt: row.booked_at || null,
       transactionHash: row.transaction_hash,
       requestedBy: row.requested_by,
       createdAt: row.created_at,

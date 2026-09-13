@@ -60,7 +60,8 @@ async function main() {
 
   if (args.sync) {
     const synced = await ThirdwebTreasuryFundingEngine.syncTopUp(args.sync);
-    print(`top-up ${synced.status}${synced.booked ? ' (booked)' : ''}`, synced);
+    const booked = synced.booked ? ` (booked in ${synced.bookOfRecord || 'ledger'}, journal ${synced.journalEntryId || 'n/a'})` : '';
+    print(`top-up ${synced.status}${booked}`, synced);
     return;
   }
 

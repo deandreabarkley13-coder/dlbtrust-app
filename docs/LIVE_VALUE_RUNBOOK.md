@@ -4,8 +4,8 @@ Two independent paths let the trust move real value. Both are shadow by default
 and fail closed until every gate on the path is open.
 
 ```
-fiat (trust card/bank)                      hold account (trust:1000)
-  → thirdweb Universal Bridge checkout        ── swept + journalled on settle ──┐
+fiat (trust card/bank)                      authority + book of record: ERP (canonical:1000)
+  → thirdweb Universal Bridge checkout        ── Fineract GL post on settle ────┐
   → THIRDWEB_SERVER_WALLET_ADDRESS (Base)     DR 1210 crypto / CR 1000 cash     ┘
   → ThirdwebServerWalletEngine.send()         → beneficiary / vendor wallet
 
@@ -33,7 +33,7 @@ Never commit any of them.
 | `THIRDWEB_SERVER_WALLET_IDENTIFIER` | `dlbtrust-treasury` | identifier the pinned wallet was created from |
 | `THIRDWEB_SERVER_WALLET_CHAIN_ID` | `8453` | Base mainnet (defaults to `DAPP_CHAIN_ID`) |
 | `TREASURY_TOPUP_HOLD_ACCOUNT_ID` | `1000` (or the funded hold account) | fiat for a top-up is drawn from `TREASURY_TOPUP_HOLD_SOURCE_TYPE:this` |
-| `TREASURY_TOPUP_HOLD_SOURCE_TYPE` | `trust` | `canonical` makes the Fineract ERP the availability authority |
+| `TREASURY_TOPUP_HOLD_SOURCE_TYPE` | `canonical` | the Fineract ERP is the availability authority and book of record (`CanonicalFundingSource.assertAvailable` / `.commit`); `trust` falls back to the local sub-ledger sweep |
 | `TRUST_POLICY_ENFORCED` | `false` | see §5 |
 
 Smart Router rail gates (all live except canonical, which needs a signer secret):
@@ -60,9 +60,12 @@ Everything above is applied. Notes that differ from the defaults in this documen
 - The pinned wallet in production is `DLBT-FTC` at
   `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` on Base (`8453`), not the
   `dlbtrust-treasury` example wallet.
-- `TREASURY_TOPUP_HOLD_ACCOUNT_ID=1000` (`trust` / Trust Cash & Equivalents),
-  chosen from `GET /api/dapp/source-of-funds` because it is `funding_eligible`
-  with a positive `available_balance_cents`.
+- `TREASURY_TOPUP_HOLD_SOURCE_TYPE=canonical`, `TREASURY_TOPUP_HOLD_ACCOUNT_ID=1000`
+  (Fineract GL `1000` Trust Cash & Equivalents). The ERP is the authority:
+  `GET /api/dapp/canonical-source/position` must show `fundingEligible: true` and
+  drift `0`, and a settled top-up is booked into Fineract (the top-up record
+  carries `bookOfRecord: "fineract"`, `journalEntryId`, `fineractTransactionId`,
+  `bookedAt`). `trust:1000` is no longer the book of record for top-ups.
 - `TRUST_POLICY_ENFORCED=true` in production (a `TRUST_POLICY_ADDRESS` is set),
   so direct `server-wallet/send` is refused with `409 TRUST_POLICY_ENFORCED` even
   though readiness reports `canSend: true` — value must go through the
@@ -122,9 +125,9 @@ node server/scripts/valueWorkflowSmokeTest.js  # OTP → smart wallet → SIWE �
 
 ## 4. Moving real value (operator commands)
 
-Prerequisites the trustee must supply: the secrets in §1, a funded hold account
-(`trust:1000` seeds at $0.00 — the top-up is refused with
-`INSUFFICIENT_SOURCE_FUNDS` until it carries the fiat), and enough ETH on
+Prerequisites the trustee must supply: the secrets in §1, a canonical source that
+covers the amount (`GET /api/dapp/canonical-source/position` — the top-up is
+refused with `INSUFFICIENT_CANONICAL_FUNDS` otherwise), and enough ETH on
 `0x95bb85FdeC42b1517d282e8AD43A789d390aAda2` for gas (an ERC-20 send with
 `THIRDWEB_SERVER_WALLET_FUNDING_PREFLIGHT=true` is refused if the wallet cannot
 cover gas).
@@ -134,10 +137,10 @@ cover gas).
 ```sh
 node server/scripts/thirdwebTreasuryFundingWire.js \
   --amount 1000 --currency USD \
-  --source-type trust --source-account 1000
+  --source-type canonical --source-account 1000
 ```
 
-The script quotes the fiat amount, checks the hold account, creates a hosted
+The script quotes the fiat amount, asserts availability against the ERP, creates a hosted
 thirdweb checkout and prints `checkout: https://...` plus the top-up id
 (`TWTOP-...`). A trustee completes the checkout link with the trust's card or bank
 account; tokens are delivered to the server wallet when the bridge settles.
@@ -148,9 +151,14 @@ account; tokens are delivered to the server wallet when the bridge settles.
 node server/scripts/thirdwebTreasuryFundingWire.js --sync TWTOP-<id>
 ```
 
-Polls thirdweb; on `COMPLETED` the fiat is swept from the hold account and the
-journal entry `DR 1210 / CR 1000` is posted once (`booked: true`). Re-running is
-idempotent. `PENDING` means the checkout has not settled yet — run again later.
+Polls thirdweb; on `COMPLETED` the journal entry `DR 1210 / CR 1000` is posted
+once through `CanonicalFundingSource.commit` — the local trust journal *and* the
+Fineract GL (`booked: true`, `bookOfRecord: "fineract"`, `journalEntryId`,
+`fineractTransactionId`). Re-running is idempotent (a booked record never
+commits again). `PENDING` means the checkout has not settled yet — run again
+later. If `CANONICAL_FUNDING_LIVE` is off the commit is shadow and the record
+stays `booked: false` so the next sync retries. With `--source-type trust` the
+fiat is instead swept from the sub-ledger hold account (`bookOfRecord: "trust_ledger"`).
 
 ### 4c. Send value out of the server wallet
 
