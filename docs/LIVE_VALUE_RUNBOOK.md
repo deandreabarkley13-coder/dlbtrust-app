@@ -78,6 +78,16 @@ Everything above is applied. Notes that differ from the defaults in this documen
   (`POST /v1/projects/dlbtrust/services/dlbtrust-app/restart`).
 - Treasury wallet balance is still 0 ETH / 0 USDC: the first top-up plus Base ETH
   for gas is the remaining prerequisite before any outbound send.
+- `SPRITZ_PAYOUT_WALLET` / `SPRITZ_PAYOUT_WALLET_PROVIDER` were also pinned at the
+  service level (to the old Coinbase wallet) and had to be changed there as well
+  as in the group; both now point at `DLBT-FTC` / `thirdweb`, and
+  `SPRITZ_BILLPAY_LIVE=true` is set in both places. `GET /spritz/wallet` reports
+  `signer.type: thirdweb`.
+- The Spritz Bill Pay engine in `treasury_wallet` funding mode signs through
+  `ThirdwebServerWalletEngine.sendTransactions` (Spritz approve + payment
+  calldata), which is not subject to the `TRUST_POLICY_ENFORCED` direct-send
+  refusal. `scripts/spritz-pipeline.cjs settle` still releases through the
+  policy contract first, so that path needs the policy funded.
 
 `SMART_ROUTER_LIVE=true` on its own only changes `status.mode` to `live`; `deliver`
 still refuses every rail whose own gate is closed (`Rail <rail> is not live or not
