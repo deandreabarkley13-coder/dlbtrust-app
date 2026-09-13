@@ -11,7 +11,7 @@ fiat (trust card/bank)                      hold account (trust:1000)
 
 SmartRouterEngine.deliver()  (SMART_ROUTER_LIVE)
   → fiat        PaymentGatewayServerEngine    PAYMENT_MODE=production | PAYMENT_HUB_LIVE=true
-  → stablecoin  StablecoinGateway             STABLECOIN_MODE=live
+  → stablecoin  StablecoinGateway             STABLECOIN_MODE=mainnet (+STABLECOIN_ENABLED, THIRDWEB_RAIL_ENABLED)
   → canonical   CanonicalMoneyEngine          DAPP_PRIVATE_KEY + DAPP_SHADOW=false
   → funding     FundingEngine                 FUNDING_LIVE=true
 ```
@@ -36,15 +36,27 @@ Never commit any of them.
 | `TREASURY_TOPUP_HOLD_SOURCE_TYPE` | `trust` | `canonical` makes the Fineract ERP the availability authority |
 | `TRUST_POLICY_ENFORCED` | `false` | see §5 |
 
+Smart Router rail gates (all live except canonical, which needs a signer secret):
+
+| Variable | Value | Rail | Why |
+| --- | --- | --- | --- |
+| `PAYMENT_HUB_LIVE` | `true` | fiat | `_route` marks fiat `live`; `PaymentGatewayServerEngine.sale` still needs the chosen processor's credentials (Stripe / Moov / ACH) to settle |
+| `STABLECOIN_ENABLED` | `true` | stablecoin | `StablecoinGateway.readiness().ready` is false without it, so the rail is never a candidate |
+| `STABLECOIN_MODE` | `mainnet` | stablecoin | gateway accepts `disabled\|shadow\|testnet\|mainnet`; the router treats `mainnet` (or legacy `live`) as live |
+| `STABLECOIN_NETWORK` | `thirdweb` | stablecoin | settle through the pinned thirdweb server wallet instead of Stellar |
+| `THIRDWEB_RAIL_ENABLED` | `true` | stablecoin | required for `STABLECOIN_NETWORK=thirdweb` |
+| `FUNDING_LIVE` | `true` | funding | `FundingEngine.executePlan` runs instead of returning a shadow plan |
+| `DAPP_SHADOW` | `false` | canonical | already false; **`DAPP_PRIVATE_KEY`** (secret) must also be set or the canonical rail is never a candidate |
+
 Optional guard rails worth setting before the first live send:
 `THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS` (comma-separated allowlist),
 `THIRDWEB_SERVER_WALLET_MAX_QUANTITY` (smallest units), `TREASURY_TOPUP_MAX_USD`,
 `THIRDWEB_SERVER_WALLET_MIN_GAS_WEI`.
 
-The Smart Router rail gates (`PAYMENT_MODE`, `STABLECOIN_MODE`, `DAPP_PRIVATE_KEY`,
-`FUNDING_LIVE`) are **not** flipped by this runbook. `SMART_ROUTER_LIVE=true` on its
-own only changes `status.mode` to `live`; `deliver` still refuses every rail whose
-own gate is closed (`Rail <rail> is not live or not available`).
+`SMART_ROUTER_LIVE=true` on its own only changes `status.mode` to `live`; `deliver`
+still refuses every rail whose own gate is closed (`Rail <rail> is not live or not
+available`). With the table above applied, `route` reports `canExecute: true` for
+fiat, stablecoin and funding; canonical stays closed until `DAPP_PRIVATE_KEY` exists.
 
 ## 2. Readiness (nothing moves)
 

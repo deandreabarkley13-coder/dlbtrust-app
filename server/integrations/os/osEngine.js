@@ -1255,6 +1255,11 @@ class SmartRouterEngine extends BaseOSEngine {
     return process.env.SMART_ROUTER_LIVE === 'true';
   }
 
+  // StablecoinGateway only accepts disabled|shadow|testnet|mainnet; `live` is kept for older configs.
+  static _stablecoinLive() {
+    return ['live', 'mainnet'].includes(process.env.STABLECOIN_MODE);
+  }
+
   static async ensureTables() {
     await super.ensureTables();
     if (!pool) return;
@@ -1395,7 +1400,7 @@ class SmartRouterEngine extends BaseOSEngine {
     if (hasWallet || ['USDC','USDT','DLBUSD'].includes(currency)) {
       if (deps.Stablecoin && stableReady.ready) {
         const cfg = stableReady;
-        candidates.push({ rail: 'stablecoin', feeEstimateUsd: Math.max(0.01, amount * 0.001), speed: 'seconds', live: process.env.STABLECOIN_MODE === 'live', network: cfg.network || 'testnet', assetCode: cfg.assetCode || 'USDC' });
+        candidates.push({ rail: 'stablecoin', feeEstimateUsd: Math.max(0.01, amount * 0.001), speed: 'seconds', live: this._stablecoinLive(), network: cfg.network || 'testnet', assetCode: cfg.assetCode || 'USDC' });
       }
       if (deps.Canonical && process.env.DAPP_PRIVATE_KEY) {
         candidates.push({ rail: 'canonical', feeEstimateUsd: Math.max(0.10, amount * 0.002 + 0.20), speed: 'minutes', live: process.env.DAPP_SHADOW !== 'true' });
@@ -1498,7 +1503,7 @@ class SmartRouterEngine extends BaseOSEngine {
     });
     let status = created.status;
     let settled = null;
-    if (created.id && process.env.STABLECOIN_MODE === 'live') {
+    if (created.id && this._stablecoinLive()) {
       await deps.Stablecoin.approvePayment(created.id, source.accountId || payload.sourceAccountId);
       settled = await deps.Stablecoin.settlePayment(created.id, { memo: plan.memo });
       status = settled.status;
