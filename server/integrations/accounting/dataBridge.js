@@ -50,7 +50,22 @@ var ACCOUNTS = {
   LEGAL_EXPENSE:     '5200',
   OPERATING_EXPENSE: '5300',
   STABLECOIN_ASSET:  '1210',
+  // Issuer-side bond accounts (BOND_ACCOUNTING_ROLE=issuer): the trust owes the
+  // bond, so face is a liability and coupons are expense/payable.
+  BOND_SUBSCRIPTION_RECEIVABLE: '1310',
+  BONDS_PAYABLE:     '2300',
+  ACCRUED_INTEREST_PAYABLE: '2310',
+  COUPONS_PAYABLE:   '2320',
+  BOND_INTEREST_EXPENSE: '5400',
 };
+
+// 'holder': trust owns the bond (Dr 1100 investment, coupons are income).
+// 'issuer': trust issued the bond (Cr 2300 payable, coupons are expense).
+var BOND_ROLE = (process.env.BOND_ACCOUNTING_ROLE || 'holder').toLowerCase() === 'issuer' ? 'issuer' : 'holder';
+
+// system_settings key holding the live-baseline cutoff: engine source rows
+// created before it are pre-baseline test data and are never synced.
+var LIVE_BASELINE_CUTOFF_KEY = 'accounting.live_baseline_cutoff';
 
 // Trust-operating allocation per bond terms: an annual % of face value released
 // from corpus into OPERATING_CASH (1030) each coupon period, split between
@@ -128,6 +143,9 @@ class DataBridge {
     var skipped = 0;
     var failed = 0;
     var errors = [];
+    var cutoff = await DataBridge.liveBaselineCutoffSql('bt.created_at');
+    var cpCutoff = await DataBridge.liveBaselineCutoffSql('cp.created_at');
+    var isIssuer = BOND_ROLE === 'issuer';
 
     try {
       // Sync interest accrual transactions from bond_transactions
@@ -137,6 +155,7 @@ class DataBridge {
         FROM bond_transactions bt
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'interest_accrual'
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'bond_accrual'
@@ -153,10 +172,14 @@ class DataBridge {
           var accrualAmount = parseFloat(acc.amount);
           if (accrualAmount <= 0) { skipped++; continue; }
 
+          if (isIssuer) await DataBridge._ensureIssuerAccounts();
           await TrustAccountingEngine.postJournalEntry({
             entryDate: acc.transaction_date,
             description: 'Bond interest accrual — ' + acc.bond_code,
-            lines: [
+            lines: isIssuer ? [
+              { accountCode: ACCOUNTS.BOND_INTEREST_EXPENSE, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest expense ' + acc.bond_code },
+              { accountCode: ACCOUNTS.ACCRUED_INTEREST_PAYABLE, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest accrued ' + acc.bond_code },
+            ] : [
               { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest accrued ' + acc.bond_code },
               { accountCode: ACCOUNTS.INTEREST_INCOME, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest income ' + acc.bond_code },
             ],
@@ -179,6 +202,7 @@ class DataBridge {
         FROM coupon_payments cp
         JOIN bonds b ON b.id = cp.bond_id
         WHERE cp.status = 'paid'
+          ` + cpCutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'coupon_payment'
@@ -196,7 +220,7 @@ class DataBridge {
           if (cpn.amount_cents) couponAmount = couponAmount / 100;
 
           if (couponAmount > 0) {
-            await DataBridge._postCouponReceipt({
+            await (isIssuer ? DataBridge._postCouponPaid : DataBridge._postCouponReceipt)({
               amount: couponAmount,
               entryDate: cpn.coupon_date || cpn.created_at,
               bondCode: cpn.bond_code,
@@ -221,6 +245,7 @@ class DataBridge {
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'coupon_accrual'
           AND bt.transaction_date <= CURRENT_DATE
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'coupon_period'
@@ -236,7 +261,7 @@ class DataBridge {
         try {
           var periodAmount = parseFloat(per.amount);
           if (periodAmount <= 0) { skipped++; continue; }
-          await DataBridge._postCouponReceipt({
+          await (isIssuer ? DataBridge._postCouponDue : DataBridge._postCouponReceipt)({
             amount: periodAmount,
             entryDate: per.transaction_date,
             bondCode: per.bond_code,
@@ -259,6 +284,8 @@ class DataBridge {
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'coupon_accrual'
           AND bt.transaction_date <= CURRENT_DATE
+          AND $1 = 'holder'
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'operating_allocation'
@@ -267,7 +294,7 @@ class DataBridge {
           )
         ORDER BY bt.transaction_date ASC
         LIMIT 100
-      `);
+      `, [BOND_ROLE]);
 
       for (var a = 0; a < allocPeriods.rows.length; a++) {
         var ap = allocPeriods.rows[a];
@@ -372,6 +399,115 @@ class DataBridge {
     });
   }
 
+  static async _ensureIssuerAccounts() {
+    await DataBridge._ensureAccount(ACCOUNTS.BOND_SUBSCRIPTION_RECEIVABLE, 'Bond Subscription Receivable', 'asset', 'receivable');
+    await DataBridge._ensureAccount(ACCOUNTS.BONDS_PAYABLE, 'Bonds Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.ACCRUED_INTEREST_PAYABLE, 'Accrued Interest Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPONS_PAYABLE, 'Coupons Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.BOND_INTEREST_EXPENSE, 'Bond Interest Expense', 'expense', 'other');
+  }
+
+  /**
+   * Issuer side of a coupon period end: the coupon becomes payable. Any
+   * interest already accrued in 2310 is reclassified, the remainder is expense.
+   *   Cr COUPONS_PAYABLE (full coupon); Dr ACCRUED_INTEREST_PAYABLE (up to balance); Dr BOND_INTEREST_EXPENSE (rest)
+   */
+  static async _postCouponDue({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureIssuerAccounts();
+
+    var accruedResult = await pool.query(
+      'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
+      [ACCOUNTS.ACCRUED_INTEREST_PAYABLE]
+    );
+    var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
+    var reclassAmount = Math.round(Math.min(amount, Math.max(accruedBalance, 0)) * 100) / 100;
+    var expenseAmount = Math.round((amount - reclassAmount) * 100) / 100;
+
+    var lines = [];
+    if (reclassAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST_PAYABLE, debitAmount: reclassAmount, creditAmount: 0, memo: 'Accrued interest now due ' + bondCode });
+    }
+    if (expenseAmount > 0.001) {
+      lines.push({ accountCode: ACCOUNTS.BOND_INTEREST_EXPENSE, debitAmount: expenseAmount, creditAmount: 0, memo: 'Coupon interest expense ' + bondCode });
+    }
+    lines.push({ accountCode: ACCOUNTS.COUPONS_PAYABLE, debitAmount: 0, creditAmount: amount, memo: 'Coupon due to bondholders ' + bondCode });
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon due — ' + bondCode,
+      lines: lines,
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
+  }
+
+  /** Issuer pays a coupon: Dr COUPONS_PAYABLE / Cr CASH. */
+  static async _postCouponPaid({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureIssuerAccounts();
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon paid — ' + bondCode,
+      lines: [
+        { accountCode: ACCOUNTS.COUPONS_PAYABLE, debitAmount: amount, creditAmount: 0, memo: 'Coupon paid ' + bondCode },
+        { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Coupon cash out ' + bondCode },
+      ],
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  LIVE BASELINE CUTOFF
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Timestamp before which engine source rows are pre-baseline test data, or null. */
+  static async getLiveBaselineCutoff() {
+    try {
+      var r = await pool.query('SELECT value FROM system_settings WHERE key = $1', [LIVE_BASELINE_CUTOFF_KEY]);
+      if (r.rows.length === 0 || !r.rows[0].value) return null;
+      var d = new Date(r.rows[0].value);
+      return isNaN(d.getTime()) ? null : d;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static async setLiveBaselineCutoff(date, updatedBy) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMP DEFAULT NOW(),
+        updated_by VARCHAR(100) DEFAULT 'system'
+      )
+    `);
+    await pool.query(
+      `INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+      [LIVE_BASELINE_CUTOFF_KEY, new Date(date).toISOString(), updatedBy || 'system']
+    );
+  }
+
+  /**
+   * SQL fragment (" AND <col> >= '<iso>'::timestamptz" or "") excluding source
+   * rows created before the live baseline. The value is an ISO string produced
+   * by Date#toISOString, never user input.
+   */
+  static async liveBaselineCutoffSql(column) {
+    var cutoff = await DataBridge.getLiveBaselineCutoff();
+    if (!cutoff) return '';
+    if (!/^[a-z_][a-z0-9_.]*$/i.test(column)) throw new Error('Invalid cutoff column');
+    return " AND " + column + " >= '" + cutoff.toISOString() + "'::timestamptz";
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  ACH → TRUST ACCOUNTING SYNC
   // ═══════════════════════════════════════════════════════════════════════════
@@ -421,6 +557,7 @@ class DataBridge {
         SELECT ab.*
         FROM ach_batches ab
         WHERE ab.status IN ('transmitted', 'settled', 'acknowledged')
+          ` + await DataBridge.liveBaselineCutoffSql('ab.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'ach_batch'
@@ -513,6 +650,7 @@ class DataBridge {
         FROM banking_aggregator_transactions t
         JOIN banking_aggregator_connections c ON c.id = t.connection_id
         WHERE c.connector_type <> 'internal_rails'
+          ` + await DataBridge.liveBaselineCutoffSql('t.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'aggregator_txn'
@@ -719,6 +857,7 @@ class DataBridge {
         FROM bill_transactions bt
         WHERE bt.type IN ('deposit', 'payment')
           AND bt.status = 'completed'
+          ` + await DataBridge.liveBaselineCutoffSql('bt.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'bill_transaction'
@@ -936,10 +1075,14 @@ class DataBridge {
         if (postedBondIds.has('BOND-' + bond.id)) continue;
 
         try {
+          if (BOND_ROLE === 'issuer') await DataBridge._ensureIssuerAccounts();
           await TrustAccountingEngine.postJournalEntry({
             entryDate: bond.issue_date || new Date(),
             description: 'Opening balance — Bond ' + bond.bond_name + ' issuance',
-            lines: [
+            lines: BOND_ROLE === 'issuer' ? [
+              { accountCode: ACCOUNTS.BOND_SUBSCRIPTION_RECEIVABLE, debitAmount: faceValue, creditAmount: 0, memo: 'Bond subscription ' + bond.bond_name },
+              { accountCode: ACCOUNTS.BONDS_PAYABLE, debitAmount: 0, creditAmount: faceValue, memo: 'Bonds payable — ' + bond.bond_name },
+            ] : [
               { accountCode: ACCOUNTS.BOND_INVESTMENTS, debitAmount: faceValue, creditAmount: 0, memo: 'Bond investment ' + bond.bond_name },
               { accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: faceValue, memo: 'Trust corpus — ' + bond.bond_name },
             ],
@@ -1489,6 +1632,7 @@ class DataBridge {
         FROM wire_transfers wt
         WHERE wt.status IN ('settled', 'confirmed', 'sent')
           AND wt.payment_type != 'bill_deposit'
+          ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
           AND (
             wt.journal_entry_id IS NULL
             OR NOT EXISTS (
@@ -1583,6 +1727,7 @@ class DataBridge {
         FROM wire_transfers wt
         WHERE wt.status IN ('settled', 'confirmed', 'sent')
           AND wt.payment_type != 'bill_deposit'
+          ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_id = wt.wire_id
@@ -1656,6 +1801,7 @@ class DataBridge {
           OR (dr.metadata->>'expenseId' IS NULL AND er.request_id = dr.id)
         LEFT JOIN dapp_payout_center pc ON pc.id = dr.payout_id
         WHERE dr.status IN ('payout_created', 'executed', 'failed')
+          ` + await DataBridge.liveBaselineCutoffSql('dr.created_at') + `
         ORDER BY dr.created_at ASC
       `);
 
@@ -2000,6 +2146,7 @@ class DataBridge {
           FROM wire_transfers wt
           WHERE wt.status IN ('settled','confirmed','sent')
             AND wt.payment_type != 'bill_deposit'
+            ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
             AND NOT EXISTS (
               SELECT 1 FROM trust_journal_entries je
               WHERE je.reference_id = wt.wire_id
@@ -2546,4 +2693,4 @@ class DataBridge {
   }
 }
 
-module.exports = { DataBridge, ACCOUNTS };
+module.exports = { DataBridge, ACCOUNTS, BOND_ROLE, LIVE_BASELINE_CUTOFF_KEY };
