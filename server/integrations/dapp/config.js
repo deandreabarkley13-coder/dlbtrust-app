@@ -40,13 +40,25 @@ function getFees() {
   };
 }
 
+const privateKey = str('DAPP_PRIVATE_KEY', '');
+
+function derivedOperatorAddress(key) {
+  if (!key) return '';
+  try {
+    const { privateKeyToAccount } = require('viem/accounts');
+    return privateKeyToAccount(key.startsWith('0x') ? key : `0x${key}`).address;
+  } catch (e) {
+    return '';
+  }
+}
+
 const config = {
   dappEnabled: bool('DAPP_ENABLED', true),
   dappShadow: bool('DAPP_SHADOW', false),
   chainId,
   rpcUrl,
-  privateKey: str('DAPP_PRIVATE_KEY', ''),
-  operatorAddress: str('DAPP_OPERATOR_ADDRESS', ''),
+  privateKey,
+  operatorAddress: str('DAPP_OPERATOR_ADDRESS', '') || derivedOperatorAddress(privateKey),
   defaultThreshold: num('DAPP_DEFAULT_THRESHOLD', 2),
   apiKitBase: str('DAPP_SAFE_API_KIT_BASE',
     chainId === 8453 ? 'https://safe-transaction-base.safe.global'
