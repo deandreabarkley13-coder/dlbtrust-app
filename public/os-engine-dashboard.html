@@ -292,7 +292,13 @@
       'ptc-treasury': ['status', 'health', 'summary', 'reconcile', 'distribute', 'onramp'],
       'moov-paygate': ['status', 'health', 'createCustomer', 'createAccount', 'createTransfer', 'getTransfer', 'cancelTransfer', 'triggerCutoff', 'sendPayment', 'webhook'],
       'apisix': ['status', 'health', 'sendPayment', 'sendWire', 'sendPush'],
-      'nickel': ['status', 'health', 'listVendors', 'createVendor', 'createBill', 'payBill', 'submitInvoice', 'settlePayment', 'webhook']
+      'nickel': ['status', 'health', 'listVendors', 'createVendor', 'createBill', 'payBill', 'submitInvoice', 'settlePayment', 'webhook'],
+      'canonical-money': ['status', 'quote', 'propose', 'approve', 'listRequests', 'pipeline'],
+      'canonical-liquidity': ['status', 'propose', 'approve', 'listProposals', 'listPools', 'getPool', 'pipeline'],
+      'canonical-consensus': ['status', 'propose', 'approve', 'reject', 'get', 'list', 'pipeline'],
+      'canonical-funding': ['status', 'readiness', 'position', 'assertAvailable', 'commit', 'reverse', 'reconcile', 'glMap', 'pipeline'],
+      'collateral-os': ['status', 'readiness', 'facility', 'positions', 'draws', 'events', 'pledge', 'revalue', 'draw', 'reconcile', 'settle', 'execute', 'repay', 'release', 'pipeline'],
+      'live-money': ['status', 'initiateMovement', 'executeMovement', 'pollMovement', 'getMovement', 'listMovements', 'cancelMovement', 'dashboard', 'rails', 'pipeline']
     };
     const samples = {
       bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
@@ -320,6 +326,12 @@
       'ptc-treasury': JSON.stringify({ action: 'distribute', amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '<accountId>', payee: { name: 'Vendor Inc', bankName: 'External Bank', routing: '111000025', account: '000123456789' }, description: 'PTC distribution' }, null, 2),
       'moov-paygate': JSON.stringify({ action: 'sendPayment', amount: 100, source: { name: 'DLB Trust PTC Bank', email: 'ops@dlbtrust.local', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking' }, description: 'PTC Moov Paygate distribution', sameDay: false, triggerCutoff: false }, null, 2),
       'apisix': JSON.stringify({ action: 'sendPayment', amount: 0.01, type: 'wire', source: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, description: 'PTC Apache APISIX distribution' }, null, 2),
+      'canonical-money': JSON.stringify({ action: 'quote', sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 100, targetAsset: 'USDC' }, null, 2),
+      'canonical-liquidity': JSON.stringify({ action: 'listPools' }, null, 2),
+      'canonical-consensus': JSON.stringify({ action: 'list', status: 'pending', limit: 20 }, null, 2),
+      'canonical-funding': JSON.stringify({ action: 'readiness' }, null, 2),
+      'collateral-os': JSON.stringify({ action: 'facility' }, null, 2),
+      'live-money': JSON.stringify({ action: 'listMovements', limit: 20 }, null, 2),
       'nickel': JSON.stringify({ action: 'submitInvoice', amount: 0.01, sourceType: 'trust', sourceAccountId: '4000', vendor: { name: 'DB NET MGMT', email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com', bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' } }, invoiceNumber: `DBNM-${Date.now()}`, memo: 'Nickel one-click distribution to DB NET MGMT' }, null, 2)
     };
 
