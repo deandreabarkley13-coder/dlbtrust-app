@@ -8,6 +8,7 @@ const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngin
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
 const { SpritzFiatFundingEngine } = require('../integrations/spritz/spritzFiatFundingEngine');
+const { SpritzBuyEngine } = require('../integrations/spritz/spritzBuyEngine');
 const { SpritzBillPayEngine } = require('../integrations/spritz/spritzBillPayEngine');
 const { PayoutRelayerEngine } = require('../integrations/dapp/payoutRelayerEngine');
 const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
@@ -545,6 +546,63 @@ router.post('/spritz/fiat-funding/:reference/send', operatorAuth, writeRateLimit
 
 router.post('/spritz/fiat-funding/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await SpritzFiatFundingEngine.reconcile() }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Buy USDC: Spritz ACH debit (linked funding source) -> USDC to the thirdweb server wallet ──
+
+router.get('/spritz/buy/readiness', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzBuyEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/buy/funding-sources', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzBuyEngine.fundingSources() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/buy/limits', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzBuyEngine.limits(req.query.fundingSourceId) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/buy/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amountUsd, fundingSourceId, priority } = req.body || {};
+    res.json({ success: true, data: await SpritzBuyEngine.quote({ amountUsd, fundingSourceId, priority }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/buy', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try { res.json({ success: true, data: await SpritzBuyEngine.list({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+// Governed: raises a maker/checker ramp proposal; SpritzBuyEngine.buy runs when the checker signs.
+router.post('/spritz/buy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amountUsd, fundingSourceId, priority, reference, memo } = req.body || {};
+    const quoted = await SpritzBuyEngine.quote({ amountUsd, fundingSourceId, priority });
+    const proposal = await OnOffRampEngine.propose({
+      direction: 'onramp', provider: 'spritz', sourceAsset: 'USD', targetAsset: 'USDC', amount: quoted.amountUsd,
+      targetAddress: quoted.destination, network: quoted.network,
+      payload: { fundingSourceId: quoted.fundingSource.id, priority: quoted.priority, reference: reference || null, memo: memo || null, spritzQuote: quoted.quote },
+      createdBy: getUserEmail(req),
+    });
+    res.status(201).json({ success: true, data: { ...proposal, quote: quoted } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/buy/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzBuyEngine.sync({ reference: (req.body || {}).reference }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/buy/:reference', operatorAuth, async (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  try {
+    const data = await SpritzBuyEngine.get(req.params.reference);
+    if (!data) return res.status(404).json({ success: false, error: 'Spritz buy not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 // Straight-through: ERP -> (fiat credit push -> Spritz auto-ramp -> USDC) -> policy -> payout -> Spritz rails, one reference.

@@ -158,6 +158,7 @@
     { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
     { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
+    { key:'spritz-buy', name:'Spritz Buy USDC', desc:'ACH-debit a linked bank via Spritz; USDC lands in the thirdweb server wallet (maker/checker)', stat:'', endpoint:null, action:'openSpritzBuyPanel' },
     { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
     { key:'stablecoin', name:'Stablecoin Engine', desc:'Auditable mint/redeem/transfer/settle with collateral ratio', stat:'', endpoint:null, action:'openStablecoinPanel' },
     { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
@@ -757,6 +758,94 @@
       status.className = 'status ok';
     } catch(e) { status.textContent = e.message; status.className = 'status err'; }
     status.classList.remove('hidden');
+  }
+
+  function openSpritzBuyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Spritz Buy USDC';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Buys USDC on Base with an ACH debit of the Spritz-linked bank (funding source). USDC is delivered straight to the thirdweb server wallet. Submitting raises a maker/checker ramp proposal; the debit is authorized only when the checker signs and SPRITZ_BUY_LIVE=true.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="loadSpritzBuyReadiness()">Readiness</button><button class="btn btn-sec" style="margin-left:8px;" onclick="loadSpritzBuys()">History</button><button class="btn btn-sec" style="margin-left:8px;" onclick="syncSpritzBuys()">Sync Status</button></div>' +
+      '<div id="spritz-buy-status" class="status hidden"></div>' +
+      '<div id="spritz-buy-readiness" style="margin-top:12px;"></div>' +
+      '<div style="margin-top:16px; font-weight:600;">Buy USDC</div>' +
+      '<div class="token-bar"><input id="spritz-buy-amount" placeholder="USD amount to debit" /></div>' +
+      '<div class="token-bar"><select id="spritz-buy-source"><option value="">funding source: auto (single linked bank)</option></select></div>' +
+      '<div class="token-bar"><select id="spritz-buy-priority"><option value="normal">normal</option><option value="high">high</option></select></div>' +
+      '<div class="token-bar"><input id="spritz-buy-reference" placeholder="reference / idempotency key (optional)" /></div>' +
+      '<div class="token-bar"><input id="spritz-buy-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn btn-sec" onclick="quoteSpritzBuy()">Quote</button><button class="btn" style="margin-left:8px;" onclick="submitSpritzBuy()">Submit for Approval</button></div>' +
+      '<div id="spritz-buy-quote" style="margin-top:12px; word-break:break-all;"></div>' +
+      '<div id="spritz-buy-list" style="margin-top:12px;"></div>';
+    loadSpritzBuyReadiness();
+  }
+
+  function spritzBuyPre(obj) { return '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(obj, null, 2) + '</pre>'; }
+
+  async function loadSpritzBuyReadiness() {
+    const status = el('spritz-buy-status');
+    try {
+      const r = await api('/api/finops/spritz/buy/readiness');
+      const d = r.data || {};
+      el('spritz-buy-readiness').innerHTML =
+        '<div>' + (d.ready ? '<span class="pill ok">ready</span>' : '<span class="pill warn">not ready</span>') + ' ' + (d.live ? '<span class="pill ok">LIVE</span>' : '<span class="pill">shadow (no ACH debit)</span>') +
+        ' <span class="muted">destination ' + (d.destination || 'unset') + (d.destinationIsThirdweb ? ' (thirdweb server wallet)' : '') + ' on ' + (d.network || '?') + '</span></div>' +
+        ((d.issues || []).length ? '<div class="status err" style="margin-top:8px;">' + d.issues.join('<br>') + '</div>' : '') +
+        ((d.warnings || []).length ? '<div class="muted" style="margin-top:8px;">' + d.warnings.join('<br>') + '</div>' : '');
+      const sel = el('spritz-buy-source');
+      sel.innerHTML = '<option value="">funding source: auto (single linked bank)</option>' +
+        (d.fundingSources || []).map(s => '<option value="' + s.id + '">' + (s.institutionName || 'bank') + ' …' + (s.accountNumberLast4 || '') + ' [' + (s.status || '?') + ']</option>').join('');
+      status.classList.add('hidden');
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+  }
+
+  function spritzBuyForm() {
+    return {
+      amountUsd: el('spritz-buy-amount').value.trim(),
+      fundingSourceId: el('spritz-buy-source').value || undefined,
+      priority: el('spritz-buy-priority').value,
+      reference: el('spritz-buy-reference').value.trim() || undefined,
+      memo: el('spritz-buy-memo').value.trim() || undefined,
+    };
+  }
+
+  async function quoteSpritzBuy() {
+    const status = el('spritz-buy-status');
+    try {
+      const r = await api('/api/finops/spritz/buy/quote', { method:'POST', body: JSON.stringify(spritzBuyForm()) });
+      el('spritz-buy-quote').innerHTML = spritzBuyPre(r.data);
+      status.className = 'status ok'; status.textContent = 'Quote prepared (nothing authorized).';
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+  }
+
+  async function submitSpritzBuy() {
+    const status = el('spritz-buy-status');
+    const form = spritzBuyForm();
+    if (!confirm('Raise a maker/checker proposal to ACH-debit $' + form.amountUsd + ' and buy USDC into the thirdweb server wallet?')) return;
+    try {
+      const r = await api('/api/finops/spritz/buy', { method:'POST', body: JSON.stringify(form) });
+      el('spritz-buy-quote').innerHTML = spritzBuyPre(r.data);
+      status.className = 'status ok'; status.textContent = 'Proposal ' + (r.data.proposalId || '') + ' raised; approve it in Canonical Consensus.';
+      loadSpritzBuys();
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+  }
+
+  async function loadSpritzBuys() {
+    const status = el('spritz-buy-status');
+    try {
+      const r = await api('/api/finops/spritz/buy');
+      el('spritz-buy-list').innerHTML = r.data?.length ? renderTable(r.data, ['reference','status','amountUsd','priority','destination','network','depositId','shadow','createdAt'], {}) : '<span class="muted">No Spritz buys yet.</span>';
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
+  }
+
+  async function syncSpritzBuys() {
+    const status = el('spritz-buy-status');
+    try {
+      await api('/api/finops/spritz/buy/sync', { method:'POST', body: JSON.stringify({}) });
+      status.className = 'status ok'; status.textContent = 'Synced with Spritz.';
+      loadSpritzBuys();
+    } catch (e) { status.className = 'status err'; status.textContent = e.message; }
   }
 
   function openSpritzPanel() {
