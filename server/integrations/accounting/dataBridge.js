@@ -875,6 +875,11 @@ class DataBridge {
             diff > 100000 ? 'critical' : diff > 10000 ? 'high' : diff > 1000 ? 'normal' : 'low');
         } else {
           matched++;
+          await pool.query(`
+            UPDATE data_bridge_discrepancies
+            SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_balanced'
+            WHERE discrepancy_type = 'gl_balance_mismatch' AND account_code = $1 AND resolved = FALSE
+          `, [mapping.trust_account_code]);
         }
       }
 
