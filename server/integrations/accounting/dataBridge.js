@@ -1084,10 +1084,14 @@ class DataBridge {
     return 'Trust JE ' + entryId + ':';
   }
 
+  static _isFineractCounterEntry(comments) {
+    return /^Reversal entry for Journal Entry/i.test(comments || '');
+  }
+
   /**
    * Index live (non-reversed) Fineract journal entries by the local entry_id
    * embedded in their comment. Returns { byEntryId: Map<entryId, Set<transactionId>>,
-   * groups: Map<transactionId, { comments, reversed, entries }> }.
+   * groups: Map<transactionId, { comments, reversed, counterEntry, entries }> }.
    */
   static _indexFineractJournal(fineractEntries) {
     var byEntryId = new Map();
@@ -1096,8 +1100,17 @@ class DataBridge {
     for (var i = 0; i < fineractEntries.length; i++) {
       var je = fineractEntries[i];
       var txn = je.transactionId;
+      var comments = (je.comments || '').trim();
       if (!groups.has(txn)) {
-        groups.set(txn, { transactionId: txn, comments: (je.comments || '').trim(), reversed: !!je.reversed, entries: [] });
+        groups.set(txn, {
+          transactionId: txn,
+          comments: comments,
+          reversed: !!je.reversed,
+          // Counter-entries Fineract posts when reversing a transaction. They
+          // net the original to zero and must never be reversed themselves.
+          counterEntry: DataBridge._isFineractCounterEntry(comments),
+          entries: []
+        });
       }
       var group = groups.get(txn);
       group.entries.push(je);
@@ -1348,7 +1361,7 @@ class DataBridge {
     var duplicateGroups = 0;
     var unlinkedGroups = 0;
     index.groups.forEach(function(group) {
-      if (group.reversed) return;
+      if (group.reversed || group.counterEntry) return;
       liveGroups.push(group);
       if (!/^Trust JE JRN-/.test(group.comments)) unlinkedGroups++;
     });

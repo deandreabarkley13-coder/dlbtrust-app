@@ -220,6 +220,7 @@ describe('DataBridge.rebuildFineractMirror', () => {
     fineractLine('TX-3', 'Trust JE JRN-A: Fund cash', 68),
     fineractLine('TX-4', 'Trust JE JRN-A: Fund cash', 68),
     fineractLine('TX-5', 'Trust JE JRN-Z: Old', 68, true),
+    fineractLine('TX-6', 'Reversal entry for Journal Entry with Entry Id  :5 and transaction Id TX-5', 68),
   ];
 
   it('dry-runs by default and touches neither book', async () => {

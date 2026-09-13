@@ -492,8 +492,10 @@ class FineractClient {
     try {
       const journalRes = await resilientFineractRequest('GET', 'journalentries?limit=10000', null, 'gl_journals');
       const entries = (journalRes && journalRes.pageItems) || [];
+      // A Fineract reversal flags the original (reversed=true) AND posts an
+      // offsetting counter-entry (reversed=false). Summing every row nets both
+      // to zero; skipping only the original would count the counter-entry alone.
       for (const je of entries) {
-        if (je.reversed) continue;
         const acctId = je.glAccountId;
         if (!balanceMap[acctId]) balanceMap[acctId] = 0;
         const amt = je.amount || 0;
