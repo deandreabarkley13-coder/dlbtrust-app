@@ -4,9 +4,12 @@ Two independent paths let the trust move real value. Both are shadow by default
 and fail closed until every gate on the path is open.
 
 ```
-fiat (trust card/bank)                      authority + book of record: ERP (canonical:1000)
-  → thirdweb Universal Bridge checkout        ── Fineract GL post on settle ────┐
-  → THIRDWEB_SERVER_WALLET_ADDRESS (Base)     DR 1210 crypto / CR 1000 cash     ┘
+ERP canonical:1000 (Fineract)               authority + book of record: ERP
+  → TREASURY_TOPUP_SETTLEMENT_LEG             ── Fineract GL DR 1210 / CR 1000 ─┐
+      erp_credit_push: ACH/wire credit push     posted at origination           │
+        → Spritz auto-ramp account → USDC                                       │
+      hosted_checkout: thirdweb checkout link   posted when the bridge settles  ┘
+  → THIRDWEB_SERVER_WALLET_ADDRESS (Base)
   → ThirdwebServerWalletEngine.send()         → beneficiary / vendor wallet
 
 SmartRouterEngine.deliver()  (SMART_ROUTER_LIVE)
@@ -34,6 +37,9 @@ Never commit any of them.
 | `THIRDWEB_SERVER_WALLET_CHAIN_ID` | `8453` | Base mainnet (defaults to `DAPP_CHAIN_ID`) |
 | `TREASURY_TOPUP_HOLD_ACCOUNT_ID` | `1000` (or the funded hold account) | fiat for a top-up is drawn from `TREASURY_TOPUP_HOLD_SOURCE_TYPE:this` |
 | `TREASURY_TOPUP_HOLD_SOURCE_TYPE` | `canonical` | the Fineract ERP is the availability authority and book of record (`CanonicalFundingSource.assertAvailable` / `.commit`); `trust` falls back to the local sub-ledger sweep |
+| `TREASURY_TOPUP_SETTLEMENT_LEG` | `erp_credit_push` | how fiat becomes USDC in the wallet. `erp_credit_push`: the ERP originates an ACH/wire credit push (`SpritzFiatFundingEngine`) to the Spritz auto-ramp account converting to the server wallet — no card/wallet prompt. `hosted_checkout` (default): a thirdweb checkout link a trustee pays by card/wallet |
+| `TREASURY_TOPUP_ERP_RAIL` | `ach` or `wire` | default rail for `erp_credit_push` (falls back to `SPRITZ_FIAT_FUNDING_RAIL`) |
+| `SPRITZ_INTEGRATOR_KEY` / `SPRITZ_INTEGRATOR_SECRET` | Spritz integrator credentials | **secret** — required by `erp_credit_push`: auto-ramp accounts and fiat_to_crypto capability are integrator-authenticated |
 | `TRUST_POLICY_ENFORCED` | `false` | see §5 |
 
 Smart Router rail gates (all live except canonical, which needs a signer secret):
@@ -140,10 +146,27 @@ node server/scripts/thirdwebTreasuryFundingWire.js \
   --source-type canonical --source-account 1000
 ```
 
-The script quotes the fiat amount, asserts availability against the ERP, creates a hosted
-thirdweb checkout and prints `checkout: https://...` plus the top-up id
-(`TWTOP-...`). A trustee completes the checkout link with the trust's card or bank
-account; tokens are delivered to the server wallet when the bridge settles.
+The script first prints `readiness` (`GET /api/dapp/treasury-funding/readiness`)
+and stops if `canTopUp` is false — the `issues` list names every gate still
+closed. Then it quotes the fiat amount, asserts availability against the ERP and
+settles per `TREASURY_TOPUP_SETTLEMENT_LEG`:
+
+**`erp_credit_push` (ERP originates the money, no card / wallet prompt).**
+`SpritzFiatFundingEngine.fund` posts `DR 1210 / CR 1000` to Fineract at
+origination (`booked: true`, `bookOfRecord: "fineract"`, `journalEntryId`,
+`fineractTransactionId` on the top-up), originates an ACH / wire credit push
+from the canonical cash account to the Spritz auto-ramp account whose
+conversion wallet is `THIRDWEB_SERVER_WALLET_ADDRESS` (created on first use),
+and records the leg under `settlement` (`transferId`, `autoRampAccountId`,
+`status: prepared`). The auto-ramp converts the deposit to USDC at the wallet.
+External gates readiness reports under `erp credit push:` and that only the
+trustee can clear: Spritz integrator key/secret, Bridge `fiat_to_crypto` terms
+acceptance (action URL is printed), and a bank ODFI (ACH) or wire channel behind
+GL 1000 that can actually move the dollars.
+
+**`hosted_checkout`.** Creates a hosted thirdweb checkout and prints
+`checkout: https://...`; a trustee pays it by card or wallet. Use only when the
+fiat is *not* coming out of the ERP.
 
 ### 4b. Book the settled top-up
 
@@ -151,12 +174,19 @@ account; tokens are delivered to the server wallet when the bridge settles.
 node server/scripts/thirdwebTreasuryFundingWire.js --sync TWTOP-<id>
 ```
 
-Polls thirdweb; on `COMPLETED` the journal entry `DR 1210 / CR 1000` is posted
-once through `CanonicalFundingSource.commit` — the local trust journal *and* the
-Fineract GL (`booked: true`, `bookOfRecord: "fineract"`, `journalEntryId`,
-`fineractTransactionId`). Re-running is idempotent (a booked record never
-commits again). `PENDING` means the checkout has not settled yet — run again
-later. If `CANONICAL_FUNDING_LIVE` is off the commit is shadow and the record
+`erp_credit_push`: transmits the credit push to the bank network if it is still
+`prepared` (fails with `ERP_ORIGINATION_CHANNEL_MISSING` and records the reason
+under `settlement.error` when no ODFI / wire channel exists), then reconciles
+the Spritz on-ramp; `COMPLETED` carries the on-ramp `transactionHash`. The ERP
+entry was already posted at origination and is never posted again.
+
+`hosted_checkout`: polls thirdweb; on `COMPLETED` the journal entry
+`DR 1210 / CR 1000` is posted once through `CanonicalFundingSource.commit` — the
+local trust journal *and* the Fineract GL (`booked: true`,
+`bookOfRecord: "fineract"`, `journalEntryId`, `fineractTransactionId`).
+
+Re-running either is idempotent (a booked record never commits again).
+`PENDING` means the leg has not settled yet — run again later. If `CANONICAL_FUNDING_LIVE` is off the commit is shadow and the record
 stays `booked: false` so the next sync retries. With `--source-type trust` the
 fiat is instead swept from the sub-ledger hold account (`bookOfRecord: "trust_ledger"`).
 

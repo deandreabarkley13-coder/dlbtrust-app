@@ -242,6 +242,120 @@ describe('treasury top-up (fiat → on-chain)', () => {
   });
 });
 
+describe('ERP credit-push settlement leg (no hosted checkout)', () => {
+  const { CanonicalFundingSource } = require('../server/integrations/fineract/canonicalFundingSource');
+  const { SpritzFiatFundingEngine } = require('../server/integrations/spritz/spritzFiatFundingEngine');
+
+  function erpFunding(over: any = {}) {
+    return {
+      reference: over.reference, amountUsd: 5, rail: 'ach', status: 'prepared', destination: TREASURY,
+      autoRampAccount: { id: 'ara_tw', address: TREASURY, active: true }, autoRampAccountId: 'ara_tw',
+      transfer: { id: 'xfer-1', status: 'created' }, transferId: 'xfer-1', transferStatus: 'created',
+      erpCommit: { committed: true, entryId: 'JRN-erp-9', fineractTransactionId: 'FIN-9' },
+      onRampId: null, onRamp: null, error: null, ...over,
+    };
+  }
+
+  beforeEach(() => {
+    process.env.TREASURY_TOPUP_HOLD_SOURCE_TYPE = 'canonical';
+    process.env.TREASURY_TOPUP_SETTLEMENT_LEG = 'erp_credit_push';
+    vi.spyOn(CanonicalFundingSource, 'assertAvailable').mockResolvedValue({ availableBalanceCents: 500_000_00 } as any);
+  });
+
+  it('readiness surfaces the Spritz credit-push gates instead of a checkout', async () => {
+    vi.spyOn(SpritzFiatFundingEngine, 'readiness').mockResolvedValue({
+      ready: false, issues: ['SPRITZ_INTEGRATOR_KEY/SPRITZ_INTEGRATOR_SECRET not configured', 'ach: no ODFI channel'],
+    } as any);
+    const status = await ThirdwebTreasuryFundingEngine.settlementReadiness();
+    expect(status).toMatchObject({ settlementLeg: 'erp_credit_push', canTopUp: false, ready: false });
+    expect(status.issues).toEqual(expect.arrayContaining([
+      'erp credit push: SPRITZ_INTEGRATOR_KEY/SPRITZ_INTEGRATOR_SECRET not configured',
+      'erp credit push: ach: no ODFI channel',
+    ]));
+    expect(SpritzFiatFundingEngine.readiness).toHaveBeenCalledWith({ destination: TREASURY });
+  });
+
+  it('refuses the ERP leg from a non-canonical source', async () => {
+    process.env.TREASURY_TOPUP_HOLD_SOURCE_TYPE = 'trust';
+    expect(ThirdwebTreasuryFundingEngine.readiness().issues).toContain('erp_credit_push settlement requires TREASURY_TOPUP_HOLD_SOURCE_TYPE=canonical');
+    mockFetch([{ result: 5 }]);
+    const fund = vi.spyOn(SpritzFiatFundingEngine, 'fund');
+    await expect(ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 })).rejects.toMatchObject({ code: 'SETTLEMENT_SOURCE_NOT_CANONICAL' });
+    expect(fund).not.toHaveBeenCalled();
+  });
+
+  it('originates from the ERP to the treasury wallet, books at origination, and never calls /bridge/payments', async () => {
+    const fund = vi.spyOn(SpritzFiatFundingEngine, 'fund').mockImplementation(async (args: any) => erpFunding({ reference: args.reference }));
+    const commit = vi.spyOn(CanonicalFundingSource, 'commit');
+    mockFetch([{ result: 5 }]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5, requestedBy: 'trustee@dlb' });
+    expect(topUp).toMatchObject({
+      settlementLeg: 'erp_credit_push', paymentId: null, link: null, status: 'PENDING', recipient: TREASURY,
+      sourceType: 'canonical', sourceAccountId: '1000',
+      booked: true, bookOfRecord: 'fineract', journalEntryId: 'JRN-erp-9', fineractTransactionId: 'FIN-9',
+      settlement: { provider: 'spritz-fiat-funding', status: 'prepared', destination: TREASURY, autoRampAccountId: 'ara_tw', transferId: 'xfer-1' },
+    });
+    expect(fund).toHaveBeenCalledWith(expect.objectContaining({
+      amountUsd: 5, reference: topUp.id, destination: TREASURY, assetAccountCode: '1210',
+      sourceType: 'canonical', sourceAccountId: '1000', createdBy: 'trustee@dlb',
+    }));
+    expect((globalThis.fetch as any).mock.calls.every(([url]: any) => !String(url).includes('/bridge/payments'))).toBe(true);
+    expect(commit).not.toHaveBeenCalled();
+    expect(SourceOfFundsAdapter._fundSourceToTreasury).not.toHaveBeenCalled();
+    expect((await ThirdwebTreasuryFundingEngine.openTopUps()).map((t: any) => t.id)).toContain(topUp.id);
+  });
+
+  it('sync transmits the credit push, follows the on-ramp to COMPLETED, and does not re-book', async () => {
+    vi.spyOn(SpritzFiatFundingEngine, 'fund').mockImplementation(async (args: any) => erpFunding({ reference: args.reference }));
+    mockFetch([{ result: 5 }]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 });
+
+    const state = { funding: erpFunding({ reference: topUp.id }) };
+    vi.spyOn(SpritzFiatFundingEngine, 'get').mockImplementation(async () => state.funding);
+    const send = vi.spyOn(SpritzFiatFundingEngine, 'send').mockImplementation(async () => {
+      state.funding = { ...state.funding, status: 'submitted', transferStatus: 'submitted' };
+      return state.funding;
+    });
+    const reconcile = vi.spyOn(SpritzFiatFundingEngine, 'reconcile').mockResolvedValue({ updates: [] } as any);
+    const commit = vi.spyOn(CanonicalFundingSource, 'commit');
+
+    let synced = await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(synced).toMatchObject({ status: 'PENDING', booked: true, journalEntryId: 'JRN-erp-9', settlement: { status: 'submitted' } });
+    expect(send).toHaveBeenCalledWith({ reference: topUp.id });
+
+    reconcile.mockImplementation(async () => {
+      state.funding = { ...state.funding, status: 'completed', onRampId: 'onr-1', onRamp: { status: 'completed', output: { transactionHash: '0xerp-onramp' } } };
+      return { updates: [] } as any;
+    });
+    synced = await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(synced).toMatchObject({ status: 'COMPLETED', booked: true, transactionHash: '0xerp-onramp', journalEntryId: 'JRN-erp-9', settlement: { onRampId: 'onr-1' } });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(commit).not.toHaveBeenCalled();
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect((await ThirdwebTreasuryFundingEngine.openTopUps()).map((t: any) => t.id)).not.toContain(topUp.id);
+  });
+
+  it('keeps the top-up PENDING and records why when the bank channel is missing', async () => {
+    vi.spyOn(SpritzFiatFundingEngine, 'fund').mockImplementation(async (args: any) => erpFunding({ reference: args.reference }));
+    mockFetch([{ result: 5 }]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 });
+    vi.spyOn(SpritzFiatFundingEngine, 'get').mockResolvedValue(erpFunding({ reference: topUp.id }));
+    vi.spyOn(SpritzFiatFundingEngine, 'send').mockRejectedValue(Object.assign(new Error('ach credit push cannot reach the bank network: no ODFI channel'), { code: 'ERP_ORIGINATION_CHANNEL_MISSING' }));
+    await expect(ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id)).rejects.toMatchObject({ code: 'ERP_ORIGINATION_CHANNEL_MISSING' });
+    const after = await ThirdwebTreasuryFundingEngine.getTopUp(topUp.id);
+    expect(after).toMatchObject({ status: 'PENDING', booked: true, settlement: { error: expect.stringContaining('no ODFI channel') } });
+  });
+
+  it('leaves a shadow ERP commit unbooked', async () => {
+    vi.spyOn(SpritzFiatFundingEngine, 'fund').mockImplementation(async (args: any) => erpFunding({ reference: args.reference, erpCommit: { committed: false, shadow: true } }));
+    mockFetch([{ result: 5 }]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 });
+    expect(topUp).toMatchObject({ status: 'PENDING', booked: false, bookOfRecord: null, journalEntryId: null });
+  });
+});
+
 describe('treasury swap (rebalancing held assets)', () => {
   it('is refused while shadow', async () => {
     await expect(ThirdwebTreasuryFundingEngine.swap({ amountUsd: 100 }))

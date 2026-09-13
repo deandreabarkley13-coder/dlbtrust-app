@@ -1228,7 +1228,7 @@ router.get('/expense-wallets/fundings', operatorAuth, async (req, res) => {
 // ─── Treasury funding via thirdweb bridge (fiat → on-chain, no extra provider) ─
 
 router.get('/treasury-funding/readiness', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: ThirdwebTreasuryFundingEngine.readiness() }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await ThirdwebTreasuryFundingEngine.settlementReadiness() }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/treasury-funding/convert', operatorAuth, async (req, res) => {
