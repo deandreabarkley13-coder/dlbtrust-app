@@ -961,8 +961,9 @@
       const sources = Object.entries(s.bySource || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
       el('nw-sub').textContent = sources || 'across all ledgers';
       el('source-list').innerHTML = '<div style="display:grid;gap:8px;">' + Object.entries(s.bySource || {}).map(([k,v]) => `<div class="badge">${k}: ${fmtUsd(v.balance)}</div>`).join('') + '</div>';
-      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd(((s.bySource.cash || {}).balance || 0) + ((s.bySource.trust_bank || {}).balance || 0)) : '—';
-      el('cash-value').textContent = cash;
+      const cashSources = ['cash', 'trust_bank', 'treasury_prime', 'stripe_treasury'].filter(k => s.bySource && s.bySource[k]);
+      el('cash-value').textContent = cashSources.length ? fmtUsd(cashSources.reduce((t, k) => t + (s.bySource[k].balance || 0), 0)) : '—';
+      if (cashSources.length) el('cash-sub').textContent = cashSources.map(k => k.replace(/_/g, ' ') + ': ' + fmtUsd(s.bySource[k].balance)).join(' · ');
       el('bond-value').textContent = fmtUsd(s.bondValue);
       el('pending-value').textContent = s.pendingApprovals || 0;
       const rows = (s.distributions || []).slice(0, 8).map(r => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);"><span>${r.id} — ${r.beneficiary_name || r.beneficiary_email}</span><span class="badge ${r.status === 'approved' || r.status === 'executed' ? 'approved' : r.status === 'rejected' ? 'rejected' : 'pending'}">${r.status}</span></div>`).join('');

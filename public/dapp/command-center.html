@@ -161,7 +161,7 @@
     <div class="content" id="home">
       <div class="kpis">
         <div class="kpi gold"><div class="label">Net Worth</div><div class="value" id="k-nw">—</div><div class="sub" id="k-nw-sub">across all ledgers</div></div>
-        <div class="kpi"><div class="label">Cash &amp; Reserves</div><div class="value" id="k-cash">—</div><div class="sub">operating &amp; reserve accounts</div><button class="btn sec sm act" type="button" onclick="openModule('trust-treasury')">Fund</button></div>
+        <div class="kpi"><div class="label">Cash &amp; Reserves</div><div class="value" id="k-cash">—</div><div class="sub" id="k-cash-sub">operating <div class="sub">operating &amp; reserve accounts</div>amp; reserve accounts</div><button class="btn sec sm act" type="button" onclick="openModule('trust-treasury')">Fund</button></div>
         <div class="kpi"><div class="label">Bonds / Fixed Income</div><div class="value" id="k-bonds">—</div><div class="sub">active positions</div><button class="btn sec sm act" type="button" onclick="openModule('treasury')">Portfolio</button></div>
         <div class="kpi"><div class="label">Pending Approvals</div><div class="value" id="k-pending">—</div><div class="sub">distribution / payment requests</div><button class="btn sec sm act" type="button" onclick="openModule('trust-distributions')">Review</button></div>
       </div>
@@ -192,7 +192,8 @@
           <div id="recent-requests" class="muted">Loading…</div>
         </div>
         <div class="card">
-          <div class="card-head"><h3>Balances by Source</h3></div>
+          <div class="card-head"><h3>Balances by Source</h3><span class="spacer"></span><button class="btn sec sm" type="button" onclick="loadSummary(true)">Force re-sync</button></div>
+          <div id="sync-errors"></div>
           <div id="by-source" class="muted">Loading…</div>
           <div class="card-head" style="margin-top:18px;"><h3>Trust Contacts</h3></div>
           <div id="contacts" class="muted">Loading…</div>
@@ -363,6 +364,15 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.remove(); }, 4000);
   }
 
+  var STALE_AFTER_S = 300;
+  var SRC_LABELS = { cash: 'Cash accounts', trust: 'Trust accounting', issuer: 'Issuer assets', virtual: 'Virtual accounts', trust_bank: 'Trust bank accounts', treasury_prime: 'Treasury Prime (bank)', stripe_treasury: 'Stripe Treasury', open_banking: 'Open banking', external: 'External feed', manual: 'Manual entry' };
+  function fmtAge(sec) {
+    if (sec == null) return 'unknown';
+    if (sec < 60) return sec + 's ago';
+    if (sec < 3600) return Math.round(sec / 60) + 'm ago';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h ago';
+    return Math.round(sec / 86400) + 'd ago';
+  }
   var live = { loading: false };
   function loadSummary(force) {
     if (live.loading) return Promise.resolve();
@@ -372,13 +382,26 @@
       var s = r.data || {};
       el('k-nw').textContent = fmtUsd(s.netWorth);
       var src = Object.keys(s.bySource || {});
-      el('k-nw-sub').textContent = src.length ? src.map(function (k) { return k + ': ' + fmtUsd(s.bySource[k].balance); }).join(' · ') : 'across all ledgers';
-      var cash = ((s.bySource && s.bySource.cash) || {}).balance || 0;
-      var bank = ((s.bySource && s.bySource.trust_bank) || {}).balance || 0;
-      el('k-cash').textContent = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd(cash + bank) : '—';
+      el('k-nw-sub').textContent = src.length ? src.map(function (k) { return (SRC_LABELS[k] || k) + ': ' + fmtUsd(s.bySource[k].balance); }).join(' · ') : 'across all ledgers';
+      var CASH_SOURCES = ['cash', 'trust_bank', 'treasury_prime', 'stripe_treasury'];
+      var cashSrc = CASH_SOURCES.filter(function (k) { return s.bySource && s.bySource[k]; });
+      el('k-cash').textContent = cashSrc.length ? fmtUsd(cashSrc.reduce(function (t, k) { return t + (s.bySource[k].balance || 0); }, 0)) : '—';
+      el('k-cash-sub').textContent = cashSrc.length ? cashSrc.map(function (k) { return (SRC_LABELS[k] || k) + ': ' + fmtUsd(s.bySource[k].balance); }).join(' · ') : 'operating, reserve & bank accounts';
       el('k-bonds').textContent = fmtUsd(s.bondValue);
       el('k-pending').textContent = s.pendingApprovals || 0;
-      el('by-source').innerHTML = src.length ? src.map(function (k) { return '<div class="list-row"><span>' + esc(k) + '</span><strong>' + fmtUsd(s.bySource[k].balance) + '</strong></div>'; }).join('') : '<p class="muted">No ledger sources connected.</p>';
+      var srcMeta = {};
+      (s.sources || []).forEach(function (c) { if (!srcMeta[c.source_type] || (c.age_seconds != null && c.age_seconds > (srcMeta[c.source_type].age_seconds || 0))) srcMeta[c.source_type] = c; });
+      var staleCount = 0;
+      el('by-source').innerHTML = src.length ? src.map(function (k) {
+        var m = srcMeta[k] || {};
+        var stale = m.status === 'error' || (m.age_seconds != null && m.age_seconds > STALE_AFTER_S) || (m.live === false);
+        if (stale) staleCount++;
+        var when = m.last_sync_at ? fmtAge(m.age_seconds) : 'never synced';
+        var note = m.status === 'error' ? ('<span class="badge bad" title="' + esc(m.error || '') + '">sync error</span>') : ('<span class="badge ' + (stale ? 'warn' : 'ok') + '">' + (m.live === false ? 'static' : when) + '</span>');
+        return '<div class="list-row"><span>' + esc(SRC_LABELS[k] || k) + ' <span class="muted">' + (s.bySource[k].accounts || 0) + ' acct</span></span><span style="display:flex;gap:8px;align-items:center">' + note + '<strong>' + fmtUsd(s.bySource[k].balance) + '</strong></span></div>';
+      }).join('') : '<p class="muted">No ledger sources connected.</p>';
+      var errSources = (s.sources || []).filter(function (c) { return c.status === 'error'; });
+      el('sync-errors').innerHTML = errSources.length ? errSources.map(function (c) { return '<div class="list-row"><span>' + esc(c.name) + '</span><span class="muted">' + esc(c.error || 'sync failed') + '</span></div>'; }).join('') : '';
       var rows = (s.distributions || []).slice(0, 8).map(function (r) {
         var cls = (r.status === 'approved' || r.status === 'executed') ? 'ok' : r.status === 'rejected' ? 'bad' : 'warn';
         return '<div class="list-row"><span>' + esc(r.id) + ' — ' + esc(r.beneficiary_name || r.beneficiary_email) + '</span><span class="badge ' + cls + '">' + esc(r.status) + '</span></div>';
@@ -386,10 +409,11 @@
       el('recent-requests').innerHTML = rows.join('') || '<p class="muted">No requests yet.</p>';
       var contacts = (s.contacts || []).slice(0, 8).map(function (u) { return '<div class="list-row"><span>' + esc(u.name || u.email) + '</span><span class="badge">' + esc(u.role || 'beneficiary') + '</span></div>'; });
       el('contacts').innerHTML = contacts.join('') || '<p class="muted">No contacts.</p>';
-      var errs = s.syncErrors || [];
-      el('live-indicator').textContent = errs.length ? 'Partial' : 'Live';
-      el('live-indicator').className = 'badge ' + (errs.length ? 'warn' : 'ok');
-      el('live-status').textContent = 'as of ' + (s.asOf ? new Date(s.asOf) : new Date()).toLocaleTimeString();
+      var errs = (s.syncErrors || []).length + staleCount;
+      el('live-indicator').textContent = errs ? 'Partial' : 'Live';
+      el('live-indicator').className = 'badge ' + (errs ? 'warn' : 'ok');
+      var oldest = s.oldestSyncedAt || s.asOf;
+      el('live-status').textContent = 'synced ' + (s.asOf ? new Date(s.asOf).toLocaleTimeString() : new Date().toLocaleTimeString()) + (oldest && oldest !== s.asOf ? ' · oldest source ' + fmtAge(Math.round((Date.now() - new Date(oldest).getTime()) / 1000)) : '') + (errs ? ' · ' + errs + ' source' + (errs > 1 ? 's' : '') + ' need attention' : '');
     }).catch(function (e) {
       el('live-indicator').textContent = 'Stale';
       el('live-indicator').className = 'badge bad';
