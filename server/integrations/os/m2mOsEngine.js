@@ -36,10 +36,11 @@
  *                swaps identities atomically and retires the old one. The
  *                channel is never without a working key.
  *   cycle        The unattended workflow: for every verified partner, transmit
- *                what has been *approved by people* through MFT's four-eyes
- *                gate, collect acknowledgements and returns, record a
- *                heartbeat. The machine carries the files; it never releases
- *                them. `MFT_REQUIRE_APPROVAL` is not this engine's to relax.
+ *                what MFT's release policy allows out, collect acknowledgements
+ *                and returns, record a heartbeat. Which files those are is
+ *                `MFT_REQUIRE_APPROVAL`'s decision, never this engine's: with
+ *                the four-eyes gate on, only files people released; with it off,
+ *                every built file, auto-approved by MFT as `policy:no-approval`.
  */
 
 const crypto = require('crypto');
@@ -566,8 +567,12 @@ const M2mOsEngine = {
       if (partner.status !== 'verified') { r.errors.push(`partner is ${partner.status}; run a handshake first`); results.push(r); continue; }
       try {
         if (partner.policy.autoTransmit !== false) {
-          const approved = await MftOsEngine.list({ channelId: partner.channelId, status: 'approved', limit: 200 });
-          for (const file of approved) {
+          const statuses = MftOsEngine.config().requireApproval ? ['approved'] : ['approved', 'built'];
+          const queue = [];
+          for (const status of statuses) {
+            queue.push(...await MftOsEngine.list({ channelId: partner.channelId, status, limit: 200 }));
+          }
+          for (const file of queue) {
             try {
               const sent = await MftOsEngine.transmit(file.fileId, { actor: who });
               (sent.transmitted ? r.transmitted : r.skipped).push({ fileId: file.fileId, filename: file.filename, manifestPath: sent.manifestPath || null });
