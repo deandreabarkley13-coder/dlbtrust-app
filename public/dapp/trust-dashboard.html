@@ -111,6 +111,15 @@
   </header>
 
   <div class="container">
+    <div id="boot-card" class="card hidden">
+      <h2 id="boot-title">Loading your session…</h2>
+      <p class="muted" id="boot-detail">Verifying your trustee session with the server.</p>
+      <div id="boot-actions" class="hidden" style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+        <button class="btn" type="button" onclick="location.reload()">Retry</button>
+        <button class="btn btn-sec" type="button" onclick="DashboardBoot.resetSession()">Log out &amp; clear session</button>
+      </div>
+    </div>
+
     <div id="token-card" class="card">
       <h2>Authentication Required</h2>
       <p class="muted">Please log in with your trustee email + PIN or operator token to access the command center.</p>
@@ -702,21 +711,89 @@
 
   <script src="/lib/portal-routing.js?v=1789301449"></script>
   <script>
+  // Boot watchdog. Kept in its own ES5 script block so it still runs when the
+  // main dashboard script fails to parse or throws before initDashboard: a
+  // stored session then shows a loading card, then an actionable error,
+  // instead of a silent "Authentication Required" that looks stuck.
+  (function () {
+    var BOOT_TIMEOUT_MS = 20000;
+    var byId = function (id) { return document.getElementById(id); };
+    var hasSession = false;
+    try {
+      hasSession = !!(localStorage.getItem('dlb-admin-token') || localStorage.getItem('dlb-beneficiary-token'));
+    } catch (e) { hasSession = false; }
+    var done = false;
+    var timer = null;
+    function show(id, on) { var n = byId(id); if (n) n.classList[on ? 'remove' : 'add']('hidden'); }
+    function fail(msg) {
+      if (done) return;
+      var title = byId('boot-title'); var detail = byId('boot-detail');
+      if (title) title.textContent = 'Dashboard could not load';
+      if (detail) detail.textContent = msg;
+      show('boot-card', true); show('boot-actions', true); show('token-card', false);
+    }
+    var boot = {
+      ready: function () {
+        done = true;
+        if (timer) clearTimeout(timer);
+        show('boot-card', false);
+      },
+      fail: fail,
+      resetSession: function () {
+        try {
+          localStorage.removeItem('dlb-admin-token');
+          localStorage.removeItem('dlb-beneficiary-token');
+          localStorage.removeItem('dlb-trust-email');
+        } catch (e) { /* storage unavailable */ }
+        location.href = '/dapp';
+      }
+    };
+    window.DashboardBoot = boot;
+    if (!hasSession) return;
+    show('boot-card', true); show('token-card', false);
+    timer = setTimeout(function () {
+      fail('The server did not answer within ' + Math.round(BOOT_TIMEOUT_MS / 1000) + 's. Check your connection, then retry or clear your session and log in again.');
+    }, BOOT_TIMEOUT_MS);
+    window.addEventListener('error', function (ev) {
+      if (done) return;
+      var msg = (ev && ev.message) || 'unexpected script error';
+      fail('A script error stopped the dashboard from starting (' + msg + '). Reload to pick up the latest version, or clear your session and log in again.');
+    });
+  })();
+  </script>
+  <script>
   const ADMIN_KEY = PortalRouting.ADMIN_KEY;
   const USER_KEY = PortalRouting.USER_KEY;
   const el = id => document.getElementById(id);
   const getToken = () => localStorage.getItem(ADMIN_KEY) || localStorage.getItem(USER_KEY) || '';
   const isAdmin = () => !!localStorage.getItem(ADMIN_KEY);
+  const API_TIMEOUT_MS = 30000;
   const api = async (path, opts={}) => {
     const adminToken = localStorage.getItem(ADMIN_KEY);
     const userToken = localStorage.getItem(USER_KEY);
     opts.headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
     if (adminToken) opts.headers['x-admin-token'] = adminToken;
     else if (userToken) opts.headers['Authorization'] = 'Bearer ' + userToken;
-    const res = await fetch(path, opts);
+    opts.cache = 'no-store';
+    opts.credentials = 'same-origin';
+    let timer = null;
+    if (typeof AbortController === 'function' && !opts.signal) {
+      const ctrl = new AbortController();
+      opts.signal = ctrl.signal;
+      timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    }
+    let res;
+    try {
+      res = await fetch(path, opts);
+    } catch (e) {
+      const aborted = e && e.name === 'AbortError';
+      throw new Error(aborted ? 'Request timed out after ' + Math.round(API_TIMEOUT_MS / 1000) + 's' : 'Network error: ' + ((e && e.message) || 'could not reach the server'));
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (res.status === 401) { logout(); return {}; }
     const text = await res.text();
-    let data; try { data = JSON.parse(text); } catch { data = { error: text }; }
+    let data; try { data = JSON.parse(text); } catch (e) { data = { error: res.ok ? 'Unexpected non-JSON response from server' : (res.status + ' ' + res.statusText) }; }
     if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
     return data;
   };
@@ -800,6 +877,7 @@
       session.email = authenticatedUser.email || '';
       session.role = authenticatedRole || '';
       session.consensusRole = consensusRoleFrom(authenticatedRoles, authenticatedRole);
+      DashboardBoot.ready();
       el('token-card').classList.add('hidden');
       el('dashboard').classList.remove('hidden');
       el('logout-btn').classList.remove('hidden');
@@ -812,7 +890,10 @@
       startLiveRefresh();
       const requestedTab = tabFromLocation();
       if (requestedTab) switchTab(requestedTab);
-    } catch (e) { showStatus('token-status', e.message, true); }
+    } catch (e) {
+      DashboardBoot.fail('Could not verify your session: ' + (e.message || 'unknown error'));
+      showStatus('token-status', e.message, true);
+    }
   }
 
   // The overview reads a live aggregation of the underlying ledgers, so it is
@@ -872,7 +953,7 @@
       const sources = Object.entries(s.bySource || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
       el('nw-sub').textContent = sources || 'across all ledgers';
       el('source-list').innerHTML = '<div style="display:grid;gap:8px;">' + Object.entries(s.bySource || {}).map(([k,v]) => `<div class="badge">${k}: ${fmtUsd(v.balance)}</div>`).join('') + '</div>';
-      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd((s.bySource.cash?.balance || 0) + (s.bySource.trust_bank?.balance || 0)) : '—';
+      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd(((s.bySource.cash || {}).balance || 0) + ((s.bySource.trust_bank || {}).balance || 0)) : '—';
       el('cash-value').textContent = cash;
       el('bond-value').textContent = fmtUsd(s.bondValue);
       el('pending-value').textContent = s.pendingApprovals || 0;
@@ -892,7 +973,7 @@
     loadPipeline();
   }
 
-  const escHtml = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const escHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const shortAddr = (a) => (a && a.length > 12 ? a.slice(0, 6) + '…' + a.slice(-4) : (a || '—'));
   const pipeline = { loading: false, data: null, prepared: null, grant: null };
 

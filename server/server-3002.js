@@ -42,6 +42,16 @@ app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 // Input sanitization (null bytes, oversized strings)
 app.use(security.sanitizeInput);
 
+// Dashboard API responses are live ledger reads; never let a browser or edge
+// cache serve a stale one.
+app.use('/api', function(req, res, next) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
+  next();
+});
+
 // ─── Auth Routes (login, logout, user management) ────────────────────────────
 try { app.use('/api/auth', require(path.join(HD, 'server', 'routes', 'auth'))); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
 
