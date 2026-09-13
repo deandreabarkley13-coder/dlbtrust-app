@@ -9,7 +9,8 @@ const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { SpritzTreasuryLegEngine } = require('../integrations/spritz/spritzTreasuryLegEngine');
 const { SpritzFiatFundingEngine } = require('../integrations/spritz/spritzFiatFundingEngine');
 const { SpritzBuyEngine } = require('../integrations/spritz/spritzBuyEngine');
-const { SpritzBillPayEngine } = require('../integrations/spritz/spritzBillPayEngine');
+const { SpritzBillPayEngine, FUNDING_MODES: SPRITZ_FUNDING_MODES } = require('../integrations/spritz/spritzBillPayEngine');
+const { ThirdwebOnrampBillPayPipeline } = require('../integrations/spritz/thirdwebOnrampBillPayPipeline');
 const { PayoutRelayerEngine } = require('../integrations/dapp/payoutRelayerEngine');
 const { TrustAllocationEngine } = require('../integrations/dapp/trustAllocationEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
@@ -677,6 +678,8 @@ router.post('/spritz/bill-pay/pay', operatorAuth, writeRateLimiter(), async (req
   try {
     const spritzBillId = req.body.spritzBillId || req.body.billId;
     if (!spritzBillId) return res.status(400).json({ success: false, error: 'spritzBillId required' });
+    const fundingMode = String(req.body.fundingMode || 'erp').toLowerCase();
+    if (!SPRITZ_FUNDING_MODES.includes(fundingMode)) return res.status(400).json({ success: false, error: `fundingMode must be one of ${SPRITZ_FUNDING_MODES.join(', ')}` });
     const spritzBill = await SpritzBillPayEngine.getPayableBill(spritzBillId);
     let bill = req.body.vendorBillId ? await VendorPaymentEngine.getBill(req.body.vendorBillId) : null;
     if (req.body.vendorBillId && !bill) return res.status(404).json({ success: false, error: 'Vendor bill not found' });
@@ -715,12 +718,53 @@ router.post('/spritz/bill-pay/pay', operatorAuth, writeRateLimiter(), async (req
         vendor,
         rail: 'spritz_bill_pay',
         spritzBillId,
-        fundingSource: SpritzBillPayEngine.config().fundingSource,
+        fundingMode,
+        fundingSource: fundingMode === 'treasury_wallet'
+          ? { kind: 'treasury_wallet', wallet: SpritzBillPayEngine.config().payoutWallet, assetAccountCode: SpritzBillPayEngine.config().fundingSource.assetAccountCode }
+          : SpritzBillPayEngine.config().fundingSource,
         memo: req.body.memo || bill.memo,
       },
     });
     res.status(202).json({ success: true, data, bill, spritzBill, requiresApprovals: ['maker', 'checker'] });
   } catch (err) { sendError(res, err); }
+});
+
+// thirdweb on-ramp -> server wallet -> Spritz bill pay pipeline. Opens a hosted
+// checkout for any USDC shortfall, then stages the bill (fundingMode
+// treasury_wallet) for maker/checker once the wallet is funded.
+router.get('/spritz/bill-pay/onramp-pipeline/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebOnrampBillPayPipeline.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bill-pay/onramp-pipeline', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebOnrampBillPayPipeline.list({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bill-pay/onramp-pipeline', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await ThirdwebOnrampBillPayPipeline.start({
+      spritzBillId: body.spritzBillId || body.billId,
+      amountUsd: body.amountUsd || body.amount,
+      vendorBillId: body.vendorBillId,
+      memo: body.memo,
+      topUp: body.topUp || {},
+      createdBy: getUserEmail(req),
+    });
+    res.status(202).json({ success: true, data, requiresApprovals: ['maker', 'checker'] });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bill-pay/onramp-pipeline/:id', operatorAuth, async (req, res) => {
+  try {
+    const row = await ThirdwebOnrampBillPayPipeline.get(req.params.id);
+    if (!row) return res.status(404).json({ success: false, error: 'Pipeline not found' });
+    res.json({ success: true, data: ThirdwebOnrampBillPayPipeline._present(row) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bill-pay/onramp-pipeline/:id/advance', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ThirdwebOnrampBillPayPipeline.advance(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/spritz/bill-pay/payments', operatorAuth, async (req, res) => {

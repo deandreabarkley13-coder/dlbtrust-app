@@ -733,6 +733,27 @@ class SpritzTreasuryLegEngine {
     return { ...(await this.payoutWalletStatus({ address: wallet })), registered };
   }
 
+  /**
+   * On-chain settlement-token balance (USD string) of the payout wallet.
+   * Read through the thirdweb API when the wallet is the thirdweb server
+   * wallet, otherwise straight from the chain; null when neither is available.
+   */
+  static async payoutWalletUsdcBalance({ address } = {}) {
+    const cfg = this.config();
+    const wallet = address || cfg.payoutWallet;
+    if (!cfg.settlementToken || !wallet) return null;
+    if (ThirdwebServerWalletEngine && sameAddress(wallet, thirdwebWalletAddress()) && ThirdwebServerWalletEngine.getConfig().secretKey) {
+      const rows = await ThirdwebServerWalletEngine.balance({ address: wallet, chainId: cfg.chainId, tokenAddress: cfg.settlementToken });
+      const row = (Array.isArray(rows) ? rows : [rows]).find(r => r && sameAddress(r.tokenAddress, cfg.settlementToken)) || (Array.isArray(rows) ? rows[0] : rows);
+      if (!row) return null;
+      return row.value !== undefined && row.value !== null ? unitsToUsd(row.value) : String(row.displayValue);
+    }
+    if (!viem) return null;
+    const client = viem.createPublicClient({ chain: viemChain(cfg.chainId), transport: viem.http(getConfig().rpcUrl) });
+    const raw = await client.readContract({ address: cfg.settlementToken, abi: ERC20_BALANCE_ABI, functionName: 'balanceOf', args: [wallet] });
+    return unitsToUsd(raw);
+  }
+
   /** Configured payout wallet, its registry entry, on-chain USDC balance and policy allow-list state. */
   static async payoutWalletStatus({ address } = {}) {
     const cfg = this.config();
@@ -747,16 +768,7 @@ class SpritzTreasuryLegEngine {
     }
     if (!registry) issues.push('payout wallet is not registered as an external wallet; POST /spritz/wallet/connect');
 
-    let usdcBalance = null;
-    if (viem && cfg.settlementToken) {
-      try {
-        const client = viem.createPublicClient({ chain: viemChain(cfg.chainId), transport: viem.http(getConfig().rpcUrl) });
-        const raw = await client.readContract({ address: cfg.settlementToken, abi: ERC20_BALANCE_ABI, functionName: 'balanceOf', args: [wallet] });
-        usdcBalance = unitsToUsd(raw);
-      } catch (e) {
-        usdcBalance = null;
-      }
-    }
+    const usdcBalance = await this.payoutWalletUsdcBalance({ address: wallet }).catch(() => null);
 
     let policy = null;
     try {
