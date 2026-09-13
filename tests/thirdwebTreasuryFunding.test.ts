@@ -155,6 +155,52 @@ describe('treasury top-up (fiat → on-chain)', () => {
     expect(TrustAccountingEngine.postJournalEntry).toHaveBeenCalledTimes(1);
   });
 
+  it('books a canonical (ERP) top-up through Fineract and records the journal evidence', async () => {
+    const { CanonicalFundingSource } = require('../server/integrations/fineract/canonicalFundingSource');
+    process.env.TREASURY_TOPUP_HOLD_SOURCE_TYPE = 'canonical';
+    vi.spyOn(CanonicalFundingSource, 'assertAvailable').mockResolvedValue({ availableBalanceCents: 500_000_00 } as any);
+    const commit = vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({
+      committed: true, journalEntryId: 'JRN-erp-1', fineractTransactionId: 'FIN-77',
+    } as any);
+    mockFetch([
+      { result: 5 },
+      { result: { id: 'pay_erp', link: 'https://thirdweb.com/pay/pay_erp' } },
+      { data: [{ id: 'pay_erp', status: 'COMPLETED', transactions: [{ transactionHash: '0xerp' }] }] },
+      { data: [{ id: 'pay_erp', status: 'COMPLETED', transactions: [{ transactionHash: '0xerp' }] }] },
+    ]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 });
+    expect(topUp).toMatchObject({ sourceType: 'canonical', sourceAccountId: '1000', booked: false });
+    const synced = await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(synced).toMatchObject({
+      status: 'COMPLETED', booked: true, bookOfRecord: 'fineract',
+      journalEntryId: 'JRN-erp-1', fineractTransactionId: 'FIN-77', transactionHash: '0xerp',
+    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({
+      amountUsd: 5, reference: topUp.id, referenceType: 'treasury_topup', cashAccountCode: '1000', assetAccountCode: '1210',
+    }));
+    // The ERP posts to both books itself: no sub-ledger sweep or second journal.
+    expect(SourceOfFundsAdapter._fundSourceToTreasury).not.toHaveBeenCalled();
+    expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
+    await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a shadow canonical commit unbooked so it is retried', async () => {
+    const { CanonicalFundingSource } = require('../server/integrations/fineract/canonicalFundingSource');
+    process.env.TREASURY_TOPUP_HOLD_SOURCE_TYPE = 'canonical';
+    vi.spyOn(CanonicalFundingSource, 'assertAvailable').mockResolvedValue({ availableBalanceCents: 500_000_00 } as any);
+    vi.spyOn(CanonicalFundingSource, 'commit').mockResolvedValue({ committed: false, shadow: true } as any);
+    mockFetch([
+      { result: 5 },
+      { result: { id: 'pay_shadow', link: 'https://thirdweb.com/pay/pay_shadow' } },
+      { data: [{ id: 'pay_shadow', status: 'COMPLETED', transactions: [] }] },
+    ]);
+    const topUp = await ThirdwebTreasuryFundingEngine.createTopUp({ amountFiat: 5 });
+    const synced = await ThirdwebTreasuryFundingEngine.syncTopUp(topUp.id);
+    expect(synced).toMatchObject({ status: 'COMPLETED', booked: false });
+    expect(synced.journalEntryId).toBeUndefined();
+  });
+
   it('leaves a pending top-up unbooked', async () => {
     mockFetch([
       { result: 100 },
