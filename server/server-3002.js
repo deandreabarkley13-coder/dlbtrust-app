@@ -228,6 +228,10 @@ function serveFinops(req, res) {
   setNoStoreHeaders(res);
   res.redirect('/dashboard');
 }
+function serveCommandCenter(req, res) {
+  setNoStoreHeaders(res);
+  res.sendFile(path.join(HD, 'public', 'dapp', 'command-center.html'));
+}
 function serveTrustDashboard(req, res) {
   setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
@@ -243,7 +247,8 @@ function serveTrustPortalDashboard(req, res) {
 app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
-app.get('/dashboard', serveTrustDashboard);
+app.get('/dashboard', serveCommandCenter);
+app.get('/dashboard/classic', serveTrustDashboard);
 app.get('/treasury', function(req, res) {
   setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));

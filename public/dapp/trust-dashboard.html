@@ -73,6 +73,8 @@
     .chat-bubble.user { background:var(--primary); margin-left:30px; }
     .chat-bubble.agent { background:var(--bg-2); margin-right:30px; }
     .hidden { display:none !important; }
+    body.embedded header { display:none; }
+    body.embedded .container { padding-top:16px; }
     .panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px; }
     .ramps { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px; }
     .ramp-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; }
@@ -745,7 +747,7 @@
           localStorage.removeItem('dlb-beneficiary-token');
           localStorage.removeItem('dlb-trust-email');
         } catch (e) { /* storage unavailable */ }
-        location.href = '/dapp';
+        window.top.location.href = '/dapp';
       }
     };
     window.DashboardBoot = boot;
@@ -803,11 +805,17 @@
   };
   const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 
+  // Rendered inside the command center shell (/dashboard) when embed=1: the
+  // shell owns navigation and session, so this page hides its own header and
+  // sends session redirects to the top window.
+  const EMBEDDED = new URLSearchParams(window.location.search).get('embed') === '1' && window.top !== window;
+  if (EMBEDDED) document.body.classList.add('embedded');
+  const nav = (url) => { window.top.location.href = url; };
   function logout() {
     localStorage.removeItem(ADMIN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem('dlb-trust-email');
-    location.href = '/dapp';
+    nav('/dapp');
   }
   function switchTab(key) {
     document.querySelectorAll('.tabs').forEach(t => t.classList.remove('active'));
@@ -863,7 +871,7 @@
 
   async function initDashboard() {
     const token = getToken();
-    if (!token) { location.href = '/dapp'; return; }
+    if (!token) { nav('/dapp'); return; }
     try {
       const me = await api('/api/dapp/auth/me');
       const authenticatedUser = (me && me.data && (me.data.dappUser || me.data.user)) || {};
@@ -871,7 +879,7 @@
       const authenticatedRole = authenticatedUser.role || authenticatedUser.active_role;
       if (!isAdmin() && !PortalRouting.isTrusteeRole(authenticatedRoles, authenticatedRole)) {
         // Carry the reason so the beneficiary portal can explain the bounce.
-        location.replace(PortalRouting.BENEFICIARY_HOME + '?denied=trustee');
+        window.top.location.replace(PortalRouting.BENEFICIARY_HOME + '?denied=trustee');
         return;
       }
       session.email = authenticatedUser.email || '';
@@ -1773,7 +1781,8 @@
         sumHtml += `<div class="badge">${k}: ${v.count}</div>`;
       }
       sumHtml += '</div>';
-      el('txs-summary').innerHTML = sumHtml;
+      const hasSummary = Object.keys(s.byStatus || {}).length || Object.keys(s.byRail || {}).length;
+      el('txs-summary').innerHTML = hasSummary ? sumHtml : '<p class="muted">No settlement orders yet. Create one below to start the ERP → policy → payout pipeline.</p>';
 
       let listHtml = '<div style="display:grid;gap:8px;max-height:320px;overflow:auto;">';
       for (const o of orders.data || []) {
@@ -1785,8 +1794,11 @@
         </div>`;
       }
       listHtml += '</div>';
-      el('txs-list').innerHTML = listHtml;
-    } catch (e) { el('txs-summary').textContent = e.message; }
+      el('txs-list').innerHTML = (orders.data || []).length ? listHtml : '<p class="muted">No orders recorded.</p>';
+    } catch (e) {
+      el('txs-summary').textContent = 'Could not load settlement data: ' + e.message;
+      el('txs-list').textContent = '';
+    }
   }
 
   async function createTxsOrder() {
