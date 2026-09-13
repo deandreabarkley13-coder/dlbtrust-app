@@ -180,6 +180,7 @@ ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS return_code TEXT;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS return_reason TEXT;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS partner_id TEXT;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS same_day BOOLEAN NOT NULL DEFAULT FALSE;
 
 -- Add missing as2_partners columns (migrate-as2.sql creates a different schema)
 -- Ensure name and as2_identifier columns exist (they come from migrate-as2.sql)
