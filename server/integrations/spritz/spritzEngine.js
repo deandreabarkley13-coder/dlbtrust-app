@@ -108,7 +108,7 @@ async function spritzRequest(method, path, body, options = {}) {
     'User-Agent': 'dlbtrust-spritz-engine/1.0',
     Origin: process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run',
   };
-  if (options.useUserJwt) {
+  if (options.useUserJwt && hasIntegratorCreds()) {
     const token = await getIntegratorToken();
     headers['Authorization'] = `Bearer ${token}`;
   } else if (useProxy()) {
@@ -395,13 +395,18 @@ class SpritzEngine {
     return spritzRequest('GET', '/v1/bills/');
   }
 
-  static async activateBills({ termsText, termsTextVersion, acceptedAt } = {}) {
+  static async activateBills({ termsText, termsTextVersion, acceptedAt, clientContext } = {}) {
     const consent = {
       termsText: termsText || str('SPRITZ_BILLPAY_TERMS', 'I agree to the Spritz bill pay terms.'),
       termsTextVersion: termsTextVersion || str('SPRITZ_BILLPAY_TERMS_VERSION', '2026-01-01'),
       acceptedAt: acceptedAt || new Date().toISOString(),
     };
-    return spritzRequest('POST', '/v1/bills/activate', { consent });
+    const ctx = clientContext || {};
+    if (!ctx.clientIp) throw Object.assign(new Error('clientContext.clientIp required (the consenting operator\'s IP)'), { status: 400 });
+    const context = { clientIp: ctx.clientIp, platform: ctx.platform || 'web' };
+    if (ctx.userAgent) context.userAgent = ctx.userAgent;
+    if (ctx.sessionId) context.sessionId = ctx.sessionId;
+    return spritzRequest('POST', '/v1/bills/activate', { consent, clientContext: context });
   }
 
   static async startBillVerification(activationId) {
@@ -455,6 +460,12 @@ class SpritzEngine {
 
   static async listCards() {
     return spritzRequest('GET', '/v1/cards/', undefined, { useUserJwt: true });
+  }
+
+  /** Off-ramp quote loading a Spritz card program balance (rail `card_deposit`). */
+  static async createCardDepositQuote({ cardId, amount, chain, tokenAddress, amountMode = 'output' } = {}) {
+    if (!cardId) throw new Error('cardId required');
+    return this.createOffRampQuote({ accountId: cardId, amount, chain, tokenAddress, amountMode, rail: 'card_deposit' });
   }
 
   static async getCardBalance() {

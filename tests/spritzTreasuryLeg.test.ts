@@ -395,6 +395,52 @@ describe('Spritz treasury leg', () => {
     expect(calls.some(c => /deposits|funding-sources/.test(c.url))).toBe(false);
   });
 
+  it('routes payouts through the Bill Pay endpoint while Spritz ACH origination is not active, even with a settlement bank linked', async () => {
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    const CAPS = { capabilities: [{ product: 'crypto_to_fiat', method: 'ach_credit', name: 'Bank payouts', status: 'pending' }, { product: 'crypto_to_fiat', method: 'bill_pay', name: 'Bill Pay', status: 'active' }] };
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (/FROM coupon_payments/.test(sql)) return { rows: [{ total: '83333.33' }], rowCount: 1 } as any;
+      return { rows: [], rowCount: 0 } as any;
+    });
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+    vi.spyOn(TrustPolicyEngine, 'propose').mockResolvedValue({ distributionId: '8', status: 'proposed' } as any);
+    stubSpritz((path) => {
+      if (path === '/v1/users/me') return CAPS;
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/bills/') return [{ id: 'bill_1', name: 'Duke Energy', status: 'active' }];
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_bp', requiredTokenInput: '100500000' };
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const rails = await SpritzTreasuryLegEngine.settlementRails();
+    expect(rails.default).toMatchObject({ rail: 'bill_pay', destination: 'bill', accountId: 'bill_1' });
+    expect(rails.active.map((r: any) => r.rail)).toEqual(['bill_pay']);
+    expect(rails.capabilities).toEqual({ achCredit: 'pending', billPay: 'active' });
+
+    const out = await SpritzTreasuryLegEngine.stagePayout({ amountUsd: 100, purpose: 'distribution', reference: 'PAY-BP' });
+    const quote = calls.find(c => c.url.endsWith('/v1/off-ramp-quotes/'))!;
+    expect(JSON.parse(quote.init.body as string)).toMatchObject({ accountId: 'bill_1', rail: 'bill_pay', amount: '100.00' });
+    expect(out).toMatchObject({ rail: 'bill_pay', settlementBank: null, destination: { kind: 'bill', accountId: 'bill_1' } });
+  });
+
+  it('readiness does not block on inactive ACH origination when Bill Pay is active with a payable bill', async () => {
+    vi.spyOn(TrustAllocationEngine, 'fundingSources').mockResolvedValue([] as any);
+    vi.spyOn(CanonicalMoneyEngine, 'quote').mockResolvedValue({ executable: true } as any);
+    vi.spyOn(TrustAllocationEngine, 'routeExecutable').mockReturnValue(true);
+    stubSpritz((path) => {
+      if (path === '/v1/users/me') return { capabilities: [{ product: 'crypto_to_fiat', method: 'ach_credit', name: 'Bank payouts', status: 'pending' }, { product: 'crypto_to_fiat', method: 'bill_pay', name: 'Bill Pay', status: 'active' }] };
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/bills/') return [{ id: 'bill_1', name: 'Duke Energy', status: 'active' }];
+      throw new Error(`unexpected ${path}`);
+    });
+
+    const out = await SpritzTreasuryLegEngine.readiness();
+    expect(out.issues).toEqual([]);
+    expect(out.notes).toEqual(['Spritz ACH payout is pending; payouts settle through Spritz Bill Pay']);
+    expect(out.settlementDestinations).toMatchObject({ bank: 1, bills: 1, default: 'bill' });
+    expect(out).toMatchObject({ offramp: { status: 'pending' }, billPay: { status: 'active' } });
+  });
+
   it('refuses a settlement rail the settlement bank does not support', async () => {
     process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
     vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
@@ -428,5 +474,100 @@ describe('Spritz treasury leg', () => {
     }
     expect(out.txs[1].call.params).toEqual([PAYOUT, USDC, '500000000', '2000000000', 2592000]);
     expect(JSON.stringify(out)).toBeTruthy();
+  });
+
+  // ─── settle(): ERP funding -> stage -> approval -> timelock -> execute ─────
+
+  it('settle walks ERP funding -> stage -> approval -> timelock -> execute by reference without auto-approving', async () => {
+    const { SpritzFiatFundingEngine } = require('../server/integrations/spritz/spritzFiatFundingEngine');
+    process.env.TRUST_ALLOCATION_BENEFICIARY_WALLETS = PAYOUT;
+    vi.spyOn(pool, 'query').mockImplementation(async (sql: string) => {
+      if (/FROM coupon_payments/.test(sql)) return { rows: [{ total: '83333.33' }], rowCount: 1 } as any;
+      return { rows: [], rowCount: 0 } as any;
+    });
+    const policyAvailable = { value: '0' };
+    vi.spyOn(TrustPolicyEngine, 'status').mockImplementation(async () => ({ treasury: { available: policyAvailable.value } }) as any);
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: true, frozen: false } as any);
+    const propose = vi.spyOn(TrustPolicyEngine, 'propose').mockResolvedValue({ distributionId: '7', status: 'proposed' } as any);
+    const release = vi.spyOn(TrustPolicyEngine, 'execute').mockResolvedValue({ txHash: '0xrelease' } as any);
+    const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-GL-1' } as any);
+    const mark = vi.spyOn(TrustAllocationEngine, 'markExecuted').mockResolvedValue(null as any);
+    const executeQuote = vi.spyOn(SpritzEngine, 'executeQuote').mockResolvedValue({ txHash: '0x' + 'ab'.repeat(32), quoteId: 'q_1' } as any);
+
+    let funding: any = null;
+    vi.spyOn(SpritzFiatFundingEngine, 'get').mockImplementation(async () => funding);
+    const fund = vi.spyOn(SpritzFiatFundingEngine, 'fund').mockImplementation(async ({ amountUsd, reference }: any) => {
+      funding = { reference, amountUsd: Number(amountUsd).toFixed(2), rail: 'ach', status: 'prepared' };
+      return funding;
+    });
+    const send = vi.spyOn(SpritzFiatFundingEngine, 'send');
+
+    const payouts: any[] = [];
+    vi.spyOn(TrustAllocationEngine, 'listPayouts').mockImplementation(async () => payouts);
+    const distribution: any = { distributionId: '7', status: 'proposed', approvals: 1, releasableAt: null };
+    vi.spyOn(TrustPolicyEngine, 'distribution').mockImplementation(async () => distribution);
+    stubSpritz((path) => {
+      if (path === '/v1/bank-accounts/') return BANKS;
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_1', requiredTokenInput: '100500000' };
+      if (path === '/v1/off-ramp-quotes/q_1') return { id: 'q_1', status: 'created', output: { amount: '100.00' }, input: { amount: '100.50' }, feeUsd: '0.50' };
+      throw new Error(`unexpected ${path}`);
+    });
+    const args = { amountUsd: 100, purpose: 'distribution', reference: 'SETTLE-1', rail: 'rtp', createdBy: 'ops' };
+
+    // 1. policy contract is empty -> an ERP credit push is originated (not transmitted) and settle stops at funding.
+    let out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out).toMatchObject({ stage: 'funding', status: 'blocked', funding: { reference: 'SETTLE-1-fund', amountUsd: '100.00', status: 'prepared' } });
+    expect(fund).toHaveBeenCalledWith(expect.objectContaining({ amountUsd: 100, reference: 'SETTLE-1-fund' }));
+    expect(send).not.toHaveBeenCalled();
+    expect(propose).not.toHaveBeenCalled();
+
+    // 2. re-settle resumes the same funding leg instead of originating another.
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out.stage).toBe('funding');
+    expect(fund).toHaveBeenCalledTimes(1);
+
+    // 3. USDC landed on the policy -> quote + governed distribution staged; stops for the checker.
+    policyAvailable.value = '500000000';
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out).toMatchObject({ stage: 'approval', status: 'blocked', payout: { spritzQuoteId: 'q_1', distribution: { distributionId: '7' } } });
+    expect(propose).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+    payouts.push({ reference: 'SETTLE-1', status: 'proposed', distributionId: '7', spritzQuoteId: 'q_1' });
+
+    // 4. still proposed -> no second proposal, still blocked on approval.
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out).toMatchObject({ stage: 'approval', status: 'blocked' });
+    expect(propose).toHaveBeenCalledTimes(1);
+
+    // 5. approved but timelocked -> blocked at timelock, nothing released.
+    distribution.status = 'approved';
+    distribution.approvals = 2;
+    distribution.releasableAt = new Date(Date.now() + 3600_000).toISOString();
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out).toMatchObject({ stage: 'timelock', status: 'blocked' });
+    expect(release).not.toHaveBeenCalled();
+
+    // 6. timelock elapsed -> policy releases to the payout wallet, the Spritz quote is executed and the payout is booked
+    //    (Dr distributions 100.00, Dr fee 0.50, Cr treasury 100.50) and marked executed.
+    distribution.releasableAt = new Date(Date.now() - 1000).toISOString();
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(release).toHaveBeenCalledWith({ distributionId: '7' });
+    expect(executeQuote).toHaveBeenCalledWith('q_1');
+    expect(out).toMatchObject({ stage: 'execute', status: 'submitted', execution: { status: 'settling', spritzQuoteId: 'q_1', amountUsd: '100.00', feeUsd: '0.50', journal: { booked: true, entryId: 'JE-GL-1' } } });
+    expect(out.trail.map((t: any) => t.stage)).toEqual(['policy', 'distribution', 'execute']);
+    expect(post).toHaveBeenCalledTimes(1);
+    const je = post.mock.calls[0][0] as any;
+    expect(je).toMatchObject({ referenceType: 'spritz_offramp', referenceId: 'q_1' });
+    const debits = je.lines.reduce((s: number, l: any) => s + Number(l.debitAmount || 0), 0);
+    const credits = je.lines.reduce((s: number, l: any) => s + Number(l.creditAmount || 0), 0);
+    expect(debits).toBeCloseTo(100.5, 2);
+    expect(credits).toBeCloseTo(100.5, 2);
+    expect(mark).toHaveBeenCalledWith('SETTLE-1');
+
+    // 7. executed on chain -> settled, idempotent.
+    distribution.status = 'executed';
+    out = await SpritzTreasuryLegEngine.settle(args);
+    expect(out).toMatchObject({ stage: 'settled', status: 'completed' });
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

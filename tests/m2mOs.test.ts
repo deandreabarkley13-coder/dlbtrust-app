@@ -170,6 +170,7 @@ beforeEach(() => {
   process.env.PAYMENT_DATA_ENCRYPTION_KEY = crypto.randomBytes(32).toString('hex');
   process.env.M2M_KEY_BITS = '2048';
   delete process.env.MFT_SFTP_HOST;
+  delete process.env.MFT_REQUIRE_APPROVAL;
   delete process.env.M2M_CYCLE_INTERVAL_MS;
   process.env.NODE_ENV = 'test';
 });
@@ -305,6 +306,23 @@ describe('M2M OS — the unattended cycle', () => {
     expect(second.partners[0].transmitted).toEqual([]);
     expect(second.partners[0].collected.acknowledged).toEqual([approved.fileId]);
     expect((await MftOsEngine.get(approved.fileId)).bankReference).toBe('BANKREF-777');
+  });
+
+  it('carries built files too once MFT_REQUIRE_APPROVAL is off, auto-approved as policy:no-approval', async () => {
+    process.env.MFT_REQUIRE_APPROVAL = 'false';
+    store();
+    fakeBank(tmp);
+    const { partner } = await M2mOsEngine.registerPartner(bank);
+    await M2mOsEngine.handshake(partner.partnerId);
+    const { file } = await MftOsEngine.build({ channelId: partner.channelId, fileType: 'vendor_payment', builtBy: 'system', entries: [payee({ name: 'Acme Vendor' })] });
+    expect(file.status).toBe('built');
+
+    const cycle = await M2mOsEngine.runCycle();
+    expect(cycle.partners[0].transmitted.map((t: Row) => t.fileId)).toEqual([file.fileId]);
+    const sent = await MftOsEngine.get(file.fileId);
+    expect(sent.status).toBe('transmitted');
+    expect(sent.approvedBy).toBe('policy:no-approval');
+    expect(fs.readdirSync(path.join(tmp, bank.host, 'payments', 'outbound')).sort()).toEqual([sent.filename, `${sent.filename}${MANIFEST_SUFFIX}`].sort());
   });
 
   it('skips partners that have not passed a handshake and degrades one whose bank goes away', async () => {

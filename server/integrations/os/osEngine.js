@@ -5,7 +5,8 @@
  *
  * Exposes domain engines (Bank, Treasury, Payment, Clearing, Settlement,
  * Compliance, Security, REST API, Bookkeeping, Cash, Asset Acquisition,
- * Bank Account Aggregator, Funding, Smart Router, Back Office) behind a common interface
+ * Bank Account Aggregator, Funding, Smart Router, Back Office, Canonical Money /
+ * Liquidity / Consensus / Funding, Collateral OS, Live Money) behind a common interface
  * so they can be wired, scripted, and monitored from a single endpoint tree:
  *
  *   GET  /api/os/:engine/status
@@ -8099,6 +8100,482 @@ class MoovPaygateEngine extends BaseOSEngine {
   }
 }
 
+// ─── Unified value-movement pipeline ───────────────────────────────────────────
+//
+// Shared by the canonical / collateral / live-money OS wrappers so one
+// `pipeline` action exposes the ERP -> policy contract -> Spritz -> settlement
+// stages (and the trust control plane's gap analysis) from the OS layer.
+
+async function unifiedPipeline({ limit = 20 } = {}) {
+  const settle = (p) => Promise.resolve().then(() => p).then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
+  const SpritzLeg = tryRequire('../spritz/spritzTreasuryLegEngine')?.SpritzTreasuryLegEngine;
+  const ControlPlane = tryRequire('../trust/trustControlPlaneEngine')?.TrustControlPlaneEngine;
+  const Collateral = tryRequire('./collateralOsEngine')?.CollateralOsEngine;
+  const Funding = tryRequire('../fineract/canonicalFundingSource')?.CanonicalFundingSource;
+  const [treasuryLeg, controlPlane, collateral, canonicalFunding] = await Promise.all([
+    SpritzLeg ? settle(SpritzLeg.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'SpritzTreasuryLegEngine not available' }),
+    ControlPlane ? settle(ControlPlane.controlPlane()) : Promise.resolve({ ok: false, error: 'TrustControlPlaneEngine not available' }),
+    Collateral ? settle(Collateral.status()) : Promise.resolve({ ok: false, error: 'CollateralOsEngine not available' }),
+    Funding ? settle(Promise.resolve(Funding.readiness())) : Promise.resolve({ ok: false, error: 'CanonicalFundingSource not available' }),
+  ]);
+  return {
+    stages: ['erp', 'policy_contract', 'spritz', 'settlement'],
+    canonicalFunding,
+    treasuryLeg,
+    controlPlane,
+    collateral,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// ─── Canonical Money Engine ───────────────────────────────────────────────────
+//
+// Maker/checker gated conversions of segregated trust value into canonical
+// USDC. Every execution runs through CanonicalConsensusEngine; the OS wrapper
+// only proposes/approves and never executes directly.
+
+class CanonicalMoneyOSEngine extends BaseOSEngine {
+  static get engineName() { return 'canonical-money'; }
+
+  static _engine() { return tryRequire('../dapp/canonicalMoneyEngine')?.CanonicalMoneyEngine || null; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Money = this._engine();
+    if (Money && typeof Money.ensureTables === 'function') await Money.ensureTables();
+  }
+
+  static async status() {
+    const Money = this._engine();
+    const Consensus = tryRequire('../dapp/canonicalConsensusEngine')?.CanonicalConsensusEngine;
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: process.env.CANONICAL_FUNDING_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { canonicalMoney: !!Money, canonicalConsensus: !!Consensus },
+      gating: 'maker-checker consensus',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Money = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    switch (action) {
+      case 'quote':
+        if (!Money) return shadow('CanonicalMoneyEngine not available');
+        return await Money.quote(payload);
+      case 'propose':
+      case 'createRequest':
+        if (!Money) return shadow('CanonicalMoneyEngine not available');
+        return await Money.propose({ ...payload, autoApprove: false });
+      case 'approve':
+        if (!Money) return shadow('CanonicalMoneyEngine not available');
+        if (!payload.proposalId) return shadow('proposalId required');
+        return await Money.approve({ proposalId: payload.proposalId, role: payload.role, approverEmail: payload.approverEmail });
+      case 'listRequests':
+      case 'list':
+        if (!Money) return shadow('CanonicalMoneyEngine not available');
+        return await Money.listRequests({ status: payload.status, limit: payload.limit, offset: payload.offset });
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Canonical Liquidity Engine ───────────────────────────────────────────────
+
+class CanonicalLiquidityOSEngine extends BaseOSEngine {
+  static get engineName() { return 'canonical-liquidity'; }
+
+  static _engine() { return tryRequire('../dapp/canonicalLiquidityEngine')?.CanonicalLiquidityEngine || null; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Liquidity = this._engine();
+    if (Liquidity && typeof Liquidity.ensureTables === 'function') await Liquidity.ensureTables();
+  }
+
+  static async status() {
+    const Liquidity = this._engine();
+    const Dex = tryRequire('../dapp/dexSwapEngine')?.DexSwapEngine;
+    let dex = null;
+    try { dex = Dex ? Dex.readiness() : null; } catch (e) { dex = { ready: false, mode: 'shadow', issues: [e.message] }; }
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: dex && dex.mode === 'live' ? 'live' : 'shadow',
+      integrations: { canonicalLiquidity: !!Liquidity, dexSwap: !!Dex },
+      dex,
+      gating: 'maker-checker consensus',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Liquidity = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    switch (action) {
+      case 'propose':
+        if (!Liquidity) return shadow('CanonicalLiquidityEngine not available');
+        return await Liquidity.propose({ action: payload.liquidityAction || payload.proposalAction, title: payload.title, createdBy: payload.createdBy, payload: payload.payload || {} });
+      case 'approve':
+        if (!Liquidity) return shadow('CanonicalLiquidityEngine not available');
+        if (!payload.proposalId) return shadow('proposalId required');
+        return await Liquidity.approve({ proposalId: payload.proposalId, role: payload.role, approverEmail: payload.approverEmail });
+      case 'listProposals':
+      case 'list':
+        if (!Liquidity) return shadow('CanonicalLiquidityEngine not available');
+        return await Liquidity.listProposals({ status: payload.status, limit: payload.limit, offset: payload.offset });
+      case 'listPools':
+      case 'pools':
+        if (!Liquidity) return shadow('CanonicalLiquidityEngine not available');
+        return await Liquidity.listPools();
+      case 'getPool':
+        if (!Liquidity) return shadow('CanonicalLiquidityEngine not available');
+        if (!payload.poolAddress) return shadow('poolAddress required');
+        return await Liquidity.getPool(payload.poolAddress);
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Canonical Consensus Engine ───────────────────────────────────────────────
+
+class CanonicalConsensusOSEngine extends BaseOSEngine {
+  static get engineName() { return 'canonical-consensus'; }
+
+  static _engine() { return tryRequire('../dapp/canonicalConsensusEngine')?.CanonicalConsensusEngine || null; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Consensus = this._engine();
+    if (Consensus && typeof Consensus.ensureTables === 'function') await Consensus.ensureTables();
+  }
+
+  static async status() {
+    const Consensus = this._engine();
+    let signatureOfRecord = null;
+    try { signatureOfRecord = Consensus ? Consensus.getSignatureOfRecord() : null; } catch { signatureOfRecord = null; }
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: Consensus ? 'ready' : 'shadow',
+      integrations: { canonicalConsensus: !!Consensus },
+      threshold: Number(process.env.CANONICAL_CONSENSUS_THRESHOLD) || 1,
+      signatureOfRecordRoles: Array.isArray(signatureOfRecord) ? signatureOfRecord.map((s) => s && s.role).filter(Boolean) : [],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Consensus = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    switch (action) {
+      case 'propose':
+      case 'createProposal':
+        if (!Consensus) return shadow('CanonicalConsensusEngine not available');
+        return await Consensus.createProposal({
+          title: payload.title,
+          description: payload.description,
+          category: payload.category,
+          payload: payload.payload || {},
+          requiredRoles: payload.requiredRoles,
+          requiredApprovals: payload.requiredApprovals,
+          createdBy: payload.createdBy,
+          autoExecute: false,
+        });
+      case 'approve':
+      case 'approveProposal':
+        if (!Consensus) return shadow('CanonicalConsensusEngine not available');
+        if (!payload.proposalId) return shadow('proposalId required');
+        return await Consensus.approveProposal({ proposalId: payload.proposalId, role: payload.role, approverEmail: payload.approverEmail, signature: payload.signature, signerName: payload.signerName });
+      case 'reject':
+      case 'rejectProposal':
+        if (!Consensus) return shadow('CanonicalConsensusEngine not available');
+        if (!payload.proposalId) return shadow('proposalId required');
+        return await Consensus.rejectProposal({ proposalId: payload.proposalId, role: payload.role, rejectorEmail: payload.rejectorEmail || payload.approverEmail, reason: payload.reason });
+      case 'get':
+      case 'getProposal':
+        if (!Consensus) return shadow('CanonicalConsensusEngine not available');
+        if (!payload.proposalId) return shadow('proposalId required');
+        return await Consensus.getProposal(payload.proposalId);
+      case 'list':
+      case 'listProposals':
+        if (!Consensus) return shadow('CanonicalConsensusEngine not available');
+        return await Consensus.listProposals({ status: payload.status, limit: payload.limit, offset: payload.offset });
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Canonical Funding Engine (Treasury Core Banking ERP GL) ──────────────────
+//
+// Fineract general ledger as the canonical funding source. `commit` posts a
+// real double-entry only when CANONICAL_FUNDING_LIVE=true; otherwise the
+// underlying engine returns the plan with `shadow: true`.
+
+class CanonicalFundingEngine extends BaseOSEngine {
+  static get engineName() { return 'canonical-funding'; }
+
+  static _engine() { return tryRequire('../fineract/canonicalFundingSource')?.CanonicalFundingSource || null; }
+
+  static async status() {
+    const Funding = this._engine();
+    let readiness = null;
+    try { readiness = Funding ? Funding.readiness() : null; } catch (e) { readiness = { ready: false, issues: [e.message] }; }
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: readiness && readiness.live ? 'live' : 'shadow',
+      integrations: { canonicalFundingSource: !!Funding, fineract: !!tryRequire('../fineract/fineractClient') },
+      readiness,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Funding = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    if (!Funding && action !== 'pipeline' && action !== 'status') return shadow('CanonicalFundingSource not available');
+    switch (action) {
+      case 'readiness':
+        return Funding.readiness();
+      case 'position':
+        return await Funding.position({ accountCode: payload.accountCode, purpose: payload.purpose, savingsAccountId: payload.savingsAccountId });
+      case 'assertAvailable':
+        return await Funding.assertAvailable({ amountUsd: payload.amountUsd, accountCode: payload.accountCode, purpose: payload.purpose });
+      case 'commit':
+        return await Funding.commit({
+          amountUsd: payload.amountUsd,
+          reference: payload.reference,
+          referenceType: payload.referenceType,
+          memo: payload.memo,
+          cashAccountCode: payload.cashAccountCode,
+          assetAccountCode: payload.assetAccountCode,
+          postedBy: payload.postedBy || 'os-canonical-funding',
+          purpose: payload.purpose,
+        });
+      case 'reverse':
+        return await Funding.reverse({ journalEntryId: payload.journalEntryId, amountUsd: payload.amountUsd, reference: payload.reference, postedBy: payload.postedBy || 'os-canonical-funding' });
+      case 'reconcile':
+        return await Funding.reconcile({ accountCodes: payload.accountCodes });
+      case 'glMap':
+        return await Funding.glMap();
+      case 'integrity':
+      case 'ledgerIntegrity': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.verifyTrustBalanceIntegrity({ toleranceUsd: payload.toleranceUsd });
+      }
+      case 'reconcileGl':
+      case 'reconcile-gl': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.reconcileFineractGL();
+      }
+      case 'rebuildMirror':
+      case 'rebuild-mirror': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.rebuildFineractMirror({
+          dryRun: payload.dryRun !== false,
+          confirm: payload.confirm,
+        });
+      }
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Collateral OS Engine ─────────────────────────────────────────────────────
+//
+// Spendable value against custody-held tokenized RWA. Draws raise a
+// maker/checker proposal through the Spritz treasury leg; nothing in this
+// wrapper bypasses that gate.
+
+class CollateralOSEngine extends BaseOSEngine {
+  static get engineName() { return 'collateral-os'; }
+
+  static _engine() { return tryRequire('./collateralOsEngine')?.CollateralOsEngine || null; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Collateral = this._engine();
+    if (Collateral && typeof Collateral.ensureTables === 'function') await Collateral.ensureTables();
+  }
+
+  static async status() {
+    const Collateral = this._engine();
+    let config = null;
+    try { config = Collateral ? Collateral.config() : null; } catch (e) { config = { error: e.message }; }
+    const fundingLive = process.env.CANONICAL_FUNDING_LIVE === 'true';
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: fundingLive ? 'live' : 'shadow',
+      integrations: { collateralOs: !!Collateral, spritzTreasuryLeg: !!tryRequire('../spritz/spritzTreasuryLegEngine') },
+      enabled: config ? config.enabled !== false : false,
+      chainId: config ? config.chainId : null,
+      gating: 'maker-checker consensus via Spritz treasury leg',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Collateral = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    if (!Collateral && action !== 'pipeline' && action !== 'status') return shadow('CollateralOsEngine not available');
+    const actor = payload.actor || payload.by || payload.createdBy || null;
+    switch (action) {
+      case 'readiness':
+        return await Collateral.readiness();
+      case 'facility':
+        return await Collateral.facility();
+      case 'positions':
+        return await Collateral.positions({ status: payload.status || null, limit: payload.limit });
+      case 'position':
+        if (!payload.positionId) return shadow('positionId required');
+        return await Collateral.position(payload.positionId);
+      case 'draws':
+        return await Collateral.draws({ status: payload.status || null, positionId: payload.positionId || null, limit: payload.limit });
+      case 'getDraw':
+        if (!payload.drawId) return shadow('drawId required');
+        return await Collateral.getDraw(payload.drawId);
+      case 'events':
+        return await Collateral.events({ subjectId: payload.subjectId || null, limit: payload.limit || 100 });
+      case 'pledge':
+        return await Collateral.pledge({
+          tokenId: payload.tokenId, tokenSymbol: payload.tokenSymbol, tokenAddress: payload.tokenAddress,
+          quantity: payload.quantity, quantityUnits: payload.quantityUnits, custodyWallet: payload.custodyWallet,
+          assetClass: payload.assetClass, advanceRateBps: payload.advanceRateBps, reference: payload.reference,
+          pledgedBy: payload.pledgedBy || actor, metadata: payload.metadata,
+        });
+      case 'revalue':
+        return await Collateral.revalue({ actor });
+      case 'draw':
+        return await Collateral.draw({
+          amountUsd: payload.amountUsd, positionId: payload.positionId || null, bucket: payload.bucket || undefined,
+          sourceType: payload.sourceType, sourceAccountId: payload.sourceAccountId, sourceToken: payload.sourceToken, sourceModule: payload.sourceModule,
+          reference: payload.reference, createdBy: payload.createdBy || actor, autoApprove: false, metadata: payload.metadata,
+        });
+      case 'reconcile':
+        return await Collateral.reconcile({ postedBy: payload.postedBy || actor });
+      case 'settle':
+        return await Collateral.settle({ drawId: payload.drawId, purpose: payload.purpose, rail: payload.rail, memo: payload.memo, payoutWallet: payload.payoutWallet, bankAccountId: payload.bankAccountId, billId: payload.billId, actor });
+      case 'execute':
+      case 'executeSettlement':
+        return await Collateral.executeSettlement({ drawId: payload.drawId, actor });
+      case 'repay':
+        return await Collateral.repay({ drawId: payload.drawId, amountUsd: payload.amountUsd, actor, reference: payload.reference });
+      case 'release':
+        return await Collateral.release({ positionId: payload.positionId, actor, reason: payload.reason });
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Live Money Movement Engine ───────────────────────────────────────────────
+//
+// Real fiat movement over the configured settlement rails. The underlying
+// engine only transmits when the selected rail's own `_LIVE` flag is set;
+// otherwise movements stay `manual_pending` / simulated.
+
+class LiveMoneyEngine extends BaseOSEngine {
+  static get engineName() { return 'live-money'; }
+
+  static _engine() { return tryRequire('../dapp/liveMoneyMovementEngine')?.LiveMoneyMovementEngine || null; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Live = this._engine();
+    if (Live && typeof Live.ensureTables === 'function') await Live.ensureTables();
+  }
+
+  static async status() {
+    const Live = this._engine();
+    let rails = null;
+    if (Live && pool) {
+      try { rails = await Live.getAvailableRails(); } catch (e) { rails = { error: e.message }; }
+    }
+    const liveFlags = Object.keys(process.env).filter((k) => /_LIVE$/.test(k) && process.env[k] === 'true').sort();
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: liveFlags.length ? 'live' : 'shadow',
+      integrations: { liveMoneyMovement: !!Live },
+      liveFlags,
+      rails,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Live = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    if (!Live && action !== 'pipeline' && action !== 'status') return shadow('LiveMoneyMovementEngine not available');
+    const movementId = payload.movementId || payload.id;
+    switch (action) {
+      case 'initiateMovement':
+      case 'initiate':
+        return await Live.initiateMovement(payload);
+      case 'executeMovement':
+      case 'execute':
+        if (!movementId) return shadow('movementId required');
+        return await Live.executeMovement(movementId);
+      case 'pollMovement':
+      case 'poll':
+        if (!movementId) return shadow('movementId required');
+        return await Live.pollMovement(movementId);
+      case 'getMovement':
+      case 'get':
+        if (!movementId) return shadow('movementId required');
+        return await Live.getMovement(movementId);
+      case 'listMovements':
+      case 'list':
+        return await Live.listMovements({ status: payload.status, limit: payload.limit });
+      case 'cancelMovement':
+      case 'cancel':
+        if (!movementId) return shadow('movementId required');
+        return await Live.cancelMovement(movementId);
+      case 'dashboard':
+        return await Live.getDashboard();
+      case 'rails':
+      case 'availableRails':
+        return await Live.getAvailableRails();
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -8127,6 +8604,12 @@ const ENGINES = {
   'moov-paygate': MoovPaygateEngine,
   'apisix': ApacheApisixEngine,
   nickel: NickelMcpEngine,
+  'canonical-money': CanonicalMoneyOSEngine,
+  'canonical-liquidity': CanonicalLiquidityOSEngine,
+  'canonical-consensus': CanonicalConsensusOSEngine,
+  'canonical-funding': CanonicalFundingEngine,
+  'collateral-os': CollateralOSEngine,
+  'live-money': LiveMoneyEngine,
 };
 
 async function ensureAll() {
@@ -8168,6 +8651,13 @@ module.exports = {
   ApacheApisixEngine,
   NickelMcpEngine,
   SettlementEndpointEngine,
+  CanonicalMoneyOSEngine,
+  CanonicalLiquidityOSEngine,
+  CanonicalConsensusOSEngine,
+  CanonicalFundingEngine,
+  CollateralOSEngine,
+  LiveMoneyEngine,
+  unifiedPipeline,
   engines: ENGINES,
   ensureAll,
 };

@@ -50,7 +50,22 @@ var ACCOUNTS = {
   LEGAL_EXPENSE:     '5200',
   OPERATING_EXPENSE: '5300',
   STABLECOIN_ASSET:  '1210',
+  // Issuer-side bond accounts (BOND_ACCOUNTING_ROLE=issuer): the trust owes the
+  // bond, so face is a liability and coupons are expense/payable.
+  BOND_SUBSCRIPTION_RECEIVABLE: '1310',
+  BONDS_PAYABLE:     '2300',
+  ACCRUED_INTEREST_PAYABLE: '2310',
+  COUPONS_PAYABLE:   '2320',
+  BOND_INTEREST_EXPENSE: '5400',
 };
+
+// 'holder': trust owns the bond (Dr 1100 investment, coupons are income).
+// 'issuer': trust issued the bond (Cr 2300 payable, coupons are expense).
+var BOND_ROLE = (process.env.BOND_ACCOUNTING_ROLE || 'holder').toLowerCase() === 'issuer' ? 'issuer' : 'holder';
+
+// system_settings key holding the live-baseline cutoff: engine source rows
+// created before it are pre-baseline test data and are never synced.
+var LIVE_BASELINE_CUTOFF_KEY = 'accounting.live_baseline_cutoff';
 
 // Trust-operating allocation per bond terms: an annual % of face value released
 // from corpus into OPERATING_CASH (1030) each coupon period, split between
@@ -128,6 +143,9 @@ class DataBridge {
     var skipped = 0;
     var failed = 0;
     var errors = [];
+    var cutoff = await DataBridge.liveBaselineCutoffSql('bt.created_at');
+    var cpCutoff = await DataBridge.liveBaselineCutoffSql('cp.created_at');
+    var isIssuer = BOND_ROLE === 'issuer';
 
     try {
       // Sync interest accrual transactions from bond_transactions
@@ -137,6 +155,7 @@ class DataBridge {
         FROM bond_transactions bt
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'interest_accrual'
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'bond_accrual'
@@ -153,10 +172,14 @@ class DataBridge {
           var accrualAmount = parseFloat(acc.amount);
           if (accrualAmount <= 0) { skipped++; continue; }
 
+          if (isIssuer) await DataBridge._ensureIssuerAccounts();
           await TrustAccountingEngine.postJournalEntry({
             entryDate: acc.transaction_date,
             description: 'Bond interest accrual — ' + acc.bond_code,
-            lines: [
+            lines: isIssuer ? [
+              { accountCode: ACCOUNTS.BOND_INTEREST_EXPENSE, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest expense ' + acc.bond_code },
+              { accountCode: ACCOUNTS.ACCRUED_INTEREST_PAYABLE, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest accrued ' + acc.bond_code },
+            ] : [
               { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest accrued ' + acc.bond_code },
               { accountCode: ACCOUNTS.INTEREST_INCOME, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest income ' + acc.bond_code },
             ],
@@ -179,6 +202,7 @@ class DataBridge {
         FROM coupon_payments cp
         JOIN bonds b ON b.id = cp.bond_id
         WHERE cp.status = 'paid'
+          ` + cpCutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'coupon_payment'
@@ -196,7 +220,7 @@ class DataBridge {
           if (cpn.amount_cents) couponAmount = couponAmount / 100;
 
           if (couponAmount > 0) {
-            await DataBridge._postCouponReceipt({
+            await (isIssuer ? DataBridge._postCouponPaid : DataBridge._postCouponReceipt)({
               amount: couponAmount,
               entryDate: cpn.coupon_date || cpn.created_at,
               bondCode: cpn.bond_code,
@@ -221,6 +245,7 @@ class DataBridge {
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'coupon_accrual'
           AND bt.transaction_date <= CURRENT_DATE
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'coupon_period'
@@ -236,7 +261,7 @@ class DataBridge {
         try {
           var periodAmount = parseFloat(per.amount);
           if (periodAmount <= 0) { skipped++; continue; }
-          await DataBridge._postCouponReceipt({
+          await (isIssuer ? DataBridge._postCouponDue : DataBridge._postCouponReceipt)({
             amount: periodAmount,
             entryDate: per.transaction_date,
             bondCode: per.bond_code,
@@ -259,6 +284,8 @@ class DataBridge {
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'coupon_accrual'
           AND bt.transaction_date <= CURRENT_DATE
+          AND $1 = 'holder'
+          ` + cutoff + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'operating_allocation'
@@ -267,7 +294,7 @@ class DataBridge {
           )
         ORDER BY bt.transaction_date ASC
         LIMIT 100
-      `);
+      `, [BOND_ROLE]);
 
       for (var a = 0; a < allocPeriods.rows.length; a++) {
         var ap = allocPeriods.rows[a];
@@ -372,6 +399,115 @@ class DataBridge {
     });
   }
 
+  static async _ensureIssuerAccounts() {
+    await DataBridge._ensureAccount(ACCOUNTS.BOND_SUBSCRIPTION_RECEIVABLE, 'Bond Subscription Receivable', 'asset', 'receivable');
+    await DataBridge._ensureAccount(ACCOUNTS.BONDS_PAYABLE, 'Bonds Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.ACCRUED_INTEREST_PAYABLE, 'Accrued Interest Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.COUPONS_PAYABLE, 'Coupons Payable', 'liability', 'payable');
+    await DataBridge._ensureAccount(ACCOUNTS.BOND_INTEREST_EXPENSE, 'Bond Interest Expense', 'expense', 'other');
+  }
+
+  /**
+   * Issuer side of a coupon period end: the coupon becomes payable. Any
+   * interest already accrued in 2310 is reclassified, the remainder is expense.
+   *   Cr COUPONS_PAYABLE (full coupon); Dr ACCRUED_INTEREST_PAYABLE (up to balance); Dr BOND_INTEREST_EXPENSE (rest)
+   */
+  static async _postCouponDue({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureIssuerAccounts();
+
+    var accruedResult = await pool.query(
+      'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
+      [ACCOUNTS.ACCRUED_INTEREST_PAYABLE]
+    );
+    var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
+    var reclassAmount = Math.round(Math.min(amount, Math.max(accruedBalance, 0)) * 100) / 100;
+    var expenseAmount = Math.round((amount - reclassAmount) * 100) / 100;
+
+    var lines = [];
+    if (reclassAmount > 0) {
+      lines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST_PAYABLE, debitAmount: reclassAmount, creditAmount: 0, memo: 'Accrued interest now due ' + bondCode });
+    }
+    if (expenseAmount > 0.001) {
+      lines.push({ accountCode: ACCOUNTS.BOND_INTEREST_EXPENSE, debitAmount: expenseAmount, creditAmount: 0, memo: 'Coupon interest expense ' + bondCode });
+    }
+    lines.push({ accountCode: ACCOUNTS.COUPONS_PAYABLE, debitAmount: 0, creditAmount: amount, memo: 'Coupon due to bondholders ' + bondCode });
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon due — ' + bondCode,
+      lines: lines,
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
+  }
+
+  /** Issuer pays a coupon: Dr COUPONS_PAYABLE / Cr CASH. */
+  static async _postCouponPaid({ amount, entryDate, bondCode, bondId, referenceType, referenceId }) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    await DataBridge._ensureIssuerAccounts();
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: entryDate,
+      description: 'Coupon paid — ' + bondCode,
+      lines: [
+        { accountCode: ACCOUNTS.COUPONS_PAYABLE, debitAmount: amount, creditAmount: 0, memo: 'Coupon paid ' + bondCode },
+        { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Coupon cash out ' + bondCode },
+      ],
+      referenceType: referenceType,
+      referenceId: referenceId,
+      bondId: bondId,
+      postedBy: 'data_bridge',
+      postToFineract: false,
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  LIVE BASELINE CUTOFF
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Timestamp before which engine source rows are pre-baseline test data, or null. */
+  static async getLiveBaselineCutoff() {
+    try {
+      var r = await pool.query('SELECT value FROM system_settings WHERE key = $1', [LIVE_BASELINE_CUTOFF_KEY]);
+      if (r.rows.length === 0 || !r.rows[0].value) return null;
+      var d = new Date(r.rows[0].value);
+      return isNaN(d.getTime()) ? null : d;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static async setLiveBaselineCutoff(date, updatedBy) {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMP DEFAULT NOW(),
+        updated_by VARCHAR(100) DEFAULT 'system'
+      )
+    `);
+    await pool.query(
+      `INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES ($1, $2, NOW(), $3)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW(), updated_by = EXCLUDED.updated_by`,
+      [LIVE_BASELINE_CUTOFF_KEY, new Date(date).toISOString(), updatedBy || 'system']
+    );
+  }
+
+  /**
+   * SQL fragment (" AND <col> >= '<iso>'::timestamptz" or "") excluding source
+   * rows created before the live baseline. The value is an ISO string produced
+   * by Date#toISOString, never user input.
+   */
+  static async liveBaselineCutoffSql(column) {
+    var cutoff = await DataBridge.getLiveBaselineCutoff();
+    if (!cutoff) return '';
+    if (!/^[a-z_][a-z0-9_.]*$/i.test(column)) throw new Error('Invalid cutoff column');
+    return " AND " + column + " >= '" + cutoff.toISOString() + "'::timestamptz";
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  ACH → TRUST ACCOUNTING SYNC
   // ═══════════════════════════════════════════════════════════════════════════
@@ -421,6 +557,7 @@ class DataBridge {
         SELECT ab.*
         FROM ach_batches ab
         WHERE ab.status IN ('transmitted', 'settled', 'acknowledged')
+          ` + await DataBridge.liveBaselineCutoffSql('ab.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'ach_batch'
@@ -513,6 +650,7 @@ class DataBridge {
         FROM banking_aggregator_transactions t
         JOIN banking_aggregator_connections c ON c.id = t.connection_id
         WHERE c.connector_type <> 'internal_rails'
+          ` + await DataBridge.liveBaselineCutoffSql('t.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'aggregator_txn'
@@ -719,6 +857,7 @@ class DataBridge {
         FROM bill_transactions bt
         WHERE bt.type IN ('deposit', 'payment')
           AND bt.status = 'completed'
+          ` + await DataBridge.liveBaselineCutoffSql('bt.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'bill_transaction'
@@ -821,17 +960,10 @@ class DataBridge {
         return { syncId: syncId, matched: 0, unmatched: 0, error: 'Cannot connect to Fineract: ' + glErr.message, discrepancies: [] };
       }
 
-      // getGLSummary() groups accounts by type ({ assets: [], liabilities: [], ... })
       var glMap = {};
-      var glGroups = glSummary && glSummary.accounts
-        ? (Array.isArray(glSummary.accounts) ? [glSummary.accounts] : Object.values(glSummary.accounts))
-        : [];
-      for (var gi = 0; gi < glGroups.length; gi++) {
-        var group = glGroups[gi] || [];
-        for (var g = 0; g < group.length; g++) {
-          var glAcct = group[g];
-          glMap[glAcct.id] = glAcct;
-        }
+      var flatAccounts = DataBridge._flattenGlAccounts(glSummary);
+      for (var g = 0; g < flatAccounts.length; g++) {
+        glMap[flatAccounts[g].id] = flatAccounts[g];
       }
 
       // If Fineract returned no accounts, it's likely not connected/configured
@@ -882,14 +1014,19 @@ class DataBridge {
             diff > 100000 ? 'critical' : diff > 10000 ? 'high' : diff > 1000 ? 'normal' : 'low');
         } else {
           matched++;
+          await pool.query(`
+            UPDATE data_bridge_discrepancies
+            SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_balanced'
+            WHERE discrepancy_type = 'gl_balance_mismatch' AND account_code = $1 AND resolved = FALSE
+          `, [mapping.trust_account_code]);
         }
       }
 
-      // Count unsynced trust journal entries (posted but no fineract_txn_id)
+      // Count unsynced trust journal entries (posted/reversed but no fineract_txn_id)
       var unsyncedResult = await pool.query(`
         SELECT COUNT(*) AS count
         FROM trust_journal_entries
-        WHERE status = 'posted' AND fineract_txn_id IS NULL
+        WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL
       `);
       var unsyncedCount = parseInt(unsyncedResult.rows[0].count);
 
@@ -938,10 +1075,14 @@ class DataBridge {
         if (postedBondIds.has('BOND-' + bond.id)) continue;
 
         try {
+          if (BOND_ROLE === 'issuer') await DataBridge._ensureIssuerAccounts();
           await TrustAccountingEngine.postJournalEntry({
             entryDate: bond.issue_date || new Date(),
             description: 'Opening balance — Bond ' + bond.bond_name + ' issuance',
-            lines: [
+            lines: BOND_ROLE === 'issuer' ? [
+              { accountCode: ACCOUNTS.BOND_SUBSCRIPTION_RECEIVABLE, debitAmount: faceValue, creditAmount: 0, memo: 'Bond subscription ' + bond.bond_name },
+              { accountCode: ACCOUNTS.BONDS_PAYABLE, debitAmount: 0, creditAmount: faceValue, memo: 'Bonds payable — ' + bond.bond_name },
+            ] : [
               { accountCode: ACCOUNTS.BOND_INVESTMENTS, debitAmount: faceValue, creditAmount: 0, memo: 'Bond investment ' + bond.bond_name },
               { accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: faceValue, memo: 'Trust corpus — ' + bond.bond_name },
             ],
@@ -1063,10 +1204,85 @@ class DataBridge {
   }
 
   /**
-   * Push all unsynced trust journal entries to Fineract GL.
-   * Includes idempotency guard to prevent duplicate pushes.
+   * Flatten a FineractClient.getGLSummary() result into a single array of
+   * detail accounts. The summary groups accounts by category
+   * ({ assets, liabilities, equity, income, expenses }); a bare array is also
+   * accepted for the degraded fallback shape.
    */
-  static async pushToFineract() {
+  static _flattenGlAccounts(glSummary) {
+    if (!glSummary || !glSummary.accounts) return [];
+    if (Array.isArray(glSummary.accounts)) return glSummary.accounts.filter(Boolean);
+    var flat = [];
+    var groups = Object.keys(glSummary.accounts);
+    for (var i = 0; i < groups.length; i++) {
+      var group = glSummary.accounts[groups[i]];
+      if (!Array.isArray(group)) continue;
+      for (var j = 0; j < group.length; j++) {
+        if (group[j]) flat.push(group[j]);
+      }
+    }
+    return flat;
+  }
+
+  static _fineractComment(entry) {
+    return 'Trust JE ' + entry.entry_id + ': ' + entry.description;
+  }
+
+  static _fineractCommentPrefix(entryId) {
+    return 'Trust JE ' + entryId + ':';
+  }
+
+  static _isFineractCounterEntry(comments) {
+    return /^Reversal entry for Journal Entry/i.test(comments || '');
+  }
+
+  /**
+   * Index live (non-reversed) Fineract journal entries by the local entry_id
+   * embedded in their comment. Returns { byEntryId: Map<entryId, Set<transactionId>>,
+   * groups: Map<transactionId, { comments, reversed, counterEntry, entries }> }.
+   */
+  static _indexFineractJournal(fineractEntries) {
+    var byEntryId = new Map();
+    var groups = new Map();
+    var re = /^Trust JE (JRN-[A-Z0-9-]+):/;
+    for (var i = 0; i < fineractEntries.length; i++) {
+      var je = fineractEntries[i];
+      var txn = je.transactionId;
+      var comments = (je.comments || '').trim();
+      if (!groups.has(txn)) {
+        groups.set(txn, {
+          transactionId: txn,
+          comments: comments,
+          reversed: !!je.reversed,
+          // Counter-entries Fineract posts when reversing a transaction. They
+          // net the original to zero and must never be reversed themselves.
+          counterEntry: DataBridge._isFineractCounterEntry(comments),
+          entries: []
+        });
+      }
+      var group = groups.get(txn);
+      group.entries.push(je);
+      if (je.reversed) group.reversed = true;
+      if (!je.reversed) {
+        var match = (je.comments || '').trim().match(re);
+        if (match) {
+          if (!byEntryId.has(match[1])) byEntryId.set(match[1], new Set());
+          byEntryId.get(match[1]).add(txn);
+        }
+      }
+    }
+    return { byEntryId: byEntryId, groups: groups };
+  }
+
+  /**
+   * Push all unsynced trust journal entries to Fineract GL.
+   *
+   * Every local journal entry that moved balances is mirrored — including
+   * reversal entries and originals that were later reversed — so the Fineract
+   * GL reproduces the sub-ledger's balances exactly. Idempotency is keyed on
+   * the local entry_id embedded in the Fineract comment.
+   */
+  static async pushToFineract({ limit } = {}) {
     var { FineractClient } = require('../fineract/fineractClient');
 
     var syncId = 'PUSH-GL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -1074,9 +1290,9 @@ class DataBridge {
     var skipped = 0;
     var failed = 0;
     var errors = [];
+    var batchLimit = Math.max(1, parseInt(limit, 10) || 500);
 
     try {
-      // Get unsynced journal entries (only posted, not reversed, not reversals)
       var entries = await pool.query(`
         SELECT je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status,
@@ -1085,25 +1301,21 @@ class DataBridge {
                  'debit_amount', jl.debit_amount,
                  'credit_amount', jl.credit_amount,
                  'memo', jl.memo
-               )) AS lines
+               ) ORDER BY jl.id) AS lines
         FROM trust_journal_entries je
         JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
-        WHERE je.status = 'posted' AND je.fineract_txn_id IS NULL
-          AND je.reference_type != 'reversal'
+        WHERE je.status IN ('posted', 'reversed') AND je.fineract_txn_id IS NULL
         GROUP BY je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                  je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status
-        ORDER BY je.entry_date ASC
-        LIMIT 50
-      `);
+        ORDER BY je.entry_date ASC, je.id ASC
+        LIMIT $1
+      `, [batchLimit]);
 
-      // Mark reversal entries as synced (they don't need to go to Fineract)
-      await pool.query(`
-        UPDATE trust_journal_entries
-        SET fineract_txn_id = 'REVERSAL-LOCAL'
-        WHERE status = 'posted' AND fineract_txn_id IS NULL AND reference_type = 'reversal'
-      `);
+      if (entries.rows.length === 0) {
+        await DataBridge._logSync(syncId, 'push_to_fineract', 'trust_accounting', 'fineract_gl', 0, 0, 0, []);
+        return { syncId: syncId, synced: 0, skipped: 0, failed: 0, remaining: 0, errors: [] };
+      }
 
-      // Get GL mappings
       var mappings = await pool.query(`
         SELECT trust_account_code, fineract_gl_id
         FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal'
@@ -1113,18 +1325,13 @@ class DataBridge {
         glMap[mappings.rows[m].trust_account_code] = parseInt(mappings.rows[m].fineract_gl_id);
       }
 
-      // Idempotency: fetch existing Fineract JE comments to avoid duplicates
-      var existingComments = new Set();
+      // Idempotency: index live Fineract entries by local entry_id
+      var existing = { byEntryId: new Map(), groups: new Map() };
+      var idempotencyAvailable = true;
       try {
-        var journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
-        var existingEntries = (journalRes && journalRes.pageItems) || [];
-        for (var e = 0; e < existingEntries.length; e++) {
-          if (!existingEntries[e].reversed && existingEntries[e].comments) {
-            existingComments.add(existingEntries[e].comments.trim());
-          }
-        }
+        existing = DataBridge._indexFineractJournal(await FineractClient.getAllJournalEntries());
       } catch (fetchErr) {
-        // If we can't fetch existing entries, proceed without idempotency check
+        idempotencyAvailable = false;
         console.warn('[DataBridge] Could not fetch existing Fineract JEs for idempotency check:', fetchErr.message);
       }
 
@@ -1134,12 +1341,12 @@ class DataBridge {
           var lines = entry.lines;
           var debits = [];
           var credits = [];
-          var hasMissingMapping = false;
+          var missingCodes = [];
 
           for (var j = 0; j < lines.length; j++) {
             var line = lines[j];
             var glId = glMap[line.account_code];
-            if (!glId) { hasMissingMapping = true; break; }
+            if (!glId) { missingCodes.push(line.account_code); continue; }
 
             if (parseFloat(line.debit_amount) > 0) {
               debits.push({ glAccountId: glId, amount: parseFloat(line.debit_amount) });
@@ -1149,22 +1356,31 @@ class DataBridge {
             }
           }
 
-          if (hasMissingMapping) { skipped++; continue; }
-          if (debits.length === 0 || credits.length === 0) { skipped++; continue; }
+          if (missingCodes.length > 0) {
+            skipped++;
+            errors.push({ entryId: entry.entry_id, skipped: true, error: 'No Fineract GL mapping for ' + missingCodes.join(', ') });
+            continue;
+          }
+          if (debits.length === 0 || credits.length === 0) {
+            skipped++;
+            errors.push({ entryId: entry.entry_id, skipped: true, error: 'Entry has no debit/credit pair' });
+            continue;
+          }
 
-          var jeComment = 'Trust JE ' + entry.entry_id + ': ' + entry.description;
-
-          // Idempotency guard: skip if this JE was already pushed
-          if (existingComments.has(jeComment)) {
-            var idempotencyId = 'IDEM-' + syncId + '-' + entry.entry_id;
+          var alreadyPosted = existing.byEntryId.get(entry.entry_id);
+          if (alreadyPosted && alreadyPosted.size > 0) {
             await pool.query(
               'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
-              [idempotencyId, entry.entry_id]
+              [Array.from(alreadyPosted)[0], entry.entry_id]
             );
             skipped++;
             continue;
           }
+          if (!idempotencyAvailable) {
+            throw new Error('Fineract journal unavailable for idempotency check; not posting');
+          }
 
+          var jeComment = DataBridge._fineractComment(entry);
           var glResult;
           try {
             glResult = await FineractClient.postJournalEntry({
@@ -1191,7 +1407,9 @@ class DataBridge {
             }
           }
 
-          var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id);
+          var fineractTxnId = glResult && glResult.transactionId
+            ? String(glResult.transactionId)
+            : (glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id));
           await pool.query(
             'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
             [fineractTxnId, entry.entry_id]
@@ -1206,10 +1424,180 @@ class DataBridge {
       errors.push({ phase: 'query', error: outerErr.message });
     }
 
+    var remaining = 0;
+    try {
+      var remainingRes = await pool.query(`
+        SELECT COUNT(*) AS count FROM trust_journal_entries
+        WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL
+      `);
+      remaining = parseInt(remainingRes.rows[0].count, 10);
+    } catch (_) { /* reported as 0 */ }
+
     await DataBridge._logSync(syncId, 'push_to_fineract', 'trust_accounting', 'fineract_gl', synced, skipped, failed, errors);
 
-    return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+    return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, remaining: remaining, errors: errors };
   }
+
+  /**
+   * Verify the sub-ledger is internally consistent: each trust_accounts.balance
+   * must equal the net of its journal lines. A mismatch means a balance was
+   * changed outside the journal and cannot be trusted for funding.
+   */
+  static async verifyTrustBalanceIntegrity({ toleranceUsd } = {}) {
+    var tolerance = Number.isFinite(Number(toleranceUsd)) ? Number(toleranceUsd) : 0.01;
+    var res = await pool.query(`
+      SELECT ta.account_code, ta.account_name, ta.account_type, ta.balance::numeric AS balance,
+             COALESCE(SUM(CASE
+               WHEN ta.account_type IN ('asset', 'expense') THEN jl.debit_amount - jl.credit_amount
+               ELSE jl.credit_amount - jl.debit_amount END), 0)::numeric AS journal_balance,
+             COUNT(jl.id) AS line_count
+      FROM trust_accounts ta
+      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        AND je.status IN ('posted', 'reversed')
+      WHERE ta.is_active = TRUE
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.balance
+      ORDER BY ta.account_code
+    `);
+    var mismatches = [];
+    for (var i = 0; i < res.rows.length; i++) {
+      var row = res.rows[i];
+      var balance = parseFloat(row.balance || 0);
+      var journal = parseFloat(row.journal_balance || 0);
+      var diff = Math.round((balance - journal) * 100) / 100;
+      if (Math.abs(diff) > tolerance) {
+        mismatches.push({
+          accountCode: row.account_code,
+          accountName: row.account_name,
+          accountType: row.account_type,
+          balance: balance,
+          journalBalance: journal,
+          difference: diff,
+          lineCount: parseInt(row.line_count, 10),
+        });
+      }
+    }
+    return {
+      checkedAt: new Date().toISOString(),
+      toleranceUsd: tolerance,
+      accountsChecked: res.rows.length,
+      consistent: mismatches.length === 0,
+      mismatches: mismatches,
+    };
+  }
+
+  /**
+   * Rebuild the Fineract GL as an exact mirror of the local trust journal.
+   *
+   * 1. Reverse every live Fineract transaction (auditable — nothing is deleted).
+   * 2. Clear fineract_txn_id on every local journal entry.
+   * 3. Re-push every local entry (posted and reversed, including reversals).
+   * 4. Reconcile balances.
+   *
+   * Dry-run (default) reports what would happen without touching either book.
+   * Requires confirm === 'REBUILD_FINERACT_MIRROR' to execute.
+   */
+  static async rebuildFineractMirror({ dryRun, confirm } = {}) {
+    var { FineractClient } = require('../fineract/fineractClient');
+    var isDryRun = dryRun !== false || confirm !== 'REBUILD_FINERACT_MIRROR';
+    var syncId = 'REBUILD-GL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var startedAt = Date.now();
+
+    var fineractEntries = await FineractClient.getAllJournalEntries();
+    var index = DataBridge._indexFineractJournal(fineractEntries);
+    var liveGroups = [];
+    var duplicateGroups = 0;
+    var unlinkedGroups = 0;
+    index.groups.forEach(function(group) {
+      if (group.reversed || group.counterEntry) return;
+      liveGroups.push(group);
+      if (!/^Trust JE JRN-/.test(group.comments)) unlinkedGroups++;
+    });
+    index.byEntryId.forEach(function(txns) { if (txns.size > 1) duplicateGroups += txns.size - 1; });
+
+    var localCount = await pool.query(`
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE fineract_txn_id IS NULL) AS unsynced
+      FROM trust_journal_entries WHERE status IN ('posted', 'reversed')
+    `);
+    var integrity = await DataBridge.verifyTrustBalanceIntegrity();
+
+    var plan = {
+      fineractLiveTransactions: liveGroups.length,
+      fineractDuplicateTransactions: duplicateGroups,
+      fineractTransactionsWithoutLocalEntry: unlinkedGroups,
+      localEntriesToMirror: parseInt(localCount.rows[0].total, 10),
+      localEntriesCurrentlyUnsynced: parseInt(localCount.rows[0].unsynced, 10),
+      subLedgerIntegrity: integrity,
+    };
+
+    if (isDryRun) {
+      return {
+        syncId: syncId,
+        mode: 'dry_run',
+        plan: plan,
+        note: 'Pass { dryRun: false, confirm: "REBUILD_FINERACT_MIRROR" } to execute',
+      };
+    }
+
+    var reversed = 0;
+    var reverseErrors = [];
+    for (var i = 0; i < liveGroups.length; i++) {
+      try {
+        await FineractClient.reverseJournalEntry(liveGroups[i].transactionId);
+        reversed++;
+      } catch (err) {
+        reverseErrors.push({ transactionId: liveGroups[i].transactionId, error: err.message });
+      }
+    }
+    if (reverseErrors.length > 0) {
+      await DataBridge._logSync(syncId, 'rebuild_fineract_mirror', 'trust_accounting', 'fineract_gl',
+        0, 0, reverseErrors.length, reverseErrors);
+      return {
+        syncId: syncId,
+        mode: 'aborted',
+        plan: plan,
+        reversed: reversed,
+        errors: reverseErrors,
+        note: 'Some Fineract transactions could not be reversed; local entries were not re-pushed',
+      };
+    }
+
+    await pool.query(`UPDATE trust_journal_entries SET fineract_txn_id = NULL WHERE status IN ('posted', 'reversed')`);
+    FineractClient.clearCache();
+
+    var pushes = [];
+    var totalSynced = 0;
+    var totalSkipped = 0;
+    var totalFailed = 0;
+    var pushErrors = [];
+    for (var round = 0; round < 50; round++) {
+      var push = await DataBridge.pushToFineract({ limit: 500 });
+      pushes.push({ syncId: push.syncId, synced: push.synced, skipped: push.skipped, failed: push.failed, remaining: push.remaining });
+      totalSynced += push.synced;
+      totalSkipped += push.skipped;
+      totalFailed += push.failed;
+      pushErrors = pushErrors.concat(push.errors || []);
+      if (push.remaining === 0 || (push.synced === 0 && push.skipped === 0)) break;
+    }
+
+    FineractClient.clearCache();
+    var reconciliation = await DataBridge.reconcileFineractGL();
+
+    await DataBridge._logSync(syncId, 'rebuild_fineract_mirror', 'trust_accounting', 'fineract_gl',
+      totalSynced, totalSkipped, totalFailed, pushErrors);
+
+    return {
+      syncId: syncId,
+      mode: 'executed',
+      durationMs: Date.now() - startedAt,
+      plan: plan,
+      reversed: reversed,
+      pushed: { synced: totalSynced, skipped: totalSkipped, failed: totalFailed, rounds: pushes, errors: pushErrors },
+      reconciliation: reconciliation,
+    };
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  WIRE → ACCOUNTING SYNC
@@ -1244,6 +1632,7 @@ class DataBridge {
         FROM wire_transfers wt
         WHERE wt.status IN ('settled', 'confirmed', 'sent')
           AND wt.payment_type != 'bill_deposit'
+          ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
           AND (
             wt.journal_entry_id IS NULL
             OR NOT EXISTS (
@@ -1338,6 +1727,7 @@ class DataBridge {
         FROM wire_transfers wt
         WHERE wt.status IN ('settled', 'confirmed', 'sent')
           AND wt.payment_type != 'bill_deposit'
+          ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_id = wt.wire_id
@@ -1411,6 +1801,7 @@ class DataBridge {
           OR (dr.metadata->>'expenseId' IS NULL AND er.request_id = dr.id)
         LEFT JOIN dapp_payout_center pc ON pc.id = dr.payout_id
         WHERE dr.status IN ('payout_created', 'executed', 'failed')
+          ` + await DataBridge.liveBaselineCutoffSql('dr.created_at') + `
         ORDER BY dr.created_at ASC
       `);
 
@@ -1682,7 +2073,7 @@ class DataBridge {
     try {
       // Trust Accounting status
       var jeCount = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status = 'posted'`);
-      var unsyncedJE = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status = 'posted' AND fineract_txn_id IS NULL`);
+      var unsyncedJE = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL`);
       var acctCount = await pool.query(`SELECT COUNT(*) AS c FROM trust_accounts WHERE is_active = TRUE`);
       status.modules.trust_accounting = {
         journalEntries: parseInt(jeCount.rows[0].c),
@@ -1755,6 +2146,7 @@ class DataBridge {
           FROM wire_transfers wt
           WHERE wt.status IN ('settled','confirmed','sent')
             AND wt.payment_type != 'bill_deposit'
+            ` + await DataBridge.liveBaselineCutoffSql('wt.created_at') + `
             AND NOT EXISTS (
               SELECT 1 FROM trust_journal_entries je
               WHERE je.reference_id = wt.wire_id
@@ -2301,4 +2693,4 @@ class DataBridge {
   }
 }
 
-module.exports = { DataBridge, ACCOUNTS };
+module.exports = { DataBridge, ACCOUNTS, BOND_ROLE, LIVE_BASELINE_CUTOFF_KEY };

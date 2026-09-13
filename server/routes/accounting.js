@@ -457,6 +457,48 @@ router.get('/bridge/reconcile/fineract', async (req, res) => {
   }
 });
 
+// ─── GET /api/accounting/bridge/reconcile/integrity ───────────────────────────
+router.get('/bridge/reconcile/integrity', async (req, res) => {
+  try {
+    const result = await DataBridge.verifyTrustBalanceIntegrity({ toleranceUsd: req.query.toleranceUsd });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/fineract/rebuild ─────────────────────────────
+// Dry-run by default; body { dryRun: false, confirm: 'REBUILD_FINERACT_MIRROR' } executes.
+router.post('/bridge/fineract/rebuild', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const result = await DataBridge.rebuildFineractMirror({
+      dryRun: !req.body || req.body.dryRun !== false,
+      confirm: req.body && req.body.confirm,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/live-baseline/reset ──────────────────────────
+// Archive pre-production test books and post the live baseline. Dry-run by
+// default; body { dryRun: false, confirm: 'RESET_LIVE_BASELINE' } executes.
+router.post('/bridge/live-baseline/reset', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { LiveBaselineReset } = require('../integrations/accounting/liveBaselineReset');
+    const result = await LiveBaselineReset.run({
+      dryRun: !req.body || req.body.dryRun !== false,
+      confirm: req.body && req.body.confirm,
+      asOf: req.body && req.body.asOf,
+      performedBy: (req.user && (req.user.email || req.user.username)) || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── GET /api/accounting/bridge/reconcile/wire ────────────────────────────────
 router.get('/bridge/reconcile/wire', async (req, res) => {
   try {

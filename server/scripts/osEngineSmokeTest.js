@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'nickel', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate', 'apisix'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'nickel', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate', 'apisix', 'canonical-money', 'canonical-liquidity', 'canonical-consensus', 'canonical-funding', 'collateral-os', 'live-money'];
 
 const results = [];
 let failed = false;
@@ -177,6 +177,14 @@ async function main() {
     { engine: 'moov-paygate', action: 'sendPayment', payload: { amount: 0.01, source: { name: 'PTC Smoke Origin', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'PTC Smoke Payee', routingNumber: '111000025', accountNumber: '000987654321', accountType: 'checking' }, description: 'Smoke moov payment', sameDay: false, triggerCutoff: false } },
     { engine: 'apisix', action: 'status', payload: {} },
     { engine: 'apisix', action: 'sendPayment', payload: { amount: 0.01, source: { name: 'PTC Smoke Origin', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'PTC Smoke Payee', routingNumber: '111000025', accountNumber: '000987654321', accountType: 'checking' }, description: 'Smoke APISIX payment', type: 'wire' } },
+    // Canonical / collateral / live-money wrappers: read-only or shadow actions only (no value moves).
+    { engine: 'canonical-money', action: 'listRequests', payload: { limit: 5 }, expectEvent: true },
+    { engine: 'canonical-liquidity', action: 'listPools', payload: {}, expectEvent: true },
+    { engine: 'canonical-consensus', action: 'list', payload: { limit: 5 }, expectEvent: true },
+    { engine: 'canonical-funding', action: 'readiness', payload: {}, expectEvent: true },
+    { engine: 'collateral-os', action: 'facility', payload: {}, expectEvent: true },
+    { engine: 'live-money', action: 'listMovements', payload: { limit: 5 }, expectEvent: true },
+    { engine: 'collateral-os', action: 'pipeline', payload: { limit: 5 } },
   ];
 
   const bankEventIds = [];

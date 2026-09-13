@@ -75,6 +75,10 @@ function setCache(key, data) {
   responseCache.set(key, { data, timestamp: Date.now() });
 }
 
+function clearCache() {
+  responseCache.clear();
+}
+
 /**
  * Low-level HTTP request to Fineract REST API.
  * Handles Basic Auth, TenantId header, TLS, circuit breaker, and retry.
@@ -324,7 +328,9 @@ class FineractClient {
         amount: d.amount,
       })),
     };
-    return fineractRequest('POST', 'journalentries', payload);
+    const result = await fineractRequest('POST', 'journalentries', payload);
+    clearCache();
+    return result;
   }
 
   /**
@@ -425,7 +431,32 @@ class FineractClient {
    * Maps to POST /journalentries/{transactionId}?command=reverse
    */
   static async reverseJournalEntry(transactionId) {
-    return fineractRequest('POST', `journalentries/${transactionId}?command=reverse`, {});
+    const result = await fineractRequest('POST', `journalentries/${transactionId}?command=reverse`, {});
+    clearCache();
+    return result;
+  }
+
+  /** Drop every cached GET response so the next read reflects Fineract's current state. */
+  static clearCache() {
+    clearCache();
+  }
+
+  /**
+   * Fetch every journal entry, bypassing the response cache.
+   * Pages through Fineract so callers see the complete, current GL.
+   */
+  static async getAllJournalEntries({ pageSize = 5000 } = {}) {
+    const all = [];
+    let offset = 0;
+    for (;;) {
+      const res = await fineractRequest('GET',
+        `journalentries?offset=${offset}&limit=${pageSize}&locale=en&dateFormat=dd%20MMMM%20yyyy`);
+      const items = (res && res.pageItems) || [];
+      all.push(...items);
+      if (items.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
 
   /**
@@ -461,8 +492,10 @@ class FineractClient {
     try {
       const journalRes = await resilientFineractRequest('GET', 'journalentries?limit=10000', null, 'gl_journals');
       const entries = (journalRes && journalRes.pageItems) || [];
+      // A Fineract reversal flags the original (reversed=true) AND posts an
+      // offsetting counter-entry (reversed=false). Summing every row nets both
+      // to zero; skipping only the original would count the counter-entry alone.
       for (const je of entries) {
-        if (je.reversed) continue;
         const acctId = je.glAccountId;
         if (!balanceMap[acctId]) balanceMap[acctId] = 0;
         const amt = je.amount || 0;

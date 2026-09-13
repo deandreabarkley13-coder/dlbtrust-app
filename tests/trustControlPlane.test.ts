@@ -42,7 +42,8 @@ beforeEach(() => {
   process.env.DAPP_MEMORY_MODE = 'true';
   for (const k of ['TRUST_LEGAL_NAME', 'TRUST_NAME', 'TRUST_MANDATE_ENFORCE', 'TRUST_MANDATE_ALLOW_CORPUS', 'TRUST_MANDATE_RESERVE_INCOME_PCT',
     'TRUST_MANDATE_REQUIRE_CANONICAL', 'FABRIC_CONNECT_URL', 'FABRIC_SIGNER', 'FABRIC_LEDGER_LIVE', 'FIREFLY_API_URL', 'FIREFLY_LIVE',
-    'THIRDWEB_SECRET_KEY', 'APP_DOMAIN', 'NORTHFLANK_PROJECT_ID', 'NF_SERVICE_ID']) delete process.env[k];
+    'THIRDWEB_SECRET_KEY', 'APP_DOMAIN', 'NORTHFLANK_PROJECT_ID', 'NF_SERVICE_ID',
+    'SPRITZ_API_KEY', 'TRUST_POLICY_ADDRESS', 'TRUST_POLICY_LIVE', 'CANONICAL_FUNDING_LIVE', 'SPRITZ_PAYOUT_WALLET']) delete process.env[k];
 });
 
 afterEach(() => {
@@ -75,11 +76,14 @@ describe('trust mandate', () => {
 describe('control plane readiness', () => {
   it('lists every component and flags unconfigured ones as gaps without throwing', () => {
     const r = TrustControlPlaneEngine.readiness();
-    for (const k of ['fineract', 'subLedger', 'fixedIncome', 'custodian', 'issuer', 'thirdweb', 'fabric', 'firefly', 'northflank', 'vm']) {
+    for (const k of ['fineract', 'subLedger', 'fixedIncome', 'custodian', 'issuer', 'thirdweb', 'fabric', 'firefly', 'spritz', 'northflank', 'vm']) {
       expect(r.components[k]).toBeDefined();
       expect(r.components[k].available).toBe(true);
     }
-    expect(r.live).toEqual({ fabric: false, firefly: false, thirdweb: false, fineract: false });
+    expect(r.live).toEqual({ fabric: false, firefly: false, thirdweb: false, fineract: false, spritz: false });
+    expect(r.components.spritz).toMatchObject({ component: 'spritz', ready: false, mode: 'shadow', evaluated: 'config' });
+    expect(r.components.spritz.issues).toEqual(expect.arrayContaining(['SPRITZ_API_KEY not configured', 'TRUST_POLICY_ADDRESS not configured']));
+    expect(r.gaps.some((g: any) => g.component === 'spritz' && g.severity === 'medium')).toBe(true);
     expect(r.gaps.some((g: any) => g.component === 'fabric')).toBe(true);
     expect(r.gaps.some((g: any) => g.component === 'settlement' && g.severity === 'info')).toBe(true);
     expect(r.components.vm.mode).toBe('ip-only');
@@ -99,6 +103,59 @@ describe('control plane readiness', () => {
     expect(r.live.firefly).toBe(true);
     expect(r.components.vm).toMatchObject({ mode: 'dns', publicUrl: 'https://app.dlbfamilytrust.com', issues: [] });
     expect(r.components.northflank.ready).toBe(true);
+  });
+
+  it('reports the Spritz leg live only when the ERP draw and the policy contract both are', () => {
+    process.env.SPRITZ_API_KEY = 'sk_test';
+    process.env.TRUST_POLICY_ADDRESS = '0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64';
+    process.env.TRUST_POLICY_LIVE = 'true';
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    const r = TrustControlPlaneEngine.readiness();
+    expect(r.components.spritz).toMatchObject({ ready: true, mode: 'live', policyContract: '0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64', issues: [] });
+    expect(r.live.spritz).toBe(true);
+    expect(r.gaps.some((g: any) => g.component === 'settlement')).toBe(false);
+  });
+
+  it('readinessFull folds the Spritz API evaluation into the component and the gaps', async () => {
+    process.env.SPRITZ_API_KEY = 'sk_test';
+    process.env.TRUST_POLICY_ADDRESS = '0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64';
+    const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
+    vi.spyOn(SpritzTreasuryLegEngine, 'readiness').mockResolvedValue({
+      provider: 'spritz-treasury-leg',
+      ready: false,
+      issues: ['Spritz ACH payout is requirements_needed'],
+      policyContract: '0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64',
+      chainId: 8453,
+      network: 'base',
+      payoutWallet: '0x0D17327aB3A97cc9E00b0c2da7172014C3d9008e',
+      payoutWalletSigner: { type: 'external', provider: 'coinbase' },
+      fundingSource: { kind: 'treasury_core_erp', sourceAccountId: '1000', live: false, bucket: null, route: { executable: true } },
+      fundingSources: [{ bucket: 'coupon_income', configured: true, executable: true, issue: null }],
+      settlementBank: { id: 'bank-1', institution: 'Column', accountNumberLast4: '2959', status: 'active' },
+      settlementDestinations: { bank: 1, bills: 0, default: 'bank' },
+      offramp: { status: 'requirements_needed' },
+      billPay: null,
+      gl: { bookingEnabled: true },
+    });
+    const r = await TrustControlPlaneEngine.readinessFull();
+    expect(r.components.spritz).toMatchObject({
+      component: 'spritz', available: true, ready: false, mode: 'shadow', evaluated: 'spritz-api',
+      offramp: 'requirements_needed', settlementBank: { institution: 'Column', last4: '2959' },
+      fundingSource: { sourceAccountId: '1000', executable: true },
+    });
+    expect(r.gaps.find((g: any) => g.component === 'spritz')).toMatchObject({ severity: 'medium', gap: expect.stringContaining('requirements_needed') });
+    const p = TrustControlPlaneEngine.evaluatePipeline(r, healthySnapshot());
+    expect(gapsFor(p, 'settle').some((g: any) => /Spritz fiat leg not ready/.test(g.gap))).toBe(true);
+  });
+
+  it('readinessFull reports a Spritz API failure as an issue, not an exception', async () => {
+    process.env.SPRITZ_API_KEY = 'sk_test';
+    const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
+    vi.spyOn(SpritzTreasuryLegEngine, 'readiness').mockRejectedValue(new Error('relay 502'));
+    const r = await TrustControlPlaneEngine.readinessFull();
+    expect(r.components.spritz.available).toBe(true);
+    expect(r.components.spritz.ready).toBe(false);
+    expect(r.components.spritz.issues).toEqual(expect.arrayContaining([expect.stringContaining('relay 502')]));
   });
 });
 

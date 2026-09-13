@@ -7,7 +7,8 @@
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
- * ptc-treasury, settlement-endpoint, moov-paygate, apisix, and nickel.
+ * ptc-treasury, settlement-endpoint, moov-paygate, apisix, nickel, canonical-money,
+ * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os, and live-money.
  */
 
 const express = require('express');
@@ -40,6 +41,12 @@ const {
   MoovPaygateEngine,
   ApacheApisixEngine,
   NickelMcpEngine,
+  CanonicalMoneyOSEngine,
+  CanonicalLiquidityOSEngine,
+  CanonicalConsensusOSEngine,
+  CanonicalFundingEngine,
+  CollateralOSEngine,
+  LiveMoneyEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -85,6 +92,12 @@ const ENGINES = {
   'moov-paygate': MoovPaygateEngine,
   apisix: ApacheApisixEngine,
   nickel: NickelMcpEngine,
+  'canonical-money': CanonicalMoneyOSEngine,
+  'canonical-liquidity': CanonicalLiquidityOSEngine,
+  'canonical-consensus': CanonicalConsensusOSEngine,
+  'canonical-funding': CanonicalFundingEngine,
+  'collateral-os': CollateralOSEngine,
+  'live-money': LiveMoneyEngine,
 };
 
 function sendError(res, err) {

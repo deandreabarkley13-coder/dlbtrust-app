@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>DLB Trust — Command Center</title>
+  <style>
+    :root {
+      --bg:#0a0e17; --bg-2:#0d1320; --card:#111a2b; --panel:#172337;
+      --border:#26314a; --text:#f8fafc; --muted:#94a3b8;
+      --primary:#4f87ff; --primary-hover:#3a70e0; --primary-glow:rgba(79,135,255,.22);
+      --gold:#d4af37; --gold-glow:rgba(212,175,55,.18);
+      --success:#22c55e; --warning:#f59e0b; --danger:#ef4444;
+      --radius:14px; --sidebar:264px;
+    }
+    * { box-sizing:border-box; margin:0; padding:0; }
+    html, body { height:100%; }
+    body { font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); display:flex; min-height:100vh; }
+    button, input { font:inherit; }
+    a { color:inherit; text-decoration:none; }
+    .hidden { display:none !important; }
+
+    /* Sidebar */
+    .sidebar { width:var(--sidebar); flex:0 0 var(--sidebar); background:var(--bg-2); border-right:1px solid var(--border); display:flex; flex-direction:column; height:100vh; position:sticky; top:0; }
+    .brand { display:flex; align-items:center; gap:12px; padding:18px 18px 14px; border-bottom:1px solid var(--border); }
+    .brand .logo { width:38px; height:38px; border-radius:11px; background:linear-gradient(135deg,var(--gold),#f0d77a); color:#0a0e17; font-weight:800; display:flex; align-items:center; justify-content:center; letter-spacing:-.5px; }
+    .brand h1 { font-size:.95rem; font-weight:700; line-height:1.15; }
+    .brand p { font-size:.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+    .search { padding:12px 14px; }
+    .search input { width:100%; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:9px 12px; color:var(--text); font-size:.85rem; }
+    .search input:focus { outline:none; border-color:var(--primary); box-shadow:0 0 0 3px var(--primary-glow); }
+    .nav { flex:1; overflow:auto; padding:4px 10px 14px; }
+    .nav-group { margin-top:10px; }
+    .nav-group h3 { font-size:.66rem; text-transform:uppercase; letter-spacing:.1em; color:var(--muted); padding:8px 10px 4px; }
+    .nav-item { display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:none; border:0; color:var(--text); padding:9px 10px; border-radius:9px; cursor:pointer; font-size:.86rem; }
+    .nav-item:hover { background:var(--card); }
+    .nav-item.active { background:var(--primary-glow); color:#dbe7ff; }
+    .nav-item .ic { width:22px; text-align:center; font-size:.95rem; opacity:.9; }
+    .nav-item .ext { margin-left:auto; color:var(--muted); font-size:.7rem; }
+    .nav-item.dim { display:none; }
+    .sidebar-foot { padding:14px; border-top:1px solid var(--border); }
+    .user-chip { display:flex; align-items:center; gap:10px; }
+    .avatar { width:34px; height:34px; border-radius:50%; background:var(--panel); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:.8rem; color:var(--gold); }
+    .user-chip .name { font-size:.82rem; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:140px; }
+    .user-chip .role { font-size:.7rem; color:var(--muted); text-transform:capitalize; }
+
+    /* Main */
+    .main { flex:1; min-width:0; display:flex; flex-direction:column; height:100vh; }
+    .topbar { display:flex; align-items:center; gap:12px; padding:14px 22px; border-bottom:1px solid var(--border); background:var(--bg-2); }
+    .topbar h2 { font-size:1.05rem; font-weight:700; }
+    .topbar .crumb { color:var(--muted); font-size:.8rem; }
+    .topbar .spacer { flex:1; }
+    .menu-btn { display:none; }
+    .btn { display:inline-flex; align-items:center; gap:6px; background:var(--primary); color:#fff; border:0; border-radius:9px; padding:8px 13px; font-size:.82rem; font-weight:600; cursor:pointer; white-space:nowrap; }
+    .btn:hover { background:var(--primary-hover); }
+    .btn:disabled { opacity:.6; cursor:default; }
+    .btn.sec { background:var(--panel); border:1px solid var(--border); color:var(--text); }
+    .btn.sec:hover { background:var(--card); }
+    .btn.gold { background:var(--gold); color:#0a0e17; }
+    .btn.danger { background:transparent; border:1px solid var(--danger); color:var(--danger); }
+    .btn.sm { padding:6px 10px; font-size:.76rem; }
+    .content { flex:1; overflow:auto; padding:22px; }
+    .content.frame { padding:0; overflow:hidden; display:flex; }
+    iframe.module { border:0; width:100%; height:100%; background:var(--bg); flex:1; }
+
+    .badge { display:inline-block; font-size:.7rem; padding:3px 9px; border-radius:999px; border:1px solid var(--border); color:var(--muted); background:var(--panel); }
+    .badge.ok { color:var(--success); border-color:var(--success); }
+    .badge.warn { color:var(--warning); border-color:var(--warning); }
+    .badge.bad { color:var(--danger); border-color:var(--danger); }
+    .muted { color:var(--muted); font-size:.8rem; }
+
+    .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; }
+    .kpi { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:18px; position:relative; overflow:hidden; }
+    .kpi.gold { border-color:rgba(212,175,55,.45); background:linear-gradient(160deg,rgba(212,175,55,.12),var(--card) 60%); }
+    .kpi .label { font-size:.7rem; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); }
+    .kpi .value { font-size:1.55rem; font-weight:700; margin:8px 0 4px; letter-spacing:-.02em; }
+    .kpi .sub { font-size:.76rem; color:var(--muted); }
+    .kpi .act { position:absolute; right:14px; top:14px; }
+
+    .row { display:grid; grid-template-columns:1.4fr 1fr; gap:14px; margin-top:14px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:18px; min-width:0; overflow-wrap:anywhere; }
+    .row > *, .kpis > *, .modules > * { min-width:0; }
+    .card-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+    .card-head h3 { font-size:.95rem; font-weight:700; }
+    .card-head .spacer { flex:1; }
+    .list-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--border); font-size:.84rem; }
+    .list-row:last-child { border-bottom:0; }
+    .stage { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--border); flex-wrap:wrap; }
+    .stage > div { min-width:0; flex:1; }
+    .stage:last-child { border-bottom:0; }
+    .stage .pill { min-width:64px; text-align:center; }
+    .stage strong { font-size:.82rem; display:block; }
+    .stage .muted { font-size:.74rem; }
+
+    .quick { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    .modules { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:12px; margin-top:14px; }
+    .mod { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; cursor:pointer; text-align:left; color:var(--text); transition:transform .12s, border-color .12s; }
+    .mod:hover { transform:translateY(-2px); border-color:var(--primary); }
+    .mod .ic { font-size:1.4rem; }
+    .mod h4 { font-size:.9rem; margin:10px 0 4px; }
+    .mod p { font-size:.76rem; color:var(--muted); line-height:1.4; }
+    .section-title { display:flex; align-items:center; gap:10px; margin-top:26px; font-size:1rem; font-weight:700; }
+    .section-title .muted { font-weight:400; }
+
+    .overlay { position:fixed; inset:0; background:rgba(10,14,23,.85); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; }
+    .overlay .card { max-width:460px; width:100%; }
+    .overlay h2 { font-size:1.1rem; margin-bottom:6px; }
+    .overlay .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+
+    .toast { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:10px 14px; font-size:.82rem; z-index:60; box-shadow:0 12px 30px rgba(0,0,0,.35); }
+    .toast.err { border-color:var(--danger); }
+
+    @media (max-width: 900px) {
+      .sidebar { position:fixed; left:0; top:0; z-index:40; transform:translateX(-100%); transition:transform .18s; }
+      .sidebar.open { transform:none; }
+      .menu-btn { display:inline-flex; }
+      .row { grid-template-columns:1fr; }
+      .kpis { grid-template-columns:1fr; }
+      .kpi .value { font-size:1.3rem; overflow-wrap:anywhere; }
+      .modules, .quick { grid-template-columns:1fr; }
+      .content { padding:14px; }
+      .card-head { flex-wrap:wrap; }
+      .topbar { padding:12px 14px; }
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="logo">DLB</div>
+      <div><h1>Command Center</h1><p>DeAndrea LaVar Barkley Trust</p></div>
+    </div>
+    <div class="search"><input id="nav-search" type="search" placeholder="Find a module…" autocomplete="off"></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="user-chip">
+        <div class="avatar" id="avatar">–</div>
+        <div><div class="name" id="user-name">…</div><div class="role" id="user-role"></div></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn sec sm" id="classic-btn" type="button" onclick="openModule('trust-overview', true)">Classic view</button>
+        <button class="btn danger sm" type="button" onclick="logout()">Log out</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="topbar">
+      <button class="btn sec sm menu-btn" type="button" onclick="toggleSidebar()">☰</button>
+      <div><h2 id="page-title">Home</h2><div class="crumb" id="page-crumb">Overview of the trust</div></div>
+      <div class="spacer"></div>
+      <span class="badge" id="live-indicator">Live</span>
+      <span class="muted" id="live-status"></span>
+      <button class="btn sec sm" id="refresh-btn" type="button" onclick="refreshAll(true)">Refresh</button>
+      <button class="btn sec sm hidden" id="open-tab-btn" type="button" onclick="openCurrentInTab()">Open in new tab ↗</button>
+    </div>
+
+    <div class="content" id="home">
+      <div class="kpis">
+        <div class="kpi gold"><div class="label">Net Worth</div><div class="value" id="k-nw">—</div><div class="sub" id="k-nw-sub">across all ledgers</div></div>
+        <div class="kpi"><div class="label">Cash &amp; Reserves</div><div class="value" id="k-cash">—</div><div class="sub">operating &amp; reserve accounts</div><button class="btn sec sm act" type="button" onclick="openModule('trust-treasury')">Fund</button></div>
+        <div class="kpi"><div class="label">Bonds / Fixed Income</div><div class="value" id="k-bonds">—</div><div class="sub">active positions</div><button class="btn sec sm act" type="button" onclick="openModule('treasury')">Portfolio</button></div>
+        <div class="kpi"><div class="label">Pending Approvals</div><div class="value" id="k-pending">—</div><div class="sub">distribution / payment requests</div><button class="btn sec sm act" type="button" onclick="openModule('trust-distributions')">Review</button></div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <div class="card-head"><h3>Settlement Pipeline</h3><span class="badge" id="pipe-indicator">Loading</span><div class="spacer"></div><button class="btn sec sm" type="button" onclick="openModule('trust-settlement')">Details</button></div>
+          <div id="pipe-stages" class="muted">Loading…</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Quick Actions</h3></div>
+          <div class="quick">
+            <button class="btn gold" type="button" onclick="openModule('trust-distributions')">New Distribution</button>
+            <button class="btn" type="button" onclick="openModule('trust-vendors')">Pay a Vendor</button>
+            <button class="btn sec" type="button" onclick="openModule('payout-center')">Send Payout</button>
+            <button class="btn sec" type="button" onclick="openModule('trust-wires')">Approve Wires</button>
+            <button class="btn sec" type="button" onclick="openModule('trust-signatures')">Sign Bills</button>
+            <button class="btn sec" type="button" onclick="openModule('finops')">Ask FinOps AI</button>
+          </div>
+          <div class="card-head" style="margin-top:18px;"><h3>System Health</h3><div class="spacer"></div><span class="badge" id="health-badge">…</span></div>
+          <div id="health-list" class="muted">Checking…</div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <div class="card-head"><h3>Recent Distribution Requests</h3><div class="spacer"></div><button class="btn sec sm" type="button" onclick="openModule('trust-distributions')">All requests</button></div>
+          <div id="recent-requests" class="muted">Loading…</div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Balances by Source</h3></div>
+          <div id="by-source" class="muted">Loading…</div>
+          <div class="card-head" style="margin-top:18px;"><h3>Trust Contacts</h3></div>
+          <div id="contacts" class="muted">Loading…</div>
+        </div>
+      </div>
+
+      <div class="section-title">All Modules <span class="muted">— everything in one place</span></div>
+      <div class="modules" id="module-grid"></div>
+    </div>
+
+    <div class="content frame hidden" id="frame-wrap">
+      <iframe class="module" id="module-frame" title="Module"></iframe>
+    </div>
+  </main>
+
+  <div class="overlay hidden" id="boot-overlay">
+    <div class="card">
+      <h2 id="boot-title">Loading your session…</h2>
+      <p class="muted" id="boot-detail">Verifying your trustee session with the server.</p>
+      <div class="actions hidden" id="boot-actions">
+        <button class="btn" type="button" onclick="location.reload()">Retry</button>
+        <button class="btn sec" type="button" onclick="resetSession()">Log out &amp; clear session</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/lib/portal-routing.js?v=1789301449"></script>
+  <script>
+  var ADMIN_KEY = PortalRouting.ADMIN_KEY;
+  var USER_KEY = PortalRouting.USER_KEY;
+  var el = function (id) { return document.getElementById(id); };
+  var esc = function (v) { return String(v == null ? '' : v).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
+  var fmtUsd = function (n) { return '$' + Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+
+  function resetSession() {
+    try { localStorage.removeItem(ADMIN_KEY); localStorage.removeItem(USER_KEY); localStorage.removeItem('dlb-trust-email'); } catch (e) { /* storage unavailable */ }
+    location.href = '/dapp';
+  }
+  function logout() { resetSession(); }
+  function toggleSidebar() { el('sidebar').classList.toggle('open'); }
+
+  // Every module is either a tab of the trust operations dashboard (embedded
+  // via /dashboard/classic?embed=1) or a standalone page under /public.
+  var MODULES = [
+    { id: 'home', group: 'Home', ic: '⌂', title: 'Home', desc: 'Live balances, pipeline health and quick actions.' },
+
+    { id: 'trust-overview', group: 'Trust Operations', ic: '◎', title: 'Trust Overview', desc: 'Net worth, sources and recent activity.', url: '/dashboard/classic?embed=1&tab=overview' },
+    { id: 'trust-distributions', group: 'Trust Operations', ic: '⇄', title: 'Distributions', desc: 'Two-trustee distribution and disbursement requests.', url: '/dashboard/classic?embed=1&tab=distributions' },
+    { id: 'trust-signatures', group: 'Trust Operations', ic: '✍', title: 'Bill Signatures', desc: 'Maker / checker sign-off on vendor bills.', url: '/dashboard/classic?embed=1&tab=signatures' },
+    { id: 'trust-wires', group: 'Trust Operations', ic: '⚡', title: 'Wire Approvals', desc: 'Approve, reject and track outgoing wires.', url: '/dashboard/classic?embed=1&tab=wires' },
+    { id: 'trust-vendors', group: 'Trust Operations', ic: '🧾', title: 'Vendor Payments', desc: 'Vendors, bills and payment runs.', url: '/dashboard/classic?embed=1&tab=vendors' },
+    { id: 'trust-payouts', group: 'Trust Operations', ic: '↗', title: 'Payouts', desc: 'Beneficiary and counterparty payouts.', url: '/dashboard/classic?embed=1&tab=payouts' },
+    { id: 'trust-holds', group: 'Trust Operations', ic: '🔒', title: 'Hold Accounts', desc: 'Open and manage segregated hold accounts.', url: '/dashboard/classic?embed=1&tab=holds' },
+    { id: 'trust-treasury', group: 'Trust Operations', ic: '🏦', title: 'Treasury Funding', desc: 'Deposit instructions and funding history.', url: '/dashboard/classic?embed=1&tab=treasury' },
+    { id: 'trust-policy', group: 'Trust Operations', ic: '⛓', title: 'On-Chain Policy', desc: 'Distribution policy contract readiness.', url: '/dashboard/classic?embed=1&tab=policy' },
+    { id: 'trust-ramps', group: 'Trust Operations', ic: '⇅', title: 'On / Off Ramps', desc: 'Fiat ↔ stablecoin ramps.', url: '/dashboard/classic?embed=1&tab=ramps' },
+    { id: 'trust-agent', group: 'Trust Operations', ic: '✦', title: 'AI Agent', desc: 'Conversational trustee assistant.', url: '/dashboard/classic?embed=1&tab=agent' },
+    { id: 'trust-settlement', group: 'Trust Operations', ic: '⟳', title: 'Settlement Gateway', desc: 'ERP → policy → payout wallet pipeline.', url: '/dashboard/classic?embed=1&tab=settlement' },
+    { id: 'trust-rally', group: 'Trust Operations', ic: '◈', title: 'Rally Wallet', desc: 'Rally Protocol wallets, tap-pay and payouts.', url: '/dashboard/classic?embed=1&tab=rally' },
+
+    { id: 'treasury', group: 'Treasury & Banking', ic: '📊', title: 'Treasury Management System', desc: 'Bonds, cash, ACH, wires, accounting, tax, Fineract GL and more.', url: '/treasury', standalone: true },
+    { id: 'master', group: 'Treasury & Banking', ic: '▦', title: 'Master Dashboard', desc: 'Bond masters, requests and portfolio overview.', url: '/dapp/master-dashboard.html' },
+    { id: 'os-engine', group: 'Treasury & Banking', ic: '⚙', title: 'OS Engine Operator Panel', desc: 'Domain engine status and operator controls.', url: '/os-engine-dashboard.html', standalone: true },
+
+    { id: 'wallets', group: 'Wallets & Payments', ic: '👛', title: 'Wallets & Transactions', desc: 'Custodial wallets, balances and transaction history.', url: '/dapp/wallets.html' },
+    { id: 'payout-center', group: 'Wallets & Payments', ic: '💸', title: 'Payout Center', desc: 'Send payouts, manage recipients, view activity.', url: '/dapp/payout-center.html' },
+    { id: 'mobile', group: 'Wallets & Payments', ic: '📱', title: 'Mobile Wallet', desc: 'Tap-to-pay wallet and QR receive.', url: '/dapp/mobile.html' },
+
+    { id: 'finops', group: 'Intelligence', ic: '🤖', title: 'AI FinOps Agent', desc: 'Natural-language FinOps operations and consensus.', url: '/dapp/finops.html' },
+
+    { id: 'beneficiary-portal', group: 'Portals', ic: '👥', title: 'Beneficiary Portal', desc: 'What beneficiaries see: PTC dashboard and requests.', url: '/trust-portal/dashboard.html', standalone: true },
+    { id: 'legacy-dapp', group: 'Portals', ic: '🕘', title: 'Legacy DeFi dApp', desc: 'Previous dApp interface, kept for reference.', url: '/dapp/legacy.html' }
+  ];
+  var byId = {};
+  MODULES.forEach(function (m) { byId[m.id] = m; });
+  var current = 'home';
+
+  function renderNav() {
+    var groups = [];
+    MODULES.forEach(function (m) { if (groups.indexOf(m.group) === -1) groups.push(m.group); });
+    el('nav').innerHTML = groups.map(function (g) {
+      return '<div class="nav-group"><h3>' + esc(g) + '</h3>' + MODULES.filter(function (m) { return m.group === g; }).map(function (m) {
+        return '<button class="nav-item" type="button" data-id="' + m.id + '" data-search="' + esc((m.title + ' ' + m.desc + ' ' + m.group).toLowerCase()) + '"><span class="ic">' + m.ic + '</span><span>' + esc(m.title) + '</span>' + (m.standalone ? '<span class="ext">full page</span>' : '') + '</button>';
+      }).join('') + '</div>';
+    }).join('');
+    el('nav').querySelectorAll('.nav-item').forEach(function (b) { b.onclick = function () { openModule(b.dataset.id); }; });
+    el('module-grid').innerHTML = MODULES.filter(function (m) { return m.id !== 'home'; }).map(function (m) {
+      return '<button class="mod" type="button" data-id="' + m.id + '"><div class="ic">' + m.ic + '</div><h4>' + esc(m.title) + '</h4><p>' + esc(m.desc) + '</p></button>';
+    }).join('');
+    el('module-grid').querySelectorAll('.mod').forEach(function (b) { b.onclick = function () { openModule(b.dataset.id); }; });
+  }
+
+  el('nav-search').addEventListener('input', function () {
+    var q = this.value.trim().toLowerCase();
+    el('nav').querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('dim', !!q && b.dataset.search.indexOf(q) === -1); });
+    el('nav').querySelectorAll('.nav-group').forEach(function (g) { g.style.display = g.querySelectorAll('.nav-item:not(.dim)').length ? '' : 'none'; });
+  });
+
+  function setActive(id) {
+    el('nav').querySelectorAll('.nav-item').forEach(function (b) { b.classList.toggle('active', b.dataset.id === id); });
+  }
+
+  function openModule(id, newTab) {
+    var m = byId[id] || byId.home;
+    if (newTab && m.url) { window.open(m.url.replace('embed=1&', '').replace('?embed=1', ''), '_blank'); return; }
+    // The treasury system and the OS panel keep their own login and layout,
+    // so they open as full pages rather than inside the shell.
+    if (m.standalone) { window.open(m.url, '_blank'); return; }
+    current = m.id;
+    setActive(m.id);
+    el('sidebar').classList.remove('open');
+    el('page-title').textContent = m.title;
+    el('page-crumb').textContent = m.id === 'home' ? 'Overview of the trust' : m.group + ' · ' + m.desc;
+    if (m.id === 'home') {
+      el('home').classList.remove('hidden');
+      el('frame-wrap').classList.add('hidden');
+      el('open-tab-btn').classList.add('hidden');
+      el('refresh-btn').classList.remove('hidden');
+      if (location.hash) history.replaceState(null, '', location.pathname);
+      refreshAll(false);
+    } else {
+      el('home').classList.add('hidden');
+      el('frame-wrap').classList.remove('hidden');
+      el('open-tab-btn').classList.remove('hidden');
+      el('refresh-btn').classList.add('hidden');
+      var frame = el('module-frame');
+      if (frame.getAttribute('src') !== m.url) frame.setAttribute('src', m.url);
+      history.replaceState(null, '', '#' + m.id);
+    }
+  }
+  function openCurrentInTab() { openModule(current, true); }
+
+  // ── data ────────────────────────────────────────────────────────────────
+  var API_TIMEOUT_MS = 30000;
+  function api(path, opts) {
+    opts = opts || {};
+    var adminToken = localStorage.getItem(ADMIN_KEY);
+    var userToken = localStorage.getItem(USER_KEY);
+    opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    if (adminToken) opts.headers['x-admin-token'] = adminToken;
+    else if (userToken) opts.headers.Authorization = 'Bearer ' + userToken;
+    opts.cache = 'no-store';
+    opts.credentials = 'same-origin';
+    var timer = null;
+    if (typeof AbortController === 'function') {
+      var ctrl = new AbortController();
+      opts.signal = ctrl.signal;
+      timer = setTimeout(function () { ctrl.abort(); }, API_TIMEOUT_MS);
+    }
+    return fetch(path, opts).catch(function (e) {
+      throw new Error(e && e.name === 'AbortError' ? 'Request timed out after ' + Math.round(API_TIMEOUT_MS / 1000) + 's' : 'Network error: ' + ((e && e.message) || 'could not reach the server'));
+    }).then(function (res) {
+      if (timer) clearTimeout(timer);
+      if (res.status === 401) { resetSession(); return new Promise(function () {}); }
+      return res.text().then(function (text) {
+        var data; try { data = JSON.parse(text); } catch (e) { data = { error: res.ok ? 'Unexpected non-JSON response from server' : (res.status + ' ' + res.statusText) }; }
+        if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
+        return data;
+      });
+    });
+  }
+
+  var toastTimer = null;
+  function toast(msg, isErr) {
+    var t = document.querySelector('.toast');
+    if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.className = 'toast' + (isErr ? ' err' : '');
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.remove(); }, 4000);
+  }
+
+  var live = { loading: false };
+  function loadSummary(force) {
+    if (live.loading) return Promise.resolve();
+    live.loading = true;
+    el('refresh-btn').disabled = true;
+    return api('/api/trust-ops/summary' + (force ? '?refresh=1' : '')).then(function (r) {
+      var s = r.data || {};
+      el('k-nw').textContent = fmtUsd(s.netWorth);
+      var src = Object.keys(s.bySource || {});
+      el('k-nw-sub').textContent = src.length ? src.map(function (k) { return k + ': ' + fmtUsd(s.bySource[k].balance); }).join(' · ') : 'across all ledgers';
+      var cash = ((s.bySource && s.bySource.cash) || {}).balance || 0;
+      var bank = ((s.bySource && s.bySource.trust_bank) || {}).balance || 0;
+      el('k-cash').textContent = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd(cash + bank) : '—';
+      el('k-bonds').textContent = fmtUsd(s.bondValue);
+      el('k-pending').textContent = s.pendingApprovals || 0;
+      el('by-source').innerHTML = src.length ? src.map(function (k) { return '<div class="list-row"><span>' + esc(k) + '</span><strong>' + fmtUsd(s.bySource[k].balance) + '</strong></div>'; }).join('') : '<p class="muted">No ledger sources connected.</p>';
+      var rows = (s.distributions || []).slice(0, 8).map(function (r) {
+        var cls = (r.status === 'approved' || r.status === 'executed') ? 'ok' : r.status === 'rejected' ? 'bad' : 'warn';
+        return '<div class="list-row"><span>' + esc(r.id) + ' — ' + esc(r.beneficiary_name || r.beneficiary_email) + '</span><span class="badge ' + cls + '">' + esc(r.status) + '</span></div>';
+      });
+      el('recent-requests').innerHTML = rows.join('') || '<p class="muted">No requests yet.</p>';
+      var contacts = (s.contacts || []).slice(0, 8).map(function (u) { return '<div class="list-row"><span>' + esc(u.name || u.email) + '</span><span class="badge">' + esc(u.role || 'beneficiary') + '</span></div>'; });
+      el('contacts').innerHTML = contacts.join('') || '<p class="muted">No contacts.</p>';
+      var errs = s.syncErrors || [];
+      el('live-indicator').textContent = errs.length ? 'Partial' : 'Live';
+      el('live-indicator').className = 'badge ' + (errs.length ? 'warn' : 'ok');
+      el('live-status').textContent = 'as of ' + (s.asOf ? new Date(s.asOf) : new Date()).toLocaleTimeString();
+    }).catch(function (e) {
+      el('live-indicator').textContent = 'Stale';
+      el('live-indicator').className = 'badge bad';
+      el('live-status').textContent = e.message;
+      toast('Could not refresh balances: ' + e.message, true);
+    }).then(function () { live.loading = false; el('refresh-btn').disabled = false; });
+  }
+
+  function loadPipeline() {
+    return api('/api/finops/spritz/pipeline?limit=10').then(function (r) {
+      var p = r.data || {};
+      el('pipe-indicator').textContent = p.ready ? 'Ready' : 'Blocked';
+      el('pipe-indicator').className = 'badge ' + (p.ready ? 'ok' : 'warn');
+      el('pipe-stages').innerHTML = (p.stages || []).map(function (s) {
+        return '<div class="stage"><span class="badge pill ' + (s.ok ? 'ok' : 'bad') + '">' + (s.ok ? 'OK' : 'BLOCKED') + '</span><div><strong>' + esc(s.label) + '</strong><span class="muted">' + esc(s.detail || '') + '</span></div></div>';
+      }).join('') || '<p class="muted">No pipeline stages reported.</p>';
+    }).catch(function (e) {
+      el('pipe-indicator').textContent = 'Stale';
+      el('pipe-indicator').className = 'badge bad';
+      el('pipe-stages').textContent = 'Could not load pipeline: ' + e.message;
+    });
+  }
+
+  function loadHealth() {
+    return fetch('/api/health', { cache: 'no-store' }).then(function (res) {
+      return res.text().then(function (t) { var d; try { d = JSON.parse(t); } catch (e) { d = {}; } return { ok: res.ok, data: d }; });
+    }).then(function (out) {
+      var d = out.data || {};
+      var checks = d.checks || {};
+      var LABELS = { bonds: 'Bond engine', cashAccounts: 'Cash accounts', trustAccounts: 'Trust accounts', authUsers: 'Auth users', database: 'Database', fineract: 'Fineract GL', bill: 'Bill.com', dbCircuit: 'DB circuit' };
+      var items = [];
+      Object.keys(checks).forEach(function (k) {
+        var v = checks[k] || {};
+        var ok = k === 'dbCircuit' ? !v.isOpen : v.ok === true;
+        var detail = v.count != null ? v.count + ' records' : (v.configured === false ? 'not configured' : (v.error || ''));
+        items.push('<div class="list-row"><span>' + esc(LABELS[k] || k) + (detail ? ' <span class="muted">' + esc(String(detail)).slice(0, 80) + '</span>' : '') + '</span><span class="badge ' + (ok ? 'ok' : 'warn') + '">' + (ok ? 'OK' : 'attention') + '</span></div>');
+      });
+      var healthy = out.ok && d.status === 'healthy';
+      el('health-badge').textContent = healthy ? 'Healthy' : (d.status || 'Degraded');
+      el('health-badge').className = 'badge ' + (healthy ? 'ok' : 'warn');
+      el('health-list').innerHTML = items.join('') || '<div class="list-row"><span>API server</span><span class="badge ' + (out.ok ? 'ok' : 'warn') + '">' + (out.ok ? 'reachable' : 'degraded') + '</span></div>';
+    }).catch(function (e) {
+      el('health-badge').textContent = 'Unreachable';
+      el('health-badge').className = 'badge bad';
+      el('health-list').textContent = e.message;
+    });
+  }
+
+  function refreshAll(force) {
+    return Promise.all([loadSummary(force), loadPipeline(), loadHealth()]);
+  }
+
+  var REFRESH_MS = 20000;
+  setInterval(function () { if (!document.hidden && current === 'home') refreshAll(false); }, REFRESH_MS);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && current === 'home') refreshAll(false); });
+  window.addEventListener('hashchange', function () { var id = location.hash.replace(/^#/, ''); if (byId[id] && id !== current) openModule(id); });
+
+  // ── boot ────────────────────────────────────────────────────────────────
+  var bootTimer = null;
+  function bootFail(msg) {
+    clearTimeout(bootTimer);
+    el('boot-title').textContent = 'Dashboard could not load';
+    el('boot-detail').textContent = msg;
+    el('boot-actions').classList.remove('hidden');
+    el('boot-overlay').classList.remove('hidden');
+  }
+  function init() {
+    var token = localStorage.getItem(ADMIN_KEY) || localStorage.getItem(USER_KEY);
+    if (!token) { location.href = '/dapp'; return; }
+    el('boot-overlay').classList.remove('hidden');
+    bootTimer = setTimeout(function () { bootFail('The server did not answer within 20s. Check your connection, then retry or clear your session and log in again.'); }, 20000);
+    api('/api/dapp/auth/me').then(function (me) {
+      var u = (me && me.data && (me.data.dappUser || me.data.user)) || {};
+      var roles = u.roles || [u.role];
+      var role = u.role || u.active_role;
+      var isAdmin = !!localStorage.getItem(ADMIN_KEY);
+      if (!isAdmin && !PortalRouting.isTrusteeRole(roles, role)) { location.replace(PortalRouting.BENEFICIARY_HOME + '?denied=trustee'); return; }
+      var roleLabel = u.role || (isAdmin ? 'operator' : 'trustee');
+      var name = u.name || u.email || (isAdmin ? 'Operator' : 'Trustee');
+      el('user-name').textContent = name;
+      el('user-role').textContent = roleLabel.replace(/_/g, ' ');
+      el('avatar').textContent = name.slice(0, 2).toUpperCase();
+      clearTimeout(bootTimer);
+      el('boot-overlay').classList.add('hidden');
+      renderNav();
+      var requested = location.hash.replace(/^#/, '');
+      openModule(byId[requested] ? requested : 'home');
+    }).catch(function (e) { bootFail('Could not verify your session: ' + (e.message || 'unknown error')); });
+  }
+  window.addEventListener('error', function (ev) {
+    if (!el('boot-overlay').classList.contains('hidden')) bootFail('A script error stopped the dashboard from starting (' + ((ev && ev.message) || 'unexpected error') + ').');
+  });
+  init();
+  </script>
+</body>
+</html>

@@ -83,6 +83,38 @@ describe('Spritz Bill Pay from the Treasury-Core ERP', () => {
     expect(r.issues).toEqual([]);
   });
 
+  it('activates Bill Pay with the operator consent and client context Spritz requires', async () => {
+    stubSpritz((path) => {
+      if (path === '/v1/bills/activate') return { status: 'verification_required', activationId: 'act_1' };
+      throw new Error(`unexpected ${path}`);
+    });
+    const r = await SpritzEngine.activateBills({ clientContext: { clientIp: '203.0.113.7', userAgent: 'vitest', sessionId: 'sess_1' } });
+    expect(r).toMatchObject({ status: 'verification_required', activationId: 'act_1' });
+    const body = JSON.parse(calls[0].init.body as string);
+    expect(body.consent).toMatchObject({ termsText: expect.any(String), termsTextVersion: expect.any(String), acceptedAt: expect.any(String) });
+    expect(body.clientContext).toEqual({ clientIp: '203.0.113.7', platform: 'web', userAgent: 'vitest', sessionId: 'sess_1' });
+
+    await expect(SpritzEngine.activateBills({})).rejects.toMatchObject({ status: 400 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('reads and funds Spritz cards with the user API key when no integrator credentials are configured', async () => {
+    delete process.env.SPRITZ_INTEGRATOR_KEY;
+    delete process.env.SPRITZ_INTEGRATOR_SECRET;
+    stubSpritz((path) => {
+      if (path === '/v1/cards/') return [{ id: 'card_1', status: 'active', type: 'virtual', last4: '4242', payable: true }];
+      if (path === '/v1/off-ramp-quotes/') return { id: 'q_card', status: 'created', output: { rail: 'card_deposit', accountId: 'card_1', amount: '100.00' } };
+      throw new Error(`unexpected ${path}`);
+    });
+    const cards = await SpritzEngine.listCards();
+    expect(cards[0]).toMatchObject({ id: 'card_1', payable: true });
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe('Bearer test-key');
+
+    const q = await SpritzEngine.createCardDepositQuote({ cardId: 'card_1', amount: 100, chain: 'base', tokenAddress: USDC });
+    expect(q).toMatchObject({ id: 'q_card' });
+    expect(JSON.parse(calls[1].init.body as string)).toMatchObject({ accountId: 'card_1', rail: 'card_deposit', amount: '100', amountMode: 'output', chain: 'base', tokenAddress: USDC });
+  });
+
   it('quotes a linked bill on the bill_pay rail and refuses unpayable bills', async () => {
     stubSpritz((path) => {
       if (path === '/v1/bills/') return BILLS;

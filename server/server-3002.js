@@ -42,6 +42,16 @@ app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 // Input sanitization (null bytes, oversized strings)
 app.use(security.sanitizeInput);
 
+// Dashboard API responses are live ledger reads; never let a browser or edge
+// cache serve a stale one.
+app.use('/api', function(req, res, next) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
+  next();
+});
+
 // ─── Auth Routes (login, logout, user management) ────────────────────────────
 try { app.use('/api/auth', require(path.join(HD, 'server', 'routes', 'auth'))); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
 
@@ -200,50 +210,47 @@ try { app.use('/api/wallet', require(path.join(HD, 'server', 'routes', 'wallet')
 })();
 
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
-function serveDapp(req, res) {
+function setNoStoreHeaders(res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
+}
+function serveDapp(req, res) {
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 }
 function serveLanding(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'landing', 'index.html'));
 }
 function serveFinops(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.redirect('/dashboard');
 }
+function serveCommandCenter(req, res) {
+  setNoStoreHeaders(res);
+  res.sendFile(path.join(HD, 'public', 'dapp', 'command-center.html'));
+}
 function serveTrustDashboard(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
 }
 function serveTrustPortal(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'trust-portal', 'index.html'));
 }
 function serveTrustPortalDashboard(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'trust-portal', 'dashboard.html'));
 }
 app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
-app.get('/dashboard', serveTrustDashboard);
+app.get('/dashboard', serveCommandCenter);
+app.get('/dashboard/classic', serveTrustDashboard);
 app.get('/treasury', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/trust-portal', serveTrustPortal);
@@ -364,16 +371,11 @@ app.use(express.static(path.join(HD, 'public'), {
   maxAge: 0,
   lastModified: true,
   setHeaders: function(res, filePath) {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
-    res.set('Surrogate-Control', 'no-store');
+    setNoStoreHeaders(res);
   }
 }));
 app.get('*', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 });
 
@@ -1143,35 +1145,9 @@ initializeDatabase().then(function() {
         console.log('[fineract-init] Created ' + created + ' GL accounts');
       }
 
-      // Check if opening balance journal entry exists
-      var journalRes = await FineractClient.getJournalEntries({ limit: 100 });
-      var entries = (journalRes && journalRes.pageItems) || [];
-      var hasOpeningBalance = entries.some(function(je) {
-        return !je.reversed && je.amount === 100000000 && je.comments && je.comments.indexOf('Opening balance') >= 0;
-      });
-
-      if (hasOpeningBalance) {
-        console.log('[fineract-init] Opening balance already posted');
-      } else {
-        // Find Bond Investments and Trust Corpus detail account IDs from mappings
-        var mappingsRes = await pool.query("SELECT trust_account_code, fineract_gl_id FROM fineract_gl_mappings WHERE trust_account_code IN ('1100', '3000')");
-        var bondGlId = null, corpusGlId = null;
-        mappingsRes.rows.forEach(function(m) {
-          if (m.trust_account_code === '1100') bondGlId = m.fineract_gl_id;
-          if (m.trust_account_code === '3000') corpusGlId = m.fineract_gl_id;
-        });
-        if (bondGlId && corpusGlId) {
-          await FineractClient.postJournalEntry({
-            transactionDate: new Date(),
-            debits: [{ glAccountId: bondGlId, amount: 100000000 }],
-            credits: [{ glAccountId: corpusGlId, amount: 100000000 }],
-            comments: 'Opening balance — DLB-PRB bond issuance $100M face value',
-          });
-          console.log('[fineract-init] Posted $100M opening balance (Bond Investments ↔ Trust Corpus)');
-        } else {
-          console.warn('[fineract-init] Could not find GL mappings for opening balance');
-        }
-      }
+      // Opening balances reach Fineract only through the trust journal
+      // (DataBridge.postOpeningBalances -> pushToFineract) so the GL stays a
+      // strict mirror of the sub-ledger.
 
       // Pre-warm GL summary cache so it's available when Fineract disconnects
       try {
