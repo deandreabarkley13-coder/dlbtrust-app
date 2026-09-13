@@ -50,6 +50,7 @@ function store({
     if (text.startsWith('INSERT INTO data_sync_log') || text.startsWith('INSERT INTO data_discrepancies')) {
       writes.push({ sql: text, params }); return { rows: [] };
     }
+    if (text.startsWith('UPDATE data_bridge_discrepancies')) return { rows: [] };
     if (text.startsWith('UPDATE trust_journal_entries')) {
       writes.push({ sql: text, params });
       if (params.length === 2) {
