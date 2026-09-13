@@ -27,6 +27,7 @@ const { TrustAllocationEngine } = require('../server/integrations/dapp/trustAllo
 const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEngine');
 const { SpritzFiatFundingEngine } = require('../server/integrations/spritz/spritzFiatFundingEngine');
 const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
+const { ACHEngine } = require('../server/integrations/ach/achEngine');
 
 type FetchCall = { url: string; init: RequestInit };
 
@@ -190,11 +191,61 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
       amount: 250, rail: 'ach', memo: 'REF-2',
       destinationDetails: expect.objectContaining({ routingNumber: '101019644', accountNumber: '1234567890', bankName: 'Lead Bank' }),
     }));
-    expect(first.transfer).toEqual({ id: 'BTO-1', status: 'initiated', achBatchId: 'ach_1', wirePayoutId: null });
+    expect(first.transfer).toEqual({ id: 'BTO-1', status: 'initiated', achBatchId: 'ach_1', wirePayoutId: null, sameDay: false });
 
     const again = await SpritzFiatFundingEngine.fund({ amountUsd: 250, bucket: 'trust_operating', reference: 'REF-2' });
     expect(again.idempotent).toBe(true);
     expect(CanonicalFundingSource.commit).toHaveBeenCalledTimes(1);
+
+    const sameDay = await SpritzFiatFundingEngine.fund({ amountUsd: 0.5, bucket: 'trust_operating', reference: 'REF-2-SD', rail: 'ach', sameDay: true });
+    expect(BankTransferEngine.pushCredit).toHaveBeenLastCalledWith(expect.objectContaining({ amount: 0.5, rail: 'ach', sameDay: true }));
+    expect(sameDay.transfer.sameDay).toBe(true);
+    expect((BankTransferEngine.pushCredit as any).mock.calls[0][0].sameDay).toBeUndefined();
+  });
+
+  describe('ACHEngine.createBatch sameDay', () => {
+    const RTN = '101019644';
+    const entry = { receivingRouting: RTN, accountNumber: '1234567890', amountCents: 50, transactionCode: '22', individualId: 'BTO-1', individualName: 'Spritz' };
+    let inserted: any[];
+
+    beforeEach(() => {
+      inserted = [];
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-14T14:00:00Z')); // Monday 10:00 ET
+      vi.spyOn(pool, 'query').mockImplementation(async (sql: string, params: any[] = []) => {
+        if (/INSERT INTO ach_batches/.test(sql)) { inserted.push(params); return { rows: [{ batch_id: params[0], effective_date: params[5], same_day: params[12], nacha_content: params[8] }], rowCount: 1 }; }
+        return { rows: [], rowCount: 0 };
+      });
+      vi.spyOn(ACHEngine, 'ensureFilesDir').mockImplementation(() => {});
+      vi.spyOn(require('fs'), 'writeFileSync').mockImplementation(() => {});
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('forces the effective entry date to the current banking day, marks SDHHMM and persists same_day', async () => {
+      const batch = await ACHEngine.createBatch({ sameDay: true, description: 'SPRITZ' }, [entry]);
+      expect(batch.effective_date).toBe('2026-09-14');
+      expect(batch.same_day).toBe(true);
+      expect(batch.same_day_window).toMatchObject({ date: '2026-09-14', bankingDay: true, withinWindow: true });
+      const header = String(batch.nacha_content).split('\n').find((l: string) => l.startsWith('5'))!;
+      expect(header.slice(63, 69)).toBe('SD1000');
+      expect(header.slice(69, 75)).toBe('260914');
+      expect(header.slice(75, 78)).toBe('   ');
+
+      const standard = await ACHEngine.createBatch({ description: 'SPRITZ' }, [entry]);
+      expect(standard.same_day).toBe(false);
+      const stdHeader = String(standard.nacha_content).split('\n').find((l: string) => l.startsWith('5'))!;
+      expect(stdHeader.slice(63, 69)).toBe('      ');
+    });
+
+    it('rejects over-limit entries, mismatched effective dates and non-banking days', async () => {
+      await expect(ACHEngine.createBatch({ sameDay: true }, [{ ...entry, amountCents: 1_000_000_01 }])).rejects.toMatchObject({ code: 'ACH_SAME_DAY_LIMIT_EXCEEDED' });
+      await expect(ACHEngine.createBatch({ sameDay: true, effectiveDate: '2026-09-15' }, [entry])).rejects.toMatchObject({ code: 'ACH_SAME_DAY_EFFECTIVE_DATE' });
+      await expect(ACHEngine.createBatch({ sameDay: false }, [{ ...entry, amountCents: 1_000_000_01 }])).resolves.toBeTruthy();
+      vi.setSystemTime(new Date('2026-09-13T14:00:00Z')); // Sunday
+      await expect(ACHEngine.createBatch({ sameDay: true }, [entry])).rejects.toMatchObject({ code: 'ACH_SAME_DAY_NOT_BANKING_DAY' });
+      expect(inserted.filter((p) => p[12] === true)).toHaveLength(0);
+      expect(ACHEngine.sameDayWindow(new Date('2026-09-14T21:00:00Z'))).toMatchObject({ bankingDay: true, withinWindow: false, nowEt: '17:00' });
+    });
   });
 
   it('gates on Collateral OS headroom when the facility carries pledges', async () => {

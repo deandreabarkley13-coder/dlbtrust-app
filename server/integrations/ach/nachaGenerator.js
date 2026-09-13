@@ -84,6 +84,21 @@ function fileHeaderRecord(opts = {}) {
 }
 
 /**
+ * Same Day ACH has no dedicated NACHA field. An entry is same-day when the
+ * Batch Header Effective Entry Date (pos 70-75) is the current banking day
+ * and the file reaches the ODFI inside a same-day submission window; the
+ * Settlement Date (pos 76-78) is inserted by the ACH operator. The optional
+ * Company Descriptive Date (pos 64-69) may carry NACHA's recommended
+ * `SDHHMM` marker so the ODFI can identify same-day intent.
+ */
+const SAME_DAY_ACH_ENTRY_LIMIT_CENTS = 1_000_000_00;
+
+function sameDayDescriptiveDate(d = new Date()) {
+  const et = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(d);
+  return 'SD' + et.replace(':', '');
+}
+
+/**
  * Record 5: Batch Header Record
  */
 function batchHeaderRecord(batchNumber, opts = {}) {
@@ -207,6 +222,7 @@ function generateNACHAFile(opts = {}, batches = []) {
       companyEntryDescription: batch.companyEntryDescription || 'PAYMENT',
       serviceClassCode: batch.serviceClassCode || '200',
       effectiveEntryDate: batch.effectiveEntryDate,
+      companyDescriptiveDate: batch.companyDescriptiveDate,
       companyName: batch.companyName,
       companyId: batch.companyId,
     }));
@@ -342,6 +358,8 @@ module.exports = {
   generateNACHAFile,
   parseNACHAFile,
   validateRouting,
+  sameDayDescriptiveDate,
+  SAME_DAY_ACH_ENTRY_LIMIT_CENTS,
   ODFI_ROUTING,
   ORIGINATOR_NAME,
   ORIGINATOR_ID,

@@ -6,7 +6,7 @@
  */
 
 const pool = require('../bonds/pgPool');
-const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
+const { generateNACHAFile, parseNACHAFile, validateRouting, sameDayDescriptiveDate, SAME_DAY_ACH_ENTRY_LIMIT_CENTS, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
 const { AS2Client } = require('./as2Client');
 const { AS2Partners } = require('./as2Partners');
 const { OpenBankApi } = require('./openBankApi');
@@ -14,6 +14,17 @@ const path = require('path');
 const fs = require('fs');
 
 const ACH_FILES_DIR = process.env.ACH_FILES_DIR || path.join(__dirname, '..', '..', '..', 'data', 'ach-files');
+// Same Day ACH: the ODFI's last same-day submission cutoff, Eastern time (Fed final window closes 16:45 ET).
+const SAME_DAY_CUTOFF_ET = process.env.ACH_SAME_DAY_CUTOFF_ET || '16:45';
+const ET_ZONE = 'America/New_York';
+
+function easternParts(d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, hourCycle: 'h23', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    .formatToParts(d).reduce((acc, p) => (acc[p.type] = p.value, acc), {});
+  return { date: `${parts.year}-${parts.month}-${parts.day}`, weekday: parts.weekday, hhmm: `${parts.hour}:${parts.minute}` };
+}
+
+let sameDayColumnReady = null;
 
 class ACHEngine {
   /**
@@ -30,12 +41,32 @@ class ACHEngine {
    * Each entry: { receivingRouting, accountNumber, amountCents, transactionCode,
    *               individualId, individualName, secCode, memo }
    *
-   * @param {Object} opts - { effectiveDate, secCode, description, createdBy }
+   * @param {Object} opts - { effectiveDate, secCode, description, createdBy, sameDay, companyDescriptiveDate }
+   *   sameDay: originate as Same Day ACH — effective entry date is forced to the
+   *   current banking day (ET), every entry must be within the NACHA same-day
+   *   per-entry limit, and the batch is flagged `same_day` for the ODFI window.
    * @param {Array} entries - payment entries
    * @returns {Object} batch record with generated NACHA content
    */
   static async createBatch(opts = {}, entries = []) {
     if (!entries.length) throw new Error('At least one entry is required');
+
+    const sameDay = Boolean(opts.sameDay);
+    let sameDayWindow = null;
+    if (sameDay) {
+      sameDayWindow = ACHEngine.sameDayWindow();
+      if (!sameDayWindow.bankingDay) {
+        throw Object.assign(new Error(`Same Day ACH requires a banking day; ${sameDayWindow.date} (${sameDayWindow.weekday} ET) is not one`), { code: 'ACH_SAME_DAY_NOT_BANKING_DAY' });
+      }
+      if (opts.effectiveDate && opts.effectiveDate !== sameDayWindow.date) {
+        throw Object.assign(new Error(`Same Day ACH effective date must be the current banking day ${sameDayWindow.date}, got ${opts.effectiveDate}`), { code: 'ACH_SAME_DAY_EFFECTIVE_DATE' });
+      }
+      for (const entry of entries) {
+        if (Number(entry.amountCents) > SAME_DAY_ACH_ENTRY_LIMIT_CENTS) {
+          throw Object.assign(new Error(`Same Day ACH per-entry limit is $${(SAME_DAY_ACH_ENTRY_LIMIT_CENTS / 100).toLocaleString('en-US')}; entry of ${(Number(entry.amountCents) / 100).toFixed(2)} exceeds it`), { code: 'ACH_SAME_DAY_LIMIT_EXCEEDED' });
+        }
+      }
+    }
 
     for (const entry of entries) {
       if (!entry.receivingRouting || !entry.accountNumber || !entry.amountCents) {
@@ -47,14 +78,16 @@ class ACHEngine {
     }
 
     const batchId = 'ACH-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
-    const effectiveDate = opts.effectiveDate || new Date().toISOString().split('T')[0];
+    const effectiveDate = sameDay ? sameDayWindow.date : (opts.effectiveDate || new Date().toISOString().split('T')[0]);
     const secCode = opts.secCode || 'CCD';
     const description = opts.description || 'PAYMENT';
+    const companyDescriptiveDate = opts.companyDescriptiveDate || (sameDay ? sameDayDescriptiveDate() : undefined);
 
     const nachaContent = generateNACHAFile({}, [{
       secCode,
       companyEntryDescription: description,
       effectiveEntryDate: effectiveDate,
+      companyDescriptiveDate,
       serviceClassCode: '200',
       entries: entries.map(e => ({
         receivingRouting: e.receivingRouting,
@@ -75,16 +108,17 @@ class ACHEngine {
     fs.writeFileSync(filePath, nachaContent);
 
     // Save to database (with optional partner_id for multi-partner routing)
+    await ACHEngine.ensureSameDayColumn();
     const result = await pool.query(
       `INSERT INTO ach_batches
         (batch_id, filename, status, sec_code, entry_description,
          effective_date, entry_count, total_amount_cents, nacha_content,
-         file_path, created_by, partner_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+         file_path, created_by, partner_id, same_day, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
        RETURNING *`,
       [batchId, filename, 'pending', secCode, description,
        effectiveDate, entries.length, totalCents, nachaContent,
-       filePath, opts.createdBy || 'system', opts.partnerId || null]
+       filePath, opts.createdBy || 'system', opts.partnerId || null, sameDay]
     );
 
     // Save individual entries
@@ -101,7 +135,35 @@ class ACHEngine {
       );
     }
 
-    return result.rows[0];
+    const row = result.rows[0];
+    return sameDay ? { ...row, same_day_window: sameDayWindow } : row;
+  }
+
+  /**
+   * Same Day ACH window in Eastern time: the current banking day and whether
+   * the ODFI's last same-day submission cutoff (ACH_SAME_DAY_CUTOFF_ET) has passed.
+   * Weekends are refused; Federal Reserve holidays are the ODFI's call.
+   */
+  static sameDayWindow(now = new Date()) {
+    const et = easternParts(now);
+    const bankingDay = !['Sat', 'Sun'].includes(et.weekday);
+    return {
+      date: et.date,
+      weekday: et.weekday,
+      nowEt: et.hhmm,
+      cutoffEt: SAME_DAY_CUTOFF_ET,
+      bankingDay,
+      withinWindow: bankingDay && et.hhmm < SAME_DAY_CUTOFF_ET,
+      entryLimitCents: SAME_DAY_ACH_ENTRY_LIMIT_CENTS,
+    };
+  }
+
+  static ensureSameDayColumn() {
+    if (!sameDayColumnReady) {
+      sameDayColumnReady = pool.query('ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS same_day BOOLEAN NOT NULL DEFAULT FALSE')
+        .catch((e) => { sameDayColumnReady = null; throw e; });
+    }
+    return sameDayColumnReady;
   }
 
   /**

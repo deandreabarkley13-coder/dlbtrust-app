@@ -534,9 +534,9 @@ router.get('/spritz/fiat-funding', operatorAuth, async (req, res) => {
 
 router.post('/spritz/fiat-funding', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { amountUsd, bucket, reference, rail, memo } = req.body || {};
+    const { amountUsd, bucket, reference, rail, memo, sameDay } = req.body || {};
     const createdBy = req.user && (req.user.username || req.user.id);
-    res.status(201).json({ success: true, data: await SpritzFiatFundingEngine.fund({ amountUsd, bucket, reference, rail, memo, createdBy }) });
+    res.status(201).json({ success: true, data: await SpritzFiatFundingEngine.fund({ amountUsd, bucket, reference, rail, memo, createdBy, sameDay: sameDay === true || sameDay === 'true' }) });
   } catch (err) { sendError(res, err); }
 });
 

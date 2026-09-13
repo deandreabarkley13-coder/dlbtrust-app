@@ -132,6 +132,8 @@ class BankTransferEngine {
     memo,
     initiatedBy = 'system',
     destinationDetails,
+    sameDay = false,
+    achOptions = {},
   } = {}) {
     loadDeps();
     await this.ensureTables();
@@ -168,7 +170,7 @@ class BankTransferEngine {
       await client.query(
         `INSERT INTO bank_transfers (transfer_id, direction, amount_cents, currency, source_cash_account_id, to_bank_account_id, rail, status, memo, metadata)
          VALUES ($1,'outbound',$2,'USD',$3,$4,$5,'pending',$6,$7)`,
-        [transferId, cents, sourceCashAccountId || null, destinationBankAccountId || null, rail, memo || `Push credit to ${destination.name}`, JSON.stringify({ destination, webPaymentAdapter })]
+        [transferId, cents, sourceCashAccountId || null, destinationBankAccountId || null, rail, memo || `Push credit to ${destination.name}`, JSON.stringify({ destination, webPaymentAdapter, ...(rail === 'ach' && sameDay ? { sameDay: true } : {}) })]
       );
 
       let webPaymentId = null;
@@ -218,9 +220,11 @@ class BankTransferEngine {
         // ACHEngine.createBatch returns batch_id; actual transmit is separate.
         if (!ACHEngine) throw new Error('ACHEngine not available');
         const batch = await ACHEngine.createBatch({
+          ...achOptions,
           description: memo || `Bank transfer ${transferId}`,
           secCode: 'CCD',
           createdBy: initiatedBy,
+          sameDay: Boolean(sameDay || achOptions.sameDay),
         }, [{
           receivingRouting: destination.routingNumber,
           accountNumber: destination.accountNumber,

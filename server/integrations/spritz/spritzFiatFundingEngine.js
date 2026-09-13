@@ -331,8 +331,9 @@ class SpritzFiatFundingEngine {
    * Raise an ERP-originated fiat credit push to the auto-ramp account.
    * Idempotent on `reference`. Nothing is transmitted to the bank network
    * here: the ACH batch / wire payout is originated and left for `send`.
+   * `sameDay` (ACH only) originates the credit push as Same Day ACH.
    */
-  static async fund({ amountUsd, bucket, reference, rail, createdBy, memo } = {}) {
+  static async fund({ amountUsd, bucket, reference, rail, createdBy, memo, sameDay = false } = {}) {
     await ensureTable();
     const cfg = this.config();
     if (!reference) throw badRequest('reference required (ERP reference)');
@@ -400,6 +401,7 @@ class SpritzFiatFundingEngine {
         rail: useRail,
         memo: memo || reference,
         initiatedBy: createdBy || 'spritz-fiat-funding',
+        ...(useRail === 'ach' && sameDay ? { sameDay: true } : {}),
       });
     } catch (e) {
       error = e.message;
@@ -427,7 +429,7 @@ class SpritzFiatFundingEngine {
       autoRampAccount: account,
       erpCommit,
       collateral,
-      transfer: { id: transfer.transfer_id, status: transfer.status, achBatchId: transfer.ach_batch_id || null, wirePayoutId: transfer.wire_payout_id || null },
+      transfer: { id: transfer.transfer_id, status: transfer.status, achBatchId: transfer.ach_batch_id || null, wirePayoutId: transfer.wire_payout_id || null, sameDay: Boolean(useRail === 'ach' && sameDay) },
       next: 'send({ reference }) transmits the ERP credit push; reconcile() then tracks the Spritz on-ramp until USDC lands on the policy contract.',
     };
   }
