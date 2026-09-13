@@ -110,6 +110,14 @@ class DataBridge {
     await DataBridge._ensureAccount(ACCOUNTS.BILL_CASH, 'BILL Cash Account', 'asset', 'cash');
     await DataBridge._ensureAccount(ACCOUNTS.COUPON_CASH, 'Coupon Income Cash — Beneficiary Support', 'asset', 'cash');
     await DataBridge._ensureAccount(ACCOUNTS.OPERATING_CASH, 'Trust Operating Cash — Trustees', 'asset', 'cash');
+
+    // On-chain stablecoin backing is an investment position, not bank cash:
+    // it must not be counted in cash-vs-cash_accounts reconciliation.
+    await pool.query(
+      `UPDATE trust_accounts SET sub_type = 'investment', updated_at = NOW()
+       WHERE account_code = $1 AND sub_type = 'cash'`,
+      [ACCOUNTS.STABLECOIN_ASSET]
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
