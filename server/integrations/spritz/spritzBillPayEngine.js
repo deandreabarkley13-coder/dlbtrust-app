@@ -162,7 +162,7 @@ class SpritzBillPayEngine {
       fundingSource: cfg.fundingSource,
       gl: cfg.gl,
       payoutWallet: cfg.payoutWallet || null,
-      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: cfg.payoutWalletSigner === 'external' ? cfg.payoutWalletProvider : 'server' },
+      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: cfg.payoutWalletSigner === 'external' ? cfg.payoutWalletProvider : cfg.payoutWalletSigner === 'thirdweb' ? 'thirdweb' : 'server' },
       network: cfg.network,
       billPay: capability ? { status: capability.status } : null,
       bills,
@@ -288,7 +288,9 @@ class SpritzBillPayEngine {
     // 2. Pay the quote on-chain from the payout wallet (USDC -> Spritz -> biller).
     let settlement;
     try {
-      if (cfg.payoutWalletSigner === 'external') {
+      if (cfg.payoutWalletSigner === 'thirdweb') {
+        settlement = await SpritzTreasuryLegEngine.payQuoteFromServerWallet(quoted.quoteId, { reference: runId });
+      } else if (cfg.payoutWalletSigner === 'external') {
         const unsignedTx = await SpritzEngine.prepareQuoteTransaction(quoted.quoteId, { senderAddress: cfg.payoutWallet });
         const row = await this._save({
           ...base,
@@ -300,8 +302,9 @@ class SpritzBillPayEngine {
           unsignedTx,
           next: `Sign ${unsignedTx.approve ? 'approve then ' : ''}payment from ${cfg.payoutWallet} in the ${cfg.payoutWalletProvider} wallet, then POST /spritz/bill-pay/payments/${paymentId}/confirm { txHash }`,
         };
+      } else {
+        settlement = await SpritzEngine.executeQuote(quoted.quoteId);
       }
-      settlement = await SpritzEngine.executeQuote(quoted.quoteId);
     } catch (err) {
       // Never leave the ERP short: put the draw back before failing.
       if (funding.journalEntryId) {

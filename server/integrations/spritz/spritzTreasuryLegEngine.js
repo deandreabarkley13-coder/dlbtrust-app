@@ -38,6 +38,8 @@ let ExternalWalletEngine;
 try { ({ ExternalWalletEngine } = require('../dapp/externalWalletEngine')); } catch (e) { ExternalWalletEngine = null; }
 let PayoutRelayerEngine;
 try { ({ PayoutRelayerEngine } = require('../dapp/payoutRelayerEngine')); } catch (e) { PayoutRelayerEngine = null; }
+let ThirdwebServerWalletEngine;
+try { ({ ThirdwebServerWalletEngine } = require('../dapp/thirdwebServerWalletEngine')); } catch (e) { ThirdwebServerWalletEngine = null; }
 function loadFiatFunding() {
   try { return require('./spritzFiatFundingEngine').SpritzFiatFundingEngine; } catch (e) { return null; }
 }
@@ -64,10 +66,30 @@ function sameAddress(a, b) {
   return Boolean(a && b) && String(a).toLowerCase() === String(b).toLowerCase();
 }
 
-/** 'operator' when the payout wallet is DAPP_OPERATOR_ADDRESS with a server key; otherwise 'external' (Coinbase). */
+/** The pinned thirdweb server wallet address when that rail is enabled. */
+function thirdwebWalletAddress() {
+  if (!ThirdwebServerWalletEngine) return null;
+  try {
+    const tw = ThirdwebServerWalletEngine.getConfig();
+    return tw.enabled && tw.address ? tw.address : null;
+  } catch (e) { return null; }
+}
+
+/**
+ * 'operator' when the payout wallet is DAPP_OPERATOR_ADDRESS with a server key,
+ * 'thirdweb' when it is the pinned thirdweb server wallet (signed server-side
+ * through the thirdweb API), otherwise 'external' (Coinbase).
+ */
 function payoutSigner(wallet, dapp) {
   if (wallet && dapp.privateKey && sameAddress(wallet, dapp.operatorAddress)) return 'operator';
+  if (wallet && sameAddress(wallet, thirdwebWalletAddress())) return 'thirdweb';
   return 'external';
+}
+
+function signerProvider(cfg) {
+  if (cfg.payoutWalletSigner === 'external') return cfg.payoutWalletProvider;
+  if (cfg.payoutWalletSigner === 'thirdweb') return 'thirdweb';
+  return 'server';
 }
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
@@ -345,7 +367,7 @@ class SpritzTreasuryLegEngine {
       network: cfg.network,
       settlementToken: cfg.settlementToken,
       payoutWallet: cfg.payoutWallet || null,
-      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: cfg.payoutWalletSigner === 'external' ? cfg.payoutWalletProvider : 'server' },
+      payoutWalletSigner: { type: cfg.payoutWalletSigner, provider: signerProvider(cfg) },
       fundingSource: { ...fs, kind: fs.kind || 'treasury_core_erp', bucket: defaultOwner ? defaultOwner.key : null, route: fundingRoute },
       fundingSources,
       segregation: 'coupon_income (DLB-PRB / bond_portfolio -> beneficiaries) and trust_operating (DLB-TREASURY / treasury -> trustees) are funded and paid out separately; cross-bucket sources are refused with ALLOCATION_SOURCE_MISMATCH',
@@ -570,6 +592,10 @@ class SpritzTreasuryLegEngine {
     if (!reference) throw badRequest('reference required');
 
     const release = await TrustPolicyEngine.execute({ distributionId });
+    if (cfg.payoutWalletSigner === 'thirdweb') {
+      const settlement = await this.payQuoteFromServerWallet(spritzQuoteId, { reference });
+      return this._bookPayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy, release, settlement });
+    }
     if (cfg.payoutWalletSigner === 'external') {
       const unsignedTx = await SpritzEngine.prepareQuoteTransaction(spritzQuoteId, { senderAddress: cfg.payoutWallet });
       if (PayoutRelayerEngine && PayoutRelayerEngine.enabled) {
@@ -598,6 +624,49 @@ class SpritzTreasuryLegEngine {
     }
     const settlement = await SpritzEngine.executeQuote(spritzQuoteId);
     return this._bookPayout({ distributionId, spritzQuoteId, reference, amountUsd, createdBy, release, settlement });
+  }
+
+  /**
+   * Pay a Spritz quote from the thirdweb server wallet: the approve (when the
+   * allowance is short) and the payment calldata Spritz hands back are sent
+   * through the thirdweb API and each is awaited before the next. Refused
+   * unless THIRDWEB_SERVER_WALLET_LIVE=true; `dryRun` returns the steps unsent.
+   */
+  static async payQuoteFromServerWallet(spritzQuoteId, { reference, dryRun = false } = {}) {
+    const cfg = this.config();
+    if (!ThirdwebServerWalletEngine) throw conflict('ThirdwebServerWalletEngine not available', 'THIRDWEB_UNAVAILABLE');
+    if (cfg.payoutWalletSigner !== 'thirdweb') throw conflict('SPRITZ_PAYOUT_WALLET is not the thirdweb server wallet', 'PAYOUT_SIGNER_MISMATCH');
+    const tw = ThirdwebServerWalletEngine.getConfig();
+    const unsignedTx = await SpritzEngine.prepareQuoteTransaction(spritzQuoteId, { senderAddress: cfg.payoutWallet });
+    if (unsignedTx.sufficientBalance === false) {
+      throw conflict(`payout wallet ${cfg.payoutWallet} holds ${unsignedTx.senderBalance} of ${unsignedTx.inputToken}, quote needs ${unsignedTx.requiredTokenInput}`, 'PAYOUT_WALLET_UNDERFUNDED');
+    }
+    const steps = [];
+    if (unsignedTx.approve) steps.push({ kind: 'approve', tx: unsignedTx.approve });
+    steps.push({ kind: 'payment', tx: unsignedTx.payment });
+    if (dryRun) {
+      return { dryRun: true, live: Boolean(tw.live), txHash: null, quoteId: spritzQuoteId, signer: 'thirdweb', payoutWallet: cfg.payoutWallet, steps: steps.map(s => ({ kind: s.kind, to: s.tx.to, value: s.tx.value })) };
+    }
+    if (!tw.live) throw conflict('THIRDWEB_SERVER_WALLET_LIVE=false: thirdweb payout wallet cannot sign', 'PAYOUT_SIGNER_NOT_LIVE');
+    const transactions = [];
+    let txHash = null;
+    for (const step of steps) {
+      const sent = await ThirdwebServerWalletEngine.sendTransactions({
+        transactions: [{ to: step.tx.to, data: step.tx.data, value: step.tx.value }],
+        chainId: unsignedTx.chainId || cfg.chainId,
+        from: cfg.payoutWallet,
+        idempotencyKey: reference ? `spritz:${spritzQuoteId}:${step.kind}:${reference}` : undefined,
+      });
+      const transactionId = sent.transactionIds[0];
+      if (!transactionId) throw new Error(`thirdweb returned no transactionId for ${step.kind}`);
+      const done = await ThirdwebServerWalletEngine.waitForTransaction(transactionId);
+      if (done.status !== 'CONFIRMED') {
+        throw Object.assign(new Error(`Spritz ${step.kind} ${transactionId} ${done.status}${done.errorMessage ? ': ' + done.errorMessage : ''}`), { status: 502, code: 'PAYOUT_TX_FAILED' });
+      }
+      transactions.push({ kind: step.kind, transactionId, txHash: done.transactionHash });
+      txHash = done.transactionHash;
+    }
+    return { txHash, quoteId: spritzQuoteId, signer: 'thirdweb', payoutWallet: cfg.payoutWallet, transactions };
   }
 
   /** Record a Spritz payout signed by the external (Coinbase) payout wallet. */
@@ -879,16 +948,20 @@ class SpritzTreasuryLegEngine {
           : null,
       },
       { key: 'policy', label: 'Trust distribution policy (on-chain)', ok: Boolean(pol && pol.live && !pol.paused), detail: pol ? `${cfg.policyAddress} chain ${cfg.chainId}${pol.paused ? ' PAUSED' : ''}` : null },
-      { key: 'payoutWallet', label: 'Spritz payout wallet (Coinbase)', ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
+      { key: 'payoutWallet', label: `Spritz payout wallet (${signerProvider(cfg)})`, ok: Boolean(pw && pw.ready), detail: pw ? (pw.ready ? `${pw.address} allow-listed` : pw.issues.join('; ')) : null },
       {
         key: 'signer',
-        label: 'Payout signing (session-key relayer or external wallet)',
-        ok: Boolean(relay && (relay.ready || (!relay.enabled && pw && pw.ready))),
-        detail: relay
-          ? (relay.enabled
-            ? (relay.ready ? `relayer ${relay.relayer} session key on ${relay.smartAccount}, expires in ${Math.round((relay.session.expiresInSeconds || 0) / 86400)}d` : relay.issues.join('; '))
-            : `manual: each payout signed in the ${cfg.payoutWalletProvider} wallet (enable SPRITZ_PAYOUT_RELAYER=session_key for repeated signing)`)
-          : null,
+        label: 'Payout signing (thirdweb server wallet, session-key relayer or external wallet)',
+        ok: cfg.payoutWalletSigner === 'thirdweb'
+          ? Boolean(pw && pw.ready)
+          : Boolean(relay && (relay.ready || (!relay.enabled && pw && pw.ready))),
+        detail: cfg.payoutWalletSigner === 'thirdweb'
+          ? `server-side: thirdweb server wallet ${cfg.payoutWallet} signs approve + payment through the thirdweb API`
+          : relay
+            ? (relay.enabled
+              ? (relay.ready ? `relayer ${relay.relayer} session key on ${relay.smartAccount}, expires in ${Math.round((relay.session.expiresInSeconds || 0) / 86400)}d` : relay.issues.join('; '))
+              : `manual: each payout signed in the ${cfg.payoutWalletProvider} wallet (enable SPRITZ_PAYOUT_RELAYER=session_key for repeated signing)`)
+            : null,
       },
       { key: 'spritz', label: 'Spritz credit push (crypto -> fiat at settlement)', ok: Boolean(rl && rl.active.length), detail: rl ? (rl.rails.length ? rl.rails.map(r => `${r.rail}${r.destination === 'bill' ? ' -> ' + r.label : ''} [${r.status}]`).join(', ') : 'no settlement bank or payable bill linked') : null },
     ];

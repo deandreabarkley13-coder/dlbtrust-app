@@ -117,6 +117,53 @@ describe('Spritz treasury leg', () => {
     }
   });
 
+  it('executePayout with the thirdweb server wallet as payout wallet signs approve + payment through thirdweb and books once confirmed', async () => {
+    const TW = '0x1A904F795a0511C31Ba6347504D08d1bA58E4f89';
+    const { ThirdwebServerWalletEngine } = require('../server/integrations/dapp/thirdwebServerWalletEngine');
+    process.env.SPRITZ_PAYOUT_WALLET = TW;
+    process.env.THIRDWEB_SERVER_WALLET_ENABLED = 'true';
+    process.env.THIRDWEB_SERVER_WALLET_ADDRESS = TW;
+    process.env.THIRDWEB_SERVER_WALLET_LIVE = 'true';
+    process.env.THIRDWEB_SECRET_KEY = 'tw-test';
+    try {
+      expect(SpritzTreasuryLegEngine.config()).toMatchObject({ payoutWallet: TW, payoutWalletSigner: 'thirdweb' });
+
+      vi.spyOn(TrustPolicyEngine, 'execute').mockResolvedValue({ txHash: '0xrelease' } as any);
+      const exec = vi.spyOn(SpritzEngine, 'executeQuote');
+      const post = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-GL-10' } as any);
+      vi.spyOn(TrustAllocationEngine, 'markExecuted').mockResolvedValue(null as any);
+      let n = 0;
+      const send = vi.spyOn(ThirdwebServerWalletEngine, 'sendTransactions').mockImplementation(async () => ({ transactionIds: [`tw-${++n}`], from: TW, chainId: 8453 }));
+      const waitFor = vi.spyOn(ThirdwebServerWalletEngine, 'waitForTransaction').mockImplementation(async (id: string) => ({ id, status: 'CONFIRMED', transactionHash: '0x' + (id === 'tw-1' ? 'a1' : 'b2').repeat(32) }));
+      stubSpritz((path) => {
+        if (path === '/v1/off-ramp-quotes/q_10/transaction') return { type: 'evm', contractAddress: '0x' + '22'.repeat(20), calldata: '0xbeef', inputToken: USDC, requiredTokenInput: '100000000' };
+        if (path === '/v1/off-ramp-quotes/q_10') return { id: 'q_10', status: 'created', output: { amount: '100.00' }, input: { amount: '101.00' } };
+        throw new Error(`unexpected ${path}`);
+      });
+
+      const out = await SpritzTreasuryLegEngine.executePayout({ distributionId: 8, spritzQuoteId: 'q_10', reference: 'REF-10', amountUsd: 100, createdBy: 'ops' });
+      expect(exec).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[0][0]).toMatchObject({ from: TW, chainId: 8453, transactions: [{ to: USDC }] });
+      expect(send.mock.calls[1][0]).toMatchObject({ from: TW, transactions: [{ to: '0x' + '22'.repeat(20), data: '0xbeef' }] });
+      expect(waitFor).toHaveBeenCalledTimes(2);
+      expect(out).toMatchObject({ status: 'settling', txHash: '0x' + 'b2'.repeat(32), spritzQuoteId: 'q_10', amountUsd: '100.00' });
+      expect(post).toHaveBeenCalledTimes(1);
+
+      process.env.THIRDWEB_SERVER_WALLET_LIVE = 'false';
+      await expect(SpritzTreasuryLegEngine.payQuoteFromServerWallet('q_10', { reference: 'REF-10' })).rejects.toMatchObject({ code: 'PAYOUT_SIGNER_NOT_LIVE' });
+      const dry = await SpritzTreasuryLegEngine.payQuoteFromServerWallet('q_10', { reference: 'REF-10', dryRun: true });
+      expect(dry).toMatchObject({ dryRun: true, live: false, steps: [{ kind: 'approve' }, { kind: 'payment' }] });
+      expect(send).toHaveBeenCalledTimes(2);
+    } finally {
+      process.env.SPRITZ_PAYOUT_WALLET = PAYOUT;
+      delete process.env.THIRDWEB_SERVER_WALLET_ENABLED;
+      delete process.env.THIRDWEB_SERVER_WALLET_ADDRESS;
+      delete process.env.THIRDWEB_SERVER_WALLET_LIVE;
+      delete process.env.THIRDWEB_SECRET_KEY;
+    }
+  });
+
   it('converts between USD and 6-decimal USDC units', () => {
     expect(usdToUnits('10')).toBe(10_000_000n);
     expect(usdToUnits('0.25')).toBe(250_000n);

@@ -175,6 +175,27 @@ curl -X POST localhost:3002/api/os/smart-router/process -H "x-admin-token: $ADMI
 # review candidates[].live / canExecute, then action:"deliver" with the same payload, then action:"confirm" with the paymentId
 ```
 
+### 4e. Fiat out through the thirdweb wallet (Spritz payouts)
+
+Set `SPRITZ_PAYOUT_WALLET` to the pinned `THIRDWEB_SERVER_WALLET_ADDRESS`
+(`SPRITZ_PAYOUT_WALLET_PROVIDER=thirdweb` is informational). The payout signer
+then reports `type: thirdweb` in `GET /spritz/wallet` / treasury readiness, and
+`executePayout` (treasury payout) and bill-pay both sign the Spritz approve +
+payment calldata through the thirdweb API and book the GL entry once each
+transaction is `CONFIRMED` — no Coinbase signing step, no `/confirm` call.
+Requires `THIRDWEB_SERVER_WALLET_LIVE=true` (otherwise
+`409 PAYOUT_SIGNER_NOT_LIVE`), the wallet allow-listed as a beneficiary on the
+policy contract, and USDC + Base ETH in the wallet (otherwise
+`409 PAYOUT_WALLET_UNDERFUNDED`). The governed path is unchanged: the
+distribution is still released via `TrustPolicyEngine.execute` first.
+
+```sh
+node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime \
+  SPRITZ_PAYOUT_WALLET=0x1A904F795a0511C31Ba6347504D08d1bA58E4f89 \
+  SPRITZ_PAYOUT_WALLET_PROVIDER=thirdweb
+# restart the service, then check GET /spritz/wallet -> signer.type === 'thirdweb'
+```
+
 ## 5. `TRUST_POLICY_ENFORCED`
 
 Left `false`. With `false`, `ThirdwebServerWalletEngine.send` is allowed to move

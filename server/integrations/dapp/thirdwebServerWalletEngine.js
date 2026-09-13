@@ -272,6 +272,28 @@ class ThirdwebServerWalletEngine {
     return { transactionIds: result.transactionIds || [], from: body.from, chainId: body.chainId };
   }
 
+  /**
+   * Pre-encoded transactions sent from the server wallet (POST /v1/transactions).
+   * `transactions` are `{ to, data, value }` with `value` in wei as a string.
+   * Used when a counterparty (e.g. Spritz) hands back calldata rather than an
+   * ABI call.
+   */
+  static async sendTransactions({ transactions, chainId, from, idempotencyKey } = {}) {
+    if (!Array.isArray(transactions) || !transactions.length) throw new Error('transactions required');
+    const cfg = this.getConfig();
+    const body = {
+      transactions: transactions.map((tx) => {
+        if (!isAddress(tx.to)) throw new Error('transaction to invalid');
+        return { to: checksum(tx.to), data: tx.data || '0x', value: String(tx.value || '0') };
+      }),
+      chainId: Number(chainId || cfg.chainId),
+      from: from || (cfg.address ? checksum(cfg.address) : await this.resolveAddress()),
+    };
+    if (idempotencyKey) body.idempotencyKey = idempotencyKey;
+    const result = await this._request('POST', '/v1/transactions', body);
+    return { transactionIds: result.transactionIds || [], from: body.from, chainId: body.chainId };
+  }
+
   /** Deploy a contract from the server wallet (POST /v1/contracts). */
   static async deployContract({ abi, bytecode, constructorParams = {}, chainId, from, salt } = {}) {
     if (!Array.isArray(abi) || !abi.length) throw new Error('abi required');
