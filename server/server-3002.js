@@ -200,40 +200,34 @@ try { app.use('/api/wallet', require(path.join(HD, 'server', 'routes', 'wallet')
 })();
 
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
-function serveDapp(req, res) {
+function setNoStoreHeaders(res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
+  res.set('Surrogate-Control', 'no-store');
+}
+function serveDapp(req, res) {
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 }
 function serveLanding(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'landing', 'index.html'));
 }
 function serveFinops(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.redirect('/dashboard');
 }
 function serveTrustDashboard(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
 }
 function serveTrustPortal(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'trust-portal', 'index.html'));
 }
 function serveTrustPortalDashboard(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'trust-portal', 'dashboard.html'));
 }
 app.get('/', serveLanding);
@@ -241,9 +235,7 @@ app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
 app.get('/dashboard', serveTrustDashboard);
 app.get('/treasury', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/trust-portal', serveTrustPortal);
@@ -364,16 +356,11 @@ app.use(express.static(path.join(HD, 'public'), {
   maxAge: 0,
   lastModified: true,
   setHeaders: function(res, filePath) {
-    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.set('Pragma', 'no-cache');
-    res.set('Expires', '0');
-    res.set('Surrogate-Control', 'no-store');
+    setNoStoreHeaders(res);
   }
 }));
 app.get('*', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
+  setNoStoreHeaders(res);
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 });
 

@@ -641,7 +641,15 @@ if (state.token) {
 }
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/dapp/mobile-service-worker.js').catch(() => {});
+  let reloadedForNewWorker = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadedForNewWorker) return;
+    reloadedForNewWorker = true;
+    window.location.reload();
+  });
+  navigator.serviceWorker.register('/dapp/mobile-service-worker.js')
+    .then(reg => { reg.update().catch(() => {}); })
+    .catch(() => {});
 }
 </script>
 </body>
