@@ -75,6 +75,10 @@ function setCache(key, data) {
   responseCache.set(key, { data, timestamp: Date.now() });
 }
 
+function clearCache() {
+  responseCache.clear();
+}
+
 /**
  * Low-level HTTP request to Fineract REST API.
  * Handles Basic Auth, TenantId header, TLS, circuit breaker, and retry.
@@ -324,7 +328,9 @@ class FineractClient {
         amount: d.amount,
       })),
     };
-    return fineractRequest('POST', 'journalentries', payload);
+    const result = await fineractRequest('POST', 'journalentries', payload);
+    clearCache();
+    return result;
   }
 
   /**
@@ -425,7 +431,32 @@ class FineractClient {
    * Maps to POST /journalentries/{transactionId}?command=reverse
    */
   static async reverseJournalEntry(transactionId) {
-    return fineractRequest('POST', `journalentries/${transactionId}?command=reverse`, {});
+    const result = await fineractRequest('POST', `journalentries/${transactionId}?command=reverse`, {});
+    clearCache();
+    return result;
+  }
+
+  /** Drop every cached GET response so the next read reflects Fineract's current state. */
+  static clearCache() {
+    clearCache();
+  }
+
+  /**
+   * Fetch every journal entry, bypassing the response cache.
+   * Pages through Fineract so callers see the complete, current GL.
+   */
+  static async getAllJournalEntries({ pageSize = 5000 } = {}) {
+    const all = [];
+    let offset = 0;
+    for (;;) {
+      const res = await fineractRequest('GET',
+        `journalentries?offset=${offset}&limit=${pageSize}&locale=en&dateFormat=dd%20MMMM%20yyyy`);
+      const items = (res && res.pageItems) || [];
+      all.push(...items);
+      if (items.length < pageSize) break;
+      offset += pageSize;
+    }
+    return all;
   }
 
   /**

@@ -296,7 +296,8 @@ class TrustAccountingEngine {
               comments: `Trust JE ${entryId}: ${description}`,
             });
 
-            const fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+            const fineractTxnId = glResult && (glResult.transactionId || glResult.resourceId)
+              ? String(glResult.transactionId || glResult.resourceId) : null;
             if (fineractTxnId) {
               await pool.query(
                 `UPDATE trust_journal_entries SET fineract_txn_id = $1

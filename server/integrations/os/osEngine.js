@@ -8376,6 +8376,27 @@ class CanonicalFundingEngine extends BaseOSEngine {
         return await Funding.reconcile({ accountCodes: payload.accountCodes });
       case 'glMap':
         return await Funding.glMap();
+      case 'integrity':
+      case 'ledgerIntegrity': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.verifyTrustBalanceIntegrity({ toleranceUsd: payload.toleranceUsd });
+      }
+      case 'reconcileGl':
+      case 'reconcile-gl': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.reconcileFineractGL();
+      }
+      case 'rebuildMirror':
+      case 'rebuild-mirror': {
+        const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+        if (!DataBridge) return shadow('DataBridge not available');
+        return await DataBridge.rebuildFineractMirror({
+          dryRun: payload.dryRun !== false,
+          confirm: payload.confirm,
+        });
+      }
       case 'pipeline':
         return await unifiedPipeline({ limit: payload.limit });
       case 'status':

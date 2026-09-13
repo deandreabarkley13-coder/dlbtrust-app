@@ -822,11 +822,9 @@ class DataBridge {
       }
 
       var glMap = {};
-      if (glSummary && Array.isArray(glSummary.accounts)) {
-        for (var g = 0; g < glSummary.accounts.length; g++) {
-          var glAcct = glSummary.accounts[g];
-          glMap[glAcct.id] = glAcct;
-        }
+      var flatAccounts = DataBridge._flattenGlAccounts(glSummary);
+      for (var g = 0; g < flatAccounts.length; g++) {
+        glMap[flatAccounts[g].id] = flatAccounts[g];
       }
 
       // If Fineract returned no accounts, it's likely not connected/configured
@@ -880,11 +878,11 @@ class DataBridge {
         }
       }
 
-      // Count unsynced trust journal entries (posted but no fineract_txn_id)
+      // Count unsynced trust journal entries (posted/reversed but no fineract_txn_id)
       var unsyncedResult = await pool.query(`
         SELECT COUNT(*) AS count
         FROM trust_journal_entries
-        WHERE status = 'posted' AND fineract_txn_id IS NULL
+        WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL
       `);
       var unsyncedCount = parseInt(unsyncedResult.rows[0].count);
 
@@ -1058,10 +1056,72 @@ class DataBridge {
   }
 
   /**
-   * Push all unsynced trust journal entries to Fineract GL.
-   * Includes idempotency guard to prevent duplicate pushes.
+   * Flatten a FineractClient.getGLSummary() result into a single array of
+   * detail accounts. The summary groups accounts by category
+   * ({ assets, liabilities, equity, income, expenses }); a bare array is also
+   * accepted for the degraded fallback shape.
    */
-  static async pushToFineract() {
+  static _flattenGlAccounts(glSummary) {
+    if (!glSummary || !glSummary.accounts) return [];
+    if (Array.isArray(glSummary.accounts)) return glSummary.accounts.filter(Boolean);
+    var flat = [];
+    var groups = Object.keys(glSummary.accounts);
+    for (var i = 0; i < groups.length; i++) {
+      var group = glSummary.accounts[groups[i]];
+      if (!Array.isArray(group)) continue;
+      for (var j = 0; j < group.length; j++) {
+        if (group[j]) flat.push(group[j]);
+      }
+    }
+    return flat;
+  }
+
+  static _fineractComment(entry) {
+    return 'Trust JE ' + entry.entry_id + ': ' + entry.description;
+  }
+
+  static _fineractCommentPrefix(entryId) {
+    return 'Trust JE ' + entryId + ':';
+  }
+
+  /**
+   * Index live (non-reversed) Fineract journal entries by the local entry_id
+   * embedded in their comment. Returns { byEntryId: Map<entryId, Set<transactionId>>,
+   * groups: Map<transactionId, { comments, reversed, entries }> }.
+   */
+  static _indexFineractJournal(fineractEntries) {
+    var byEntryId = new Map();
+    var groups = new Map();
+    var re = /^Trust JE (JRN-[A-Z0-9-]+):/;
+    for (var i = 0; i < fineractEntries.length; i++) {
+      var je = fineractEntries[i];
+      var txn = je.transactionId;
+      if (!groups.has(txn)) {
+        groups.set(txn, { transactionId: txn, comments: (je.comments || '').trim(), reversed: !!je.reversed, entries: [] });
+      }
+      var group = groups.get(txn);
+      group.entries.push(je);
+      if (je.reversed) group.reversed = true;
+      if (!je.reversed) {
+        var match = (je.comments || '').trim().match(re);
+        if (match) {
+          if (!byEntryId.has(match[1])) byEntryId.set(match[1], new Set());
+          byEntryId.get(match[1]).add(txn);
+        }
+      }
+    }
+    return { byEntryId: byEntryId, groups: groups };
+  }
+
+  /**
+   * Push all unsynced trust journal entries to Fineract GL.
+   *
+   * Every local journal entry that moved balances is mirrored — including
+   * reversal entries and originals that were later reversed — so the Fineract
+   * GL reproduces the sub-ledger's balances exactly. Idempotency is keyed on
+   * the local entry_id embedded in the Fineract comment.
+   */
+  static async pushToFineract({ limit } = {}) {
     var { FineractClient } = require('../fineract/fineractClient');
 
     var syncId = 'PUSH-GL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -1069,9 +1129,9 @@ class DataBridge {
     var skipped = 0;
     var failed = 0;
     var errors = [];
+    var batchLimit = Math.max(1, parseInt(limit, 10) || 500);
 
     try {
-      // Get unsynced journal entries (only posted, not reversed, not reversals)
       var entries = await pool.query(`
         SELECT je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status,
@@ -1080,25 +1140,21 @@ class DataBridge {
                  'debit_amount', jl.debit_amount,
                  'credit_amount', jl.credit_amount,
                  'memo', jl.memo
-               )) AS lines
+               ) ORDER BY jl.id) AS lines
         FROM trust_journal_entries je
         JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
-        WHERE je.status = 'posted' AND je.fineract_txn_id IS NULL
-          AND je.reference_type != 'reversal'
+        WHERE je.status IN ('posted', 'reversed') AND je.fineract_txn_id IS NULL
         GROUP BY je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                  je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status
-        ORDER BY je.entry_date ASC
-        LIMIT 50
-      `);
+        ORDER BY je.entry_date ASC, je.id ASC
+        LIMIT $1
+      `, [batchLimit]);
 
-      // Mark reversal entries as synced (they don't need to go to Fineract)
-      await pool.query(`
-        UPDATE trust_journal_entries
-        SET fineract_txn_id = 'REVERSAL-LOCAL'
-        WHERE status = 'posted' AND fineract_txn_id IS NULL AND reference_type = 'reversal'
-      `);
+      if (entries.rows.length === 0) {
+        await DataBridge._logSync(syncId, 'push_to_fineract', 'trust_accounting', 'fineract_gl', 0, 0, 0, []);
+        return { syncId: syncId, synced: 0, skipped: 0, failed: 0, remaining: 0, errors: [] };
+      }
 
-      // Get GL mappings
       var mappings = await pool.query(`
         SELECT trust_account_code, fineract_gl_id
         FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal'
@@ -1108,18 +1164,13 @@ class DataBridge {
         glMap[mappings.rows[m].trust_account_code] = parseInt(mappings.rows[m].fineract_gl_id);
       }
 
-      // Idempotency: fetch existing Fineract JE comments to avoid duplicates
-      var existingComments = new Set();
+      // Idempotency: index live Fineract entries by local entry_id
+      var existing = { byEntryId: new Map(), groups: new Map() };
+      var idempotencyAvailable = true;
       try {
-        var journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
-        var existingEntries = (journalRes && journalRes.pageItems) || [];
-        for (var e = 0; e < existingEntries.length; e++) {
-          if (!existingEntries[e].reversed && existingEntries[e].comments) {
-            existingComments.add(existingEntries[e].comments.trim());
-          }
-        }
+        existing = DataBridge._indexFineractJournal(await FineractClient.getAllJournalEntries());
       } catch (fetchErr) {
-        // If we can't fetch existing entries, proceed without idempotency check
+        idempotencyAvailable = false;
         console.warn('[DataBridge] Could not fetch existing Fineract JEs for idempotency check:', fetchErr.message);
       }
 
@@ -1129,12 +1180,12 @@ class DataBridge {
           var lines = entry.lines;
           var debits = [];
           var credits = [];
-          var hasMissingMapping = false;
+          var missingCodes = [];
 
           for (var j = 0; j < lines.length; j++) {
             var line = lines[j];
             var glId = glMap[line.account_code];
-            if (!glId) { hasMissingMapping = true; break; }
+            if (!glId) { missingCodes.push(line.account_code); continue; }
 
             if (parseFloat(line.debit_amount) > 0) {
               debits.push({ glAccountId: glId, amount: parseFloat(line.debit_amount) });
@@ -1144,22 +1195,31 @@ class DataBridge {
             }
           }
 
-          if (hasMissingMapping) { skipped++; continue; }
-          if (debits.length === 0 || credits.length === 0) { skipped++; continue; }
+          if (missingCodes.length > 0) {
+            skipped++;
+            errors.push({ entryId: entry.entry_id, skipped: true, error: 'No Fineract GL mapping for ' + missingCodes.join(', ') });
+            continue;
+          }
+          if (debits.length === 0 || credits.length === 0) {
+            skipped++;
+            errors.push({ entryId: entry.entry_id, skipped: true, error: 'Entry has no debit/credit pair' });
+            continue;
+          }
 
-          var jeComment = 'Trust JE ' + entry.entry_id + ': ' + entry.description;
-
-          // Idempotency guard: skip if this JE was already pushed
-          if (existingComments.has(jeComment)) {
-            var idempotencyId = 'IDEM-' + syncId + '-' + entry.entry_id;
+          var alreadyPosted = existing.byEntryId.get(entry.entry_id);
+          if (alreadyPosted && alreadyPosted.size > 0) {
             await pool.query(
               'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
-              [idempotencyId, entry.entry_id]
+              [Array.from(alreadyPosted)[0], entry.entry_id]
             );
             skipped++;
             continue;
           }
+          if (!idempotencyAvailable) {
+            throw new Error('Fineract journal unavailable for idempotency check; not posting');
+          }
 
+          var jeComment = DataBridge._fineractComment(entry);
           var glResult;
           try {
             glResult = await FineractClient.postJournalEntry({
@@ -1186,7 +1246,9 @@ class DataBridge {
             }
           }
 
-          var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id);
+          var fineractTxnId = glResult && glResult.transactionId
+            ? String(glResult.transactionId)
+            : (glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id));
           await pool.query(
             'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
             [fineractTxnId, entry.entry_id]
@@ -1201,10 +1263,180 @@ class DataBridge {
       errors.push({ phase: 'query', error: outerErr.message });
     }
 
+    var remaining = 0;
+    try {
+      var remainingRes = await pool.query(`
+        SELECT COUNT(*) AS count FROM trust_journal_entries
+        WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL
+      `);
+      remaining = parseInt(remainingRes.rows[0].count, 10);
+    } catch (_) { /* reported as 0 */ }
+
     await DataBridge._logSync(syncId, 'push_to_fineract', 'trust_accounting', 'fineract_gl', synced, skipped, failed, errors);
 
-    return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+    return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, remaining: remaining, errors: errors };
   }
+
+  /**
+   * Verify the sub-ledger is internally consistent: each trust_accounts.balance
+   * must equal the net of its journal lines. A mismatch means a balance was
+   * changed outside the journal and cannot be trusted for funding.
+   */
+  static async verifyTrustBalanceIntegrity({ toleranceUsd } = {}) {
+    var tolerance = Number.isFinite(Number(toleranceUsd)) ? Number(toleranceUsd) : 0.01;
+    var res = await pool.query(`
+      SELECT ta.account_code, ta.account_name, ta.account_type, ta.balance::numeric AS balance,
+             COALESCE(SUM(CASE
+               WHEN ta.account_type IN ('asset', 'expense') THEN jl.debit_amount - jl.credit_amount
+               ELSE jl.credit_amount - jl.debit_amount END), 0)::numeric AS journal_balance,
+             COUNT(jl.id) AS line_count
+      FROM trust_accounts ta
+      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        AND je.status IN ('posted', 'reversed')
+      WHERE ta.is_active = TRUE
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.balance
+      ORDER BY ta.account_code
+    `);
+    var mismatches = [];
+    for (var i = 0; i < res.rows.length; i++) {
+      var row = res.rows[i];
+      var balance = parseFloat(row.balance || 0);
+      var journal = parseFloat(row.journal_balance || 0);
+      var diff = Math.round((balance - journal) * 100) / 100;
+      if (Math.abs(diff) > tolerance) {
+        mismatches.push({
+          accountCode: row.account_code,
+          accountName: row.account_name,
+          accountType: row.account_type,
+          balance: balance,
+          journalBalance: journal,
+          difference: diff,
+          lineCount: parseInt(row.line_count, 10),
+        });
+      }
+    }
+    return {
+      checkedAt: new Date().toISOString(),
+      toleranceUsd: tolerance,
+      accountsChecked: res.rows.length,
+      consistent: mismatches.length === 0,
+      mismatches: mismatches,
+    };
+  }
+
+  /**
+   * Rebuild the Fineract GL as an exact mirror of the local trust journal.
+   *
+   * 1. Reverse every live Fineract transaction (auditable — nothing is deleted).
+   * 2. Clear fineract_txn_id on every local journal entry.
+   * 3. Re-push every local entry (posted and reversed, including reversals).
+   * 4. Reconcile balances.
+   *
+   * Dry-run (default) reports what would happen without touching either book.
+   * Requires confirm === 'REBUILD_FINERACT_MIRROR' to execute.
+   */
+  static async rebuildFineractMirror({ dryRun, confirm } = {}) {
+    var { FineractClient } = require('../fineract/fineractClient');
+    var isDryRun = dryRun !== false || confirm !== 'REBUILD_FINERACT_MIRROR';
+    var syncId = 'REBUILD-GL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var startedAt = Date.now();
+
+    var fineractEntries = await FineractClient.getAllJournalEntries();
+    var index = DataBridge._indexFineractJournal(fineractEntries);
+    var liveGroups = [];
+    var duplicateGroups = 0;
+    var unlinkedGroups = 0;
+    index.groups.forEach(function(group) {
+      if (group.reversed) return;
+      liveGroups.push(group);
+      if (!/^Trust JE JRN-/.test(group.comments)) unlinkedGroups++;
+    });
+    index.byEntryId.forEach(function(txns) { if (txns.size > 1) duplicateGroups += txns.size - 1; });
+
+    var localCount = await pool.query(`
+      SELECT COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE fineract_txn_id IS NULL) AS unsynced
+      FROM trust_journal_entries WHERE status IN ('posted', 'reversed')
+    `);
+    var integrity = await DataBridge.verifyTrustBalanceIntegrity();
+
+    var plan = {
+      fineractLiveTransactions: liveGroups.length,
+      fineractDuplicateTransactions: duplicateGroups,
+      fineractTransactionsWithoutLocalEntry: unlinkedGroups,
+      localEntriesToMirror: parseInt(localCount.rows[0].total, 10),
+      localEntriesCurrentlyUnsynced: parseInt(localCount.rows[0].unsynced, 10),
+      subLedgerIntegrity: integrity,
+    };
+
+    if (isDryRun) {
+      return {
+        syncId: syncId,
+        mode: 'dry_run',
+        plan: plan,
+        note: 'Pass { dryRun: false, confirm: "REBUILD_FINERACT_MIRROR" } to execute',
+      };
+    }
+
+    var reversed = 0;
+    var reverseErrors = [];
+    for (var i = 0; i < liveGroups.length; i++) {
+      try {
+        await FineractClient.reverseJournalEntry(liveGroups[i].transactionId);
+        reversed++;
+      } catch (err) {
+        reverseErrors.push({ transactionId: liveGroups[i].transactionId, error: err.message });
+      }
+    }
+    if (reverseErrors.length > 0) {
+      await DataBridge._logSync(syncId, 'rebuild_fineract_mirror', 'trust_accounting', 'fineract_gl',
+        0, 0, reverseErrors.length, reverseErrors);
+      return {
+        syncId: syncId,
+        mode: 'aborted',
+        plan: plan,
+        reversed: reversed,
+        errors: reverseErrors,
+        note: 'Some Fineract transactions could not be reversed; local entries were not re-pushed',
+      };
+    }
+
+    await pool.query(`UPDATE trust_journal_entries SET fineract_txn_id = NULL WHERE status IN ('posted', 'reversed')`);
+    FineractClient.clearCache();
+
+    var pushes = [];
+    var totalSynced = 0;
+    var totalSkipped = 0;
+    var totalFailed = 0;
+    var pushErrors = [];
+    for (var round = 0; round < 50; round++) {
+      var push = await DataBridge.pushToFineract({ limit: 500 });
+      pushes.push({ syncId: push.syncId, synced: push.synced, skipped: push.skipped, failed: push.failed, remaining: push.remaining });
+      totalSynced += push.synced;
+      totalSkipped += push.skipped;
+      totalFailed += push.failed;
+      pushErrors = pushErrors.concat(push.errors || []);
+      if (push.remaining === 0 || (push.synced === 0 && push.skipped === 0)) break;
+    }
+
+    FineractClient.clearCache();
+    var reconciliation = await DataBridge.reconcileFineractGL();
+
+    await DataBridge._logSync(syncId, 'rebuild_fineract_mirror', 'trust_accounting', 'fineract_gl',
+      totalSynced, totalSkipped, totalFailed, pushErrors);
+
+    return {
+      syncId: syncId,
+      mode: 'executed',
+      durationMs: Date.now() - startedAt,
+      plan: plan,
+      reversed: reversed,
+      pushed: { synced: totalSynced, skipped: totalSkipped, failed: totalFailed, rounds: pushes, errors: pushErrors },
+      reconciliation: reconciliation,
+    };
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════════
   //  WIRE → ACCOUNTING SYNC
@@ -1677,7 +1909,7 @@ class DataBridge {
     try {
       // Trust Accounting status
       var jeCount = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status = 'posted'`);
-      var unsyncedJE = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status = 'posted' AND fineract_txn_id IS NULL`);
+      var unsyncedJE = await pool.query(`SELECT COUNT(*) AS c FROM trust_journal_entries WHERE status IN ('posted', 'reversed') AND fineract_txn_id IS NULL`);
       var acctCount = await pool.query(`SELECT COUNT(*) AS c FROM trust_accounts WHERE is_active = TRUE`);
       status.modules.trust_accounting = {
         journalEntries: parseInt(jeCount.rows[0].c),

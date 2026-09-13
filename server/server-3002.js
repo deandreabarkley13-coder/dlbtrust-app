@@ -1143,35 +1143,9 @@ initializeDatabase().then(function() {
         console.log('[fineract-init] Created ' + created + ' GL accounts');
       }
 
-      // Check if opening balance journal entry exists
-      var journalRes = await FineractClient.getJournalEntries({ limit: 100 });
-      var entries = (journalRes && journalRes.pageItems) || [];
-      var hasOpeningBalance = entries.some(function(je) {
-        return !je.reversed && je.amount === 100000000 && je.comments && je.comments.indexOf('Opening balance') >= 0;
-      });
-
-      if (hasOpeningBalance) {
-        console.log('[fineract-init] Opening balance already posted');
-      } else {
-        // Find Bond Investments and Trust Corpus detail account IDs from mappings
-        var mappingsRes = await pool.query("SELECT trust_account_code, fineract_gl_id FROM fineract_gl_mappings WHERE trust_account_code IN ('1100', '3000')");
-        var bondGlId = null, corpusGlId = null;
-        mappingsRes.rows.forEach(function(m) {
-          if (m.trust_account_code === '1100') bondGlId = m.fineract_gl_id;
-          if (m.trust_account_code === '3000') corpusGlId = m.fineract_gl_id;
-        });
-        if (bondGlId && corpusGlId) {
-          await FineractClient.postJournalEntry({
-            transactionDate: new Date(),
-            debits: [{ glAccountId: bondGlId, amount: 100000000 }],
-            credits: [{ glAccountId: corpusGlId, amount: 100000000 }],
-            comments: 'Opening balance — DLB-PRB bond issuance $100M face value',
-          });
-          console.log('[fineract-init] Posted $100M opening balance (Bond Investments ↔ Trust Corpus)');
-        } else {
-          console.warn('[fineract-init] Could not find GL mappings for opening balance');
-        }
-      }
+      // Opening balances reach Fineract only through the trust journal
+      // (DataBridge.postOpeningBalances -> pushToFineract) so the GL stays a
+      // strict mirror of the sub-ledger.
 
       // Pre-warm GL summary cache so it's available when Fineract disconnects
       try {
