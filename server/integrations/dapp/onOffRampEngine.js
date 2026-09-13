@@ -8,7 +8,8 @@
  * through whichever configured provider is available.
  *
  * Supported flows:
- *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint
+ *  - On-ramp (fiat -> USDC/USDS/ETH): Coinbase Treasury Bridge, MoonPay, Circle Mint,
+ *    Spritz Buy (ACH debit of a linked funding source -> USDC to the thirdweb server wallet)
  *  - Off-ramp (USDC/USDS/ETH -> fiat bank/card): Spritz (to the settlement bank), Coinbase sell+withdraw
  *  - Policy funding (ERP reserve -> USDC -> TrustDistributionPolicy): SpritzTreasuryLegEngine
  *  - Reserve conversion (DLB-PTCUSD/DLBUSD/DLB-PRB -> USDC/USDS): TrustMarketEngine P2P
@@ -18,12 +19,13 @@ const { getConfig } = require('./config');
 const { TrustMarketEngine } = require('./trustMarketEngine');
 const { RampFeeEngine } = require('./rampFeeEngine');
 
-let CoinbaseTreasuryBridge, CoinbaseSpotEngine, MoonPayEngine, SpritzEngine, SpritzTreasuryLegEngine, CircleMintClient;
+let CoinbaseTreasuryBridge, CoinbaseSpotEngine, MoonPayEngine, SpritzEngine, SpritzTreasuryLegEngine, SpritzBuyEngine, CircleMintClient;
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) { }
 try { ({ CoinbaseSpotEngine } = require('./coinbaseSpotEngine')); } catch (e) { }
 try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) { }
 try { ({ SpritzEngine } = require('../spritz/spritzEngine')); } catch (e) { }
 try { ({ SpritzTreasuryLegEngine } = require('../spritz/spritzTreasuryLegEngine')); } catch (e) { }
+try { ({ SpritzBuyEngine } = require('../spritz/spritzBuyEngine')); } catch (e) { }
 try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintClient; } catch (e) { }
 
 function id(prefix = 'RMP') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
@@ -73,7 +75,7 @@ class OnOffRampEngine {
     // Spritz off-ramp
     if (SpritzEngine) {
       const spritzKey = process.env.SPRITZ_API_KEY || cfg.spritzApiKey;
-      list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
+      list.push({ id: 'spritz', name: 'Spritz Finance', directions: SpritzBuyEngine ? ['offramp', 'onramp'] : ['offramp'], ready: !!spritzKey, issues: spritzKey ? [] : ['SPRITZ_API_KEY not configured'] });
     } else {
       list.push({ id: 'spritz', name: 'Spritz Finance', directions: ['offramp'], ready: false, issues: ['SpritzEngine not available'] });
     }
@@ -149,6 +151,28 @@ class OnOffRampEngine {
           onrampUrl: url,
           instructions: r.ready
             ? 'Complete the MoonPay widget to deposit the purchased crypto to the operator wallet.'
+            : `Fix: ${(r.issues || []).join(', ')}`,
+          issues: r.issues || [],
+        });
+      }
+
+      // Spritz Buy: ACH debit of the linked funding source -> USDC to the thirdweb server wallet
+      if (SpritzBuyEngine) {
+        const r = await SpritzBuyEngine.readiness().catch(e => ({ ready: false, live: false, issues: [e.message], destination: null, network: null }));
+        routes.push({
+          provider: 'spritz',
+          name: 'Spritz Buy USDC',
+          direction: 'onramp',
+          sourceAsset: sourceAsset || 'USD',
+          targetAsset: 'USDC',
+          amount,
+          targetAddress: r.destination || null,
+          network: r.network || null,
+          status: r.ready ? (r.live ? 'ready' : 'shadow') : 'needs_config',
+          instructions: r.ready
+            ? (r.live
+              ? `ACH-debits the linked Spritz funding source and delivers USDC to ${r.destination} under maker/checker consensus.`
+              : 'Ready to quote; set SPRITZ_BUY_LIVE=true to authorize the ACH debit.')
             : `Fix: ${(r.issues || []).join(', ')}`,
           issues: r.issues || [],
         });
@@ -370,7 +394,19 @@ class OnOffRampEngine {
     }
 
     if (provider === 'spritz' && (direction === 'onramp' || direction === 'fiat_to_crypto')) {
-      throw Object.assign(new Error('Spritz is the settlement (off-ramp) leg only; the policy contract is funded from the Treasury-Core ERP via SpritzTreasuryLegEngine.fund()'), { status: 409, code: 'SPRITZ_NOT_A_FUNDING_SOURCE' });
+      if (!SpritzBuyEngine) throw new Error('SpritzBuyEngine not available');
+      const destination = SpritzBuyEngine.config().destination;
+      if (p.targetAddress && destination && String(p.targetAddress).toLowerCase() !== String(destination).toLowerCase()) {
+        throw Object.assign(new Error(`Spritz buys deliver only to the configured destination ${destination}, not ${p.targetAddress}`), { status: 409, code: 'SPRITZ_BUY_DESTINATION_MISMATCH' });
+      }
+      return SpritzBuyEngine.buy({
+        amountUsd: p.amount,
+        reference: p.reference || proposal.id,
+        fundingSourceId: p.fundingSourceId,
+        priority: p.priority,
+        memo: p.memo,
+        createdBy: proposal.created_by || proposal.createdBy,
+      });
     }
 
     if (provider === 'spritz') {
