@@ -15,6 +15,9 @@ var https = require('https');
 var { URL } = require('url');
 
 var FINERACT_URL = process.env.FINERACT_URL || 'https://localhost:8443/fineract-provider/api/v1';
+var FINERACT_TENANT_ID = process.env.FINERACT_TENANT_ID || 'default';
+var FINERACT_USERNAME = process.env.FINERACT_USERNAME || 'mifos';
+var FINERACT_PASSWORD = process.env.FINERACT_PASSWORD || 'password';
 var CHECK_INTERVAL = parseInt(process.env.FINERACT_CHECK_INTERVAL || '30000', 10); // 30s
 var MAX_CONSECUTIVE_FAILURES = parseInt(process.env.FINERACT_FAILURE_THRESHOLD || '5', 10);
 
@@ -54,8 +57,8 @@ function checkFineractHealth() {
       method: 'GET',
       timeout: 15000,
       headers: {
-        'Fineract-Platform-TenantId': 'default',
-        'Authorization': 'Basic ' + Buffer.from('mifos:password').toString('base64'),
+        'Fineract-Platform-TenantId': FINERACT_TENANT_ID,
+        'Authorization': 'Basic ' + Buffer.from(FINERACT_USERNAME + ':' + FINERACT_PASSWORD).toString('base64'),
       },
       rejectUnauthorized: false,
     };
