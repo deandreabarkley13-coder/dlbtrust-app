@@ -39,6 +39,7 @@ const NATIVE = 'eth';
 const STEP_KEYS = ['preflight', 'topUp', 'book', 'gas', 'draw', 'fund', 'settle', 'release', 'reconcile'];
 
 const BUCKET_BY_ROLE = Object.freeze({ beneficiary: 'coupon_income', trustee: 'trust_operating' });
+const IN_FLIGHT_DRAW = new Set(['proposed', 'funded', 'settling']);
 
 class RunbookError extends Error {
   constructor(message, code = 'RUNBOOK_ERROR', status = 409, details = {}) {
@@ -108,7 +109,7 @@ class LiveValueRunbookOsEngine {
     if (!g.THIRDWEB_SERVER_WALLET_LIVE) closed.push('THIRDWEB_SERVER_WALLET_LIVE');
     if (g.THIRDWEB_SHADOW) closed.push('THIRDWEB_SHADOW=false');
     if (!g.CANONICAL_FUNDING_LIVE) closed.push('CANONICAL_FUNDING_LIVE');
-    if (g.TRUST_POLICY_ENFORCED && !g.TRUST_POLICY_LIVE) closed.push('TRUST_POLICY_LIVE');
+    if (!g.TRUST_POLICY_LIVE) closed.push('TRUST_POLICY_LIVE');
     return { open: closed.length === 0, closed };
   }
 
@@ -172,10 +173,10 @@ class LiveValueRunbookOsEngine {
         g.SMART_ROUTER_LIVE ? 'live: deliver routes to rails whose own gate is open' : 'shadow: deliver returns the routing plan only',
         false, { gate: 'SMART_ROUTER_LIVE' }),
       stage('trustPolicy', 'TrustDistributionPolicy (maker/checker, §5)',
-        policy && g.TRUST_POLICY_ADDRESS && !(g.TRUST_POLICY_ENFORCED && !g.TRUST_POLICY_LIVE),
+        policy && g.TRUST_POLICY_ADDRESS && g.TRUST_POLICY_LIVE,
         policy
           ? (g.TRUST_POLICY_ADDRESS
-            ? `${g.TRUST_POLICY_ADDRESS} enforced=${g.TRUST_POLICY_ENFORCED} live=${g.TRUST_POLICY_LIVE}${g.TRUST_POLICY_ENFORCED && !g.TRUST_POLICY_LIVE ? ' — enforced without live would block all outbound value' : ''}`
+            ? `${g.TRUST_POLICY_ADDRESS} enforced=${g.TRUST_POLICY_ENFORCED} live=${g.TRUST_POLICY_LIVE}${!g.TRUST_POLICY_LIVE ? (g.TRUST_POLICY_ENFORCED ? ' — enforced without live would block all outbound value' : ' — TRUST_POLICY_LIVE=false: proposals are shadow, a settled draw would have no executable distribution') : ''}`
             : 'TRUST_POLICY_ADDRESS not configured (draw destination / governed settlement)')
           : 'TrustPolicyEngine unavailable',
         true, { gate: 'TRUST_POLICY_ENFORCED', enforced: g.TRUST_POLICY_ENFORCED, live: g.TRUST_POLICY_LIVE }),
@@ -295,7 +296,7 @@ class LiveValueRunbookOsEngine {
     const stageOk = (key) => { const s = readiness.stages.find((x) => x.key === key); return Boolean(s && s.ok); };
     const stageDetail = (key) => { const s = readiness.stages.find((x) => x.key === key); return s ? s.detail : null; };
     const bucket = this._bucketFor(role);
-    const ref = reference || `LVR-${Date.now().toString(36).toUpperCase()}`;
+    let ref = reference || `LVR-${Date.now().toString(36).toUpperCase()}`;
     const steps = [];
     const step = (key, section, label, fields) => { const s = { key, section, label, canExecute: false, human: false, skip: false, reason: null, requires: [], ...fields }; steps.push(s); return s; };
 
@@ -314,16 +315,22 @@ class LiveValueRunbookOsEngine {
       });
     }
 
-    // 2. §4a top-up — only when the treasury does not already hold the USDC
+    // 2. §4a top-up — an open (unsettled or unbooked) top-up is synced before
+    // anything else; otherwise only when the treasury does not already hold the USDC
     const usdc = readiness.treasury.usdc;
     const openTopUps = d.TreasuryFunding ? await attempt(() => d.TreasuryFunding.openTopUps({ limit: 20 })) : { ok: true, value: [] };
     const open = openTopUps.ok ? openTopUps.value : [];
-    if (usdc !== null && usdc >= amount) {
+    if (open.length) {
+      const t = open[0];
+      const apiOk = stageOk('thirdwebApi');
+      step('topUp', '§4a', 'Sync the open treasury top-up (thirdweb checkout → USDC on Base)', {
+        canExecute: apiOk, resume: true, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, status: t.status, booked: Boolean(t.booked), link: t.link || null,
+        note: `open top-up ${t.id} (${t.status}${t.status === 'COMPLETED' && !t.booked ? ', unbooked' : ''}): syncTopUp polls thirdweb; stops only while the checkout is still pending`,
+      });
+      step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: apiOk, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
+    } else if (usdc !== null && usdc >= amount) {
       step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', { skip: true, reason: `treasury already holds ${usdc} USDC >= $${amount}` });
       step('book', '§4b', 'Book the settled top-up in the ERP', { skip: true, reason: 'no top-up needed' });
-    } else if (open.length) {
-      step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', { skip: true, human: true, reason: `open top-up ${open[0].id} (${open[0].status}) awaiting checkout / bridge settlement`, topUpId: open[0].id, link: open[0].link || null });
-      step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: stageOk('thirdwebApi'), reason: stageOk('thirdwebApi') ? null : stageDetail('thirdwebApi'), topUpId: open[0].id, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
     } else {
       const reasons = [];
       if (!stageOk('thirdwebApi')) reasons.push(stageDetail('thirdwebApi'));
@@ -352,9 +359,15 @@ class LiveValueRunbookOsEngine {
       step('gas', '§4', 'Base ETH for gas (FundingEngine.executePlan)', { canExecute: reasons.length === 0, reason: reasons.length ? reasons.join('; ') : null, requires: ['FUNDING_LIVE'], live: g.FUNDING_LIVE, fundingPlan: gasPlan && gasPlan.ok ? { canExecute: gasPlan.value.canExecute, steps: gasPlan.value.steps, missing: gasPlan.value.missing } : null });
     }
 
-    // 4. collateral draw — maker/checker proposal against the RWA facility
+    // 4. collateral draw — maker/checker proposal against the RWA facility.
+    // An in-flight runbook draw (same reference, or the newest LVR- draw for this
+    // amount) is resumed from its recorded state instead of proposed again.
+    const inFlight = await this._inFlightDraw(d, { reference, amount });
+    if (inFlight) ref = inFlight.reference;
     let facility = null;
-    if (d.Collateral) {
+    if (inFlight) {
+      step('draw', '§4c', 'RWA collateral draw (maker/checker)', { skip: true, reason: `resuming draw ${inFlight.drawId} (${inFlight.status}, ref ${inFlight.reference})`, drawId: inFlight.drawId, drawStatus: inFlight.status, reference: inFlight.reference, proposalId: inFlight.proposalId });
+    } else if (d.Collateral) {
       const f = await attempt(() => d.Collateral.facility());
       if (f.ok) facility = f.value; else step('draw', '§4c', 'RWA collateral draw (maker/checker)', { reason: `facility: ${f.error}` });
     } else step('draw', '§4c', 'RWA collateral draw (maker/checker)', { reason: 'CollateralOsEngine not available' });
@@ -365,15 +378,39 @@ class LiveValueRunbookOsEngine {
       if (Number(facility.availableUsd || 0) < amount) reasons.push(`facility available $${round2(facility.availableUsd).toFixed(2)} < $${amount} (pledge more RWA)`);
       step('draw', '§4c', 'RWA collateral draw (maker/checker)', { canExecute: reasons.length === 0, reason: reasons.length ? reasons.join('; ') : null, bucket, reference: ref, amountUsd: amount, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE, facility: { availableUsd: facility.availableUsd, spendableUsd: facility.spendableUsd, drawnUsd: facility.drawnUsd } });
     }
-    step('fund', '§4c', 'Checker approves the ERP proposal; reconcile books DR 1210 / CR 2400', { canExecute: false, human: true, reason: 'checker approval of the canonical_money proposal is a human step; reconcile() runs after it' });
+    const FUND_LABEL = 'Checker approves the ERP proposal; reconcile books DR 1210 / CR 2400';
+    if (inFlight && inFlight.status === 'proposed') {
+      step('fund', '§4c', FUND_LABEL, { canExecute: true, resume: true, drawId: inFlight.drawId, proposalId: inFlight.proposalId, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE, note: 'reconcile() books the draw if the checker has approved; otherwise stops for the checker' });
+    } else if (inFlight) {
+      step('fund', '§4c', FUND_LABEL, { skip: true, reason: `draw ${inFlight.drawId} already ${inFlight.status}`, drawId: inFlight.drawId });
+    } else {
+      step('fund', '§4c', FUND_LABEL, { canExecute: false, human: true, reason: 'checker approval of the canonical_money proposal is a human step; reconcile() runs after it' });
+    }
 
     // 5. governed settlement + Spritz off-ramp
     const settleReasons = [];
     if (!stageOk('trustPolicy')) settleReasons.push(stageDetail('trustPolicy'));
     if (!stageOk('signer')) settleReasons.push(stageDetail('signer'));
     if (!g.THIRDWEB_SERVER_WALLET_LIVE) settleReasons.push('THIRDWEB_SERVER_WALLET_LIVE not set (payout signer not live)');
-    step('settle', '§4e', 'Stage the Spritz off-ramp under the policy contract (CollateralOsEngine.settle)', { canExecute: settleReasons.length === 0, reason: settleReasons.length ? settleReasons.join('; ') : null, purpose, requires: ['THIRDWEB_SERVER_WALLET_LIVE', 'TRUST_POLICY_LIVE'], live: g.THIRDWEB_SERVER_WALLET_LIVE && (!g.TRUST_POLICY_ENFORCED || g.TRUST_POLICY_LIVE) });
-    step('release', '§4e', 'Checker approves the distribution; after the release delay executeSettlement releases via the policy contract and Spritz pays out', { canExecute: false, human: true, reason: 'checker approval + timelock is a human step; executeSettlement() runs after it' });
+    const SETTLE_LABEL = 'Stage the Spritz off-ramp under the policy contract (CollateralOsEngine.settle)';
+    const RELEASE_LABEL = 'Checker approves the distribution; after the release delay executeSettlement releases via the policy contract and Spritz pays out';
+    if (inFlight && ['settling', 'settled'].includes(inFlight.status)) {
+      step('settle', '§4e', SETTLE_LABEL, { skip: true, reason: `draw ${inFlight.drawId} already ${inFlight.status}; distribution ${inFlight.distributionId || 'n/a'}, Spritz quote ${inFlight.spritzQuoteId || 'n/a'}`, drawId: inFlight.drawId, distributionId: inFlight.distributionId });
+    } else {
+      step('settle', '§4e', SETTLE_LABEL, { canExecute: settleReasons.length === 0, reason: settleReasons.length ? settleReasons.join('; ') : null, purpose, drawId: inFlight ? inFlight.drawId : null, requires: ['THIRDWEB_SERVER_WALLET_LIVE', 'TRUST_POLICY_LIVE'], live: g.THIRDWEB_SERVER_WALLET_LIVE && g.TRUST_POLICY_LIVE });
+    }
+    if (inFlight && inFlight.status === 'settled') {
+      step('release', '§4e', RELEASE_LABEL, { skip: true, reason: `draw ${inFlight.drawId} settled`, drawId: inFlight.drawId });
+    } else if (inFlight && inFlight.status === 'settling') {
+      const rel = await this._releaseState(d, inFlight);
+      const runnable = rel.releasable || Boolean(rel.executed);
+      step('release', '§4e', RELEASE_LABEL, {
+        canExecute: runnable && settleReasons.length === 0, human: !runnable, drawId: inFlight.drawId, distributionId: inFlight.distributionId, distribution: rel.distribution,
+        reason: runnable ? (settleReasons.length ? settleReasons.join('; ') : null) : rel.reason, requires: ['THIRDWEB_SERVER_WALLET_LIVE', 'TRUST_POLICY_LIVE'], live: g.THIRDWEB_SERVER_WALLET_LIVE && g.TRUST_POLICY_LIVE,
+      });
+    } else {
+      step('release', '§4e', RELEASE_LABEL, { canExecute: false, human: true, reason: 'checker approval + timelock is a human step; executeSettlement() runs after it' });
+    }
     step('reconcile', '§4', 'ThirdwebSettlementEngine.reconcile (confirm on-chain legs, book once)', { canExecute: Boolean(d.Settlement && stageOk('thirdwebApi')), reason: d.Settlement ? (stageOk('thirdwebApi') ? null : stageDetail('thirdwebApi')) : 'ThirdwebSettlementEngine not available' });
 
     const firstBlocked = steps.find((s) => !s.skip && !s.canExecute);
@@ -384,6 +421,7 @@ class LiveValueRunbookOsEngine {
       purpose,
       bucket,
       reference: ref,
+      resuming: inFlight ? { drawId: inFlight.drawId, status: inFlight.status, reference: inFlight.reference, distributionId: inFlight.distributionId || null } : null,
       mode: liveGates.open ? 'live' : 'shadow',
       liveGates,
       ready: readiness.ready,
@@ -418,6 +456,7 @@ class LiveValueRunbookOsEngine {
     const results = [];
     let stopped = null;
     let fundedDrawId = null;
+    let syncedTopUp = null;
     const FUND_STEP = { key: 'fund', section: '§4c', label: 'Checker approves the ERP proposal; reconcile books DR 1210 / CR 2400', human: true };
     const RELEASE_STEP = { key: 'release', section: '§4e', label: 'Checker approves the distribution; executeSettlement releases via the policy contract', human: true };
     const record = (s, status, message, extra = {}) => { const r = { key: s.key, section: s.section, label: s.label, status, mode, message, ...extra }; results.push(r); return r; };
@@ -426,18 +465,18 @@ class LiveValueRunbookOsEngine {
     for (const s of plan.steps) {
       if (stopped) { record(s, 'pending', 'not reached'); continue; }
       if (wanted && !wanted.has(s.key)) { record(s, 'skipped', 'not selected'); continue; }
-      if (s.skip && !s.human) { record(s, 'skipped', s.reason); continue; }
-      if (s.skip && s.human) { stop(s, `${s.reason}. Complete the checkout${s.link ? ` (${s.link})` : ''}, then re-run: the §4b sync books it.`); continue; }
+      if (s.skip) { record(s, 'skipped', s.reason); continue; }
       if (s.key === 'fund' && fundedDrawId) { record(s, 'skipped', `draw ${fundedDrawId} already funded during this run`); continue; }
+      if (s.key === 'book' && syncedTopUp && syncedTopUp.booked) { record(s, 'skipped', `top-up ${syncedTopUp.id} already booked in ${syncedTopUp.bookOfRecord || 'ledger'}`); continue; }
       if (!s.canExecute) {
         if (s.human) { stop(s, `human step: ${s.reason}`); continue; }
         stop(s, `blocked at ${s.section} ${s.key}: ${s.reason}`);
         continue;
       }
-      const missingGates = (s.requires || []).filter((k) => !(k === 'TRUST_POLICY_LIVE' && !g.TRUST_POLICY_ENFORCED) && !g[k]);
+      const missingGates = (s.requires || []).filter((k) => !g[k]);
       if (!isLive) {
-        record(s, 'shadow', `would run ${s.key} (${s.section})${missingGates.length ? `; live would need ${missingGates.join(', ')}` : ''}`, { moved: false, reason: shadowReason });
-        if (s.key === 'topUp') stop(s, `shadow: would create a hosted thirdweb checkout for $${plan.amountUsd} and stop for a trustee to complete it (§4a). Nothing was created.`, {}, true);
+        record(s, 'shadow', `would run ${s.key} (${s.section})${s.resume ? ` resuming ${s.topUpId || s.drawId}` : ''}${missingGates.length ? `; live would need ${missingGates.join(', ')}` : ''}`, { moved: false, reason: shadowReason });
+        if (s.key === 'topUp' && !s.resume) stop(s, `shadow: would create a hosted thirdweb checkout for $${plan.amountUsd} and stop for a trustee to complete it (§4a). Nothing was created.`, {}, true);
         if (s.key === 'draw') stop(s, 'shadow: would raise the maker/checker ERP proposal and stop for the checker (§4c). Nothing was proposed.', {}, true);
         continue;
       }
@@ -449,6 +488,13 @@ class LiveValueRunbookOsEngine {
             record(s, 'done', s.reason ? `passed with advisory: ${s.reason}` : 'passed', { evaluation: s.evaluation });
             break;
           case 'topUp': {
+            if (s.resume) {
+              const synced = await d.TreasuryFunding.syncTopUp(s.topUpId);
+              if (synced.status === 'COMPLETED') { syncedTopUp = synced; record(s, 'done', `top-up ${synced.id} settled${synced.booked ? ` and booked in ${synced.bookOfRecord || 'ledger'}` : ' (not yet booked)'}`, { topUp: synced, moved: false }); }
+              else if (synced.status === 'FAILED') stop(s, `top-up ${synced.id} FAILED at thirdweb; create a new top-up`, { topUp: synced });
+              else stop(s, `§4a: top-up ${synced.id} is ${synced.status} — a trustee must complete the hosted checkout ${synced.link || s.link || ''}; re-run afterwards to book it.`, { topUpId: synced.id, link: synced.link || s.link }, true);
+              break;
+            }
             const topUp = await d.TreasuryFunding.createTopUp({ amountFiat: plan.amountUsd, requestedBy: actor, requesterRole: 'trustee' });
             record(s, 'done', `top-up ${topUp.id} created (${topUp.status})`, { topUpId: topUp.id, link: topUp.link, moved: false });
             stop(s, `§4a: a trustee must complete the hosted checkout ${topUp.link || '(no link returned)'} with the trust's card or bank. Then re-run (or: npm run trust:treasury-funding -- --sync ${topUp.id}) to book it.`, { topUpId: topUp.id, link: topUp.link }, true);
@@ -469,6 +515,13 @@ class LiveValueRunbookOsEngine {
             else stop(s, `gas provisioning did not complete: ${(out.executed || []).map((e) => `${e.rail}: ${e.error}`).join('; ') || out.recommendation}`, { executed: out.executed });
             break;
           }
+          case 'fund': {
+            const rec = await d.Collateral.reconcile({ postedBy: actor });
+            const mine = (rec.draws || []).find((x) => x.drawId === s.drawId);
+            if (mine && mine.status === 'funded') { fundedDrawId = s.drawId; record(s, 'done', `draw ${s.drawId} funded (journal ${mine.journal && mine.journal.entryId ? mine.journal.entryId : 'n/a'})`, { drawId: s.drawId }); }
+            else stop(s, `§4c: checker must approve canonical_money proposal ${s.proposalId || '(see draw)'} for draw ${s.drawId}; then re-run to reconcile and settle.`, { drawId: s.drawId, proposalId: s.proposalId }, true);
+            break;
+          }
           case 'draw': {
             const draw = await d.Collateral.draw({ amountUsd: plan.amountUsd, bucket: plan.bucket, reference: plan.reference, createdBy: actor, autoApprove: false });
             record(s, 'done', `draw ${draw.drawId} ${draw.status}${draw.idempotent ? ' (idempotent)' : ''}`, { drawId: draw.drawId, proposalId: draw.proposalId, requestId: draw.requestId });
@@ -483,16 +536,19 @@ class LiveValueRunbookOsEngine {
             break;
           }
           case 'settle': {
-            const drawId = fundedDrawId || (await this._latestDraw(d, 'funded'));
+            const drawId = fundedDrawId || s.drawId;
             if (!drawId) { stop(s, 'no funded draw to settle; complete §4c first'); break; }
             const settled = await d.Collateral.settle({ drawId, purpose: purpose || undefined, actor });
             record(s, 'done', `draw ${drawId} settling; Spritz quote ${settled.spritzQuoteId || 'n/a'}, distribution ${settled.distributionId || 'n/a'}`, { drawId, payout: settled.payout ? { rail: settled.payout.rail, destination: settled.payout.destination, amountUsd: settled.payout.amountUsd } : null });
             stop(RELEASE_STEP, `§4e: checker must approve distribution ${settled.distributionId || '(staged)'}; after the release delay run executeSettlement for draw ${drawId} (the policy contract releases and Spritz pays out).`, { drawId, distributionId: settled.distributionId });
             break;
           }
-          case 'release':
-            stop(s, s.reason);
+          case 'release': {
+            const out = await d.Collateral.executeSettlement({ drawId: s.drawId, actor });
+            const st = out.settlement || {};
+            record(s, 'done', `draw ${s.drawId} settled: policy released distribution ${s.distributionId}, Spritz payout ${st.status || 'submitted'}${st.txHash ? ` tx ${st.txHash}` : ''}`, { drawId: s.drawId, distributionId: s.distributionId, txHash: st.txHash || null, amountUsd: st.amountUsd, feeUsd: st.feeUsd });
             break;
+          }
           case 'reconcile': {
             const out = await d.Settlement.reconcile({});
             record(s, 'done', 'settlement reconciled', { reconcile: out });
@@ -517,7 +573,7 @@ class LiveValueRunbookOsEngine {
       liveRequested,
       liveGates,
       shadowReason,
-      moved: isLive && results.some((r) => r.status === 'done' && ['book', 'gas', 'draw', 'settle'].includes(r.key)),
+      moved: isLive && results.some((r) => r.status === 'done' && ['book', 'gas', 'draw', 'fund', 'settle', 'release'].includes(r.key)),
       completed: !stopped,
       stoppedAt: stopped,
       message: stopped ? stopped.message : `all ${results.filter((r) => r.status === 'done').length} executable steps ran in ${mode} mode`,
@@ -527,10 +583,32 @@ class LiveValueRunbookOsEngine {
     };
   }
 
-  static async _latestDraw(d, status) {
+  /**
+   * The runbook draw to resume: the draw with `reference` if given, otherwise
+   * the newest in-flight (proposed / funded / settling) LVR- draw for `amount`.
+   */
+  static async _inFlightDraw(d, { reference, amount }) {
     if (!d.Collateral) return null;
-    const r = await attempt(() => d.Collateral.draws({ status, limit: 1 }));
-    return r.ok && r.value.length ? r.value[0].drawId : null;
+    const r = await attempt(() => d.Collateral.draws({ limit: 200 }));
+    if (!r.ok) return null;
+    if (reference) return r.value.find((x) => x.reference === reference) || null;
+    return r.value.find((x) => IN_FLIGHT_DRAW.has(x.status) && /^LVR-/.test(x.reference || '') && round2(x.amountUsd) === amount) || null;
+  }
+
+  /** Whether a settling draw's on-chain distribution is approved and past its release delay. */
+  static async _releaseState(d, draw) {
+    if (!draw.distributionId) return { releasable: false, reason: `draw ${draw.drawId} is settling with no distribution id (TRUST_POLICY_LIVE was false when it was staged?); repay or re-stage`, distribution: null };
+    if (!d.TrustPolicy) return { releasable: false, reason: 'TrustPolicyEngine not available to read the distribution', distribution: null };
+    const r = await attempt(() => d.TrustPolicy.distribution(draw.distributionId));
+    if (!r.ok) return { releasable: false, reason: `distribution ${draw.distributionId}: ${r.error}`, distribution: null };
+    const dist = r.value;
+    if (!dist) return { releasable: false, reason: `distribution ${draw.distributionId} not found on the policy contract`, distribution: null };
+    const summary = { distributionId: dist.distributionId, status: dist.status, approvals: dist.approvals, releasableAt: dist.releasableAt };
+    if (dist.status === 'executed') return { releasable: false, reason: `distribution ${dist.distributionId} already executed on chain; run executeSettlement to book the payout`, distribution: summary, executed: true };
+    if (dist.status === 'cancelled') return { releasable: false, reason: `distribution ${dist.distributionId} cancelled on chain; repay the draw`, distribution: summary };
+    if (dist.status !== 'approved') return { releasable: false, reason: `checker must approve distribution ${dist.distributionId} on the policy contract (${dist.status}, ${dist.approvals} approval(s))`, distribution: summary };
+    if (dist.releasableAt && new Date(dist.releasableAt) > new Date()) return { releasable: false, reason: `release delay: distribution ${dist.distributionId} executable at ${dist.releasableAt}`, distribution: summary };
+    return { releasable: true, reason: null, distribution: summary };
   }
 }
 
