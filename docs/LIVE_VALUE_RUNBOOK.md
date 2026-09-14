@@ -189,22 +189,53 @@ thirdweb checkout and prints `checkout: https://...` plus the top-up id
 (`TWTOP-...`). A trustee completes the checkout link with the trust's card or bank
 account; tokens are delivered to the server wallet when the bridge settles.
 
-#### 4a-alt. Fund the treasury wallet with no fiat checkout (direct on-chain USDC)
+#### 4a-alt. Fund the treasury wallet with no fiat checkout (on-chain USDC)
 
-When the trust already holds USDC (own wallet / exchange), skip the hosted checkout
-and use `TreasuryDepositEngine` (`POST /api/dapp/treasury-deposits`, needs
-`TREASURY_DEPOSIT_CRYPTO_ACCOUNT_CODE=1210`, `TREASURY_DEPOSIT_CONTRA_ACCOUNT_CODE=1000`):
+Both variants go through `TreasuryDepositEngine` (`POST /api/dapp/treasury-deposits`,
+needs `TREASURY_DEPOSIT_CRYPTO_ACCOUNT_CODE=1210`,
+`TREASURY_DEPOSIT_CONTRA_ACCOUNT_CODE=1000`). A deposit is declared first so the
+arrival is attributed against the wallet's baseline, and it is booked
+(`DR 1210 / CR 1000`) exactly once, only after the USDC is verified on chain.
+
+**Preferred — internal 1:1 swap (no external wallet, no human send).** The USDC is
+produced from a ledger source: DLBUSD is minted 1:1 from the source-of-funds account,
+swapped on the DEX for USDC, and delivered to the treasury wallet by the operator.
+`npm run trust:runbook` runs this as the `selfFund` step (§4a-alt) before falling back
+to the hosted checkout; by hand:
 
 1. Declare: `POST /api/dapp/treasury-deposits { amount }` (asset defaults to the
-   settlement token) → returns `depositAddress` (the pinned treasury wallet),
+   settlement token) → `depositAddress` `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89`,
    `chainId` `8453`, exact `amount`/`symbol`.
+2. Fund: `POST /api/dapp/treasury-deposits/:id/fund { sourceType?, sourceAccountId? }`
+   (adminAuth; defaults to `TREASURY_TOPUP_HOLD_SOURCE_TYPE` /
+   `TREASURY_TOPUP_HOLD_ACCOUNT_ID`). This calls
+   `StablecoinDexEngine.depositAndSwap({ targetAsset: 'USDC', recipient: depositAddress })`
+   for the outstanding amount, then runs the deposit `sync` so the credit is verified and
+   booked in the same call. The response is `funded: true` only with a live `txHash`
+   and a `credited` deposit; otherwise it is `funded: false` with a `code`
+   (`STABLECOIN_DEX_NOT_LIVE`, `SWAP_NOT_LIVE`, `AWAITING_CHAIN`, `ALREADY_CREDITED`)
+   and nothing is claimed or double-booked. Check `GET /api/dapp/treasury-deposits/fund/readiness`
+   first.
+3. `GET /api/dapp/treasury-funding/balances` and `npm run trust:runbook` →
+   `treasuryUsdc` ok.
+
+Prerequisites: `STABLECOIN_DEX_ENABLED=true` and **not** shadow
+(`STABLECOIN_DEX_SHADOW=false`, or `DAPP_SHADOW=false`), `DAPP_PRIVATE_KEY` (the
+operator hot wallet pays mint + swap gas, so it needs Base ETH), `DAPP_CHAIN_ID=8453`
+matching the treasury chain, `DAPP_USDC_ADDRESS`, `DAPP_DLBUSD_ADDRESS` (deployed
+DLBUSD), and a funded DLBUSD/USDC pool or a DLBUSD/WETH pool plus a WETH→USDC route
+(`BOND_DEX_ADDRESS` / DexSwapEngine router). The source account must cover the amount:
+the mint debits it (`SourceOfFundsAdapter._fundSourceToTreasury`) and is rolled back if
+the mint fails.
+
+**Last resort — external send.** When the trust already holds USDC off-platform and the
+swap rail is closed:
+
+1. Declare as above.
 2. Send exactly that USDC on Base (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) to
    `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` from the trust's external wallet.
 3. Credit: `POST /api/dapp/treasury-deposits/:id/sync` (or `/treasury-deposits/sync`
-   for every open deposit). The deposit is booked (`DR 1210 / CR 1000`) only once the
-   tokens are verified on chain.
-4. `GET /api/dapp/treasury-funding/balances` and `npm run trust:runbook` →
-   `treasuryUsdc` ok.
+   for every open deposit).
 
 The same flow with the native asset (`tokenAddress: null`) deposits Base ETH for gas,
 if the trustee prefers holding ETH over sponsorship (§4-gas below).

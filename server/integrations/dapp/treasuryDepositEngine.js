@@ -19,6 +19,12 @@
  * nothing, `credited` books once (debit the on-chain asset account, credit the
  * external-funding contra account) and is idempotent, and a deposit that never
  * arrives can be cancelled without ever having touched the ledger.
+ *
+ * `fund` removes the external send altogether: the outstanding USDC is produced
+ * internally by minting DLBUSD 1:1 from a source-of-funds ledger and swapping it
+ * for USDC delivered to the deposit address (StablecoinDexEngine), then the
+ * same `sync` verifies the arrival on chain and books it. The swap is only
+ * attempted when the DEX rail is live; in shadow the deposit is left untouched.
  */
 
 const { ThirdwebPriceOracle, NATIVE_TOKEN } = require('./thirdwebPriceOracle');
@@ -26,6 +32,9 @@ const { ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine');
 
 let TrustAccountingEngine = null;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { /* optional */ }
+
+let StablecoinDexEngine = null;
+try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) { /* optional */ }
 
 let pool = null;
 try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
@@ -108,6 +117,47 @@ class TreasuryDepositEngine {
       settlementToken: str('THIRDWEB_SETTLEMENT_TOKEN') || str('DAPP_USDC_ADDRESS') || null,
       cryptoAccountCode: str('TREASURY_DEPOSIT_CRYPTO_ACCOUNT_CODE', str('TREASURY_TOPUP_CRYPTO_ACCOUNT_CODE', '1210')),
       contraAccountCode: str('TREASURY_DEPOSIT_CONTRA_ACCOUNT_CODE', '1000'),
+      // Source ledger the internal 1:1 swap mints DLBUSD from when a fund request names none.
+      fundSourceType: str('TREASURY_TOPUP_HOLD_SOURCE_TYPE', 'trust'),
+      fundSourceAccountId: str('TREASURY_TOPUP_HOLD_ACCOUNT_ID') || str('EXPENSE_WALLET_HOLD_ACCOUNT_ID') || null,
+    };
+  }
+
+  static _dex() { return StablecoinDexEngine; }
+
+  /** Whether the internal swap rail can actually deliver USDC on chain right now. */
+  static fundReadiness() {
+    const cfg = this.getConfig();
+    const Dex = this._dex();
+    const issues = [];
+    let dex = null;
+    if (!Dex) issues.push('StablecoinDexEngine not available');
+    else {
+      try { dex = Dex.getConfig(); } catch (e) { issues.push(`StablecoinDexEngine config: ${e.message}`); }
+    }
+    if (dex) {
+      if (!dex.enabled) issues.push('STABLECOIN_DEX_ENABLED is not true');
+      if (dex.shadow) issues.push('StablecoinDexEngine is in shadow mode (STABLECOIN_DEX_SHADOW / DAPP_SHADOW): no USDC would reach the treasury');
+      if (!dex.privateKey) issues.push('DAPP_PRIVATE_KEY not configured (operator pays mint + swap gas)');
+      if (!dex.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
+      if (!dex.dlbusdAddress) issues.push('DAPP_DLBUSD_ADDRESS not configured');
+      if (Number(dex.chainId) !== Number(cfg.chainId)) issues.push(`StablecoinDexEngine chain ${dex.chainId} != treasury chain ${cfg.chainId}`);
+    }
+    // A missing default source is not fatal: the request can name one.
+    const canFund = issues.length === 0;
+    if (!cfg.fundSourceAccountId) issues.push('TREASURY_TOPUP_HOLD_ACCOUNT_ID not configured (pass sourceAccountId per request)');
+    return {
+      provider: 'treasury-deposit-fund',
+      rail: 'dlbusd-1to1-swap',
+      mode: dex ? (dex.shadow ? 'shadow' : 'live') : null,
+      enabled: Boolean(dex && dex.enabled),
+      chainId: cfg.chainId,
+      usdcAddress: dex ? dex.usdcAddress || null : null,
+      sourceType: cfg.fundSourceType,
+      sourceAccountId: cfg.fundSourceAccountId,
+      canFund,
+      ready: issues.length === 0,
+      issues,
     };
   }
 
@@ -242,6 +292,74 @@ class TreasuryDepositEngine {
       patch.amountUsd = booking.amountUsd;
     }
     return this._update(record.id, patch);
+  }
+
+  /**
+   * Source the outstanding USDC internally instead of waiting for an external
+   * send: mint DLBUSD 1:1 from `sourceType:sourceAccountId`, swap it for USDC
+   * delivered to the deposit address, then `sync` so the arrival is verified on
+   * chain and booked exactly once. Never claims success without a live txHash;
+   * an already-credited deposit is returned as-is and nothing is swapped.
+   */
+  static async fund(depositId, { sourceType, sourceAccountId, poolAddress } = {}) {
+    const record = await this.get(depositId);
+    if (!record) throw Object.assign(new Error(`deposit ${depositId} not found`), { status: 404 });
+    const result = (funded, code, message, extra = {}) => ({
+      funded, code, message, depositId: record.id, rail: 'dlbusd-1to1-swap', ...extra,
+    });
+    if (record.status === 'credited') {
+      return result(false, 'ALREADY_CREDITED', `deposit ${record.id} already credited${record.booked ? ' and booked' : ''}; nothing to fund`, { deposit: record, idempotent: true });
+    }
+    if (!OPEN_STATUSES.includes(record.status)) {
+      throw Object.assign(new Error(`deposit ${record.id} is ${record.status} and cannot be funded`), { status: 409, code: 'DEPOSIT_NOT_OPEN' });
+    }
+
+    const cfg = this.getConfig();
+    const readiness = this.fundReadiness();
+    const source = {
+      sourceType: String(sourceType || cfg.fundSourceType || '').trim(),
+      sourceAccountId: String(sourceAccountId || cfg.fundSourceAccountId || '').trim(),
+    };
+    if (!source.sourceType || !source.sourceAccountId) {
+      throw Object.assign(new Error('sourceAccountId required (or set TREASURY_TOPUP_HOLD_ACCOUNT_ID)'), { status: 422, code: 'SOURCE_REQUIRED' });
+    }
+    if (!readiness.canFund) {
+      const blocking = readiness.issues.filter((i) => !/TREASURY_TOPUP_HOLD_ACCOUNT_ID/.test(i));
+      return result(false, 'STABLECOIN_DEX_NOT_LIVE', `internal swap rail unavailable: ${blocking.join('; ')}. Nothing was minted, swapped or booked; fund the deposit externally or open the rail.`, { deposit: record, readiness });
+    }
+    if (!record.tokenAddress || lower(record.tokenAddress) !== lower(readiness.usdcAddress)) {
+      throw Object.assign(new Error(`deposit ${record.id} expects ${record.symbol || 'the native asset'} (${record.tokenAddress || 'native'}); the internal swap only delivers USDC ${readiness.usdcAddress}`), { status: 422, code: 'ASSET_MISMATCH' });
+    }
+
+    const outstanding = BigInt(record.expectedQuantity) - BigInt(record.creditedQuantity || '0');
+    if (outstanding <= 0n) return result(false, 'NOTHING_OUTSTANDING', `deposit ${record.id} has nothing outstanding`, { deposit: record, idempotent: true });
+    const amount = display(outstanding, record.decimals);
+
+    const swap = await this._dex().depositAndSwap({
+      ...source,
+      amount,
+      targetAsset: 'USDC',
+      recipient: record.walletAddress,
+      poolAddress,
+    });
+    const txHash = (swap.usdcSwap && swap.usdcSwap.txHash) || (swap.swap && (swap.swap.transferHash || swap.swap.txHash)) || null;
+    const live = swap.mode === 'live' && Boolean(txHash) && !/^shadow-/.test(String(txHash));
+    const summary = {
+      operationId: swap.operationId, mode: swap.mode, amount, amountOut: swap.amountOut, txHash,
+      mintTxHash: swap.mintTxHash || null, poolAddress: swap.poolAddress || null, recipient: swap.recipient,
+      ...source,
+    };
+    if (!live) {
+      return result(false, 'SWAP_NOT_LIVE', `swap ${swap.operationId} ran in ${swap.mode} mode without a live txHash; no USDC reached ${record.walletAddress} and nothing was booked`, { deposit: record, swap: summary });
+    }
+
+    const synced = await this.sync(record.id);
+    const credited = synced.status === 'credited';
+    return result(credited, credited ? (synced.booked ? 'CREDITED' : 'CREDITED_UNBOOKED') : 'AWAITING_CHAIN',
+      credited
+        ? `deposit ${record.id} funded via internal 1:1 swap (tx ${txHash}), verified on chain${synced.booked ? ` and booked DR ${cfg.cryptoAccountCode} / CR ${cfg.contraAccountCode}` : ' (journal not posted; re-sync)'}`
+        : `swap ${swap.operationId} broadcast (tx ${txHash}) but the treasury balance shows ${synced.status}; re-sync once the transfer is indexed`,
+      { deposit: synced, swap: summary });
   }
 
   /** Sync every open deposit; used by the dashboard and the reconcile job. */

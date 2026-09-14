@@ -36,7 +36,7 @@ function fromCents(c) { return (Number(c) || 0) / 100; }
 const MIN_GAS_ETH_DEFAULT = 0.003; // FundingEngine.neededEthForFirstTx
 const NATIVE = 'eth';
 
-const STEP_KEYS = ['preflight', 'topUp', 'book', 'gas', 'draw', 'fund', 'settle', 'release', 'reconcile'];
+const STEP_KEYS = ['preflight', 'selfFund', 'topUp', 'book', 'gas', 'draw', 'fund', 'settle', 'release', 'reconcile'];
 
 const BUCKET_BY_ROLE = Object.freeze({ beneficiary: 'coupon_income', trustee: 'trust_operating' });
 const IN_FLIGHT_DRAW = new Set(['proposed', 'funded', 'settling']);
@@ -60,6 +60,7 @@ class LiveValueRunbookOsEngine {
   static _deps() {
     return {
       TreasuryFunding: tryRequire('../dapp/thirdwebTreasuryFundingEngine')?.ThirdwebTreasuryFundingEngine || null,
+      TreasuryDeposit: tryRequire('../dapp/treasuryDepositEngine')?.TreasuryDepositEngine || null,
       ServerWallet: tryRequire('../dapp/thirdwebServerWalletEngine')?.ThirdwebServerWalletEngine || null,
       Settlement: tryRequire('../dapp/thirdwebSettlementEngine')?.ThirdwebSettlementEngine || null,
       Funding: tryRequire('../dapp/fundingEngine')?.FundingEngine || null,
@@ -363,13 +364,29 @@ class LiveValueRunbookOsEngine {
       step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', { skip: true, reason: `treasury already holds ${usdc} USDC >= $${amount}` });
       step('book', '§4b', 'Book the settled top-up in the ERP', { skip: true, reason: 'no top-up needed' });
     } else {
+      // Preferred: source the USDC internally (DLBUSD 1:1 mint → swap → treasury
+      // wallet), verified on chain and booked by TreasuryDepositEngine — no human
+      // checkout and no external wallet send.
+      const selfFund = d.TreasuryDeposit && typeof d.TreasuryDeposit.fundReadiness === 'function'
+        ? await attempt(() => d.TreasuryDeposit.fundReadiness())
+        : { ok: false, error: 'TreasuryDepositEngine not available' };
+      const selfReasons = [];
+      if (!selfFund.ok) selfReasons.push(selfFund.error);
+      else if (!selfFund.value.canFund) selfReasons.push(...selfFund.value.issues.filter((i) => !/TREASURY_TOPUP_HOLD_ACCOUNT_ID/.test(i)));
+      if (selfFund.ok && !selfFund.value.sourceAccountId) selfReasons.push('TREASURY_TOPUP_HOLD_ACCOUNT_ID not configured');
+      if (!stageOk('serverWallet')) selfReasons.push(stageDetail('serverWallet'));
+      step('selfFund', '§4a-alt', 'Self-fund the treasury wallet via internal 1:1 swap (source ledger → DLBUSD → USDC on the treasury wallet)', {
+        canExecute: selfReasons.length === 0, optional: true, reason: selfReasons.length ? selfReasons.join('; ') : null, amountUsd: amount,
+        source: selfFund.ok ? { sourceType: selfFund.value.sourceType, sourceAccountId: selfFund.value.sourceAccountId } : null,
+        note: 'declares a USDC treasury deposit (TreasuryDepositEngine), mints DLBUSD 1:1 from the hold source and swaps it for USDC delivered to the treasury wallet, then syncs so it is verified on chain and booked DR 1210 / CR 1000. Nobody sends USDC by hand.',
+      });
       const reasons = [];
       if (!stageOk('thirdwebApi')) reasons.push(stageDetail('thirdwebApi'));
       if (!stageOk('serverWallet')) reasons.push(stageDetail('serverWallet'));
       if (!stageOk('fundingEligible')) reasons.push(`ERP: ${stageDetail('fundingEligible')}`);
       step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', {
         canExecute: reasons.length === 0, humanAfter: true, reason: reasons.length ? reasons.join('; ') : null, amountUsd: amount,
-        note: 'creates a hosted thirdweb checkout; a trustee must complete the link — execution stops here until it settles. No-fiat alternative: declare a direct on-chain USDC deposit (POST /api/dapp/treasury-deposits), send it to the treasury wallet, then sync it',
+        note: 'fallback when the internal swap (§4a-alt selfFund) cannot fund the treasury: creates a hosted thirdweb checkout; a trustee must complete the link — execution stops here until it settles. Last resort with neither rail: declare a direct on-chain USDC deposit (POST /api/dapp/treasury-deposits), send it to the treasury wallet from an external wallet, then sync it',
       });
       step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: false, reason: 'waits for the §4a checkout to settle (re-run to sync)', requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
     }
@@ -444,7 +461,7 @@ class LiveValueRunbookOsEngine {
     }
     step('reconcile', '§4', 'ThirdwebSettlementEngine.reconcile (confirm on-chain legs, book once)', { canExecute: Boolean(d.Settlement && stageOk('thirdwebApi')), reason: d.Settlement ? (stageOk('thirdwebApi') ? null : stageDetail('thirdwebApi')) : 'ThirdwebSettlementEngine not available' });
 
-    const firstBlocked = steps.find((s) => !s.skip && !s.canExecute);
+    const firstBlocked = steps.find((s) => !s.skip && !s.optional && !s.canExecute);
     const liveGates = this.liveGatesOpen(g);
     return {
       amountUsd: amount,
@@ -488,6 +505,7 @@ class LiveValueRunbookOsEngine {
     let stopped = null;
     let fundedDrawId = null;
     let syncedTopUp = null;
+    let selfFunded = null;
     const FUND_STEP = { key: 'fund', section: '§4c', label: 'Checker approves the ERP proposal; reconcile books DR 1210 / CR 2400', human: true };
     const RELEASE_STEP = { key: 'release', section: '§4e', label: 'Checker approves the distribution; executeSettlement releases via the policy contract', human: true };
     const record = (s, status, message, extra = {}) => { const r = { key: s.key, section: s.section, label: s.label, status, mode, message, ...extra }; results.push(r); return r; };
@@ -499,7 +517,10 @@ class LiveValueRunbookOsEngine {
       if (s.skip) { record(s, 'skipped', s.reason); continue; }
       if (s.key === 'fund' && fundedDrawId) { record(s, 'skipped', `draw ${fundedDrawId} already funded during this run`); continue; }
       if (s.key === 'book' && syncedTopUp && syncedTopUp.booked) { record(s, 'skipped', `top-up ${syncedTopUp.id} already booked in ${syncedTopUp.bookOfRecord || 'ledger'}`); continue; }
+      if ((s.key === 'topUp' || s.key === 'book') && selfFunded) { record(s, 'skipped', `treasury self-funded via internal swap: deposit ${selfFunded.depositId} ${selfFunded.code}`); continue; }
       if (!s.canExecute) {
+        // The internal swap is preferred, not required: fall through to the fiat checkout.
+        if (s.key === 'selfFund') { record(s, 'skipped', `internal swap unavailable: ${s.reason}`); continue; }
         if (s.human) { stop(s, `human step: ${s.reason}`); continue; }
         stop(s, `blocked at ${s.section} ${s.key}: ${s.reason}`);
         continue;
@@ -518,6 +539,19 @@ class LiveValueRunbookOsEngine {
           case 'preflight':
             record(s, 'done', s.reason ? `passed with advisory: ${s.reason}` : 'passed', { evaluation: s.evaluation });
             break;
+          case 'selfFund': {
+            const openDeposits = await d.TreasuryDeposit.list({ status: 'open', limit: 50 });
+            let deposit = openDeposits.find((x) => x.tokenAddress && Number(x.expectedQuantity) / 10 ** Number(x.decimals) === plan.amountUsd) || null;
+            if (!deposit) deposit = await d.TreasuryDeposit.declare({ amount: String(plan.amountUsd), memo: `live value runbook ${plan.reference}`, requestedBy: actor });
+            const funded = await d.TreasuryDeposit.fund(deposit.id, s.source || {});
+            if (funded.funded) {
+              selfFunded = funded;
+              record(s, 'done', funded.message, { depositId: deposit.id, swap: funded.swap || null, deposit: funded.deposit, moved: true });
+            } else {
+              record(s, 'skipped', `internal swap did not fund the treasury (${funded.code}): ${funded.message}`, { depositId: deposit.id, code: funded.code, swap: funded.swap || null });
+            }
+            break;
+          }
           case 'topUp': {
             if (s.resume) {
               const synced = await d.TreasuryFunding.syncTopUp(s.topUpId);
@@ -604,7 +638,7 @@ class LiveValueRunbookOsEngine {
       liveRequested,
       liveGates,
       shadowReason,
-      moved: isLive && results.some((r) => r.status === 'done' && ['book', 'gas', 'draw', 'fund', 'settle', 'release'].includes(r.key)),
+      moved: isLive && results.some((r) => r.status === 'done' && ['selfFund', 'book', 'gas', 'draw', 'fund', 'settle', 'release'].includes(r.key)),
       completed: !stopped,
       stoppedAt: stopped,
       message: stopped ? stopped.message : `all ${results.filter((r) => r.status === 'done').length} executable steps ran in ${mode} mode`,
