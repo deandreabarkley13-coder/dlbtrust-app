@@ -34,6 +34,7 @@
     "trust:funding-buckets": "node server/scripts/provision-funding-buckets.js",
     "trust:treasury-funding": "node server/scripts/thirdwebTreasuryFundingWire.js",
     "trust:server-wallet": "node server/scripts/thirdwebServerWalletWire.js",
+    "trust:runbook": "node server/scripts/liveValueRunbookWire.js",
     "db:init": "tsx src/server/db/init.ts",
     "db:migrate-legacy-sqlite": "node server/scripts/migrateSqliteToPostgres.js",
     "db:migrate-json-state": "node server/scripts/migrateJsonStateToPostgres.js",

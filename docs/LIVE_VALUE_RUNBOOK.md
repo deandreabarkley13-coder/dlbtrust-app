@@ -97,6 +97,40 @@ still refuses every rail whose own gate is closed (`Rail <rail> is not live or n
 available`). With the table above applied, `route` reports `canExecute: true` for
 fiat, stablecoin and funding; canonical stays closed until `DAPP_PRIVATE_KEY` exists.
 
+## 1b. One automated entry point: `trust:runbook`
+
+`server/integrations/os/liveValueRunbookOsEngine.js` (`LiveValueRunbookOsEngine`,
+OS engine `live-value-runbook`) orchestrates §2–§4 over the engines that own each
+stage — thirdweb treasury funding, FundingEngine (gas), Collateral OS, the Spritz
+treasury leg, thirdweb settlement, and the trust control plane — without
+reimplementing any of them.
+
+```sh
+npm run trust:runbook                                   # readiness + pipeline, read-only
+npm run trust:runbook -- --plan --amount 250 --role beneficiary --purpose medical
+npm run trust:runbook -- --execute --amount 250         # shadow: records what would run, moves nothing
+npm run trust:runbook -- --execute --amount 250 --live  # broadcasts only if every relevant *_LIVE gate is set
+npm run trust:runbook -- --strict [--json]              # exit 2 on any blocking gate (deploy gate)
+```
+
+- `readiness` lists every gate as `{ key, label, ok, detail, blocking }` (same shape
+  as the Spritz pipeline stages the dashboards render): thirdweb API, pinned server
+  wallet, `THIRDWEB_SERVER_WALLET_LIVE`, `THIRDWEB_SHADOW`, `THIRDWEB_GAS_SPONSORSHIP_LIVE`,
+  `CANONICAL_FUNDING_LIVE`, `SMART_ROUTER_LIVE`, `TRUST_POLICY_ENFORCED`/`TRUST_POLICY_LIVE`,
+  the Spritz `signer.type`, Collateral OS, treasury ETH/USDC and ERP `fundingEligible`.
+- `plan` orders the steps for an amount — pre-flight (`evaluateDistribution`), §4a
+  top-up, §4b book, gas, §4c collateral draw + checker approval, §4e governed
+  settlement (`CollateralOsEngine.settle` → checker → `executeSettlement`), reconcile —
+  and marks each `canExecute` or blocked with the exact reason.
+- `execute` runs the executable steps in order and STOPS at the first human step
+  (the §4a hosted checkout link, a checker approval) or closed gate with an
+  actionable message. It is shadow unless `--live` is passed AND the live gates are
+  open; settlement always goes through the policy contract and Spritz leg, never a
+  raw server-wallet send.
+
+Over HTTP: `POST /api/os/live-value-runbook/process` with
+`{ action: 'readiness' | 'plan' | 'execute' | 'pipeline', amountUsd, role, purpose, live }`.
+
 ## 2. Readiness (nothing moves)
 
 ```sh
