@@ -74,6 +74,60 @@ describe('TreasuryDepositEngine.fund (internal 1:1 swap)', () => {
     expect(r.issues.join(' ')).toMatch(/shadow mode/);
   });
 
+  it('an unset DAPP_DLBUSD_ADDRESS is not a blocker when DLBUSD can be auto-provisioned, and fund() resolves it before swapping', async () => {
+    vi.spyOn(StablecoinDexEngine, 'getConfig').mockReturnValue(dexConfig({ dlbusdAddress: '' }));
+    vi.spyOn(StablecoinDexEngine, 'canProvisionDLBUSD').mockReturnValue(true);
+    const ensure = vi.spyOn(StablecoinDexEngine, 'ensureDLBUSDAddress').mockResolvedValue({ address: DLBUSD, source: 'resolved', mode: 'live' });
+
+    const r = TreasuryDepositEngine.fundReadiness();
+    expect(r.canFund).toBe(true);
+    expect(r.issues.join(' ')).not.toMatch(/DAPP_DLBUSD_ADDRESS/);
+    expect(r).toMatchObject({ dlbusdAddress: null, dlbusdSource: 'auto-provision' });
+
+    const resolved = await TreasuryDepositEngine.resolveFundReadiness();
+    expect(resolved).toMatchObject({ canFund: true, dlbusdAddress: DLBUSD, dlbusdSource: 'resolved' });
+
+    const swap = liveSwap(10_000_000n);
+    vi.spyOn(StablecoinDexEngine, 'depositAndSwap').mockImplementation(swap);
+    const deposit = await TreasuryDepositEngine.declare({ amount: '10', tokenAddress: USDC });
+    const out = await TreasuryDepositEngine.fund(deposit.id, {});
+    expect(out).toMatchObject({ funded: true, code: 'CREDITED' });
+    expect(ensure).toHaveBeenCalled();
+    expect(swap).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unset DAPP_DLBUSD_ADDRESS blocks the rail only when DLBUSD cannot be resolved or deployed', async () => {
+    vi.spyOn(StablecoinDexEngine, 'getConfig').mockReturnValue(dexConfig({ dlbusdAddress: '' }));
+    vi.spyOn(StablecoinDexEngine, 'canProvisionDLBUSD').mockReturnValue(false);
+    const r = TreasuryDepositEngine.fundReadiness();
+    expect(r.canFund).toBe(false);
+    expect(r.issues.join(' ')).toMatch(/DAPP_DLBUSD_ADDRESS not configured and DLBUSD cannot be auto-provisioned/);
+
+    vi.spyOn(StablecoinDexEngine, 'canProvisionDLBUSD').mockReturnValue(true);
+    vi.spyOn(StablecoinDexEngine, 'ensureDLBUSDAddress').mockRejectedValue(new Error('deploy failed: no gas'));
+    const swap = vi.spyOn(StablecoinDexEngine, 'depositAndSwap');
+    const deposit = await TreasuryDepositEngine.declare({ amount: '10', tokenAddress: USDC });
+    const out = await TreasuryDepositEngine.fund(deposit.id, {});
+    expect(out).toMatchObject({ funded: false, code: 'STABLECOIN_DEX_NOT_LIVE' });
+    expect(out.message).toMatch(/DLBUSD could not be resolved or deployed: deploy failed: no gas/);
+    expect(swap).not.toHaveBeenCalled();
+    expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
+  });
+
+  it('shadow mode with no DLBUSD address never resolves, deploys or funds', async () => {
+    vi.spyOn(StablecoinDexEngine, 'getConfig').mockReturnValue(dexConfig({ shadow: true, dlbusdAddress: '' }));
+    const create = vi.spyOn(StablecoinDexEngine, 'getOrCreateDLBUSDToken');
+    const swap = vi.spyOn(StablecoinDexEngine, 'depositAndSwap');
+    await expect(StablecoinDexEngine.ensureDLBUSDAddress()).resolves.toMatchObject({ address: 'shadow-dlbusd-8453', source: 'shadow', mode: 'shadow' });
+    expect(create).not.toHaveBeenCalled();
+
+    const deposit = await TreasuryDepositEngine.declare({ amount: '10', tokenAddress: USDC });
+    const out = await TreasuryDepositEngine.fund(deposit.id, {});
+    expect(out).toMatchObject({ funded: false, code: 'STABLECOIN_DEX_NOT_LIVE' });
+    expect(swap).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('happy path: mints + swaps the outstanding USDC to the deposit address, syncs and books exactly once', async () => {
     const swap = liveSwap(250_000_000n);
     vi.spyOn(StablecoinDexEngine, 'depositAndSwap').mockImplementation(swap);

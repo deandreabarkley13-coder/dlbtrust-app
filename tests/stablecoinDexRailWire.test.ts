@@ -47,7 +47,45 @@ describe('stablecoinDexRailWire (shadow mode)', () => {
       .toMatchObject({ fund: true, amount: '250', sourceType: 'cash', sourceAccount: 'CA-BOND-PROCEEDS' });
     expect(parseArgs(['--create-pool', '--target', 'USDC', '--seed-dlbusd', '1', '--seed-usdc', '2']))
       .toMatchObject({ createPool: true, target: 'USDC', seedDlbusd: '1', seedUsdc: '2' });
+    expect(parseArgs(['--deploy-dlbusd'])).toMatchObject({ deployDlbusd: true, createPool: false, fund: false });
     expect(() => parseArgs(['--bogus'])).toThrow(/unknown argument/);
+  });
+
+  it('--deploy-dlbusd refuses in shadow mode and never resolves or deploys the token', async () => {
+    const { err, log, error } = io();
+    const ensure = vi.spyOn(StablecoinDexEngine, 'ensureDLBUSDAddress');
+    const create = vi.spyOn(StablecoinDexEngine, 'getOrCreateDLBUSDToken');
+
+    const res = await run(['--deploy-dlbusd'], { log, error });
+    expect(res.exitCode).toBe(1);
+    expect(res.refused).toBe(true);
+    expect(err.join('\n')).toMatch(/refusing to move value/);
+    expect(ensure).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('live readiness with DAPP_DLBUSD_ADDRESS unset: --deploy-dlbusd resolves the token and prints the address to pin', async () => {
+    vi.spyOn(StablecoinDexEngine, 'getConfig').mockReturnValue(dexConfig({ shadow: false, dlbusdAddress: '' }));
+    vi.spyOn(StablecoinDexEngine, 'canProvisionDLBUSD').mockReturnValue(true);
+    const ensure = vi.spyOn(StablecoinDexEngine, 'ensureDLBUSDAddress').mockResolvedValue({ address: DLBUSD, source: 'resolved', tokenId: 'TOK-1', mode: 'live' });
+    const { out, log, error } = io();
+
+    const fundReadiness = TreasuryDepositEngine.fundReadiness();
+    expect(fundReadiness.canFund).toBe(true);
+    expect(fundReadiness.dlbusdSource).toBe('auto-provision');
+
+    const Dex = {
+      getConfig: StablecoinDexEngine.getConfig,
+      readiness: () => ({ ready: true, mode: 'live', issues: [] }),
+      ensureDLBUSDAddress: () => StablecoinDexEngine.ensureDLBUSDAddress(),
+      createPool: vi.fn(),
+    };
+    const res = await run(['--deploy-dlbusd'], { Dex, log, error });
+    expect(res.exitCode).toBe(0);
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(res.result).toMatchObject({ address: DLBUSD, source: 'resolved' });
+    expect(out.join('\n')).toMatch(new RegExp(`set DAPP_DLBUSD_ADDRESS=${DLBUSD} in the dlbtrust-runtime secret group`));
+    expect(Dex.createPool).not.toHaveBeenCalled();
   });
 
   it('--readiness prints both readiness reports and moves nothing', async () => {

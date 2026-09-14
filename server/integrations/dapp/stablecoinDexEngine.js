@@ -31,6 +31,9 @@ function bool(name, fallback = false) { const v = process.env[name]; return v ? 
 
 const MAINNET_USDS = '0xdC035D45d973E3EC169d2276DDab16f1e407384F';
 
+// chainId -> DLBUSD address resolved/deployed at runtime when DAPP_DLBUSD_ADDRESS is unset.
+const resolvedDlbusd = new Map();
+
 function id(prefix = 'SDEX') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 
 function getOperatorAddress(cfg) {
@@ -89,6 +92,39 @@ class StablecoinDexEngine {
     };
   }
 
+  /** Whether DLBUSD can be resolved or deployed when DAPP_DLBUSD_ADDRESS is unset. */
+  static canProvisionDLBUSD() { return Boolean(BondTokenizationEngine); }
+
+  /** DLBUSD address already known without touching the chain: env pin or a prior resolution. */
+  static knownDLBUSDAddress() {
+    const cfg = this.getConfig();
+    if (cfg.dlbusdAddress) return { address: cfg.dlbusdAddress, source: 'env' };
+    const cached = resolvedDlbusd.get(Number(cfg.chainId));
+    if (cached) return { address: cached, source: 'resolved' };
+    return { address: null, source: BondTokenizationEngine ? 'auto-provision' : null };
+  }
+
+  /**
+   * Resolve the DLBUSD token address the rail will use: the env pin wins, otherwise
+   * the token is looked up (pool, BondTokenizationEngine DB) or deployed via
+   * getOrCreateDLBUSDToken() and the result is cached per chain so later calls on
+   * this replica agree. Shadow mode returns a placeholder and deploys nothing.
+   */
+  static async ensureDLBUSDAddress() {
+    const cfg = this.getConfig();
+    if (cfg.dlbusdAddress) return { address: cfg.dlbusdAddress, source: 'env', mode: cfg.shadow ? 'shadow' : 'live' };
+    if (cfg.shadow) return { address: `shadow-dlbusd-${cfg.chainId}`, source: 'shadow', mode: 'shadow' };
+    const chainId = Number(cfg.chainId);
+    const cached = resolvedDlbusd.get(chainId);
+    if (cached) return { address: cached, source: 'resolved', mode: 'live' };
+    if (!BondTokenizationEngine) throw new Error('DAPP_DLBUSD_ADDRESS not configured and BondTokenizationEngine not available to deploy DLBUSD');
+    const token = await this.getOrCreateDLBUSDToken();
+    const address = token && token.token_address;
+    if (!address) throw new Error('DLBUSD token resolved without a token_address');
+    resolvedDlbusd.set(chainId, address);
+    return { address, source: 'resolved', tokenId: token.id || null, mode: 'live' };
+  }
+
   static readiness() {
     const cfg = this.getConfig();
     const issues = [];
@@ -100,7 +136,14 @@ class StablecoinDexEngine {
       if (!BondTokenizationEngine) issues.push('BondTokenizationEngine not available');
       if (!DexSwapEngine) issues.push('DexSwapEngine not available');
     }
-    return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
+    const dlbusd = this.knownDLBUSDAddress();
+    return {
+      ready: issues.length === 0,
+      mode: cfg.shadow ? 'shadow' : 'live',
+      dlbusdAddress: dlbusd.address,
+      dlbusdSource: dlbusd.source,
+      issues,
+    };
   }
 
   static async wrapEth({ amount } = {}) {
