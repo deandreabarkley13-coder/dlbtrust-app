@@ -123,6 +123,41 @@ describe('LiveValueRunbookOsEngine.readiness', () => {
     expect(r.liveGates.closed).toContain('TRUST_POLICY_LIVE');
   });
 
+  it('gasSponsorship only passes when the verifier would actually admit the treasury wallet', () => {
+    const treasury = '0x1A904F795a0511C31Ba6347504D08d1bA58E4f89';
+    const aa = { readiness: () => ({ canSponsorGas: true, sponsorshipPolicy: 'thirdweb project policy' }) };
+    const wallet = { readiness: () => ({ ready: true, address: treasury, chainId: 8453, live: true, issues: [] }) };
+    const describe = vi.fn(() => ({ verifierPath: '/api/dapp/thirdweb/sponsorship/verify', enforcing: true, verifierSecretConfigured: true, chainIds: [8453], allowedSenders: [], requireProvisioned: true }));
+    const d = { ...fakeDeps(), ThirdwebWallet: aa, ServerWallet: wallet, SponsorshipPolicy: { describe } };
+    vi.spyOn(LiveValueRunbookOsEngine, '_deps').mockReturnValue(d as any);
+    process.env.THIRDWEB_GAS_SPONSORSHIP_LIVE = 'true';
+    process.env.THIRDWEB_SHADOW = 'false';
+
+    let s = LiveValueRunbookOsEngine.readiness().stages.find((x: any) => x.key === 'gasSponsorship');
+    expect(s.ok).toBe(false);
+    expect(s.treasuryAllowed).toBe(false);
+    expect(s.detail).toMatch(/not in THIRDWEB_POLICY_ALLOWED_SENDERS/);
+
+    describe.mockReturnValue({ verifierPath: '/api/dapp/thirdweb/sponsorship/verify', enforcing: true, verifierSecretConfigured: false, chainIds: [1], allowedSenders: [treasury.toLowerCase()], requireProvisioned: true });
+    s = LiveValueRunbookOsEngine.readiness().stages.find((x: any) => x.key === 'gasSponsorship');
+    expect(s.ok).toBe(false);
+    expect(s.detail).toMatch(/THIRDWEB_VERIFIER_SECRET not configured/);
+    expect(s.detail).toMatch(/chain 8453 not in THIRDWEB_POLICY_CHAIN_IDS/);
+
+    describe.mockReturnValue({ verifierPath: '/api/dapp/thirdweb/sponsorship/verify', enforcing: true, verifierSecretConfigured: true, chainIds: [8453], allowedSenders: [treasury.toLowerCase()], requireProvisioned: true });
+    s = LiveValueRunbookOsEngine.readiness().stages.find((x: any) => x.key === 'gasSponsorship');
+    expect(s.ok).toBe(true);
+    expect(s.treasuryAllowed).toBe(true);
+    expect(s.detail).toMatch(/treasury allowlisted/);
+
+    // off stays off, whatever the allowlist says
+    process.env.THIRDWEB_GAS_SPONSORSHIP_LIVE = 'false';
+    d.ThirdwebWallet = { readiness: () => ({ canSponsorGas: false }) } as any;
+    s = LiveValueRunbookOsEngine.readiness().stages.find((x: any) => x.key === 'gasSponsorship');
+    expect(s.ok).toBe(false);
+    expect(s.detail).toMatch(/not sponsoring/);
+  });
+
   it('never prints the secret value, only whether it is configured', () => {
     process.env.THIRDWEB_SECRET_KEY = 'super-secret-value';
     const r = LiveValueRunbookOsEngine.readiness();

@@ -66,6 +66,7 @@ class LiveValueRunbookOsEngine {
       GasTank: tryRequire('../dapp/operatorGasTank')?.OperatorGasTank || null,
       AccountAbstraction: tryRequire('../dapp/accountAbstractionEngine')?.AccountAbstractionEngine || null,
       ThirdwebWallet: tryRequire('../dapp/thirdwebWalletEngine')?.ThirdwebWalletEngine || null,
+      SponsorshipPolicy: tryRequire('../dapp/thirdwebSponsorshipPolicy')?.ThirdwebSponsorshipPolicy || null,
       Collateral: tryRequire('./collateralOsEngine')?.CollateralOsEngine || null,
       SpritzLeg: tryRequire('../spritz/spritzTreasuryLegEngine')?.SpritzTreasuryLegEngine || null,
       ControlPlane: tryRequire('../trust/trustControlPlaneEngine')?.TrustControlPlaneEngine || null,
@@ -129,6 +130,7 @@ class LiveValueRunbookOsEngine {
     const funding = d.TreasuryFunding ? safe('treasury funding', () => d.TreasuryFunding.readiness()) : null;
     const wallet = d.ServerWallet ? safe('server wallet', () => d.ServerWallet.readiness()) : null;
     const aa = d.ThirdwebWallet ? safe('thirdweb wallet', () => d.ThirdwebWallet.readiness()) : null;
+    const sponsorPolicy = d.SponsorshipPolicy ? safe('sponsorship policy', () => d.SponsorshipPolicy.describe()) : null;
     const canonical = d.CanonicalFunding ? safe('canonical funding', () => d.CanonicalFunding.readiness()) : null;
     const policy = d.TrustPolicy ? safe('trust policy', () => d.TrustPolicy.readiness()) : null;
     const legCfg = d.SpritzLeg ? safe('spritz treasury leg', () => d.SpritzLeg.config()) : null;
@@ -142,6 +144,7 @@ class LiveValueRunbookOsEngine {
 
     const signerType = legCfg ? legCfg.payoutWalletSigner : null;
     const walletAddress = (wallet && wallet.address) || g.THIRDWEB_SERVER_WALLET_ADDRESS || null;
+    const sponsorship = this._treasurySponsorship({ aa, policy: sponsorPolicy, walletAddress, chainId: wallet ? wallet.chainId : null, g });
 
     const stages = [
       stage('thirdwebApi', 'thirdweb API (Universal Bridge top-up, §4a)',
@@ -161,9 +164,8 @@ class LiveValueRunbookOsEngine {
         g.THIRDWEB_SHADOW ? 'THIRDWEB_SHADOW=true: gas sponsorship leg is simulated' : 'THIRDWEB_SHADOW=false',
         false, { gate: 'THIRDWEB_SHADOW' }),
       stage('gasSponsorship', 'THIRDWEB_GAS_SPONSORSHIP_LIVE (paymaster covers gas)',
-        aa && aa.canSponsorGas,
-        aa ? (aa.canSponsorGas ? `sponsored via ${aa.sponsorshipPolicy}` : `not sponsoring (live=${g.THIRDWEB_GAS_SPONSORSHIP_LIVE}, shadow=${g.THIRDWEB_SHADOW}); wallet must hold >= ${this.minGasEth()} ETH`) : 'ThirdwebWalletEngine unavailable',
-        false, { gate: 'THIRDWEB_GAS_SPONSORSHIP_LIVE' }),
+        sponsorship.ok, sponsorship.detail,
+        false, { gate: 'THIRDWEB_GAS_SPONSORSHIP_LIVE', treasuryAllowed: sponsorship.treasuryAllowed }),
       stage('canonicalFunding', 'Treasury-Core ERP (Fineract) canonical funding source, §4b book of record',
         canonical && canonical.ready,
         canonical ? (canonical.ready ? `${canonical.live ? 'CANONICAL_FUNDING_LIVE=true: journal posts to the GL' : 'CANONICAL_FUNDING_LIVE=false: shadow commit, top-ups stay unbooked'}` : canonical.issues.join('; ')) : 'CanonicalFundingSource unavailable',
@@ -212,6 +214,35 @@ class LiveValueRunbookOsEngine {
       liveGates,
       signer: { type: signerType },
       treasury: { address: walletAddress, chainId: wallet ? wallet.chainId : null, eth: null, usdc: null, fundingEligible: null },
+    };
+  }
+
+  /**
+   * Can the paymaster actually cover the treasury wallet's gas? Requires the
+   * thirdweb leg to be live AND the trust's own verifier to admit the treasury
+   * as a sponsored sender on its chain, otherwise every treasury op is denied
+   * by the very policy that would sponsor it.
+   */
+  static _treasurySponsorship({ aa, policy, walletAddress, chainId, g }) {
+    const need = this.minGasEth();
+    if (!aa) return { ok: false, treasuryAllowed: null, detail: 'ThirdwebWalletEngine unavailable' };
+    if (!aa.canSponsorGas) return { ok: false, treasuryAllowed: null, detail: `not sponsoring (live=${g.THIRDWEB_GAS_SPONSORSHIP_LIVE}, shadow=${g.THIRDWEB_SHADOW}); wallet must hold >= ${need} ETH` };
+    if (!policy) return { ok: true, treasuryAllowed: null, detail: `sponsored via ${aa.sponsorshipPolicy} (ThirdwebSponsorshipPolicy unavailable, sender rules not checked)` };
+    const issues = [];
+    if (!policy.enforcing) issues.push('verifier not enforcing (THIRDWEB_GAS_SPONSORSHIP_LIVE/THIRDWEB_SHADOW)');
+    if (!policy.verifierSecretConfigured) issues.push('THIRDWEB_VERIFIER_SECRET not configured');
+    const addr = String(walletAddress || '').toLowerCase();
+    const senderAllowed = Boolean(addr) && (!policy.requireProvisioned || (policy.allowedSenders || []).includes(addr));
+    if (!walletAddress) issues.push('treasury wallet not pinned');
+    else if (!senderAllowed) issues.push(`treasury ${walletAddress} not in THIRDWEB_POLICY_ALLOWED_SENDERS`);
+    if (chainId && Array.isArray(policy.chainIds) && policy.chainIds.length && !policy.chainIds.map(Number).includes(Number(chainId))) issues.push(`chain ${chainId} not in THIRDWEB_POLICY_CHAIN_IDS`);
+    const treasuryAllowed = issues.length === 0;
+    return {
+      ok: treasuryAllowed,
+      treasuryAllowed,
+      detail: treasuryAllowed
+        ? `sponsored via ${policy.verifierPath} (treasury allowlisted, chain ${policy.chainIds.join(',')})`
+        : `paymaster live but the verifier would deny the treasury: ${issues.join('; ')}`,
     };
   }
 
@@ -338,7 +369,7 @@ class LiveValueRunbookOsEngine {
       if (!stageOk('fundingEligible')) reasons.push(`ERP: ${stageDetail('fundingEligible')}`);
       step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', {
         canExecute: reasons.length === 0, humanAfter: true, reason: reasons.length ? reasons.join('; ') : null, amountUsd: amount,
-        note: 'creates a hosted thirdweb checkout; a trustee must complete the link — execution stops here until it settles',
+        note: 'creates a hosted thirdweb checkout; a trustee must complete the link — execution stops here until it settles. No-fiat alternative: declare a direct on-chain USDC deposit (POST /api/dapp/treasury-deposits), send it to the treasury wallet, then sync it',
       });
       step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: false, reason: 'waits for the §4a checkout to settle (re-run to sync)', requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
     }
@@ -352,7 +383,7 @@ class LiveValueRunbookOsEngine {
       let gasPlan = null;
       if (d.Funding && sameWallet) gasPlan = await attempt(() => d.Funding.buildPlan({ amountUsd: Number(str('OPERATOR_GAS_TANK_TOPUP_USD')) || 25, targetAsset: 'ETH' }));
       const reasons = [];
-      if (!sameWallet) reasons.push(`FundingEngine funds the operator ${operator || '(unset)'}, not the treasury ${readiness.treasury.address || '(unset)'}: deposit >= ${this.minGasEth()} ETH manually or enable THIRDWEB_GAS_SPONSORSHIP_LIVE`);
+      if (!sameWallet) reasons.push(`FundingEngine funds the operator ${operator || '(unset)'}, not the treasury ${readiness.treasury.address || '(unset)'}: deposit >= ${this.minGasEth()} ETH manually (TreasuryDepositEngine, native asset) or sponsor it (${stageDetail('gasSponsorship')})`);
       else if (!gasPlan || !gasPlan.ok) reasons.push(`FundingEngine: ${gasPlan ? gasPlan.error : 'not available'}`);
       else if (!gasPlan.value.canExecute) reasons.push(gasPlan.value.recommendation || (gasPlan.value.missing || []).join('; '));
       if (!g.FUNDING_LIVE) reasons.push('FUNDING_LIVE not set');

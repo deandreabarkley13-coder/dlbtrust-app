@@ -189,6 +189,40 @@ thirdweb checkout and prints `checkout: https://...` plus the top-up id
 (`TWTOP-...`). A trustee completes the checkout link with the trust's card or bank
 account; tokens are delivered to the server wallet when the bridge settles.
 
+#### 4a-alt. Fund the treasury wallet with no fiat checkout (direct on-chain USDC)
+
+When the trust already holds USDC (own wallet / exchange), skip the hosted checkout
+and use `TreasuryDepositEngine` (`POST /api/dapp/treasury-deposits`, needs
+`TREASURY_DEPOSIT_CRYPTO_ACCOUNT_CODE=1210`, `TREASURY_DEPOSIT_CONTRA_ACCOUNT_CODE=1000`):
+
+1. Declare: `POST /api/dapp/treasury-deposits { amount }` (asset defaults to the
+   settlement token) → returns `depositAddress` (the pinned treasury wallet),
+   `chainId` `8453`, exact `amount`/`symbol`.
+2. Send exactly that USDC on Base (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) to
+   `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` from the trust's external wallet.
+3. Credit: `POST /api/dapp/treasury-deposits/:id/sync` (or `/treasury-deposits/sync`
+   for every open deposit). The deposit is booked (`DR 1210 / CR 1000`) only once the
+   tokens are verified on chain.
+4. `GET /api/dapp/treasury-funding/balances` and `npm run trust:runbook` →
+   `treasuryUsdc` ok.
+
+The same flow with the native asset (`tokenAddress: null`) deposits Base ETH for gas,
+if the trustee prefers holding ETH over sponsorship (§4-gas below).
+
+#### 4-gas. No native ETH: EIP-4337 gas sponsorship
+
+Set in the `dlbtrust-runtime` group **and** the service-level runtime env:
+`THIRDWEB_GAS_SPONSORSHIP_LIVE=true`, `THIRDWEB_SHADOW=false`, `THIRDWEB_SECRET_KEY`,
+`THIRDWEB_VERIFIER_SECRET` (same value as the thirdweb dashboard's server verifier for
+`POST /api/dapp/thirdweb/sponsorship/verify`), `THIRDWEB_POLICY_ALLOWED_SENDERS=<treasury
+wallet>`, `THIRDWEB_POLICY_CHAIN_IDS=8453`, optionally `THIRDWEB_POLICY_ALLOWED_TARGETS`
+(Base USDC, policy / Spritz contracts). Fund the thirdweb project's gas credits, then
+restart the service. The runbook's `gasSponsorship` stage is ok only when the
+verifier would actually admit the treasury (`ThirdwebSponsorshipPolicy.describe()`:
+`enforcing`, `verifierSecretConfigured`, treasury in `allowedSenders`, chain
+allowlisted); `treasuryEth` then passes through its "or sponsored" branch and the
+`gas` step is skipped. With sponsorship off the gas step stays fail-closed.
+
 ### 4b. Book the settled top-up
 
 ```sh
