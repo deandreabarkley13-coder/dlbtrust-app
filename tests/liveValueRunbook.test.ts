@@ -200,6 +200,102 @@ describe('LiveValueRunbookOsEngine.execute', () => {
     expect(out.message).toMatch(/blocked at §4a topUp: THIRDWEB_SECRET_KEY not configured/);
     for (const fn of movers(d)) expect(fn).not.toHaveBeenCalled();
   });
+
+  it('closes the live gates when TRUST_POLICY_LIVE is false even if TRUST_POLICY_ENFORCED is false', () => {
+    Object.assign(process.env, LIVE_ENV, { TRUST_POLICY_ENFORCED: 'false', TRUST_POLICY_LIVE: 'false' });
+    const gates = LiveValueRunbookOsEngine.liveGatesOpen();
+    expect(gates.open).toBe(false);
+    expect(gates.closed).toEqual(['TRUST_POLICY_LIVE']);
+  });
+});
+
+describe('LiveValueRunbookOsEngine resumption', () => {
+  const inFlight = (status: string, extra: any = {}) => ({ drawId: 'CDRW-1', reference: 'LVR-PRIOR', amountUsd: 250, outstandingUsd: 250, status, proposalId: 'PROP-1', distributionId: null, spritzQuoteId: null, ...extra });
+
+  function planDeps(d: any) {
+    vi.spyOn(LiveValueRunbookOsEngine, '_deps').mockReturnValue(d);
+    vi.spyOn(LiveValueRunbookOsEngine, 'readinessFull').mockResolvedValue({
+      ready: true, blocking: [], errors: [], treasury: { address: '0xabc', eth: 1, usdc: 1000, fundingEligible: 1 }, signer: { type: 'thirdweb' },
+      stages: GATE_KEYS.map((key) => ({ key, label: key, ok: true, detail: 'ok', blocking: true })),
+    } as any);
+    d.ControlPlane.evaluateDistribution.mockResolvedValue({ allowed: true, enforced: true, blocking: [] });
+  }
+
+  it('plan reuses the in-flight LVR draw reference instead of minting a new one, and skips the draw step', async () => {
+    const d = fakeDeps();
+    d.Collateral.draws.mockResolvedValue([inFlight('proposed')]);
+    planDeps(d);
+    const plan = await LiveValueRunbookOsEngine.plan({ amountUsd: 250 });
+    expect(plan.reference).toBe('LVR-PRIOR');
+    expect(plan.resuming).toMatchObject({ drawId: 'CDRW-1', status: 'proposed' });
+    const byKey = Object.fromEntries(plan.steps.map((s: any) => [s.key, s]));
+    expect(byKey.draw.skip).toBe(true);
+    expect(byKey.fund).toMatchObject({ canExecute: true, resume: true, drawId: 'CDRW-1' });
+  });
+
+  it('live: an in-flight proposed draw is reconciled, not re-drawn; stops for the checker when still unapproved', async () => {
+    Object.assign(process.env, LIVE_ENV);
+    const d = fakeDeps();
+    d.Collateral.draws.mockResolvedValue([inFlight('proposed')]);
+    d.Collateral.reconcile.mockResolvedValue({ draws: [] });
+    planDeps(d);
+    const out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true });
+    expect(d.Collateral.draw).not.toHaveBeenCalled();
+    expect(d.Collateral.reconcile).toHaveBeenCalledTimes(1);
+    expect(out.stoppedAt).toMatchObject({ key: 'fund', human: true });
+    expect(out.message).toMatch(/checker must approve canonical_money proposal PROP-1 for draw CDRW-1/);
+  });
+
+  it('live: syncs an open top-up first; stops while pending, books when completed', async () => {
+    Object.assign(process.env, LIVE_ENV);
+    const d = fakeDeps();
+    d.TreasuryFunding.openTopUps.mockResolvedValue([{ id: 'TWTOP-9', status: 'PENDING', booked: false, link: 'https://pay/9' }]);
+    d.TreasuryFunding.syncTopUp.mockResolvedValueOnce({ id: 'TWTOP-9', status: 'PENDING', link: 'https://pay/9' });
+    planDeps(d);
+    let out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true });
+    expect(d.TreasuryFunding.syncTopUp).toHaveBeenCalledWith('TWTOP-9');
+    expect(d.TreasuryFunding.createTopUp).not.toHaveBeenCalled();
+    expect(out.stoppedAt).toMatchObject({ key: 'topUp', human: true });
+    expect(out.message).toMatch(/TWTOP-9 is PENDING/);
+
+    d.TreasuryFunding.syncTopUp.mockResolvedValue({ id: 'TWTOP-9', status: 'COMPLETED', booked: true, bookOfRecord: 'fineract', journalEntryId: 'J-1' });
+    out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true, steps: ['topUp', 'book'] });
+    const byKey = Object.fromEntries(out.results.map((r: any) => [r.key, r]));
+    expect(byKey.topUp.status).toBe('done');
+    expect(byKey.book.status).toBe('skipped');
+    expect(out.completed).toBe(true);
+  });
+
+  it('live: release stays human while the distribution is pending / timelocked, then calls executeSettlement once releasable', async () => {
+    Object.assign(process.env, LIVE_ENV);
+    const d = fakeDeps();
+    d.Collateral.draws.mockResolvedValue([inFlight('settling', { distributionId: '7', spritzQuoteId: 'Q-1' })]);
+    const dist = vi.fn();
+    (d as any).TrustPolicy = { distribution: dist, readiness: vi.fn() };
+    planDeps(d);
+
+    dist.mockResolvedValue({ distributionId: '7', status: 'pending', approvals: 0, releasableAt: null });
+    let out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true });
+    expect(out.stoppedAt).toMatchObject({ key: 'release', human: true });
+    expect(out.message).toMatch(/checker must approve distribution 7/);
+    expect(d.Collateral.executeSettlement).not.toHaveBeenCalled();
+
+    dist.mockResolvedValue({ distributionId: '7', status: 'approved', approvals: 1, releasableAt: new Date(Date.now() + 3600e3).toISOString() });
+    out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true });
+    expect(out.stoppedAt).toMatchObject({ key: 'release', human: true });
+    expect(out.message).toMatch(/release delay/);
+    expect(d.Collateral.executeSettlement).not.toHaveBeenCalled();
+
+    dist.mockResolvedValue({ distributionId: '7', status: 'approved', approvals: 1, releasableAt: new Date(Date.now() - 1000).toISOString() });
+    d.Collateral.executeSettlement.mockResolvedValue({ drawId: 'CDRW-1', status: 'settled', settlement: { status: 'settled', txHash: '0xtx', amountUsd: 250 } });
+    out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true });
+    expect(d.Collateral.executeSettlement).toHaveBeenCalledWith({ drawId: 'CDRW-1', actor: 'live-value-runbook' });
+    expect(d.Collateral.settle).not.toHaveBeenCalled();
+    expect(d.ServerWallet.send).not.toHaveBeenCalled();
+    const rel = out.results.find((r: any) => r.key === 'release');
+    expect(rel).toMatchObject({ status: 'done', txHash: '0xtx' });
+    expect(out.moved).toBe(true);
+  });
 });
 
 describe('LiveValueRunbookOSEngine (OS wrapper)', () => {

@@ -8,7 +8,7 @@
  * Run from the repo root:
  *   node server/scripts/liveValueRunbookWire.js                       # readiness + pipeline (read-only)
  *   node server/scripts/liveValueRunbookWire.js --plan --amount 250 [--role beneficiary|trustee] [--purpose <purpose>]
- *   node server/scripts/liveValueRunbookWire.js --execute --amount 250 [--role ...] [--purpose ...] [--live]
+ *   node server/scripts/liveValueRunbookWire.js --execute --amount 250 [--role ...] [--purpose ...] [--reference LVR-...] [--live]
  *   ... [--json] [--strict]
  *
  * Steps:
@@ -39,7 +39,7 @@ function parseArgs(argv) {
     else if (arg === '--plan') out.plan = true;
     else if (arg === '--execute') out.execute = true;
     else if (arg === '--live') out.live = true;
-    else if (arg === '--amount') { out.amount = next; i += 1; } else if (arg === '--role') { out.role = next; i += 1; } else if (arg === '--purpose') { out.purpose = next; i += 1; } else throw new Error(`unknown argument "${arg}"`);
+    else if (arg === '--amount') { out.amount = next; i += 1; } else if (arg === '--role') { out.role = next; i += 1; } else if (arg === '--purpose') { out.purpose = next; i += 1; } else if (arg === '--reference') { out.reference = next; i += 1; } else throw new Error(`unknown argument "${arg}"`);
   }
   if ((out.plan || out.execute) && !(Number(out.amount) > 0)) throw new Error('--plan / --execute require --amount <usd>');
   if (!['beneficiary', 'trustee'].includes(out.role)) throw new Error('--role must be beneficiary or trustee');
@@ -67,9 +67,9 @@ async function main() {
   let plan = null;
   let execution = null;
   if (args.execute) {
-    execution = await LiveValueRunbookOsEngine.execute({ amountUsd: Number(args.amount), role: args.role, purpose: args.purpose, live: args.live });
+    execution = await LiveValueRunbookOsEngine.execute({ amountUsd: Number(args.amount), role: args.role, purpose: args.purpose, reference: args.reference, live: args.live });
   } else if (args.plan) {
-    plan = await LiveValueRunbookOsEngine.plan({ amountUsd: Number(args.amount), role: args.role, purpose: args.purpose });
+    plan = await LiveValueRunbookOsEngine.plan({ amountUsd: Number(args.amount), role: args.role, purpose: args.purpose, reference: args.reference });
   }
 
   if (args.json) {
@@ -98,6 +98,7 @@ async function main() {
 
     if (plan) {
       console.log(`\n== 3. plan $${plan.amountUsd.toFixed(2)} (${plan.role}${plan.purpose ? `, ${plan.purpose}` : ''}) mode=${plan.mode} ==`);
+      if (plan.resuming) console.log(`  resuming draw ${plan.resuming.drawId} (${plan.resuming.status}) ref ${plan.resuming.reference}`);
       for (const s of plan.steps) {
         const mark = s.skip ? 'skp' : (s.canExecute ? 'run' : (s.human ? 'HUM' : 'BLK'));
         console.log(`  [${mark}] ${s.section.padEnd(4)} ${s.key.padEnd(10)} ${s.label}${s.reason ? `\n        ${s.reason}` : ''}`);

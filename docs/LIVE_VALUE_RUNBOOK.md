@@ -127,6 +127,16 @@ npm run trust:runbook -- --strict [--json]              # exit 2 on any blocking
   actionable message. It is shadow unless `--live` is passed AND the live gates are
   open; settlement always goes through the policy contract and Spritz leg, never a
   raw server-wallet send.
+- Re-running resumes rather than duplicates: an open §4a top-up is `syncTopUp`'d first
+  (stops only while the checkout is still pending; a settled one is booked), the
+  newest in-flight `LVR-` draw for the same amount (or `--reference LVR-…`) is picked
+  up in its recorded state (`proposed` → reconcile, `funded` → settle, `settling` →
+  release), and `release` calls `CollateralOsEngine.executeSettlement` once the
+  on-chain distribution is approved and past its release delay — before that it
+  stays a human step.
+- `TRUST_POLICY_LIVE=true` is required for a live run regardless of
+  `TRUST_POLICY_ENFORCED`: with the policy engine shadowed, `settle()` would leave a
+  draw `settling` with no executable distribution.
 
 Over HTTP: `POST /api/os/live-value-runbook/process` with
 `{ action: 'readiness' | 'plan' | 'execute' | 'pipeline', amountUsd, role, purpose, live }`.
