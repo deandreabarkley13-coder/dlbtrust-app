@@ -397,7 +397,7 @@ approves a proposal on its own, and the two seats sign with different keys.
 | Seat | Button | Signs with | Route |
 | --- | --- | --- | --- |
 | Maker (human, maker/admin seat) | **Maker Propose** (pick an approved wallet distribution request) | thirdweb server wallet `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` | `POST /api/dapp/trust-policy/requests/:id/propose` |
-| Checker (human, checker seat) | **Checker Approve** on a `proposed` row | checker RPC key `TRUST_POLICY_CHECKER_PRIVATE_KEY` → `0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169` | `POST /api/dapp/trust-policy/distributions/:id/approve` → `TrustPolicyEngine.approveAsChecker` |
+| Checker (human, checker seat) | **Checker Approve** on a `proposed` row | checker RPC key `TRUST_POLICY_CHECKER_PRIVATE_KEY` → `0x95bb85FdeC42b1517d282e8AD43A789d390aAda2` | `POST /api/dapp/trust-policy/distributions/:id/approve` → `TrustPolicyEngine.approveAsChecker` |
 | Maker / executor | **Execute** on an `approved` row (after the timelock) | server wallet | `POST /api/dapp/trust-policy/distributions/:id/execute` |
 
 Buttons are gated by the signed-in seat: the maker seat sees Maker Propose
@@ -409,7 +409,7 @@ Checker signer configuration (runtime secret group only):
 
 ```sh
 node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime \
-  TRUST_POLICY_CHECKER_PRIVATE_KEY=<checker key for 0x5bcd…, never the server wallet> \
+  TRUST_POLICY_CHECKER_PRIVATE_KEY=<checker key for 0x95bb85…, never the server wallet> \
   TRUST_POLICY_CHECKER_RPC_URL=https://mainnet.base.org \
   TRUST_POLICY_CHECKER_LIVE=true
 ```
