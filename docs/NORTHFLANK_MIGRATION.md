@@ -38,6 +38,23 @@ group and adds `FINERACT_URL`, `FINERACT_TENANT_ID`, `FINERACT_USERNAME`,
 Verify with `GET /api/fineract/health` (`fineract_connected: true`) and
 `GET /api/fineract/resilience` (`status: healthy`, admin token).
 
+### Rotating the Fineract admin password
+
+`fineractClient.js` and the resilience probe in `fineractResilience.js` both
+read `FINERACT_USERNAME` / `FINERACT_PASSWORD`, so a rotation is three steps:
+
+1. Change the `mifos` password inside Fineract (Admin → Users, or
+   `PUT /fineract-provider/api/v1/users/{id}` with the new `password` /
+   `repeatPassword`).
+2. Persist it into `dlbtrust-runtime` (never into git):
+   `NORTHFLANK_API_TOKEN=... FINERACT_PASSWORD=<new> node scripts/northflank/configure-fineract.mjs`
+   (add `--dry-run` first to preview; only key names and counts are printed).
+3. Redeploy so the new group version is picked up:
+   `northflank restart service --project dlbtrust --service dlbtrust-app`
+   then confirm `GET /api/fineract/health` and `GET /api/fineract/resilience`
+   are healthy. `dlbtrust-fineract` does not need a restart — the app password
+   is not part of `fineract-runtime`.
+
 ## Order of operations
 
 Prerequisites, all verified against the live account — provisioning fails
