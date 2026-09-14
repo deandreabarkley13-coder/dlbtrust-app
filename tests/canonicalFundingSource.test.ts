@@ -105,7 +105,13 @@ describe('canonical position (ERP is the authority)', () => {
   it('honours a sub-ledger segregation flag', async () => {
     (TrustAccountingEngine.getFundingPosition as any).mockResolvedValue(ledger(50_000, false));
     const position = await CanonicalFundingSource.position({});
-    expect(position).toMatchObject({ fundingEligible: false, segregationReason: 'restricted for bond proceeds' });
+    expect(position).toMatchObject({ fundingEligible: false, segregationReason: 'restricted for bond proceeds', driftCents: 0 });
+  });
+
+  it('still reports drift for a segregated account so reconciliation can see the books agree', async () => {
+    (TrustAccountingEngine.getFundingPosition as any).mockResolvedValue(ledger(50_000, false));
+    const report = await CanonicalFundingSource.reconcile({ accountCodes: ['1000'] });
+    expect(report.accounts[0]).toMatchObject({ canonicalUsd: 50_000, ledgerUsd: 50_000, driftUsd: 0, inSync: true });
   });
 
   it('subtracts on-hold funds when an operating savings account is configured', async () => {

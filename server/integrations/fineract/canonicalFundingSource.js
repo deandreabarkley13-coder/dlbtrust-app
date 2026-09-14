@@ -221,15 +221,17 @@ class CanonicalFundingSource {
 
   static _restricted({ code, glAccountId, canonical, savings, ledgerCents, driftCents = null, reason, degraded }) {
     const cfg = this.getConfig();
+    const canonicalCents = canonical ? canonical.balanceCents : null;
+    const knownDrift = canonicalCents !== null && ledgerCents !== null ? ledgerCents - canonicalCents : null;
     return {
       sourceType: cfg.sourceType,
       sourceOfTruth: 'fineract',
       accountCode: code,
       glAccountId,
       glAccount: (canonical && canonical.glAccount) || null,
-      canonicalBalanceCents: canonical ? canonical.balanceCents : null,
+      canonicalBalanceCents: canonicalCents,
       ledgerBalanceCents: ledgerCents,
-      driftCents,
+      driftCents: driftCents === null ? knownDrift : driftCents,
       savingsAccountId: (savings && savings.savingsAccountId) || cfg.savingsAccountId || null,
       savings,
       reserveCents: cfg.reserveCents,
