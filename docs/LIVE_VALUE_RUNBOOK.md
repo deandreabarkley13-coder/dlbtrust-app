@@ -224,15 +224,16 @@ to the hosted checkout; by hand:
 Prerequisites: `STABLECOIN_DEX_ENABLED=true` and **not** shadow
 (`STABLECOIN_DEX_SHADOW=false`, or `DAPP_SHADOW=false`), `DAPP_PRIVATE_KEY` (the
 operator hot wallet pays mint + swap gas, so it needs Base ETH), `DAPP_CHAIN_ID=8453`
-matching the treasury chain, `DAPP_USDC_ADDRESS`, `DAPP_DLBUSD_ADDRESS` (deployed
-DLBUSD), and a funded DLBUSD/USDC pool or a DLBUSD/WETH pool plus a WETH→USDC route
+matching the treasury chain, `DAPP_USDC_ADDRESS`, a DLBUSD token (auto-provisioned on
+first use — see step 3 below — and preferably pinned as `DAPP_DLBUSD_ADDRESS`), and a
+funded DLBUSD/USDC pool or a DLBUSD/WETH pool plus a WETH→USDC route
 (`BOND_DEX_ADDRESS` / DexSwapEngine router). The source account must cover the amount:
 the mint debits it (`SourceOfFundsAdapter._fundSourceToTreasury`) and is rolled back if
 the mint fails.
 
 **Go-live checklist (`npm run trust:dex-rail`).** The dedicated wire
 `server/scripts/stablecoinDexRailWire.js` operates this rail and is fail-closed: with
-`--create-pool` or `--fund` it refuses to move value unless
+`--deploy-dlbusd`, `--create-pool` or `--fund` it refuses to move value unless
 `StablecoinDexEngine.readiness().ready` is true in `live` mode and
 `TreasuryDepositEngine.fundReadiness().canFund` is true, printing every blocking issue
 from `fundReadiness().issues`. Live gates and keys live only in the `dlbtrust-runtime`
@@ -241,16 +242,26 @@ secret group — never in committed files.
 1. Runtime env (secret group): `STABLECOIN_DEX_ENABLED=true`,
    `STABLECOIN_DEX_SHADOW=false`, `DAPP_PRIVATE_KEY` (operator hot wallet),
    `DAPP_RPC_URL` (Base), `DAPP_CHAIN_ID=8453`, `DAPP_USDC_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`,
-   `DAPP_DLBUSD_ADDRESS`, `BOND_DEX_ADDRESS` (after step 4), plus
+   `DAPP_DLBUSD_ADDRESS` (after step 3), `BOND_DEX_ADDRESS` (after step 4), plus
    `TREASURY_TOPUP_HOLD_SOURCE_TYPE` / `TREASURY_TOPUP_HOLD_ACCOUNT_ID` for the default
    source (or pass `--source-type/--source-account` per call).
 2. Operator gas: the `DAPP_PRIVATE_KEY` wallet needs Base ETH — it pays the DLBUSD
    deploy, mint, pool deploy, approvals and swap. Check with
    `npm run trust:runbook` (`treasuryEth` / gas tank) or the wallet on Basescan.
-3. Deploy DLBUSD: `StablecoinDexEngine.getOrCreateDLBUSDToken()` (via
-   `BondTokenizationEngine.createToken`, 6 decimals) runs automatically on the first
-   `--create-pool`/`--fund` when `DAPP_DLBUSD_ADDRESS` is unset or has no bytecode; set
-   `DAPP_DLBUSD_ADDRESS` to the deployed address afterwards so every replica agrees.
+3. Deploy DLBUSD once, pin forever. A missing `DAPP_DLBUSD_ADDRESS` no longer blocks
+   the rail: `fundReadiness()` reports `dlbusdSource: auto-provision` and
+   `StablecoinDexEngine.ensureDLBUSDAddress()` resolves the token (env → pool token →
+   `BondTokenizationEngine` DB → deploy via `BondTokenizationEngine.createToken`,
+   6 decimals) on the first `--deploy-dlbusd`/`--create-pool`/`--fund`, or `fund()`
+   call. Do it explicitly so the address is printed:
+   ```sh
+   npm run trust:dex-rail -- --deploy-dlbusd
+   ```
+   Then set the printed address as `DAPP_DLBUSD_ADDRESS` in the `dlbtrust-runtime`
+   secret group and restart. The pin is still preferred: the runtime cache is
+   per replica, so without it a second replica could resolve/deploy a different
+   token. In shadow mode the step deploys nothing and returns a `shadow-dlbusd-*`
+   placeholder.
 4. Seed the pool: the BondDex artifacts are committed at
    `artifacts/contracts_BondDex_sol_BondDex.{abi,bin}` (override with
    `BOND_DEX_ABI_PATH` / `BOND_DEX_BYTECODE_PATH`). The operator must hold the seed

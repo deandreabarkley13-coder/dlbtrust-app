@@ -140,8 +140,17 @@ class TreasuryDepositEngine {
       if (dex.shadow) issues.push('StablecoinDexEngine is in shadow mode (STABLECOIN_DEX_SHADOW / DAPP_SHADOW): no USDC would reach the treasury');
       if (!dex.privateKey) issues.push('DAPP_PRIVATE_KEY not configured (operator pays mint + swap gas)');
       if (!dex.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
-      if (!dex.dlbusdAddress) issues.push('DAPP_DLBUSD_ADDRESS not configured');
       if (Number(dex.chainId) !== Number(cfg.chainId)) issues.push(`StablecoinDexEngine chain ${dex.chainId} != treasury chain ${cfg.chainId}`);
+    }
+    // DLBUSD is pinned by DAPP_DLBUSD_ADDRESS, or resolved/deployed on demand from the
+    // BondTokenizationEngine DB; only a rail that can do neither is blocked.
+    let dlbusd = { address: dex ? dex.dlbusdAddress || null : null, source: dex && dex.dlbusdAddress ? 'env' : null };
+    if (dex && !dex.dlbusdAddress) {
+      const known = typeof Dex.knownDLBUSDAddress === 'function' ? Dex.knownDLBUSDAddress() : null;
+      const canProvision = typeof Dex.canProvisionDLBUSD === 'function' && Dex.canProvisionDLBUSD();
+      if (known && known.address) dlbusd = known;
+      else if (canProvision) dlbusd = { address: null, source: 'auto-provision' };
+      else issues.push('DAPP_DLBUSD_ADDRESS not configured and DLBUSD cannot be auto-provisioned (BondTokenizationEngine not available)');
     }
     // A missing default source is not fatal: the request can name one.
     const canFund = issues.length === 0;
@@ -153,12 +162,32 @@ class TreasuryDepositEngine {
       enabled: Boolean(dex && dex.enabled),
       chainId: cfg.chainId,
       usdcAddress: dex ? dex.usdcAddress || null : null,
+      dlbusdAddress: dlbusd.address,
+      dlbusdSource: dlbusd.source,
       sourceType: cfg.fundSourceType,
       sourceAccountId: cfg.fundSourceAccountId,
       canFund,
       ready: issues.length === 0,
       issues,
     };
+  }
+
+  /**
+   * fundReadiness() plus the on-demand DLBUSD resolution: when the rail is live and
+   * DAPP_DLBUSD_ADDRESS is unset, the token is looked up or deployed now so the
+   * readiness reflects a real address (or the reason none could be produced).
+   */
+  static async resolveFundReadiness() {
+    const readiness = this.fundReadiness();
+    const Dex = this._dex();
+    if (!readiness.canFund || readiness.dlbusdAddress || !Dex || typeof Dex.ensureDLBUSDAddress !== 'function') return readiness;
+    try {
+      const resolved = await Dex.ensureDLBUSDAddress();
+      return { ...readiness, dlbusdAddress: resolved.address, dlbusdSource: resolved.source };
+    } catch (err) {
+      const issues = [...readiness.issues, `DLBUSD could not be resolved or deployed: ${err.message}`];
+      return { ...readiness, canFund: false, ready: false, issues };
+    }
   }
 
   static readiness() {
@@ -315,7 +344,6 @@ class TreasuryDepositEngine {
     }
 
     const cfg = this.getConfig();
-    const readiness = this.fundReadiness();
     const source = {
       sourceType: String(sourceType || cfg.fundSourceType || '').trim(),
       sourceAccountId: String(sourceAccountId || cfg.fundSourceAccountId || '').trim(),
@@ -323,6 +351,7 @@ class TreasuryDepositEngine {
     if (!source.sourceType || !source.sourceAccountId) {
       throw Object.assign(new Error('sourceAccountId required (or set TREASURY_TOPUP_HOLD_ACCOUNT_ID)'), { status: 422, code: 'SOURCE_REQUIRED' });
     }
+    const readiness = await this.resolveFundReadiness();
     if (!readiness.canFund) {
       const blocking = readiness.issues.filter((i) => !/TREASURY_TOPUP_HOLD_ACCOUNT_ID/.test(i));
       return result(false, 'STABLECOIN_DEX_NOT_LIVE', `internal swap rail unavailable: ${blocking.join('; ')}. Nothing was minted, swapped or booked; fund the deposit externally or open the rail.`, { deposit: record, readiness });
