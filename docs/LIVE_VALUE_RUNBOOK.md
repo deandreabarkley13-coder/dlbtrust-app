@@ -387,3 +387,40 @@ limits, purpose codes, allowlist, quantity ceiling). With `true` **and**
 approval, timelock, escrow/clawback, freeze). Flip it to `true` once the policy
 contract (`0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64` on Base) is funded and
 `TRUST_POLICY_LIVE=true`; until then `true` would block all outbound value.
+
+### 5a. One-click Maker Propose / Checker Approve
+
+Two humans, one button each, in the trust dashboard's **On-Chain Policy** tab
+(`/dapp/trust-dashboard.html`). There is **no auto-approval**: the app never
+approves a proposal on its own, and the two seats sign with different keys.
+
+| Seat | Button | Signs with | Route |
+| --- | --- | --- | --- |
+| Maker (human, maker/admin seat) | **Maker Propose** (pick an approved wallet distribution request) | thirdweb server wallet `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` | `POST /api/dapp/trust-policy/requests/:id/propose` |
+| Checker (human, checker seat) | **Checker Approve** on a `proposed` row | checker RPC key `TRUST_POLICY_CHECKER_PRIVATE_KEY` → `0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169` | `POST /api/dapp/trust-policy/distributions/:id/approve` → `TrustPolicyEngine.approveAsChecker` |
+| Maker / executor | **Execute** on an `approved` row (after the timelock) | server wallet | `POST /api/dapp/trust-policy/distributions/:id/execute` |
+
+Buttons are gated by the signed-in seat: the maker seat sees Maker Propose
+enabled and Checker Approve disabled (tooltip explains), the checker seat the
+reverse. The contract itself still rejects the proposer as checker, so even a
+mis-gated click cannot self-approve.
+
+Checker signer configuration (runtime secret group only):
+
+```sh
+node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime \
+  TRUST_POLICY_CHECKER_PRIVATE_KEY=<checker key for 0x5bcd…, never the server wallet> \
+  TRUST_POLICY_CHECKER_RPC_URL=https://mainnet.base.org \
+  TRUST_POLICY_CHECKER_LIVE=true
+```
+
+`GET /api/dapp/trust-policy/readiness` reports only
+`checkerSignerConfigured: true|false` and `checkerLive`; the key is never
+echoed. If the key is missing the approve route falls back to the server
+wallet (and the contract reverts); if it resolves to the server wallet the
+route returns `409 TRUST_POLICY_CHECKER_IS_MAKER`. With
+`TRUST_POLICY_CHECKER_LIVE=false` (or `TRUST_POLICY_LIVE=false`) the click
+returns a shadow record and submits nothing.
+
+Before any live distribution can settle the treasury still needs USDC plus
+~0.005 Base ETH for gas, and the checker account needs its own gas.

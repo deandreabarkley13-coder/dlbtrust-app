@@ -417,7 +417,13 @@
           </div>
           <div class="card">
             <h2>On-Chain Distribution Queue</h2>
-            <p class="muted">Proposals raised on the contract. A checker other than the proposer approves; once the timelock has run, execution moves the value into escrow for the beneficiary to claim.</p>
+            <p class="muted">Proposals raised on the contract. The maker seat proposes from the server wallet; a human checker approves from the checker's own key — there is no auto-approval. Once the timelock has run, execution moves the value into escrow for the beneficiary to claim.</p>
+            <h3>Maker Propose</h3>
+            <div class="form-row">
+              <div class="form-group"><label>Approved distribution request</label><select id="policy-propose-request" onchange="loadPolicyProposeOptions.sync()"><option value="">Loading…</option></select></div>
+              <div class="form-group"><label>&nbsp;</label><button id="policy-propose-btn" class="btn btn-gold" onclick="policyPropose()">Maker Propose</button></div>
+            </div>
+            <h3 style="margin-top:18px;">Queue</h3>
             <div id="policy-distributions" class="muted">Loading…</div>
             <h3 style="margin-top:18px;">Escrow</h3>
             <div class="form-row">
@@ -1248,7 +1254,7 @@
           ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
           <button class="btn btn-sec btn-sm" onclick="executeRequest('${r.id}')">Execute</button>
-          ${r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet' ? `<button class="btn btn-sec btn-sm" onclick="proposeOnChain('${r.id}')">Propose On-Chain</button>` : ''}
+          ${r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet' ? `<button class="btn btn-sec btn-sm"${policySeatGate('maker')} onclick="proposeOnChain('${r.id}')">Maker Propose On-Chain</button>` : ''}
         </div>
       </div>`).join('') || '<p class="muted">No pending approvals.</p>';
       el('approval-queue').innerHTML = queue;
@@ -1606,8 +1612,58 @@
     } catch (e) { showStatus('hold-status', e.message, true); }
   }
 
+  // Which on-chain policy seats the signed-in trustee may act as. Mirrors
+  // allowedConsensusRoles(): the admin seat is the maker seat server-side.
+  function policySeatAllows(seat) {
+    return allowedConsensusRoles().includes(seat);
+  }
+
+  function policySeatGate(seat) {
+    if (policySeatAllows(seat)) return '';
+    const need = seat === 'checker'
+      ? 'Checker seat required — the maker seat cannot approve its own proposal.'
+      : 'Maker seat required — the checker seat does not propose.';
+    return ` disabled title="${escapeHtml(need)}"`;
+  }
+
+  async function loadPolicyProposeOptions() {
+    const select = el('policy-propose-request');
+    const button = el('policy-propose-btn');
+    if (!select || !button) return;
+    try {
+      const res = await api('/api/dapp/distribution-requests?limit=100');
+      const eligible = (res.data || []).filter(r => r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet');
+      select.innerHTML = eligible.length
+        ? eligible.map(r => `<option value="${escapeHtml(r.id)}">#${escapeHtml(r.id)} · ${escapeHtml(r.beneficiary_name || r.beneficiary_email || '')} · ${fmtUsd(r.amount_cents / 100)}</option>`).join('')
+        : '<option value="">No approved wallet requests to propose</option>';
+    } catch (e) {
+      select.innerHTML = `<option value="">${escapeHtml(e.message)}</option>`;
+    }
+    loadPolicyProposeOptions.sync();
+  }
+  loadPolicyProposeOptions.sync = function syncProposeButton() {
+    const select = el('policy-propose-request');
+    const button = el('policy-propose-btn');
+    if (!select || !button) return;
+    const gated = !policySeatAllows('maker');
+    button.disabled = gated || !select.value;
+    button.title = gated ? 'Maker seat required — the checker seat does not propose.' : '';
+  };
+
+  async function policyPropose() {
+    const id = el('policy-propose-request').value;
+    if (!id) { showStatus('policy-status', 'Select an approved distribution request first.', true); return; }
+    try {
+      const res = await api(`/api/dapp/trust-policy/requests/${id}/propose`, { method: 'POST', body: JSON.stringify({ requesterRole: 'trustee' }) });
+      const p = res.data.proposal || res.data;
+      showStatus('policy-status', `Maker proposed on the policy contract${p.shadow ? ' (shadow — nothing submitted)' : ''}: ${p.quantity || ''} to ${p.beneficiary || ''}`, false);
+      loadPolicy();
+    } catch (e) { showStatus('policy-status', e.message, true); }
+  }
+
   async function loadPolicy() {
     try {
+      loadPolicyProposeOptions();
       const [readiness, distributions] = await Promise.all([
         api('/api/dapp/trust-policy/readiness'),
         api('/api/dapp/trust-policy/distributions?limit=25').catch(e => ({ error: e.message })),
@@ -1621,7 +1677,8 @@
         ['Mode', r.live ? 'live' : 'shadow (calls encoded, nothing submitted)'],
         ['Enforced', r.enforced ? 'yes — direct wallet transfers refused' : 'no — direct wallet transfers still allowed'],
         ['Settlement token', r.settlementToken || 'not configured'],
-        ['Server wallet', r.serverWallet || 'not configured'],
+        ['Server wallet (maker)', r.serverWallet || 'not configured'],
+        ['Checker signer', r.checkerSignerConfigured ? (r.checkerLive ? 'configured · live' : 'configured · shadow') : 'not configured — approvals fall back to the server wallet and will be refused on chain'],
       ];
       if (onChain) rows.push(
         ['Owner', onChain.owner],
@@ -1648,7 +1705,7 @@
 
   function policyActions(d) {
     const id = escapeHtml(d.distributionId);
-    if (d.status === 'proposed') return `<button class="btn btn-sm" onclick="policyAction('${id}','approve')">Approve</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
+    if (d.status === 'proposed') return `<button class="btn btn-gold btn-sm"${policySeatGate('checker')} onclick="policyAction('${id}','approve')">Checker Approve</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
     if (d.status === 'approved') return `<button class="btn btn-sm" onclick="policyAction('${id}','execute')">Execute</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
     if (d.escrowId) return `<button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','claim')">Claim</button> <button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','revoke')">Revoke</button>`;
     return '';
@@ -1657,7 +1714,8 @@
   async function policyAction(distributionId, action) {
     try {
       const res = await api(`/api/dapp/trust-policy/distributions/${distributionId}/${action}`, { method: 'POST', body: JSON.stringify({}) });
-      showStatus('policy-status', `${action} #${distributionId}: ${res.data.status}${res.data.transactionId ? ' tx ' + res.data.transactionId : ''}`, false);
+      const label = action === 'approve' ? 'Checker approve' : action;
+      showStatus('policy-status', `${label} #${distributionId}: ${res.data.status}${res.data.from ? ' from ' + res.data.from : ''}${res.data.transactionId ? ' tx ' + res.data.transactionId : ''}`, false);
       loadPolicy();
     } catch (e) { showStatus('policy-status', e.message, true); }
   }

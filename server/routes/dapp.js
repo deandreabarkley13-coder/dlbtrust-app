@@ -1110,8 +1110,15 @@ router.post('/trust-policy/requests/:requestId/sync', operatorAuth, writeRateLim
   try { res.json({ success: true, data: await ThirdwebSettlementEngine.syncPolicyDistribution(req.params.requestId) }); } catch (err) { sendError(res, err); }
 });
 
+// Checker approval signs with the checker seat's own RPC key when one is
+// configured; the server wallet (the proposer) would be refused by the contract.
 router.post('/trust-policy/distributions/:distributionId/approve', adminAuth, writeRateLimiter(), async (req, res) => {
-  try { res.status(201).json({ success: true, data: await TrustPolicyEngine.approve({ distributionId: req.params.distributionId }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approve = TrustPolicyEngine.checkerSignerConfigured()
+      ? TrustPolicyEngine.approveAsChecker.bind(TrustPolicyEngine)
+      : TrustPolicyEngine.approve.bind(TrustPolicyEngine);
+    res.status(201).json({ success: true, data: await approve({ distributionId: req.params.distributionId }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/trust-policy/distributions/:distributionId/execute', adminAuth, writeRateLimiter(), async (req, res) => {
