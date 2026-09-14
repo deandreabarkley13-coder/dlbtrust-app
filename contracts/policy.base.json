@@ -3,10 +3,10 @@
   "roles": [
     { "role": "maker", "account": "0x1A904F795a0511C31Ba6347504D08d1bA58E4f89" },
     { "role": "executor", "account": "0x1A904F795a0511C31Ba6347504D08d1bA58E4f89" },
-    { "role": "checker", "account": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169" },
+    { "role": "checker", "account": "0x95bb85FdeC42b1517d282e8AD43A789d390aAda2" },
     { "role": "compliance", "account": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0" },
     { "role": "pauser", "account": "0xD7Fa15572dc6553FEaC54E2304E42dCe82443CB0" },
-    { "role": "pauser", "account": "0x5bcdFcBB7C35d51c5c346CAAD83b632B8cEAE169" }
+    { "role": "pauser", "account": "0x95bb85FdeC42b1517d282e8AD43A789d390aAda2" }
   ],
   "purposes": ["distribution", "medical", "education", "housing", "trustee_fee", "operating", "investment"],
   "tokens": [
