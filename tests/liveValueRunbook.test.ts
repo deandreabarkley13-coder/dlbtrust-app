@@ -301,6 +301,41 @@ describe('LiveValueRunbookOsEngine resumption', () => {
     expect(out.completed).toBe(true);
   });
 
+  it('plans selfFund ahead of an open pending fiat top-up when the treasury is empty, and a live self-fund skips resuming the checkout', async () => {
+    Object.assign(process.env, LIVE_ENV);
+    const d = fakeDeps();
+    d.TreasuryFunding.openTopUps.mockResolvedValue([{ id: 'TWTOP-9', status: 'PENDING', booked: false, link: 'https://pay/9' }]);
+    (d as any).TreasuryDeposit = {
+      fundReadiness: vi.fn(() => ({ canFund: true, ready: true, issues: [], sourceType: 'canonical', sourceAccountId: '1000' })),
+      list: vi.fn(async () => []),
+      declare: vi.fn(async ({ amount }: any) => ({ id: 'TWDEP-1', expectedQuantity: String(Number(amount) * 1e6), decimals: 6, tokenAddress: '0xusdc' })),
+      fund: vi.fn(async () => ({ funded: true, code: 'FUNDED', message: 'deposit TWDEP-1 credited', swap: { txHash: '0xswap' }, deposit: { id: 'TWDEP-1', status: 'credited', booked: true } })),
+    };
+    planDeps(d);
+    (LiveValueRunbookOsEngine.readinessFull as any).mockResolvedValue({
+      ready: true, blocking: [], errors: [], treasury: { address: '0xabc', eth: 1, usdc: 0, fundingEligible: 1 }, signer: { type: 'thirdweb' },
+      stages: GATE_KEYS.map((key) => ({ key, label: key, ok: true, detail: 'ok', blocking: true })),
+    });
+
+    const plan = await LiveValueRunbookOsEngine.plan({ amountUsd: 250 });
+    const keys = plan.steps.map((s: any) => s.key);
+    expect(keys.indexOf('selfFund')).toBeGreaterThanOrEqual(0);
+    expect(keys.indexOf('selfFund')).toBeLessThan(keys.indexOf('topUp'));
+    const byKey = Object.fromEntries(plan.steps.map((s: any) => [s.key, s]));
+    expect(byKey.selfFund).toMatchObject({ canExecute: true, source: { sourceType: 'canonical', sourceAccountId: '1000' } });
+    expect(byKey.topUp).toMatchObject({ resume: true, topUpId: 'TWTOP-9', status: 'PENDING' });
+
+    const out = await LiveValueRunbookOsEngine.execute({ amountUsd: 250, live: true, steps: ['selfFund', 'topUp', 'book'] });
+    expect((d as any).TreasuryDeposit.declare).toHaveBeenCalledWith(expect.objectContaining({ amount: '250' }));
+    expect((d as any).TreasuryDeposit.fund).toHaveBeenCalledWith('TWDEP-1', { sourceType: 'canonical', sourceAccountId: '1000' });
+    expect(d.TreasuryFunding.syncTopUp).not.toHaveBeenCalled();
+    const res = Object.fromEntries(out.results.map((r: any) => [r.key, r]));
+    expect(res.selfFund).toMatchObject({ status: 'done', moved: true, depositId: 'TWDEP-1' });
+    expect(res.topUp.status).toBe('skipped');
+    expect(res.book.status).toBe('skipped');
+    expect(out.completed).toBe(true);
+  });
+
   it('live: release stays human while the distribution is pending / timelocked, then calls executeSettlement once releasable', async () => {
     Object.assign(process.env, LIVE_ENV);
     const d = fakeDeps();

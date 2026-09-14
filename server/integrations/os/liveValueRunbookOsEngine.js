@@ -347,23 +347,14 @@ class LiveValueRunbookOsEngine {
       });
     }
 
-    // 2. §4a top-up — an open (unsettled or unbooked) top-up is synced before
-    // anything else; otherwise only when the treasury does not already hold the USDC
+    // 2. §4a-alt / §4a — while the treasury does not hold the USDC, the internal swap
+    // (selfFund) is planned first; an open fiat top-up is only resumed after it, so
+    // pending hosted checkouts never pre-empt the rail that needs no human step.
     const usdc = readiness.treasury.usdc;
     const openTopUps = d.TreasuryFunding ? await attempt(() => d.TreasuryFunding.openTopUps({ limit: 20 })) : { ok: true, value: [] };
     const open = openTopUps.ok ? openTopUps.value : [];
-    if (open.length) {
-      const t = open[0];
-      const apiOk = stageOk('thirdwebApi');
-      step('topUp', '§4a', 'Sync the open treasury top-up (thirdweb checkout → USDC on Base)', {
-        canExecute: apiOk, resume: true, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, status: t.status, booked: Boolean(t.booked), link: t.link || null,
-        note: `open top-up ${t.id} (${t.status}${t.status === 'COMPLETED' && !t.booked ? ', unbooked' : ''}): syncTopUp polls thirdweb; stops only while the checkout is still pending`,
-      });
-      step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: apiOk, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
-    } else if (usdc !== null && usdc >= amount) {
-      step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', { skip: true, reason: `treasury already holds ${usdc} USDC >= $${amount}` });
-      step('book', '§4b', 'Book the settled top-up in the ERP', { skip: true, reason: 'no top-up needed' });
-    } else {
+    const treasuryCovered = usdc !== null && usdc >= amount;
+    if (!treasuryCovered) {
       // Preferred: source the USDC internally (DLBUSD 1:1 mint → swap → treasury
       // wallet), verified on chain and booked by TreasuryDepositEngine — no human
       // checkout and no external wallet send.
@@ -380,6 +371,19 @@ class LiveValueRunbookOsEngine {
         source: selfFund.ok ? { sourceType: selfFund.value.sourceType, sourceAccountId: selfFund.value.sourceAccountId } : null,
         note: 'declares a USDC treasury deposit (TreasuryDepositEngine), mints DLBUSD 1:1 from the hold source and swaps it for USDC delivered to the treasury wallet, then syncs so it is verified on chain and booked DR 1210 / CR 1000. Nobody sends USDC by hand.',
       });
+    }
+    if (open.length) {
+      const t = open[0];
+      const apiOk = stageOk('thirdwebApi');
+      step('topUp', '§4a', 'Sync the open treasury top-up (thirdweb checkout → USDC on Base)', {
+        canExecute: apiOk, resume: true, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, status: t.status, booked: Boolean(t.booked), link: t.link || null,
+        note: `open top-up ${t.id} (${t.status}${t.status === 'COMPLETED' && !t.booked ? ', unbooked' : ''}): syncTopUp polls thirdweb; stops only while the checkout is still pending`,
+      });
+      step('book', '§4b', 'Book the settled top-up in the ERP', { canExecute: apiOk, resume: true, reason: apiOk ? null : stageDetail('thirdwebApi'), topUpId: t.id, status: t.status, requires: ['CANONICAL_FUNDING_LIVE'], live: g.CANONICAL_FUNDING_LIVE });
+    } else if (treasuryCovered) {
+      step('topUp', '§4a', 'Fund the treasury wallet (fiat → USDC on Base)', { skip: true, reason: `treasury already holds ${usdc} USDC >= $${amount}` });
+      step('book', '§4b', 'Book the settled top-up in the ERP', { skip: true, reason: 'no top-up needed' });
+    } else {
       const reasons = [];
       if (!stageOk('thirdwebApi')) reasons.push(stageDetail('thirdwebApi'));
       if (!stageOk('serverWallet')) reasons.push(stageDetail('serverWallet'));
@@ -517,7 +521,8 @@ class LiveValueRunbookOsEngine {
       if (s.skip) { record(s, 'skipped', s.reason); continue; }
       if (s.key === 'fund' && fundedDrawId) { record(s, 'skipped', `draw ${fundedDrawId} already funded during this run`); continue; }
       if (s.key === 'book' && syncedTopUp && syncedTopUp.booked) { record(s, 'skipped', `top-up ${syncedTopUp.id} already booked in ${syncedTopUp.bookOfRecord || 'ledger'}`); continue; }
-      if ((s.key === 'topUp' || s.key === 'book') && selfFunded) { record(s, 'skipped', `treasury self-funded via internal swap: deposit ${selfFunded.depositId} ${selfFunded.code}`); continue; }
+      // A settled fiat top-up is still synced/booked after a self-fund; a pending checkout is not needed any more.
+      if ((s.key === 'topUp' || s.key === 'book') && selfFunded && !(s.resume && s.status === 'COMPLETED')) { record(s, 'skipped', `treasury self-funded via internal swap: deposit ${selfFunded.depositId} ${selfFunded.code}`); continue; }
       if (!s.canExecute) {
         // The internal swap is preferred, not required: fall through to the fiat checkout.
         if (s.key === 'selfFund') { record(s, 'skipped', `internal swap unavailable: ${s.reason}`); continue; }
