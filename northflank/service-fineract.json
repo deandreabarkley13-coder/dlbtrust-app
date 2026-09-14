@@ -1,6 +1,6 @@
 {
   "name": "dlbtrust-fineract",
-  "description": "Apache Fineract core-banking GL (Treasury-Core ERP). Private only: reached by dlbtrust-app at http://dlbtrust-fineract:8443/fineract-provider/api/v1",
+  "description": "Apache Fineract core-banking GL (Treasury-Core ERP). Private only: reached by dlbtrust-app at http://dlbtrust-fineract:8443/fineract-provider/api/v1. Serves plaintext HTTP (FINERACT_SERVER_SSL_ENABLED=false); DB credentials come from the fineract-runtime secret group (scripts/northflank/configure-fineract.mjs).",
   "billing": {
     "deploymentPlan": "nf-compute-100-2"
   },
@@ -22,5 +22,25 @@
       "public": false,
       "protocol": "HTTP"
     }
-  ]
+  ],
+  "healthChecks": [
+    {
+      "protocol": "HTTP",
+      "type": "readinessProbe",
+      "path": "/fineract-provider/actuator/health",
+      "port": 8443,
+      "initialDelaySeconds": 120,
+      "periodSeconds": 30,
+      "timeoutSeconds": 10,
+      "failureThreshold": 10,
+      "successThreshold": 1
+    }
+  ],
+  "runtimeEnvironment": {
+    "FINERACT_SERVER_PORT": "8443",
+    "FINERACT_SERVER_SSL_ENABLED": "false",
+    "FINERACT_NODE_ID": "1",
+    "FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME": "org.postgresql.Driver",
+    "JAVA_TOOL_OPTIONS": "-Xmx1024m"
+  }
 }
