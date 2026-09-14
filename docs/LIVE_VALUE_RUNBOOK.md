@@ -228,6 +228,46 @@ DLBUSD), and a funded DLBUSD/USDC pool or a DLBUSD/WETH pool plus a WETH→USDC 
 the mint debits it (`SourceOfFundsAdapter._fundSourceToTreasury`) and is rolled back if
 the mint fails.
 
+**Go-live checklist (`npm run trust:dex-rail`).** The dedicated wire
+`server/scripts/stablecoinDexRailWire.js` operates this rail and is fail-closed: with
+`--create-pool` or `--fund` it refuses to move value unless
+`StablecoinDexEngine.readiness().ready` is true in `live` mode and
+`TreasuryDepositEngine.fundReadiness().canFund` is true, printing every blocking issue
+from `fundReadiness().issues`. Live gates and keys live only in the `dlbtrust-runtime`
+secret group — never in committed files.
+
+1. Runtime env (secret group): `STABLECOIN_DEX_ENABLED=true`,
+   `STABLECOIN_DEX_SHADOW=false`, `DAPP_PRIVATE_KEY` (operator hot wallet),
+   `DAPP_RPC_URL` (Base), `DAPP_CHAIN_ID=8453`, `DAPP_USDC_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`,
+   `DAPP_DLBUSD_ADDRESS`, `BOND_DEX_ADDRESS` (after step 4), plus
+   `TREASURY_TOPUP_HOLD_SOURCE_TYPE` / `TREASURY_TOPUP_HOLD_ACCOUNT_ID` for the default
+   source (or pass `--source-type/--source-account` per call).
+2. Operator gas: the `DAPP_PRIVATE_KEY` wallet needs Base ETH — it pays the DLBUSD
+   deploy, mint, pool deploy, approvals and swap. Check with
+   `npm run trust:runbook` (`treasuryEth` / gas tank) or the wallet on Basescan.
+3. Deploy DLBUSD: `StablecoinDexEngine.getOrCreateDLBUSDToken()` (via
+   `BondTokenizationEngine.createToken`, 6 decimals) runs automatically on the first
+   `--create-pool`/`--fund` when `DAPP_DLBUSD_ADDRESS` is unset or has no bytecode; set
+   `DAPP_DLBUSD_ADDRESS` to the deployed address afterwards so every replica agrees.
+4. Seed the pool: the BondDex artifacts are committed at
+   `artifacts/contracts_BondDex_sol_BondDex.{abi,bin}` (override with
+   `BOND_DEX_ABI_PATH` / `BOND_DEX_BYTECODE_PATH`). The operator must hold the seed
+   USDC; the seed DLBUSD is minted to it (treasury backing, no source debit).
+   ```sh
+   npm run trust:dex-rail -- --readiness
+   npm run trust:dex-rail -- --create-pool --target USDC --seed-dlbusd 100 --seed-usdc 100
+   ```
+   Set the printed `poolAddress` as `BOND_DEX_ADDRESS` and restart the service.
+5. Funded source ledger: the `--fund` amount is debited from
+   `sourceType:sourceAccountId` (`trust:1000` seeds at $0.00 — fund it or use
+   `cash:CA-BOND-PROCEEDS`), and rolled back if the mint fails.
+6. Fund the treasury:
+   ```sh
+   npm run trust:dex-rail -- --fund --amount 250 --source-type trust --source-account 1000
+   ```
+   prints the declared deposit id then `funded` / `code` / `txHash`; exit code is 0 only
+   when `funded: true`. Verify with `GET /api/dapp/treasury-funding/balances`.
+
 **Last resort — external send.** When the trust already holds USDC off-platform and the
 swap rail is closed:
 
