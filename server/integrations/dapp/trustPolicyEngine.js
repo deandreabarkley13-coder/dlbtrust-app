@@ -17,6 +17,12 @@
  * usually the EXECUTOR), trustee keys are the CHECKERs, and trustee governance
  * owns the contract. A compromised backend key can therefore only propose.
  *
+ * The checker seat signs with its own RPC key (TRUST_POLICY_CHECKER_PRIVATE_KEY,
+ * never the server wallet): `approveAsChecker` submits the same encoded
+ * `approve` call through a viem wallet client, gated by
+ * TRUST_POLICY_CHECKER_LIVE on top of TRUST_POLICY_LIVE. There is no auto
+ * approval — a human checker clicks the button that reaches it.
+ *
  * Writes are gated exactly like every other live rail: with
  * TRUST_POLICY_LIVE=false (default) a call returns a shadow record describing
  * the encoded call and nothing is submitted. Reads are always allowed.
@@ -25,7 +31,9 @@
 const { ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine');
 
 let viem;
+let viemAccounts;
 try { viem = require('viem'); } catch (e) { /* keccak refs need viem; validated at call time */ }
+try { viemAccounts = require('viem/accounts'); } catch (e) { /* checker signer needs viem; validated at call time */ }
 
 function str(name, def = '') { return (process.env[name] || def).toString().trim(); }
 function bool(name, def = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : def; }
@@ -155,7 +163,15 @@ class TrustPolicyEngine {
       // Proposals expire this many seconds after they are raised; 0 keeps them open.
       proposalTtlSeconds: num('TRUST_POLICY_PROPOSAL_TTL_SECONDS', 0),
       serverWallet: wallet.address,
+      // Checker seat: a separate RPC key, never the server wallet. Kept out of readiness().
+      checkerPrivateKey: str('TRUST_POLICY_CHECKER_PRIVATE_KEY'),
+      checkerRpcUrl: str('TRUST_POLICY_CHECKER_RPC_URL'),
+      checkerLive: bool('TRUST_POLICY_CHECKER_LIVE', false),
     };
+  }
+
+  static checkerSignerConfigured() {
+    return Boolean(this.getConfig().checkerPrivateKey);
   }
 
   static readiness() {
@@ -175,6 +191,8 @@ class TrustPolicyEngine {
       settlementToken: cfg.settlementToken || null,
       defaultPurpose: cfg.defaultPurpose,
       serverWallet: cfg.serverWallet || null,
+      checkerSignerConfigured: Boolean(cfg.checkerPrivateKey),
+      checkerLive: cfg.checkerLive,
       ready: issues.length === 0,
       issues,
     };
@@ -231,6 +249,84 @@ class TrustPolicyEngine {
     });
     record.transactionId = result.transactionIds[0] || null;
     record.from = result.from;
+    return record;
+  }
+
+  static _conflict(message, code) {
+    return Object.assign(new Error(message), { status: 409, code });
+  }
+
+  static _checkerWalletClient({ account, chain, rpcUrl }) {
+    return viem.createWalletClient({ account, chain, transport: viem.http(rpcUrl) });
+  }
+
+  /**
+   * Submit one contract call signed by the checker's own RPC key. Encodes the
+   * same `{contractAddress, method, params}` call as `_write` and returns the
+   * same record shape, with `from` set to the checker account. Shadow when
+   * either TRUST_POLICY_LIVE or TRUST_POLICY_CHECKER_LIVE is false.
+   */
+  static async _writeAsChecker(action, method, params, { idempotencyKey = null } = {}) {
+    const cfg = this._contract();
+    const call = { contractAddress: cfg.address, method, params };
+    const live = cfg.live && cfg.checkerLive;
+    const record = {
+      provider: 'trust-distribution-policy',
+      action,
+      contract: cfg.address,
+      chainId: cfg.chainId,
+      from: null,
+      call,
+      shadow: !live,
+      status: live ? 'submitted' : 'shadow',
+      transactionId: null,
+      signer: 'checker-rpc',
+      idempotencyKey: idempotencyKey || null,
+    };
+    if (cfg.checkerPrivateKey && viemAccounts && viemAccounts.privateKeyToAccount) {
+      try { record.from = viemAccounts.privateKeyToAccount(cfg.checkerPrivateKey).address; } catch (e) { /* reported below when live */ }
+    }
+    if (!cfg.live) {
+      record.reason = 'TRUST_POLICY_LIVE=false: call encoded, nothing submitted';
+      return record;
+    }
+    if (!cfg.checkerLive) {
+      record.reason = 'TRUST_POLICY_CHECKER_LIVE=false: call encoded, nothing submitted';
+      return record;
+    }
+    if (!cfg.checkerPrivateKey) throw this._conflict('TRUST_POLICY_CHECKER_PRIVATE_KEY is not configured', 'TRUST_POLICY_CHECKER_NOT_CONFIGURED');
+    if (!cfg.checkerRpcUrl) throw this._conflict('TRUST_POLICY_CHECKER_RPC_URL is not configured', 'TRUST_POLICY_CHECKER_NOT_CONFIGURED');
+    if (!viem || !viem.createWalletClient || !viem.http || !viem.parseAbi || !viemAccounts || !viemAccounts.privateKeyToAccount) {
+      throw this._conflict('viem is required for the checker RPC signer', 'TRUST_POLICY_CHECKER_NOT_CONFIGURED');
+    }
+    let account;
+    try {
+      account = viemAccounts.privateKeyToAccount(cfg.checkerPrivateKey);
+    } catch (e) {
+      throw this._conflict('TRUST_POLICY_CHECKER_PRIVATE_KEY is not a valid private key', 'TRUST_POLICY_CHECKER_NOT_CONFIGURED');
+    }
+    if (cfg.serverWallet && account.address.toLowerCase() === String(cfg.serverWallet).toLowerCase()) {
+      throw this._conflict(
+        'TRUST_POLICY_CHECKER_PRIVATE_KEY resolves to the server wallet; the checker must be a different account than the maker',
+        'TRUST_POLICY_CHECKER_IS_MAKER',
+      );
+    }
+    record.from = account.address;
+    const chain = {
+      id: Number(cfg.chainId),
+      name: `chain-${cfg.chainId}`,
+      nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+      rpcUrls: { default: { http: [cfg.checkerRpcUrl] } },
+    };
+    const client = this._checkerWalletClient({ account, chain, rpcUrl: cfg.checkerRpcUrl });
+    const abi = viem.parseAbi([method]);
+    const hash = await client.writeContract({
+      address: cfg.address,
+      abi,
+      functionName: abi[0].name,
+      args: params.map((p) => (typeof p === 'string' && /^\d+$/.test(p) ? BigInt(p) : p)),
+    });
+    record.transactionId = hash;
     return record;
   }
 
@@ -406,6 +502,12 @@ class TrustPolicyEngine {
   static async approve({ distributionId } = {}) {
     const id = toBigInt(distributionId, 'distributionId');
     return this._write('approve', SIG.approve, [id.toString()], { idempotencyKey: `tdp-approve-${id}` });
+  }
+
+  /** Checker approval signed by the checker seat's own RPC key, never the server wallet. */
+  static async approveAsChecker({ distributionId } = {}) {
+    const id = toBigInt(distributionId, 'distributionId');
+    return this._writeAsChecker('approve', SIG.approve, [id.toString()], { idempotencyKey: `tdp-approve-${id}` });
   }
 
   static async cancel({ distributionId, reason = 'cancelled' } = {}) {
