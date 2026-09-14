@@ -127,8 +127,10 @@ npm run trust:runbook -- --strict [--json]              # exit 2 on any blocking
   actionable message. It is shadow unless `--live` is passed AND the live gates are
   open; settlement always goes through the policy contract and Spritz leg, never a
   raw server-wallet send.
-- Re-running resumes rather than duplicates: an open §4a top-up is `syncTopUp`'d first
-  (stops only while the checkout is still pending; a settled one is booked), the
+- Re-running resumes rather than duplicates: while the treasury lacks the USDC the
+  §4a-alt `selfFund` swap is planned first; an open §4a top-up is `syncTopUp`'d after it
+  (stops only while the checkout is still pending; a settled one is booked; a pending
+  one is skipped once the treasury has self-funded), the
   newest in-flight `LVR-` draw for the same amount (or `--reference LVR-…`) is picked
   up in its recorded state (`proposed` → reconcile, `funded` → settle, `settling` →
   release), and `release` calls `CollateralOsEngine.executeSettlement` once the
