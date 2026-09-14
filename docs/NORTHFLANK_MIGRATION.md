@@ -23,10 +23,20 @@ storage instead, and `nvme` has a 6 GiB minimum.)
 
 The live service URL is `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`.
 
-`FINERACT_URL` pointed at the Fly-internal Fineract app
-(`dlbtrust-fineract.internal`). Fineract is **not** part of this migration; the
-Melio workflow does not need it. Point it at a reachable Fineract instance or
-leave it unset before cutting DNS over.
+Fineract runs in the same project as the private deployment service
+`dlbtrust-fineract` (`northflank/service-fineract.json`, image
+`apache/fineract:latest`) against its own `fineract-db` addon
+(`northflank/addon-postgres-fineract.json`); `scripts/northflank/provision.sh`
+creates both. The image serves plaintext HTTP on 8443 because the
+`fineract-runtime` secret group sets `FINERACT_SERVER_SSL_ENABLED=false`, so the
+app reaches it at `http://dlbtrust-fineract:8443/fineract-provider/api/v1` over
+the project network. `scripts/northflank/configure-fineract.mjs` writes that
+group and adds `FINERACT_URL`, `FINERACT_TENANT_ID`, `FINERACT_USERNAME`,
+`FINERACT_PASSWORD`, `FINERACT_DEFAULT_DB` to `dlbtrust-runtime`, linking the
+`fineract-db` addon as `FINERACT_DATABASE_URL` / `FINERACT_DB_HOST` /
+`FINERACT_DB_PORT` (used by the Liquibase lock cleanup and the Fineract dump).
+Verify with `GET /api/fineract/health` (`fineract_connected: true`) and
+`GET /api/fineract/resilience` (`status: healthy`, admin token).
 
 ## Order of operations
 

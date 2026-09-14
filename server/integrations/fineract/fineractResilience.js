@@ -135,6 +135,24 @@ async function attemptRecovery() {
 }
 
 /**
+ * Connection string for one Fineract database. Fineract's Postgres is a
+ * separate addon from the app DB, so FINERACT_DATABASE_URL / FINERACT_DB_*
+ * win; DATABASE_URL is only the single-host fallback.
+ */
+function fineractDatabaseUrl(db) {
+  var withDb = function (url) { var u = new URL(url); u.pathname = '/' + db; return u.toString(); };
+  var fromParts = function (host) {
+    return 'postgresql://' + encodeURIComponent(process.env.FINERACT_DB_USER || 'dlbtrust_app') +
+      ':' + encodeURIComponent(process.env.FINERACT_DB_PASSWORD || '') +
+      '@' + host + ':' + (process.env.FINERACT_DB_PORT || '5432') + '/' + db + '?sslmode=disable';
+  };
+  if (process.env.FINERACT_DATABASE_URL) return withDb(process.env.FINERACT_DATABASE_URL);
+  if (process.env.FINERACT_DB_HOST) return fromParts(process.env.FINERACT_DB_HOST);
+  if (process.env.DATABASE_URL) return withDb(process.env.DATABASE_URL);
+  return fromParts('localhost');
+}
+
+/**
  * Clear stuck Liquibase changelog locks from both Fineract databases
  * This is needed when Fineract crashes during migration
  */
@@ -145,16 +163,7 @@ async function cleanLiquibaseLocks() {
   for (var i = 0; i < databases.length; i++) {
     var db = databases[i];
     var { Pool } = require('pg');
-    var dbUrl = process.env.DATABASE_URL;
-    if (dbUrl) {
-      dbUrl = dbUrl.replace(/\/[^/?]+(\?|$)/, '/' + db + '$1');
-    } else {
-      dbUrl = 'postgresql://' + (process.env.FINERACT_DB_USER || 'dlbtrust_app') +
-        ':' + (process.env.FINERACT_DB_PASSWORD || '') +
-        '@' + (process.env.FINERACT_DB_HOST || 'localhost') +
-        ':' + (process.env.FINERACT_DB_PORT || '5432') +
-        '/' + db + '?sslmode=disable';
-    }
+    var dbUrl = fineractDatabaseUrl(db);
 
     var tempPool = new Pool({ connectionString: dbUrl, ssl: false, max: 1 });
     try {

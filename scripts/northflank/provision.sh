@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision the Northflank project, PostgreSQL addons, /data volume, the
-# dlbtrust-app combined service and the OpenACH service from the JSON specs in
-# northflank/.
+# dlbtrust-app combined service, the OpenACH service and the Apache Fineract
+# GL service from the JSON specs in northflank/.
 #
 # OpenACH replaces the IONOS-hosted ach.dlbtrust.cloud instance: it runs from
 # openach/Dockerfile against its own openach-db addon, so ACH origination lives
@@ -24,6 +24,8 @@ ADDON_ID="${NORTHFLANK_ADDON_ID:-dlbtrust-db}"
 VOLUME_ID="${NORTHFLANK_VOLUME_ID:-dlbtrust-data}"
 OPENACH_SERVICE_ID="${NORTHFLANK_OPENACH_SERVICE_ID:-openach}"
 OPENACH_ADDON_ID="${NORTHFLANK_OPENACH_ADDON_ID:-openach-db}"
+FINERACT_SERVICE_ID="${NORTHFLANK_FINERACT_SERVICE_ID:-dlbtrust-fineract}"
+FINERACT_ADDON_ID="${NORTHFLANK_FINERACT_ADDON_ID:-fineract-db}"
 
 northflank login -t "$NORTHFLANK_API_TOKEN" -n dlbtrust --override >/dev/null
 
@@ -75,6 +77,31 @@ else
   echo "creating combined service $OPENACH_SERVICE_ID"
   nf create service combined --project "$PROJECT_ID" -f "$SPEC_DIR/service-openach.json"
 fi
+
+if exists addon --project "$PROJECT_ID" --addon "$FINERACT_ADDON_ID"; then
+  echo "addon $FINERACT_ADDON_ID already exists"
+else
+  echo "creating postgres addon $FINERACT_ADDON_ID for Fineract"
+  nf create addon --project "$PROJECT_ID" -f "$SPEC_DIR/addon-postgres-fineract.json"
+fi
+
+if exists service --project "$PROJECT_ID" --service "$FINERACT_SERVICE_ID"; then
+  echo "service $FINERACT_SERVICE_ID already exists"
+else
+  echo "creating deployment service $FINERACT_SERVICE_ID"
+  nf create service deployment --project "$PROJECT_ID" -f "$SPEC_DIR/service-fineract.json"
+fi
+
+cat <<EOF
+
+Fineract needs its database credentials and dlbtrust-app needs the connection
+variables (FINERACT_URL, FINERACT_TENANT_ID, FINERACT_USERNAME,
+FINERACT_PASSWORD, FINERACT_DATABASE_URL, FINERACT_DB_HOST, FINERACT_DB_PORT):
+  FINERACT_PASSWORD=... node scripts/northflank/configure-fineract.mjs
+which writes the fineract-runtime group (restricted to $FINERACT_SERVICE_ID)
+and links $FINERACT_ADDON_ID into dlbtrust-runtime. Both services live in
+project $PROJECT_ID, so $FINERACT_SERVICE_ID resolves over the project network.
+EOF
 
 cat <<EOF
 

@@ -69,6 +69,9 @@
     "MELIO_SOURCE_ACCOUNT_ID": "1000",
     "MELIO_ALLOWED_SOURCE_ACCOUNTS": "1000,cash:CA-OPERATING",
     "TRUST_SEGREGATED_ACCOUNT_CODES": "1210",
-    "TRUST_SIGNATURE_DOCUMENT_PATH": "/data/governance/Trustees_Signature_Page.pdf"
+    "TRUST_SIGNATURE_DOCUMENT_PATH": "/data/governance/Trustees_Signature_Page.pdf",
+    "FINERACT_URL": "http://dlbtrust-fineract:8443/fineract-provider/api/v1",
+    "FINERACT_TENANT_ID": "default",
+    "FINERACT_USERNAME": "mifos"
   }
 }
