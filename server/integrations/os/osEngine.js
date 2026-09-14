@@ -8503,6 +8503,59 @@ class CollateralOSEngine extends BaseOSEngine {
   }
 }
 
+// ─── Live Value Runbook Engine ────────────────────────────────────────────────
+//
+// Orchestrates docs/LIVE_VALUE_RUNBOOK.md §2–§4 over the existing engines
+// (top-up → book → gas → collateral draw → governed settlement → Spritz).
+// Shadow by default; `execute` only broadcasts with live=true AND open gates.
+
+class LiveValueRunbookOSEngine extends BaseOSEngine {
+  static get engineName() { return 'live-value-runbook'; }
+
+  static _engine() { return tryRequire('./liveValueRunbookOsEngine')?.LiveValueRunbookOsEngine || null; }
+
+  static async status() {
+    const Runbook = this._engine();
+    let readiness = null;
+    try { readiness = Runbook ? Runbook.readiness() : null; } catch (e) { readiness = { ready: false, errors: [e.message], stages: [], blocking: [] }; }
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: readiness ? readiness.mode : 'shadow',
+      ready: readiness ? readiness.ready : false,
+      blocking: readiness ? readiness.blocking : ['LiveValueRunbookOsEngine not available'],
+      errors: readiness ? readiness.errors : [],
+      stages: readiness ? readiness.stages.length : 0,
+      integrations: { liveValueRunbook: !!Runbook, collateralOs: !!tryRequire('./collateralOsEngine'), spritzTreasuryLeg: !!tryRequire('../spritz/spritzTreasuryLegEngine') },
+      gating: 'shadow unless live=true and *_LIVE gates open; stops at human steps (§4a checkout, checker approvals)',
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload = {}) {
+    const Runbook = this._engine();
+    const shadow = (note) => ({ mode: 'shadow', note });
+    if (!Runbook && action !== 'pipeline' && action !== 'status') return shadow('LiveValueRunbookOsEngine not available');
+    const actor = payload.actor || payload.by || payload.createdBy || null;
+    switch (action) {
+      case 'readiness':
+        return payload.full === true ? await Runbook.readinessFull() : Runbook.readiness();
+      case 'plan':
+        return await Runbook.plan({ amountUsd: payload.amountUsd, role: payload.role, purpose: payload.purpose, reference: payload.reference });
+      case 'execute':
+        return await Runbook.execute({
+          amountUsd: payload.amountUsd, role: payload.role, purpose: payload.purpose, reference: payload.reference,
+          steps: Array.isArray(payload.steps) ? payload.steps : null, live: payload.live === true, actor: actor || undefined,
+        });
+      case 'pipeline':
+        return await unifiedPipeline({ limit: payload.limit });
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 // ─── Live Money Movement Engine ───────────────────────────────────────────────
 //
 // Real fiat movement over the configured settlement rails. The underlying
@@ -8614,6 +8667,7 @@ const ENGINES = {
   'canonical-consensus': CanonicalConsensusOSEngine,
   'canonical-funding': CanonicalFundingEngine,
   'collateral-os': CollateralOSEngine,
+  'live-value-runbook': LiveValueRunbookOSEngine,
   'live-money': LiveMoneyEngine,
 };
 
@@ -8661,6 +8715,7 @@ module.exports = {
   CanonicalConsensusOSEngine,
   CanonicalFundingEngine,
   CollateralOSEngine,
+  LiveValueRunbookOSEngine,
   LiveMoneyEngine,
   unifiedPipeline,
   engines: ENGINES,

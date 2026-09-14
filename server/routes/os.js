@@ -8,7 +8,8 @@
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
  * ptc-treasury, settlement-endpoint, moov-paygate, apisix, nickel, canonical-money,
- * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os, and live-money.
+ * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os,
+ * live-value-runbook, and live-money.
  */
 
 const express = require('express');
@@ -46,6 +47,7 @@ const {
   CanonicalConsensusOSEngine,
   CanonicalFundingEngine,
   CollateralOSEngine,
+  LiveValueRunbookOSEngine,
   LiveMoneyEngine,
 } = require('../integrations/os/osEngine');
 
@@ -97,6 +99,7 @@ const ENGINES = {
   'canonical-consensus': CanonicalConsensusOSEngine,
   'canonical-funding': CanonicalFundingEngine,
   'collateral-os': CollateralOSEngine,
+  'live-value-runbook': LiveValueRunbookOSEngine,
   'live-money': LiveMoneyEngine,
 };
 
