@@ -1300,6 +1300,18 @@ router.post('/treasury-deposits/:id/sync', operatorAuth, writeRateLimiter(), asy
   try { res.json({ success: true, data: await TreasuryDepositEngine.sync(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/treasury-deposits/fund/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: TreasuryDepositEngine.fundReadiness() }); } catch (err) { sendError(res, err); }
+});
+
+// Source the USDC internally (DLBUSD 1:1 mint → swap → treasury wallet) and book it once verified.
+router.post('/treasury-deposits/:id/fund', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await TreasuryDepositEngine.fund(req.params.id, req.body || {});
+    res.status(data.funded || data.idempotent ? 200 : 409).json({ success: data.funded, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/treasury-deposits/:id/cancel', adminAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await TreasuryDepositEngine.cancel(req.params.id, req.body || {}) }); } catch (err) { sendError(res, err); }
 });
