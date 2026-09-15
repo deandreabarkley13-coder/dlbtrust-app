@@ -526,6 +526,32 @@ describe('Spritz treasury leg', () => {
     expect(JSON.stringify(out)).toBeTruthy();
   });
 
+  it('prepareAllowlistPayoutWallet encodes a zero period cap as zero units', async () => {
+    const OWNER = '0xD7Fa15572dc6553FEaC54E2304E42dce82443cb0';
+    const prepare = vi.spyOn(TrustPolicyEngine, 'prepareBeneficiaryAllowlist').mockResolvedValue({
+      owner: OWNER,
+      contract: POLICY,
+      chainId: 8453,
+      serverWalletIsOwner: false,
+      txs: [],
+    } as any);
+    vi.spyOn(TrustPolicyEngine, 'beneficiaryStatus').mockResolvedValue({ allowed: false, frozen: false, remainingPeriodAllowance: {} } as any);
+
+    await SpritzTreasuryLegEngine.prepareAllowlistPayoutWallet({
+      maxPerDistributionUsd: 100000,
+      periodCapUsd: 0,
+      periodSeconds: 0,
+    });
+
+    expect(prepare).toHaveBeenCalledWith({
+      beneficiary: PAYOUT,
+      token: USDC,
+      maxPerDistribution: '100000000000',
+      periodCap: '0',
+      periodSeconds: 0,
+    });
+  });
+
   // ─── settle(): ERP funding -> stage -> approval -> timelock -> execute ─────
 
   it('settle walks ERP funding -> stage -> approval -> timelock -> execute by reference without auto-approving', async () => {
