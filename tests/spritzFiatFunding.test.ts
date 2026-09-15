@@ -162,6 +162,25 @@ describe('Spritz fiat funding (ERP credit push -> auto-ramp)', () => {
     }
   });
 
+  it('a per-call destination targets that wallet, ignores the pinned account id, and books to the caller\'s asset account', async () => {
+    const WALLET = '0x1A904F795a0511C31Ba6347504D08d1bA58E4f89';
+    process.env.SPRITZ_AUTO_RAMP_ACCOUNT_ID = 'ar_policy';
+    stubSpritz((path, init) => {
+      if (path === '/v1/auto-ramp-accounts/' && init.method === 'POST') return { ...ACCOUNT, id: 'ar_tw', address: WALLET.toLowerCase() };
+      return [ACCOUNT];
+    });
+    expect(await SpritzFiatFundingEngine.account({ destination: WALLET })).toBeNull();
+    expect((await SpritzFiatFundingEngine.account()).id).toBe('ar_policy');
+    vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'active', active: true, requirements: [] });
+    const funding = await SpritzFiatFundingEngine.fund({
+      amountUsd: 5, reference: 'TWTOP-1', destination: WALLET, assetAccountCode: '1210', sourceType: 'canonical', sourceAccountId: '1000',
+    });
+    expect(funding).toMatchObject({ status: 'prepared', destination: WALLET, autoRampAccount: { id: 'ar_tw' } });
+    const post = calls.find((c) => c.init.method === 'POST');
+    expect(JSON.parse(String(post!.init.body))).toEqual({ address: WALLET, network: 'base', token: 'USDC' });
+    expect(CanonicalFundingSource.commit).toHaveBeenCalledWith(expect.objectContaining({ reference: 'TWTOP-1', cashAccountCode: '1000', assetAccountCode: '1210' }));
+  });
+
   it('fails closed when the Spritz fiat_to_crypto capability needs terms acceptance', async () => {
     stubSpritz((path) => (path.startsWith('/v1/users/capabilities') || /capabilit/.test(path) ? CAPS_TERMS : [ACCOUNT]));
     vi.spyOn(SpritzFiatFundingEngine, 'capability').mockResolvedValue({ rail: 'ach', method: 'ach_credit', status: 'requirements_needed', active: false, requirements: [{ type: 'terms_acceptance', status: 'pending', actionUrl: 'https://spritz.example/terms' }] });
