@@ -801,7 +801,7 @@ class SpritzTreasuryLegEngine {
   static async prepareAllowlistPayoutWallet({ address, maxPerDistributionUsd, periodCapUsd, periodSeconds } = {}) {
     const cfg = this.config();
     const wallet = address || cfg.payoutWallet;
-    const toUnits = (usd) => (usd === undefined || usd === null || usd === '' ? '0' : usdToUnits(usd).toString());
+    const toUnits = (usd) => (usd === undefined || usd === null || usd === '' || Number(usd) === 0 ? '0' : usdToUnits(usd).toString());
     const prepared = await TrustPolicyEngine.prepareBeneficiaryAllowlist({
       beneficiary: wallet,
       token: cfg.settlementToken || undefined,
