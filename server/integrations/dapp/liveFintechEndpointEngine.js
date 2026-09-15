@@ -684,20 +684,26 @@ class LiveFinTechEndpointEngine {
     const paymentId = payment.payment_id;
     const config = endpoint.config || {};
     const nameParts = String(ctx.creditorName || '').trim().split(/\s+/);
+    // MoneyGram Transfer API shapes: receiver.name.{firstName,lastName};
+    // bank/wallet deposit details go in targetAccount key/value pairs whose
+    // keys are corridor-specific (config.targetAccountFields maps them).
     const receiver = {
-      firstName: nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : nameParts[0] || '',
-      lastName: nameParts.length > 1 ? nameParts[nameParts.length - 1] : '',
-      fullName: ctx.creditorName,
-      bankAccount: ctx.creditorAccount ? {
-        accountNumber: ctx.creditorAccount,
-        routingNumber: ctx.creditorRouting || undefined,
-        bankName: ctx.creditorBank || undefined,
-      } : undefined,
+      name: {
+        firstName: nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : nameParts[0] || '',
+        lastName: nameParts.length > 1 ? nameParts[nameParts.length - 1] : '',
+      },
+      ...(config.receiver || {}),
     };
-    const sender = {
-      businessName: ctx.debtorName || 'DLB Trust',
-      ...(config.sender || {}),
-    };
+    const acctFields = config.targetAccountFields || config.target_account_fields || { accountNumber: 'accountNumber', routingNumber: 'routingNumber' };
+    const targetAccount = ctx.creditorAccount ? {
+      [acctFields.accountNumber || 'accountNumber']: ctx.creditorAccount,
+      ...(ctx.creditorRouting && acctFields.routingNumber ? { [acctFields.routingNumber]: ctx.creditorRouting } : {}),
+      ...(config.targetAccount || {}),
+    } : (config.targetAccount || undefined);
+    // MoneyGram requires a natural-person sender profile (name, address,
+    // mobilePhone, personalDetails.dateOfBirth, primaryIdentification); the
+    // trust's registered sender lives in endpoint config.sender.
+    const sender = config.sender || { name: { firstName: ctx.debtorName || 'DLB Trust', lastName: 'Trust' } };
 
     let result;
     try {
@@ -707,10 +713,13 @@ class LiveFinTechEndpointEngine {
         sourceCurrency: ctx.currency,
         destinationCurrency: config.destinationCurrency || config.destination_currency || ctx.currency,
         receiveCountry: config.receiveCountry || config.receive_country || 'USA',
+        receiveCountrySubdivision: config.receiveCountrySubdivision || config.receive_country_subdivision,
         deliveryOption: config.deliveryOption || config.delivery_option,
         serviceOptionCode: config.serviceOptionCode || config.service_option_code,
         sender,
         receiver,
+        targetAccount,
+        transactionInformation: config.transactionInformation || undefined,
         reference: paymentId,
       });
     } catch (err) {

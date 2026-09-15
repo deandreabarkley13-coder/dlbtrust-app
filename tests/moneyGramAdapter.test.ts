@@ -20,29 +20,34 @@ function startMoneyGram() {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
-      const url = req.url || '';
+      const fullUrl = req.url || '';
+      const url = fullUrl.split('?')[0];
       const send = (code: number, payload: unknown) => {
         res.writeHead(code, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(payload));
       };
-      if (url === '/oauth/accesstoken' && req.method === 'POST') {
+      if (url === '/oauth/accesstoken') {
         tokenRequests++;
-        calls.push({ method: 'POST', url, auth: req.headers.authorization, headers: req.headers, body });
+        calls.push({ method: req.method || '', url: fullUrl, auth: req.headers.authorization, headers: req.headers, body });
         if (failStep === 'token') return send(401, { error: 'invalid_client', error_description: 'bad credentials' });
         return send(200, { access_token: 'tok-' + tokenRequests, expires_in: 3600, token_type: 'BearerToken' });
       }
       calls.push({ method: req.method || '', url, auth: req.headers.authorization, headers: req.headers, body });
-      if (url === '/disbursement/v1/transactions/quote' && req.method === 'POST') {
+      if (url === '/transfer/v1/transactions/quote' && req.method === 'POST') {
         if (failStep === 'quote') return send(400, { errors: [{ code: '1002', message: 'Amount exceeds limit' }] });
-        return send(200, { transactions: [{ transactionId: 'MG-TXN-1', sendAmount: { value: 100 }, receiveAmount: { value: 100 } }] });
+        return send(200, { transactions: [
+          { transactionId: 'MG-TXN-0', serviceOptionCode: 'WILL_CALL', sendAmount: { value: 100 } },
+          { transactionId: 'MG-TXN-1', serviceOptionCode: 'BANK_DEPOSIT', sendAmount: { value: 100 }, receiveAmount: { value: 100 } },
+        ] });
       }
-      if (url === '/disbursement/v1/transactions/MG-TXN-1' && req.method === 'PUT') {
-        if (failStep === 'send') return send(200, { errors: [{ code: '3011', message: 'Receiver name invalid' }] });
+      if (url === '/transfer/v1/transactions/MG-TXN-1' && req.method === 'PUT') {
+        if (failStep === 'send') return send(400, { errors: [{ code: '3011', message: 'Receiver name invalid' }] });
+        if (failStep === 'notready') return send(200, { transactionId: 'MG-TXN-1', readyForCommit: false });
         return send(200, { transactionId: 'MG-TXN-1', readyForCommit: true });
       }
-      if (url === '/disbursement/v1/transactions/MG-TXN-1/commit' && req.method === 'PUT') {
+      if (url === '/transfer/v1/transactions/MG-TXN-1/commit' && req.method === 'PUT') {
         if (failStep === 'commit') return send(500, { error: { code: 'E500', message: 'Downstream unavailable' } });
-        return send(200, { transactionId: 'MG-TXN-1', referenceNumber: 'REF12345678', transactionStatus: commitStatus });
+        return send(200, { transactionId: 'MG-TXN-1', referenceNumber: 'REF12345678', expectedPayoutDate: '2026-09-16', transactionStatus: commitStatus });
       }
       if (url === '/status/v1/transactions/MG-TXN-1' && req.method === 'GET') {
         return send(200, { transactionId: 'MG-TXN-1', referenceNumber: 'REF12345678', transactionStatus: pollStatus });
@@ -82,10 +87,12 @@ const sendArgs = {
   sourceCurrency: 'USD',
   receiveCountry: 'USA',
   deliveryOption: 'BANK_DEPOSIT',
-  sender: { businessName: 'DLB Trust' },
-  receiver: { firstName: 'Jane', lastName: 'Doe', fullName: 'Jane Doe' },
+  sender: { name: { firstName: 'Dee', lastName: 'Barkley' }, address: { line1: '1 Main St', city: 'Dallas', countryCode: 'USA' } },
+  receiver: { name: { firstName: 'Jane', lastName: 'Doe' } },
+  targetAccount: { accountNumber: '123456', routingNumber: '021000021' },
   reference: 'FTP-TEST-1',
 };
+const isTokenCall = (c: Call) => c.url.startsWith('/oauth/accesstoken');
 
 describe('MoneyGramAdapter', () => {
   let mg: Awaited<ReturnType<typeof startMoneyGram>>;
@@ -104,18 +111,28 @@ describe('MoneyGramAdapter', () => {
     });
   }
 
-  it('defaults the token URL to {baseUrl}/oauth/accesstoken and uses Basic auth', async () => {
+  it('defaults the token URL to {baseUrl}/oauth/accesstoken and uses GET + Basic auth (MoneyGram contract)', async () => {
     const a = adapter();
     expect(a.tokenUrl).toBe(`${mg.baseUrl}/oauth/accesstoken`);
     const tok = await a.getAccessToken();
     expect(tok).toBe('tok-1');
     const tokenCall = mg.calls[0];
+    expect(tokenCall.method).toBe('GET');
+    expect(tokenCall.url).toBe('/oauth/accesstoken?grant_type=client_credentials');
     expect(tokenCall.auth).toBe('Basic ' + Buffer.from('client-abc:secret-xyz').toString('base64'));
+    expect(tokenCall.body).toBe('');
+  });
+
+  it('POSTs a form body when tokenMethod is POST', async () => {
+    await adapter({ tokenMethod: 'POST' }).getAccessToken();
+    const tokenCall = mg.calls[0];
+    expect(tokenCall.method).toBe('POST');
+    expect(tokenCall.auth).toMatch(/^Basic /);
     expect(tokenCall.body).toBe('grant_type=client_credentials');
   });
 
-  it('sends client_id/client_secret in the body when credentialsInBody is set', async () => {
-    await adapter({ credentialsInBody: true }).getAccessToken();
+  it('sends client_id/client_secret in the body when tokenMethod is POST and credentialsInBody is set', async () => {
+    await adapter({ tokenMethod: 'POST', credentialsInBody: true }).getAccessToken();
     const tokenCall = mg.calls[0];
     expect(tokenCall.auth).toBeUndefined();
     expect(tokenCall.body).toContain('client_id=client-abc');
@@ -132,11 +149,13 @@ describe('MoneyGramAdapter', () => {
     expect(result.transactionId).toBe('MG-TXN-1');
     expect(result.errorMessage).toBeNull();
 
-    const apiCalls = mg.calls.filter((c) => c.url !== '/oauth/accesstoken');
+    expect(result.expectedPayoutDate).toBe('2026-09-16');
+
+    const apiCalls = mg.calls.filter((c) => !isTokenCall(c));
     expect(apiCalls.map((c) => [c.method, c.url])).toEqual([
-      ['POST', '/disbursement/v1/transactions/quote'],
-      ['PUT', '/disbursement/v1/transactions/MG-TXN-1'],
-      ['PUT', '/disbursement/v1/transactions/MG-TXN-1/commit'],
+      ['POST', '/transfer/v1/transactions/quote'],
+      ['PUT', '/transfer/v1/transactions/MG-TXN-1'],
+      ['PUT', '/transfer/v1/transactions/MG-TXN-1/commit'],
     ]);
     for (const c of apiCalls) {
       expect(c.auth).toBe('Bearer tok-1');
@@ -145,15 +164,24 @@ describe('MoneyGramAdapter', () => {
       expect(c.headers['x-mg-clientrequestid']).toMatch(/^FTP-TEST-1-/);
     }
     const quoteBody = JSON.parse(apiCalls[0].body);
+    expect(quoteBody).toMatchObject({ targetAudience: 'AGENT_FACING', userLanguage: 'en-US', agentPartnerId: 'AGENT-1', destinationCountryCode: 'USA', serviceOptionCode: 'BANK_DEPOSIT', receiveCurrencyCode: 'USD' });
     expect(quoteBody.sendAmount).toEqual({ currencyCode: 'USD', value: 100 });
-    expect(quoteBody.destinationCountryCode).toBe('USA');
+    // Picks the quote matching the requested service option, then re-sends the quote fields on Update.
     const sendBody = JSON.parse(apiCalls[1].body);
-    expect(sendBody.partnerTransactionId).toBe('FTP-TEST-1');
-    expect(sendBody.receiver.lastName).toBe('Doe');
+    expect(sendBody).toMatchObject({ targetAudience: 'AGENT_FACING', serviceOptionCode: 'BANK_DEPOSIT', destinationCountryCode: 'USA' });
+    expect(sendBody.sendAmount).toEqual({ currencyCode: 'USD', value: 100 });
+    expect(sendBody.transactionInformation.partnerTransactionId).toBe('FTP-TEST-1');
+    expect(sendBody.receiver.name.lastName).toBe('Doe');
+    expect(sendBody.sender.name.firstName).toBe('Dee');
+    expect(sendBody.targetAccount.accountNumber).toBe('123456');
+    expect(JSON.parse(apiCalls[2].body)).toEqual({ targetAudience: 'AGENT_FACING', userLanguage: 'en-US' });
 
     // Second flow reuses the cached token.
     await a.status({ transactionId: 'MG-TXN-1' });
     expect(mg.tokenRequests()).toBe(1);
+    const statusCall = mg.calls[mg.calls.length - 1];
+    expect(statusCall.method).toBe('GET');
+    expect(statusCall.url).toBe('/status/v1/transactions/MG-TXN-1');
     expect(JSON.parse(result.rawResponse).steps.map((s: any) => s.step)).toEqual(['quote', 'send', 'commit']);
   });
 
@@ -167,13 +195,22 @@ describe('MoneyGramAdapter', () => {
     expect(result.errorMessage).toMatch(/Amount exceeds limit|Receiver name invalid|Downstream unavailable/);
   });
 
+  it('refuses to commit when Update does not return readyForCommit: true', async () => {
+    mg.setFailStep('notready');
+    const result = await adapter().disburse(sendArgs);
+    expect(result.status).toBe('failed');
+    expect(result.failedStep).toBe('send');
+    expect(result.errorMessage).toMatch(/readyForCommit/);
+    expect(mg.calls.some((c) => c.url.endsWith('/commit'))).toBe(false);
+  });
+
   it('yields failed with a clear error when the token endpoint rejects the client', async () => {
     mg.setFailStep('token');
     const result = await adapter().disburse(sendArgs);
     expect(result.status).toBe('failed');
     expect(result.failedStep).toBe('token');
     expect(result.errorMessage).toMatch(/MoneyGram token failed: 401 bad credentials/);
-    expect(mg.calls.filter((c) => c.url !== '/oauth/accesstoken')).toHaveLength(0);
+    expect(mg.calls.filter((c) => !isTokenCall(c))).toHaveLength(0);
   });
 
   it('polls status and maps MoneyGram states onto the engine enum', async () => {
@@ -187,6 +224,8 @@ describe('MoneyGramAdapter', () => {
     expect(rejected.status).toBe('failed');
     expect(rejected.mgStatus).toBe('REJECTED');
     expect(rejected.referenceNumber).toBe('REF12345678');
+    const statusCall = mg.calls[mg.calls.length - 1];
+    expect(statusCall.url).toBe('/status/v1/transactions/MG-TXN-1');
   });
 
   it('maps a non-terminal commit status to manual_pending', async () => {
@@ -215,12 +254,15 @@ describe('MoneyGram engine wiring', () => {
       api_key: 'cid',
       api_secret: 'csec',
       extra_headers: { 'X-MG-Version': '2' },
-      config: { tokenUrl: 'https://auth.moneygram.com/oauth/accesstoken', agentPartnerId: 'P1', credentialsInBody: true },
+      config: { tokenUrl: 'https://auth.moneygram.com/oauth/accesstoken', agentPartnerId: 'P1', tokenMethod: 'POST', credentialsInBody: true, targetAudience: 'CONSUMER_FACING' },
     });
     expect(a.baseUrl).toBe('https://api.moneygram.com');
     expect(a.tokenUrl).toBe('https://auth.moneygram.com/oauth/accesstoken');
     expect(a.clientId).toBe('cid');
+    expect(a.tokenMethod).toBe('POST');
     expect(a.credentialsInBody).toBe(true);
+    expect(a.targetAudience).toBe('CONSUMER_FACING');
+    expect(a.quotePath).toBe('/transfer/v1/transactions/quote');
     expect(a.agentPartnerId).toBe('P1');
     expect(a.headers['X-MG-Version']).toBe('2');
     expect(() => adapterFromEndpoint({ base_url: 'https://x', config: {} })).toThrow(/clientId and clientSecret/);
