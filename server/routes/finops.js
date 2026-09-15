@@ -3232,6 +3232,11 @@ router.post('/live-fintech-payments/:id/send', operatorAuth, async (req, res) =>
   try { res.json({ success: true, data: await LiveFinTechEndpointEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
+// MoneyGram: re-poll transaction status and reconcile a manual_pending payment.
+router.post('/live-fintech-payments/:id/refresh-status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.refreshStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Corporate Treasury Management System Engine
 // ═════════════════════════════════════════════════════════════════════════════
