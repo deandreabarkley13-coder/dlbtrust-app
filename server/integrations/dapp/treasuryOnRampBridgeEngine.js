@@ -14,6 +14,8 @@
  *  - circle_mint        -> Use Circle Mint USD balance to on-chain transfer USDC
  *  - coinbase_treasury  -> Stage a fiat deposit from a ledger source via Coinbase
  *  - moonpay            -> MoonPay widget on-ramp
+ *  - skrill             -> Skrill wallet (platform-funded) -> manual withdrawal to the
+ *                          Coinbase-linked USD balance -> CoinbaseTreasuryBridge delivery
  *  - manual             -> Instructions for an external manual deposit
  */
 
@@ -66,6 +68,9 @@ try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) {}
 let CircleMintClient;
 try { ({ CircleMintClient } = require('../stablecoin/circleMintClient')); } catch (e) {}
 
+let SkrillLinkEngine;
+try { ({ SkrillLinkEngine } = require('../payments/skrillLinkEngine')); } catch (e) {}
+
 let viem;
 try { viem = require('viem'); } catch (e) {}
 
@@ -105,7 +110,11 @@ const SOURCE_METHODS = {
   coinbase_treasury: { name: 'Coinbase Treasury Bridge', note: 'Stage a fiat deposit from a ledger source through Coinbase, then buy and send crypto.' },
   moonpay: { name: 'MoonPay on-ramp', note: 'Generate a MoonPay widget URL to buy crypto into the operator wallet.' },
   core_banking_wire: { name: 'Core-banking wire', note: 'Generate a wire/ACH payout from a core-banking cash account to the on-ramp bank account.' },
+  skrill: { name: 'Skrill wallet', note: 'Skrill wallet funded from the platform source ledger (no bank origination). The operator manually withdraws USD from Skrill to the Coinbase-linked account; Coinbase then delivers ETH gas + USDC on-chain via CoinbaseTreasuryBridge.' },
 };
+
+const OP_STATUSES = ['pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config','insufficient_source','awaiting_deposit','awaiting_onramp','needs_recipient_setup','reserved','deposit_initiated','awaiting_canonical','ready','awaiting_skrill_withdrawal','needs_manual_withdrawal'];
+const OP_STATUS_SQL = OP_STATUSES.map(s => `'${s}'`).join(',');
 
 class TreasuryOnRampBridgeEngine {
   static get config() { return getConfig(); }
@@ -149,7 +158,7 @@ class TreasuryOnRampBridgeEngine {
         internal_amount   NUMERIC(24,6),
         target_asset      TEXT NOT NULL DEFAULT 'DAI',
         recipient         TEXT,
-        status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config','insufficient_source','awaiting_deposit','awaiting_onramp','needs_recipient_setup','reserved','deposit_initiated','awaiting_canonical','ready')),
+        status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN (${OP_STATUS_SQL})),
         stage             TEXT NOT NULL DEFAULT 'on_ramp',
         result            JSONB DEFAULT '{}',
         error             TEXT,
@@ -160,7 +169,7 @@ class TreasuryOnRampBridgeEngine {
     `);
     await queryFn(`CREATE INDEX IF NOT EXISTS idx_treasury_on_ramp_status ON treasury_on_ramp_operations(status)`);
     await queryFn(`ALTER TABLE treasury_on_ramp_operations DROP CONSTRAINT IF EXISTS treasury_on_ramp_operations_status_check`);
-    await queryFn(`ALTER TABLE treasury_on_ramp_operations ADD CONSTRAINT treasury_on_ramp_operations_status_check CHECK (status IN ('pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config','insufficient_source','awaiting_deposit','awaiting_onramp','needs_recipient_setup','reserved','deposit_initiated','awaiting_canonical','ready'))`);
+    await queryFn(`ALTER TABLE treasury_on_ramp_operations ADD CONSTRAINT treasury_on_ramp_operations_status_check CHECK (status IN (${OP_STATUS_SQL}))`);
   }
 
   static async _resolveToken(token) {
@@ -258,7 +267,54 @@ class TreasuryOnRampBridgeEngine {
       const ready = !!WireOriginationEngine;
       return { ...base, ready, issues: ready ? [] : ['WireOriginationEngine not available'] };
     }
+    if (method === 'skrill') {
+      const r = this.skrillReadiness();
+      return { ...base, ready: r.ready, issues: r.issues, missing: r.missing, manualWithdrawal: true };
+    }
     return { ...base, issues: ['Unknown source method'] };
+  }
+
+  /**
+   * Skrill credentials (key names only) plus the Coinbase delivery leg. The
+   * Skrill -> bank withdrawal has no API behind email+password, so it is always
+   * reported as a manual operator step.
+   */
+  static skrillReadiness() {
+    const skrill = SkrillLinkEngine && typeof SkrillLinkEngine.readiness === 'function'
+      ? SkrillLinkEngine.readiness()
+      : { ready: false, missing: ['SKRILL_MERCHANT_EMAIL', 'SKRILL_API_PASSWORD'], issues: ['SkrillLinkEngine not available'] };
+    const coinbaseReady = CoinbaseTreasuryBridge ? CoinbaseTreasuryBridge.enabled() : false;
+    const issues = [...(skrill.issues || [])];
+    if (!coinbaseReady) issues.push('Coinbase Treasury Bridge not enabled (COINBASE_CDP_API_KEY / secret); on-chain delivery leg is not live');
+    return {
+      ready: !!skrill.ready,
+      missing: skrill.missing || [],
+      issues,
+      skrillConfigured: !!skrill.ready,
+      coinbaseReady,
+      withdrawalMode: 'manual',
+      note: 'Skrill -> Coinbase-linked bank withdrawal is a MANUAL operator step (email+password have no bank-withdrawal API).',
+    };
+  }
+
+  static skrillInstructions({ amount, targetAsset = 'ETH', cfg = this.getConfig() } = {}) {
+    const amt = Number(amount || 0).toFixed(2);
+    const targetUpper = String(targetAsset).toUpperCase();
+    return {
+      mode: 'manual_withdrawal',
+      message: `Manually withdraw ${amt} USD from the Skrill wallet (SKRILL_MERCHANT_EMAIL) to the bank account linked to the trust's Coinbase account. Once the USD settles in the Coinbase USD balance, CoinbaseTreasuryBridge buys ${targetUpper} (native Base ETH gas) plus seed USDC and sends them to operator ${cfg.operatorAddress}. Then call continue/execute.`,
+      steps: [
+        `Skrill dashboard -> Withdraw -> Bank account: ${amt} USD to the Coinbase-linked bank account.`,
+        'Coinbase -> USD balance: wait for the deposit to settle (bank/ACH only; Coinbase cannot receive from a Skrill email).',
+        `CoinbaseTreasuryBridge delivers ${targetUpper} + USDC on Base to ${cfg.operatorAddress} (staged transfer below).`,
+      ],
+      doNot: [
+        'Do not send Skrill money to your own merchant email — that is a no-op self-transfer.',
+        'Do not use Quick Checkout (pay.skrill.com) — it is pay-in only.',
+        'Do not originate a bank wire/ACH into Skrill — the Skrill wallet is funded from the platform source ledger.',
+      ],
+      automationNote: 'Automating the withdrawal leg requires Paysafe Wallet SaaS server REST API credentials, not just SKRILL_MERCHANT_EMAIL/SKRILL_API_PASSWORD.',
+    };
   }
 
   static async quote({
@@ -294,6 +350,7 @@ class TreasuryOnRampBridgeEngine {
     else if (sourceMethod === 'circle_mint') status = 'ready';
     else if (sourceMethod === 'coinbase_treasury') status = 'pending';
     else if (sourceMethod === 'moonpay') status = 'awaiting_onramp';
+    else if (sourceMethod === 'skrill') status = 'awaiting_skrill_withdrawal';
 
     const instructions = this._buildInstructions({ sourceMethod, targetAsset, amount: amountNum, onRampAmount, onRampBankDetails, cfg });
 
@@ -347,6 +404,7 @@ class TreasuryOnRampBridgeEngine {
       return { message: `Complete MoonPay on-ramp for ${onRampAmount.toFixed(2)} ${targetUpper}.`, onrampUrl: url };
     }
     if (sourceMethod === 'circle_mint') return `Use Circle Mint to transfer ${onRampAmount.toFixed(2)} USDC to ${cfg.operatorAddress}; then swap USDC -> ${targetUpper} if needed.`;
+    if (sourceMethod === 'skrill') return this.skrillInstructions({ amount, targetAsset, cfg });
     if (sourceMethod === 'coinbase_treasury') return `Stage ${amount.toFixed(2)} USD from source ledger through Coinbase Treasury Bridge, buy ${targetUpper}, and send to ${cfg.operatorAddress}.`;
     if (sourceMethod === 'core_banking_wire') {
       const bank = onRampBankDetails.name || cfg.wireBeneficiary.name || 'on-ramp bank';
@@ -562,6 +620,27 @@ class TreasuryOnRampBridgeEngine {
       const newStatus = transfer.status || 'pending';
       await queryFn(`UPDATE treasury_on_ramp_operations SET stage='canonical_swap', status=$1, metadata=jsonb_set(metadata, '{coinbaseTransfer}', $2::jsonb) WHERE id=$3`, [newStatus, safeJson(transfer), op.id]);
       return { operationId: op.id, stage: 'canonical_swap', status: newStatus, transfer, instructions: 'Coinbase treasury transfer staged. Continue once USD settles and crypto is delivered.' };
+    }
+
+    if (sourceMethod === 'skrill') {
+      const readiness = this.skrillReadiness();
+      if (!readiness.skrillConfigured) {
+        const instructions = `Set ${readiness.missing.join(' and ')} in the runtime secret group, then retry.`;
+        return { operationId: op.id, stage: 'on_ramp', status: 'needs_config', missing: readiness.missing, issues: readiness.issues, instructions };
+      }
+      const instructions = this._buildInstructions({ sourceMethod, targetAsset, amount: Number(amount), onRampAmount: Number(amount), onRampBankDetails, cfg });
+      if (!CoinbaseTreasuryBridge) throw new Error('CoinbaseTreasuryBridge not available');
+      const transfer = await CoinbaseTreasuryBridge.stageFromSource({
+        sourceType,
+        sourceAccountId,
+        amount,
+        targetAsset,
+        targetNetwork: 'ethereum',
+        targetAddress: cfg.operatorAddress,
+      });
+      const newStatus = 'awaiting_skrill_withdrawal';
+      await queryFn(`UPDATE treasury_on_ramp_operations SET stage='canonical_swap', status=$1, metadata=jsonb_set(jsonb_set(metadata, '{coinbaseTransfer}', $2::jsonb), '{skrillWithdrawal}', $3::jsonb) WHERE id=$4`, [newStatus, safeJson(transfer), safeJson({ mode: 'manual', amount: Number(amount), instructions }), op.id]);
+      return { operationId: op.id, stage: 'canonical_swap', status: newStatus, withdrawalMode: 'manual', instructions, transfer };
     }
 
     if (sourceMethod === 'circle_mint') {

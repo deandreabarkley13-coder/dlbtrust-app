@@ -2504,6 +2504,23 @@ router.post('/trust-deposits/:id/cancel', operatorAuth, writeRateLimiter(), asyn
 
 // ─── Skrill.me/rq Payment Links ─────────────────────────────────────────────
 
+// Skrill + Coinbase readiness for the operator-gas bootstrap. Reports key names
+// only, never values; the Skrill -> bank withdrawal leg is always manual.
+router.get('/skrill-links/readiness', operatorAuth, async (req, res) => {
+  try {
+    const onRamp = TreasuryOnRampBridgeEngine.skrillReadiness();
+    const amount = Number(req.query.amount || 0);
+    res.json({
+      success: true,
+      data: {
+        ...onRamp,
+        skrill: SkrillLinkEngine.readiness(),
+        instructions: amount > 0 ? TreasuryOnRampBridgeEngine.skrillInstructions({ amount, targetAsset: req.query.targetAsset || 'ETH' }) : null,
+      },
+    });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/skrill-links', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SkrillLinkEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
 });

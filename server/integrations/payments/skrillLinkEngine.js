@@ -109,7 +109,27 @@ function extractTitle(html) {
   return m ? m[1] : '';
 }
 
+const SKRILL_CREDENTIAL_KEYS = ['SKRILL_MERCHANT_EMAIL', 'SKRILL_API_PASSWORD'];
+
 class SkrillLinkEngine {
+  /**
+   * Synchronous, env-only readiness of the Skrill Automated Payments credentials.
+   * Reports key names only — never values. Email + API password allow send-to-email
+   * payouts only; there is no bank-withdrawal API behind them, so any Skrill -> bank
+   * leg is a manual operator step (see docs/LIVE_VALUE_RUNBOOK.md §4a step 2).
+   */
+  static readiness() {
+    const missing = SKRILL_CREDENTIAL_KEYS.filter(k => !String(process.env[k] || '').trim());
+    return {
+      rail: 'skrill',
+      ready: missing.length === 0,
+      missing,
+      issues: missing.map(k => `${k} not configured`),
+      capabilities: { sendToEmail: missing.length === 0, bankWithdrawal: false },
+      note: 'Skrill -> bank withdrawal is a manual operator step; automation needs Paysafe Wallet SaaS server REST API credentials.',
+    };
+  }
+
   static async ensureTables() {
     if (!pool) return;
     await pool.query(`

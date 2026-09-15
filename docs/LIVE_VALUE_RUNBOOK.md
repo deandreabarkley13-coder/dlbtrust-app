@@ -248,6 +248,43 @@ secret group — never in committed files.
 2. Operator gas: the `DAPP_PRIVATE_KEY` wallet needs Base ETH — it pays the DLBUSD
    deploy, mint, pool deploy, approvals and swap. Check with
    `npm run trust:runbook` (`treasuryEth` / gas tank) or the wallet on Basescan.
+
+   **Cold start (0 ETH, 0 USDC operator).** The DEX rail signs plain EOA txs (no
+   paymaster), so it cannot bootstrap its own gas; `FundingEngine.executePlan` never
+   runs `stablecoin_dex` first on a cold operator. Use the Skrill path:
+
+   ```
+   Skrill wallet (funded from the platform source ledger — NOT a bank push)
+     -> MANUAL operator withdrawal to the Coinbase-linked bank account
+     -> Coinbase USD balance
+     -> CoinbaseTreasuryBridge delivers native Base ETH (gas) + seed USDC on-chain
+     -> operator 0x3e53028cf69949f3B961ce786Baf2D4D75166562
+   ```
+
+   ```sh
+   # verify Skrill + Coinbase config first (key names only, never values)
+   curl -s -H "x-admin-token: $ADMIN_SECRET_TOKEN" "$BASE/api/finops/skrill-links/readiness?amount=100"
+   node server/scripts/bootstrapOperatorGas.js skrill 100 treasury TREASURY_HOT
+   ```
+
+   The bootstrap verifies `SKRILL_MERCHANT_EMAIL` / `SKRILL_API_PASSWORD` (status
+   `needs_config` naming the missing keys otherwise), stages the Coinbase transfer via
+   `CoinbaseTreasuryBridge.stageFromSource` (source ledger reserve → Coinbase USD
+   receivable), and prints the manual withdrawal instructions
+   (`awaiting_skrill_withdrawal`). Facts that shape the path:
+   - Email + API password are Skrill *Automated Payments* (send-to-email) credentials
+     only. There is **no** Skrill bank-withdrawal API behind them, so the
+     Skrill → bank leg is a **manual** operator step in the Skrill dashboard.
+   - Coinbase cannot receive funds from a Skrill email — bank/ACH only.
+   - Sending Skrill money to your own merchant email is a no-op self-transfer.
+   - Quick Checkout (`pay.skrill.com`) is pay-in only; it cannot move money out.
+   - Full automation of the withdrawal leg requires Paysafe Wallet SaaS server REST
+     API credentials, not just email + password.
+
+   Once the USD settles in Coinbase, `CoinbaseTreasuryBridge` buys and sends ETH and
+   USDC to the operator; then `--deploy-dlbusd`, `--create-pool --seed-usdc N` and
+   `--fund` below can run. All live gates stay fail-closed and no secret values are
+   logged.
 3. Deploy DLBUSD once, pin forever. A missing `DAPP_DLBUSD_ADDRESS` no longer blocks
    the rail: `fundReadiness()` reports `dlbusdSource: auto-provision` and
    `StablecoinDexEngine.ensureDLBUSDAddress()` resolves the token (env → pool token →

@@ -18,6 +18,7 @@ const { CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge');
 const { CoinbaseSpotEngine } = require('./coinbaseSpotEngine');
 const { ModuleFundingEngine } = require('./moduleFundingEngine');
 const { DappEngine } = require('./dappEngine');
+const { TreasuryOnRampBridgeEngine } = require('./treasuryOnRampBridgeEngine');
 
 let viem;
 try { viem = require('viem'); } catch (e) { }
@@ -138,10 +139,12 @@ class FundingEngine {
       coinbase_spot: { ready: CoinbaseSpotEngine.enabled(), connected: CoinbaseSpotEngine.enabled() },
       cashapp: await CashAppEngine.readiness(),
       googlewallet: await GoogleWalletEngine.readiness(),
+      skrill: TreasuryOnRampBridgeEngine.skrillReadiness(),
     };
 
     return {
       operator: { address: opAddress, ...operatorEth, weth: operatorWeth, usdc: operatorUsdc },
+      coldStart: Number(operatorEth.eth) < 0.003,
       externalWallet: extAddress ? { address: extAddress, ...externalEth, weth: externalWeth } : null,
       hedera: hederaBalance,
       pool: { address: poolAddress, ...poolLiquidity, dlbusdTokenAddress },
@@ -174,7 +177,27 @@ class FundingEngine {
       }
     }
 
-    // 2. DEX (preferred — uses internal stablecoin rails, not CEX)
+    // 2. Cold operator: the DEX rail signs plain EOA txs and cannot pay for its own
+    // gas, so an on-ramp that delivers native ETH from outside must run first.
+    // Skrill wallet (platform-funded) -> manual withdrawal -> Coinbase -> operator.
+    if (status.rails.skrill.ready) {
+      steps.push({ step: 'skrill_manual_withdrawal', message: `Withdraw ${amountUsd} USD from the Skrill wallet to the Coinbase-linked bank account (manual), then Coinbase delivers ETH gas + USDC to ${cfg.operatorAddress}.`, instructions: TreasuryOnRampBridgeEngine.skrillInstructions({ amount: amountUsd, targetAsset }) });
+      if (strategy === 'skrill' || strategy === 'auto') {
+        return { canExecute: true, status, steps, missing: [...missing, 'skrill_manual_withdrawal'], recommendation: 'Cold operator: stage the Coinbase delivery and complete the manual Skrill -> Coinbase withdrawal; the DEX rail runs only once the operator holds ETH.' };
+      }
+    } else {
+      missing.push('Skrill rail not ready: ' + (status.rails.skrill.issues || []).join(', '));
+      if (strategy === 'skrill') {
+        steps.push({ step: 'skrill_needs_config', message: `Set ${(status.rails.skrill.missing || []).join(' and ')} before running the skrill bootstrap.` });
+        return { canExecute: false, status, steps, missing, recommendation: 'Skrill credentials are not configured.' };
+      }
+    }
+    if (status.rails.coinbase_treasury.ready && strategy === 'auto') {
+      steps.push({ step: 'coinbase_treasury', message: `Cold operator: reserve ${amountUsd} USD from source ledger and stage Coinbase Treasury bridge to deliver ETH gas + USDC.` });
+      return { canExecute: true, status, steps, missing: [...missing, 'coinbase_usd_deposit'], recommendation: 'Cold operator: run the Coinbase treasury rail before any DEX transaction.' };
+    }
+
+    // 3. DEX (preferred once the operator has gas — uses internal stablecoin rails, not CEX)
     if (status.rails.stablecoin_dex.ready) {
       if (status.pool.exists && Number(status.pool.target) > 0) {
         steps.push({ step: 'dex_swap', message: `Mint ${amountUsd} DLBUSD from ${sourceType}:${sourceAccountId} and swap for ${targetAsset} on pool ${status.pool.address}.` });
@@ -189,7 +212,7 @@ class FundingEngine {
       missing.push('Stablecoin DEX not ready: ' + (status.rails.stablecoin_dex.issues || []).join(', '));
     }
 
-    // 3. Cash App / P2P fiat
+    // 4. Cash App / P2P fiat
     if (status.rails.cashapp.ready) {
       steps.push({ step: 'cashapp_p2p', message: 'Generate Cash App P2P QR/link, receive USD, then wire/deposit to Coinbase or another on-ramp.' });
       if (strategy === 'cashapp') {
@@ -205,7 +228,7 @@ class FundingEngine {
       missing.push('Cash App rail not ready: ' + (status.rails.cashapp.issues || []).join(', '));
     }
 
-    // 4. Coinbase (fiat → crypto) — fallback when DEX/Cash App cannot close the gap
+    // 5. Coinbase (fiat → crypto) — fallback when DEX/Cash App cannot close the gap
     if (status.rails.coinbase_treasury.ready) {
       steps.push({ step: 'coinbase_treasury', message: `Reserve ${amountUsd} USD from source ledger and stage Coinbase Treasury bridge. Requires Coinbase account to hold USD.` });
       if (strategy === 'coinbase') {
@@ -215,13 +238,13 @@ class FundingEngine {
       missing.push('Coinbase CDP API not configured');
     }
 
-    // 5. Hedera HBAR bridge
+    // 6. Hedera HBAR bridge
     if (status.hedera && Number(status.hedera.hbar) > 0) {
       steps.push({ step: 'hedera_bridge', message: `Hedera account holds ${status.hedera.hbar} HBAR. Bridge to EVM via Hashport/centralized exchange, then send ETH to operator.` });
       missing.push('Hedera HBAR bridge not automated; manual bridge required');
     }
 
-    // 6. Manual deposit invoice
+    // 7. Manual deposit invoice
     steps.push({ step: 'manual_deposit', message: `Deposit at least ${status.neededEthForFirstTx} ETH to ${cfg.operatorAddress}, or seed the DLBUSD/WETH pool with WETH.` });
     return { canExecute: false, status, steps, missing, recommendation: 'No automated rail can mint ETH. Deposit ETH or WETH externally, then retry.' };
   }
@@ -232,9 +255,14 @@ class FundingEngine {
 
     const executed = [];
     const cfg = this.getConfig();
+    const coldStart = Number(plan.status.operator.eth) < Number(plan.status.neededEthForFirstTx);
 
-    // DEX rail (preferred)
-    if (strategy === 'dex' || strategy === 'auto') {
+    const runDex = async () => {
+      if (!(strategy === 'dex' || strategy === 'auto')) return false;
+      if (coldStart) {
+        executed.push({ rail: 'stablecoin_dex', skipped: true, error: `operator holds ${plan.status.operator.eth} ETH (< ${plan.status.neededEthForFirstTx}); DEX rail needs gas it cannot bootstrap` });
+        return false;
+      }
       try {
         const result = await StablecoinDexEngine.depositAndSwap({
           sourceType, sourceAccountId, amount: amountUsd,
@@ -244,10 +272,59 @@ class FundingEngine {
           poolSeedDlbusd: railOptions.poolSeedDlbusd,
         });
         executed.push({ rail: 'stablecoin_dex', result });
-        return { ...plan, executed };
+        return true;
       } catch (e) {
         executed.push({ rail: 'stablecoin_dex', error: e.message });
+        return false;
       }
+    };
+
+    const runSkrill = async () => {
+      if (!(strategy === 'skrill' || strategy === 'auto')) return false;
+      const readiness = TreasuryOnRampBridgeEngine.skrillReadiness();
+      if (!readiness.skrillConfigured) {
+        executed.push({ rail: 'skrill', result: { status: 'needs_config', missing: readiness.missing, issues: readiness.issues } });
+        return strategy === 'skrill';
+      }
+      const instructions = TreasuryOnRampBridgeEngine.skrillInstructions({ amount: amountUsd, targetAsset });
+      try {
+        const transfer = await CoinbaseTreasuryBridge.stageFromSource({
+          sourceType, sourceAccountId, amount: amountUsd,
+          targetAsset, targetNetwork: 'ethereum', targetAddress: cfg.operatorAddress,
+          coinbasePaymentMethodId: railOptions.coinbasePaymentMethodId || '',
+        });
+        executed.push({ rail: 'skrill', result: { status: 'awaiting_skrill_withdrawal', withdrawalMode: 'manual', instructions, transfer } });
+        return true;
+      } catch (e) {
+        executed.push({ rail: 'skrill', result: { status: 'needs_manual_withdrawal', withdrawalMode: 'manual', instructions }, error: e.message });
+        return strategy === 'skrill';
+      }
+    };
+
+    const runCoinbase = async () => {
+      if (!(strategy === 'coinbase' || strategy === 'auto')) return false;
+      try {
+        const result = await CoinbaseTreasuryBridge.stageFromSource({
+          sourceType, sourceAccountId, amount: amountUsd,
+          targetAsset, targetAddress: cfg.operatorAddress,
+          coinbasePaymentMethodId: railOptions.coinbasePaymentMethodId || '',
+        });
+        executed.push({ rail: 'coinbase_treasury', result });
+        return true;
+      } catch (e) {
+        executed.push({ rail: 'coinbase_treasury', error: e.message });
+        return false;
+      }
+    };
+
+    // Cold operator: outside-in on-ramps first (they deliver native ETH), DEX last.
+    // Funded operator: DEX first, as before.
+    if (coldStart) {
+      if (await runSkrill()) return { ...plan, executed };
+      if (await runCoinbase()) return { ...plan, executed };
+    } else {
+      if (await runDex()) return { ...plan, executed };
+      if (await runSkrill()) return { ...plan, executed };
     }
 
     // Cash App rail
@@ -266,19 +343,10 @@ class FundingEngine {
       }
     }
 
-    // Coinbase rail (CEX fallback)
-    if (strategy === 'coinbase' || strategy === 'auto') {
-      try {
-        const result = await CoinbaseTreasuryBridge.stageFromSource({
-          sourceType, sourceAccountId, amount: amountUsd,
-          targetAsset, targetAddress: cfg.operatorAddress,
-          coinbasePaymentMethodId: railOptions.coinbasePaymentMethodId || '',
-        });
-        executed.push({ rail: 'coinbase_treasury', result });
-        return { ...plan, executed };
-      } catch (e) {
-        executed.push({ rail: 'coinbase_treasury', error: e.message });
-      }
+    if (coldStart) {
+      await runDex();
+    } else if (await runCoinbase()) {
+      return { ...plan, executed };
     }
 
     return { ...plan, executed };
