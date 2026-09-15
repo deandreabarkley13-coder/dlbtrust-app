@@ -29,6 +29,11 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 let CashEngine;
 try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
 
+let PaymentComplianceGate;
+try { ({ PaymentComplianceGate } = require('../compliance/paymentComplianceGate')); } catch (e) { PaymentComplianceGate = null; }
+
+const { adapterFromEndpoint: moneyGramAdapterFromEndpoint } = require('../payments/moneyGramAdapter');
+
 const HOLD_ACCOUNT = 'LIVE_FINTECH_HOLD';
 const SETTLED_ACCOUNT = 'LIVE_FINTECH_SETTLED';
 
@@ -44,7 +49,16 @@ const PROVIDERS = {
   spritz: { label: 'Spritz', method: 'POST' },
   cashapp: { label: 'Cash App', method: 'POST' },
   skrill: { label: 'Skrill', method: 'POST' },
+  moneygram: { label: 'MoneyGram', method: 'POST' },
 };
+
+const PROVIDER_VALUES = Object.keys(PROVIDERS);
+const AUTH_TYPES = ['none', 'bearer', 'basic', 'api_key', 'lili', 'hmac', 'oauth2_client_credentials'];
+const sqlList = (vals) => vals.map((v) => `'${v}'`).join(',');
+
+// Providers whose outbound payment is a multi-step partner flow (not the
+// single-shot httpRequest path) and must clear the compliance gate first.
+const GATED_PROVIDERS = new Set(['moneygram']);
 
 function generateId(prefix = 'FTE') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -277,10 +291,10 @@ class LiveFinTechEndpointEngine {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS live_fintech_endpoints (
         endpoint_id TEXT PRIMARY KEY,
-        provider TEXT NOT NULL CHECK (provider IN ('generic','column','increase','lili','mercury','plaid','wise','stripe','spritz','cashapp','skrill')),
+        provider TEXT NOT NULL CHECK (provider IN (${sqlList(PROVIDER_VALUES)})),
         name TEXT NOT NULL,
         base_url TEXT NOT NULL,
-        auth_type TEXT NOT NULL DEFAULT 'none' CHECK (auth_type IN ('none','bearer','basic','api_key','lili','hmac')),
+        auth_type TEXT NOT NULL DEFAULT 'none' CHECK (auth_type IN (${sqlList(AUTH_TYPES)})),
         api_key TEXT DEFAULT '',
         api_secret TEXT DEFAULT '',
         extra_headers JSONB DEFAULT '{}',
@@ -320,6 +334,13 @@ class LiveFinTechEndpointEngine {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    if (!this._constraintsMigrated) {
+      await pool.query(`ALTER TABLE live_fintech_endpoints DROP CONSTRAINT IF EXISTS live_fintech_endpoints_provider_check`);
+      await pool.query(`ALTER TABLE live_fintech_endpoints ADD CONSTRAINT live_fintech_endpoints_provider_check CHECK (provider IN (${sqlList(PROVIDER_VALUES)}))`);
+      await pool.query(`ALTER TABLE live_fintech_endpoints DROP CONSTRAINT IF EXISTS live_fintech_endpoints_auth_type_check`);
+      await pool.query(`ALTER TABLE live_fintech_endpoints ADD CONSTRAINT live_fintech_endpoints_auth_type_check CHECK (auth_type IN (${sqlList(AUTH_TYPES)}))`);
+      this._constraintsMigrated = true;
+    }
     await this._ensureHoldAccounts();
   }
 
@@ -345,6 +366,12 @@ class LiveFinTechEndpointEngine {
     if (!name) throw new Error('name is required');
     if (!baseUrl) throw new Error('baseUrl is required');
     if (!PROVIDERS[provider]) throw new Error(`Unknown provider: ${provider}`);
+    if (!AUTH_TYPES.includes(authType)) throw new Error(`Unknown authType: ${authType}`);
+    if (provider === 'moneygram') {
+      const hasId = apiKey || config.clientId || config.client_id;
+      const hasSecret = apiSecret || config.clientSecret || config.client_secret;
+      if (!hasId || !hasSecret) throw new Error('moneygram endpoints require a client id (apiKey/config.clientId) and client secret (apiSecret/config.clientSecret)');
+    }
     const id = generateId('FTE');
     const res = await pool.query(
       `INSERT INTO live_fintech_endpoints (endpoint_id, provider, name, base_url, auth_type, api_key, api_secret, extra_headers, payload_template, response_success_path, response_external_id_path, config, enabled)
@@ -493,6 +520,10 @@ class LiveFinTechEndpointEngine {
       timestamp: new Date().toISOString(),
     };
 
+    if (GATED_PROVIDERS.has(endpoint.provider)) {
+      await this._screenOutbound(payment, endpoint);
+    }
+
     let reserved = false;
     if (CashEngine && payment.source_account_id) {
       await this._ensureHoldAccounts();
@@ -510,6 +541,10 @@ class LiveFinTechEndpointEngine {
       } catch (e) {
         throw new Error(`Reserve failed: ${e.message}`);
       }
+    }
+
+    if (endpoint.provider === 'moneygram') {
+      return await this._sendMoneyGram({ payment, endpoint, ctx, reserved });
     }
 
     const payload = buildPayload(endpoint, ctx);
@@ -580,6 +615,170 @@ class LiveFinTechEndpointEngine {
     }
 
     return { paymentId, endpointId: payment.endpoint_id, status, externalId, errorMessage };
+  }
+
+  /**
+   * KYC/AML/OFAC gate for partner disbursement rails. Throws a compliance
+   * error (payment row stays `pending`, error_message recorded) so the
+   * operator can retry once the block is cleared.
+   */
+  static async _screenOutbound(payment, endpoint) {
+    const gate = this._complianceGate || PaymentComplianceGate;
+    if (!gate) throw new Error('PaymentComplianceGate not available; refusing outbound partner payment');
+    const config = endpoint.config || {};
+    try {
+      const screening = await gate.screenVendorPayment({
+        vendor: {
+          fullName: payment.creditor_name,
+          email: config.receiverEmail || undefined,
+          bankAccount: payment.creditor_account || undefined,
+          routingNumber: payment.creditor_routing || undefined,
+          country: config.receiveCountry || config.receive_country || 'US',
+        },
+        amount: payment.amount_cents / 100,
+        sourceAccountId: payment.source_account_id,
+        rail: endpoint.provider,
+        action: 'execute',
+        screenedBy: 'live_fintech',
+        reference: payment.payment_id,
+      });
+      return screening;
+    } catch (err) {
+      await pool.query(
+        `UPDATE live_fintech_payments SET error_message = $1, updated_at = NOW() WHERE payment_id = $2`,
+        [`Compliance gate: ${err.message}`, payment.payment_id]
+      );
+      throw err;
+    }
+  }
+
+  static _settleOrRefund({ payment, status, externalId, reserved }) {
+    const paymentId = payment.payment_id;
+    if (status === 'completed' && CashEngine) {
+      return CashEngine.transfer({
+        fromAccountId: HOLD_ACCOUNT,
+        toAccountId: SETTLED_ACCOUNT,
+        amountCents: payment.amount_cents,
+        movementType: 'transfer',
+        memo: `Live fintech settle ${paymentId}`,
+        referenceId: externalId || paymentId,
+        referenceType: 'live_fintech',
+      }).catch((e) => console.warn('[live-fintech] settle ledger movement skipped:', e.message));
+    }
+    if (reserved && (status === 'failed' || status === 'manual_pending')) {
+      return CashEngine.transfer({
+        fromAccountId: HOLD_ACCOUNT,
+        toAccountId: payment.source_account_id,
+        amountCents: payment.amount_cents,
+        movementType: 'transfer',
+        memo: `Refund live fintech payment ${paymentId}`,
+        referenceId: paymentId,
+        referenceType: 'live_fintech',
+      }).catch((e) => console.warn('[live-fintech] refund failed:', e.message));
+    }
+    return Promise.resolve();
+  }
+
+  /** quote → send → commit via MoneyGramAdapter; `reserved` cash already sits in HOLD_ACCOUNT. */
+  static async _sendMoneyGram({ payment, endpoint, ctx, reserved }) {
+    const paymentId = payment.payment_id;
+    const config = endpoint.config || {};
+    const nameParts = String(ctx.creditorName || '').trim().split(/\s+/);
+    const receiver = {
+      firstName: nameParts.length > 1 ? nameParts.slice(0, -1).join(' ') : nameParts[0] || '',
+      lastName: nameParts.length > 1 ? nameParts[nameParts.length - 1] : '',
+      fullName: ctx.creditorName,
+      bankAccount: ctx.creditorAccount ? {
+        accountNumber: ctx.creditorAccount,
+        routingNumber: ctx.creditorRouting || undefined,
+        bankName: ctx.creditorBank || undefined,
+      } : undefined,
+    };
+    const sender = {
+      businessName: ctx.debtorName || 'DLB Trust',
+      ...(config.sender || {}),
+    };
+
+    let result;
+    try {
+      const adapter = moneyGramAdapterFromEndpoint(endpoint);
+      result = await adapter.disburse({
+        amount: Number(ctx.dollars),
+        sourceCurrency: ctx.currency,
+        destinationCurrency: config.destinationCurrency || config.destination_currency || ctx.currency,
+        receiveCountry: config.receiveCountry || config.receive_country || 'USA',
+        deliveryOption: config.deliveryOption || config.delivery_option,
+        serviceOptionCode: config.serviceOptionCode || config.service_option_code,
+        sender,
+        receiver,
+        reference: paymentId,
+      });
+    } catch (err) {
+      result = { status: 'failed', externalId: null, errorMessage: `MoneyGram adapter error: ${err.message}`, rawRequest: null, rawResponse: null };
+    }
+
+    const { status, externalId, errorMessage } = result;
+    const rawResponse = result.rawResponse
+      ? JSON.stringify({ provider: 'moneygram', transactionId: result.transactionId || null, mgStatus: result.mgStatus || null, ...JSON.parse(result.rawResponse) })
+      : null;
+    await pool.query(
+      `UPDATE live_fintech_payments SET status = $1, external_id = $2, raw_request = $3, raw_response = $4, error_message = $5, updated_at = NOW() WHERE payment_id = $6`,
+      [status, externalId, result.rawRequest, rawResponse, errorMessage, paymentId]
+    );
+    await this._settleOrRefund({ payment, status, externalId, reserved });
+    return { paymentId, endpointId: payment.endpoint_id, status, externalId, errorMessage, transactionId: result.transactionId || null };
+  }
+
+  /**
+   * Re-poll MoneyGram for a previously sent payment and update the row.
+   * Only `manual_pending` payments change state; a completed payment is
+   * settled from HOLD to SETTLED, a failed one refunded to the source.
+   */
+  static async refreshStatus(paymentId) {
+    await this.ensureTables();
+    const payment = await this.getPayment(paymentId);
+    if (!payment) throw new Error('Payment not found');
+    const endpoint = await this.getEndpointWithSecrets(payment.endpoint_id);
+    if (!endpoint) throw new Error('Endpoint not found');
+    if (endpoint.provider !== 'moneygram') throw new Error('refreshStatus is only supported for moneygram endpoints');
+
+    let transactionId = null;
+    try { transactionId = payment.raw_response ? JSON.parse(payment.raw_response).transactionId : null; } catch { /* ignore */ }
+    if (!transactionId && !payment.external_id) throw new Error('Payment has no MoneyGram transactionId or referenceNumber to poll');
+
+    const adapter = moneyGramAdapterFromEndpoint(endpoint);
+    const polled = await adapter.status({ transactionId, referenceNumber: payment.external_id, clientRequestId: `${paymentId}-status-${Date.now()}` });
+    const previous = payment.status;
+    const externalId = payment.external_id || polled.referenceNumber || null;
+    const nextStatus = previous === 'manual_pending' ? polled.status : previous;
+    const errorMessage = nextStatus === 'failed' && previous !== 'failed' ? `MoneyGram status ${polled.mgStatus}` : payment.error_message;
+
+    let rawResponse = {};
+    try { rawResponse = payment.raw_response ? JSON.parse(payment.raw_response) : {}; } catch { rawResponse = { raw: payment.raw_response }; }
+    rawResponse.lastStatusPoll = { at: new Date().toISOString(), statusCode: polled.statusCode, body: polled.body };
+    rawResponse.mgStatus = polled.mgStatus;
+
+    await pool.query(
+      `UPDATE live_fintech_payments SET status = $1, external_id = $2, raw_response = $3, error_message = $4, updated_at = NOW() WHERE payment_id = $5`,
+      [nextStatus, externalId, JSON.stringify(rawResponse), errorMessage, paymentId]
+    );
+    if (previous === 'manual_pending' && nextStatus !== 'manual_pending') {
+      // The manual_pending refund already ran at send time; only settle here.
+      if (nextStatus === 'completed' && CashEngine && payment.source_account_id) {
+        try {
+          await CashEngine.transfer({
+            fromAccountId: payment.source_account_id,
+            toAccountId: SETTLED_ACCOUNT,
+            amountCents: payment.amount_cents,
+            movementType: 'transfer',
+            memo: `Live fintech settle (status refresh) ${paymentId}`,
+            referenceId: externalId || paymentId,
+            referenceType: 'live_fintech',
+          });
+        } catch (e) { console.warn('[live-fintech] settle ledger movement skipped:', e.message); }
+      }
+    }
+    return { paymentId, endpointId: payment.endpoint_id, previousStatus: previous, status: nextStatus, mgStatus: polled.mgStatus, externalId, transactionId: polled.transactionId };
   }
 
   static async executePayment(opts = {}) {
