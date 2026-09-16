@@ -1,0 +1,73 @@
+name: GCP Deploy
+
+# Builds the Dockerfile, pushes it to Artifact Registry and rolls the Cloud Run
+# service on every push to main. Authenticates through Workload Identity
+# Federation (infra/gcp/deploy_identity.tf) — no GCP key is stored in GitHub.
+#
+# Required repository variables (Settings > Secrets and variables > Actions > Variables):
+#   GCP_PROJECT_ID                  dlb-treasury-management
+#   GCP_REGION                      us-east1
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  terraform output workload_identity_provider
+#   GCP_DEPLOYER_SERVICE_ACCOUNT    terraform output deployer_service_account
+#
+# Disabled until cutover: remove `if: false` once the Cloud Run service is live
+# and .github/workflows/northflank-deploy.yml has been removed.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: gcp-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    name: Deploy to Cloud Run
+    if: false
+    runs-on: ubuntu-latest
+    env:
+      SERVICE: dlbtrust-app
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dlbtrust/dlbtrust-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        run: |
+          docker build -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy revision
+        run: |
+          gcloud run deploy "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --image "$IMAGE:$GITHUB_SHA" \
+            --quiet
+
+      - name: Smoke check
+        run: |
+          url=$(gcloud run services describe "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+            --format 'value(status.url)')
+          curl -fsS "$url/api/health/ready"
