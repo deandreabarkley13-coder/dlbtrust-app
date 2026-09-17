@@ -201,6 +201,14 @@ production traffic. All calls are read-only or shadow-mode.
 6. Restart the revision (`gcloud run services update --no-traffic` then back)
    and confirm `/data/shutdown-state` and the journal were written and read
    back — this is the FUSE-semantics check from above.
+7. `GET /api/trust/mandate` and `GET /api/fixed-income/readiness` (operator
+   auth) → `legalName: DEANDREA LAVAR BARKLEY FAMILY TRUST`,
+   `fundingPolicy.source: fixed-income`, `enabled: true`, `autoStage`/
+   `autoExecute: false`. The trust mandate and distribution variables
+   (`TRUST_LEGAL_NAME`, `TRUST_MANDATE_*`, `FIXED_INCOME_*`,
+   `DISTRIBUTION_LIMIT_*`) were never in the Northflank secret group, so they
+   are set explicitly in `runtime_environment` rather than left to code
+   defaults (see `docs/TRUST_CONTROL_PLANE.md`).
 
 Keep `MELIO_USE_API=false`, `SPRITZ_BUY_LIVE` unset and `PAYMENT_HUB_LIVE=false`
 throughout: a live call creates real bills / debits.
