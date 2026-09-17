@@ -23,4 +23,4 @@ UPDATE bonds SET
   placement_type = 'private',
   issuer = 'DeAndrea Lavar Barkley Trust',
   issuer_state = 'CA'
-WHERE bond_name = 'DLB-PRB';
+WHERE bond_name = 'DLB-PRB' AND bond_identifier IS NULL;
