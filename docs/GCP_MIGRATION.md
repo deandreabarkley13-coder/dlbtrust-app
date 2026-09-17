@@ -201,28 +201,53 @@ production traffic. All calls are read-only or shadow-mode.
 6. Restart the revision (`gcloud run services update --no-traffic` then back)
    and confirm `/data/shutdown-state` and the journal were written and read
    back — this is the FUSE-semantics check from above.
+7. `GET /api/trust/mandate` and `GET /api/fixed-income/readiness` (operator
+   auth) → `legalName: DEANDREA LAVAR BARKLEY FAMILY TRUST`,
+   `fundingPolicy.source: fixed-income`, `enabled: true`, `autoStage`/
+   `autoExecute: false`. The trust mandate and distribution variables
+   (`TRUST_LEGAL_NAME`, `TRUST_MANDATE_*`, `FIXED_INCOME_*`,
+   `DISTRIBUTION_LIMIT_*`) were never in the Northflank secret group, so they
+   are set explicitly in `runtime_environment` rather than left to code
+   defaults (see `docs/TRUST_CONTROL_PLANE.md`).
 
 Keep `MELIO_USE_API=false`, `SPRITZ_BUY_LIVE` unset and `PAYMENT_HUB_LIVE=false`
 throughout: a live call creates real bills / debits.
 
-## Cutover
+## Cutover (done 2026-09-17)
 
-1. Take a final `scripts/gcp/migrate-postgres.sh` and
-   `migrate-data-volume.sh` run with the Northflank service scaled to zero
-   (short write freeze; the maker/checker queue is in PostgreSQL, so nothing
-   is lost, but approvals during the freeze fail).
-2. Map the domain: `gcloud run domain-mappings create --service dlbtrust-app
-   --domain <host>` and update DNS. Update `APP_URL`,
-   `AS2_MESSAGE_ID_DOMAIN` and the CSP `connect-src` default, which currently
-   point at `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`.
-3. Set the four `GCP_*` repository variables from `terraform output`, remove
-   `if: false` from `.github/workflows/gcp-deploy.yml`, delete
-   `.github/workflows/northflank-deploy.yml`.
-4. Rotate: `SPRITZ_API_KEY` (already replaced), `NORTHFLANK_API_TOKEN` (no
-   longer needed — revoke), and any credential that was ever read out of the
-   Fly container by `migrate-fly-secrets.mjs`.
-5. Keep the Northflank project for 14 days as rollback (DNS back + resume
-   secrets), then delete it.
+The production URL is now `https://dlbtrust-app-r5oawu76jq-ue.a.run.app`.
+There was no custom domain on Northflank (only the `*.code.run` host), so the
+cutover is a URL change rather than a DNS change: `APP_URL` /
+`AS2_MESSAGE_ID_DOMAIN` are set in `runtime_environment`, the code fallbacks
+and the browser extension / mobile dapp defaults point at the new host, and
+the CSP `connect-src` allows `https://*.run.app`.
+
+1. Done: `/data` synced (`migrate-data-volume.sh`, while the Northflank
+   container was still running — `northflank exec` needs it), then the
+   Northflank service was paused (`POST .../services/dlbtrust-app/pause`) and
+   the ledger re-migrated with `migrate-postgres.sh` (source and target row
+   counts equal; Cloud SQL public IP and addon external access turned back
+   off by the script's exit trap).
+2. Done: `terraform apply` with the new `APP_URL`; revision passes
+   `/api/health` (Fineract ok), `/api/fineract/health`,
+   `/api/openach-rail/status`, Spritz readiness (`live: false`).
+3. `.github/workflows/gcp-deploy.yml` is enabled on merge to `main` and
+   carries the `GCP_*` resource names as defaults (repository variables
+   override); `northflank-deploy.yml` is removed. The first run also
+   replaces the hand-pushed `:bootstrap` image.
+4. Still to do by hand, in provider dashboards: any webhook or redirect URL
+   registered with the old host (thirdweb webhook, MoonPay webhook, Cash App
+   redirect, Lili OAuth redirect if it was ever pointed at production) and
+   any bank/rail IP allowlist → the Cloud NAT address
+   (`terraform output egress_ip`).
+5. Rotate: `SPRITZ_API_KEY` (already replaced), `NORTHFLANK_API_TOKEN` (no
+   longer needed once the rollback window closes — revoke), and any
+   credential that was ever read out of the Fly container by
+   `migrate-fly-secrets.mjs`.
+6. Rollback = `POST .../services/dlbtrust-app/resume` on Northflank and
+   revert this commit; its database is a snapshot from the pause, so anything
+   written on GCP after the cutover would have to be replayed. Keep the
+   Northflank project for 14 days, then delete it.
 
 ## Financial-data gaps this closes (and does not)
 

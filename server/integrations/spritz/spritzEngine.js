@@ -106,7 +106,7 @@ async function spritzRequest(method, path, body, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     'User-Agent': 'dlbtrust-spritz-engine/1.0',
-    Origin: process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run',
+    Origin: process.env.APP_URL || 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app',
   };
   if (options.useUserJwt && hasIntegratorCreds()) {
     const token = await getIntegratorToken();

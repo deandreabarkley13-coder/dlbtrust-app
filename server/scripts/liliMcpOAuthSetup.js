@@ -22,7 +22,7 @@ const http = require('http');
 const { URL } = require('url');
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'dlb-admin-2026-trust';
-const API_BASE = process.env.API_BASE || process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run';
+const API_BASE = process.env.API_BASE || process.env.APP_URL || 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 0;
 const RESET = process.argv.includes('--reset');
 
