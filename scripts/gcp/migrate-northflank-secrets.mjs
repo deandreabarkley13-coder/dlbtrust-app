@@ -37,10 +37,28 @@ const NF_PROJECT = process.env.NORTHFLANK_PROJECT_ID || 'dlbtrust';
 const NF_SECRET = process.env.NORTHFLANK_SECRET_ID || 'dlbtrust-runtime';
 const GCP_PROJECT = process.env.GCP_PROJECT || 'dlb-treasury-management';
 
-// Owned by the platform on Cloud Run: PORT is injected by Cloud Run, NODE_ENV
-// and the non-secret runtime variables come from terraform, DATABASE_URL from
-// the Cloud SQL resources.
-const SKIP = new Set(['DATABASE_URL', 'PORT', 'NODE_ENV']);
+// Owned by the platform on Cloud Run: PORT is injected by Cloud Run, DATABASE_URL
+// comes from the Cloud SQL resources, DB_SSL must stay unset over the connector
+// socket, and the rest are set as plain env from var.runtime_environment
+// (infra/gcp/variables.tf) — Cloud Run rejects an env name that is both plain
+// and secret-backed.
+const SKIP = new Set([
+  'DATABASE_URL',
+  'PORT',
+  'DB_SSL',
+  'NODE_ENV',
+  'PAYMENT_HUB_MODE',
+  'PAYMENT_HUB_LIVE',
+  'MELIO_EXPORT_DIR',
+  'COMPLIANCE_PROVIDER',
+  'TRUST_MAKER_EMAIL',
+  'TRUST_CHECKER_EMAIL',
+  'MELIO_SOURCE_TYPE',
+  'MELIO_SOURCE_ACCOUNT_ID',
+  'MELIO_ALLOWED_SOURCE_ACCOUNTS',
+  'TRUST_SEGREGATED_ACCOUNT_CODES',
+  'TRUST_SIGNATURE_DOCUMENT_PATH',
+]);
 const SECRET_ID = /^[A-Za-z0-9_-]{1,255}$/;
 
 async function readNorthflankGroup() {
@@ -76,9 +94,18 @@ function secretExists(name) {
 
 async function main() {
   const variables = { ...(await readNorthflankGroup()), ...OVERRIDES };
-  const names = Object.keys(variables)
+  const allNames = Object.keys(variables)
     .filter((name) => !SKIP.has(name))
     .sort();
+
+  // Secret Manager rejects empty payloads and Cloud Run refuses to start when a
+  // referenced version is missing; an empty variable is the same as unset to
+  // the app, so leave those out of both the tfvars list and the migration.
+  const empty = allNames.filter((name) => String(variables[name] ?? '') === '');
+  if (empty.length) {
+    console.error(`skipping ${empty.length} empty variables: ${empty.join(', ')}`);
+  }
+  const names = allNames.filter((name) => !empty.includes(name));
 
   const invalid = names.filter((name) => !SECRET_ID.test(name));
   if (invalid.length) {

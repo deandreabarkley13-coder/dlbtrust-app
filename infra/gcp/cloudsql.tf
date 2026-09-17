@@ -41,6 +41,7 @@ resource "google_sql_database_instance" "ledger" {
 
   settings {
     tier              = var.db_tier
+    edition           = "ENTERPRISE"
     availability_type = "ZONAL"
     disk_type         = "PD_SSD"
     disk_size         = var.db_disk_gb

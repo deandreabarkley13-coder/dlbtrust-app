@@ -78,15 +78,23 @@ gcloud auth configure-docker us-east1-docker.pkg.dev
 docker build -t us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/dlbtrust-app:bootstrap .
 docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/dlbtrust-app:bootstrap
 
-# 5. ledger database. Enable external access on the Northflank addon first,
-#    and keep the Cloud Run service at 0 traffic (it does not exist yet at
-#    this point if step 2 used image=bootstrap and failed the startup probe —
-#    that is fine; the restore must land before the app's first boot).
+# 5. ledger database. The script locks the `dlbtrust` role out and kills its
+#    sessions for the duration, so a running Cloud Run instance cannot re-seed
+#    tables mid-restore; it reconnects once the role is unlocked. Northflank
+#    keeps writing (schedulers) — expect a few +1 row deltas on log tables
+#    unless the Northflank service is paused (final cutover only).
+#    Cloud SQL is private-IP only; the proxy needs a public IP on the instance
+#    for the duration (IAM + TLS, no authorized networks).
+curl -X PATCH -H "Authorization: Bearer $NORTHFLANK_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"externalAccessEnabled":true,"tlsEnabled":true}' https://api.northflank.com/v1/projects/dlbtrust/addons/dlbtrust-db
+# EXTERNAL_POSTGRES_URI_ADMIN from GET .../addons/dlbtrust-db/credentials → SOURCE_DATABASE_URL
+gcloud sql instances patch <instance> --assign-ip
 gcloud sql users set-password postgres --instance <terraform output cloudsql_connection_name, last segment> --prompt-for-password
 SOURCE_DATABASE_URL=... CLOUDSQL_CONNECTION_NAME=$(cd infra/gcp && terraform output -raw cloudsql_connection_name) \
 CLOUDSQL_ADMIN_PASSWORD=... scripts/gcp/migrate-postgres.sh --dry-run
 ... scripts/gcp/migrate-postgres.sh
-# then disable external access on the addon again
+gcloud sql instances patch <instance> --no-assign-ip
+curl -X PATCH ... -d '{"externalAccessEnabled":false,"tlsEnabled":true}' .../addons/dlbtrust-db
 
 # 6. /data contents
 NORTHFLANK_API_TOKEN=... DATA_BUCKET=$(cd infra/gcp && terraform output -raw data_bucket) \

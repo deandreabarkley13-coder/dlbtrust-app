@@ -60,8 +60,8 @@ variable "runtime_environment" {
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
     TRUST_CHECKER_EMAIL            = "deandreabarkley13@gmail.com"
     MELIO_SOURCE_TYPE              = "trust"
-    MELIO_SOURCE_ACCOUNT_ID        = "1000"
-    MELIO_ALLOWED_SOURCE_ACCOUNTS  = "1000,cash:CA-OPERATING"
+    MELIO_SOURCE_ACCOUNT_ID        = "1010"
+    MELIO_ALLOWED_SOURCE_ACCOUNTS  = "1010,cash:CA-OPERATING"
     TRUST_SEGREGATED_ACCOUNT_CODES = "1210"
     TRUST_SIGNATURE_DOCUMENT_PATH  = "/data/governance/Trustees_Signature_Page.pdf"
   }
