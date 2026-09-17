@@ -1,10 +1,16 @@
 'use strict';
 
 const DEFAULT_BASE_URL = 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app';
+const RETIRED_BASE_URLS = ['https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'];
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(['baseUrl', 'token']);
-  return { baseUrl: (stored.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, ''), token: stored.token || '' };
+  let baseUrl = (stored.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '');
+  if (RETIRED_BASE_URLS.includes(baseUrl)) {
+    baseUrl = DEFAULT_BASE_URL;
+    await chrome.storage.local.set({ baseUrl });
+  }
+  return { baseUrl, token: stored.token || '' };
 }
 
 async function api(path, opts = {}) {
