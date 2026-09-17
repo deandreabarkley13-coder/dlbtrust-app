@@ -153,6 +153,56 @@ acknowledgements, rejections and returns per partner. `GET
 A cycle that errors marks the partner `degraded` and stops processing it on
 subsequent passes — a fresh passing handshake is what brings it back.
 
+## One channel, both rails: ACH + host-to-host wire on the shared M2M identity
+
+The ACH rails (beneficiary direct deposits, vendor bill pay — Payer OS) and
+the host-to-host wire rail (settlement funding) transmit over the **one**
+bound channel that step 3 created, under the **one** machine identity from
+step 2. Nothing new is provisioned; both rails are pointed at the same id:
+
+```bash
+ACH_MFT_CHANNEL=m2m-<partnerId>        # ACHEngine.mftChannelId()
+WIRE_H2H_MFT_CHANNEL=m2m-<partnerId>   # getWireChannelConfig() -> transport 'mft'
+WIRE_H2H_RAILS=fedwire                 # must carry the settlement-funding rail
+```
+
+Set both only after step 4 reports the partner `verified`; the bound channel
+is what carries the bank host, pinned host key, username and directory
+`layout`, so:
+
+- Every Payer OS NACHA file goes through `MftOsEngine.deliver` (protocol
+  `mft`), ahead of `ACH_SFTP_URL`, the AS2 partner and the `bank_endpoint`
+  setting. `PayerOsEngine.readiness().achChannel` reports `via: 'mft'`,
+  `ready: true` with the channel's `readiness.blockers` empty
+  (`node server/scripts/sendPayerCredit.js status`).
+- Every settlement-funding pacs.008 goes through `MftOsEngine.deliver` as
+  `fileType: 'wire_payment'`, carrying the payment's last approver as
+  `approvedBy`. `WireHostToHostEngine.readiness()` reports `transport: 'mft'`
+  with the warning that the channel's readiness is checked at transmission —
+  that is expected, not a blocker. The wire engine keeps its own conventions
+  (`WIRE_H2H_FILE_PREFIX`, staging suffix, ACK/settlement SLAs); the
+  outbound / ack / return / archive directories are the channel's `layout`,
+  so match that layout to the bank's connectivity pack. `WIRE_H2H_SFTP_*`,
+  `WIRE_H2H_REMOTE_ROOT` and `WIRE_H2H_*_DIR` are ignored in MFT mode — do
+  not also set them.
+- The channel refuses any rail not listed in `WIRE_H2H_RAILS`; the default
+  `fedwire` is what the settlement-funding wire uses.
+- Both rails' files land in the same outbound directory beside a manifest
+  signed by the same identity, and every transmission is recorded with actor
+  `machine:<identityId>`.
+
+**Four-eyes stays on.** `MFT_REQUIRE_APPROVAL=true` is the locked decision for
+this deployment and `MFT_MAX_FILE_CENTS` is left as-is. Sharing a channel does
+not share a release: each ACH file and each wire file is released separately,
+by a human who is not its builder, before the machine carries it. A file
+delivered without an approver registers as `built` and `transmit` refuses it
+(`MFT_WRONG_STATE`); the builder approving their own file is refused
+(`MFT_FOUR_EYES`); a distinct checker's `POST /api/mft-os/files/:id/approve`
+(or the wire's own approve step) is what lets the next send transmit it.
+The unattended cycle (`M2M_CYCLE_INTERVAL_MS`) still queues only `approved`
+files and otherwise collects acknowledgements and returns. Regression
+coverage: `tests/sharedM2mChannel.test.ts`.
+
 ## Governance: the control being removed
 
 `MFT_REQUIRE_APPROVAL=true` is the maker/checker (four-eyes) release control on
