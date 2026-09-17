@@ -17,7 +17,12 @@
 #   CLOUDSQL_CONNECTION_NAME=dlb-treasury-management:us-east1:dlbtrust-db-xxxx
 #   CLOUDSQL_ADMIN_PASSWORD=...          (postgres user; set with `gcloud sql users set-password`)
 #   APP_DB_USER=dlbtrust APP_DB_NAME=dlbtrust
+#   VERIFY_TABLES="bonds cash_accounts ..."  (optional row-count spot check)
 #   scripts/gcp/migrate-postgres.sh [--dry-run]
+#
+# The same script moves the Fineract databases (fineract_tenants and
+# fineract_default, APP_DB_USER=fineract) and OpenACH (openach/openach) — one
+# invocation per database.
 set -euo pipefail
 
 : "${SOURCE_DATABASE_URL:?SOURCE_DATABASE_URL is required}"
@@ -25,6 +30,7 @@ set -euo pipefail
 : "${CLOUDSQL_ADMIN_PASSWORD:?CLOUDSQL_ADMIN_PASSWORD is required}"
 APP_DB_USER="${APP_DB_USER:-dlbtrust}"
 APP_DB_NAME="${APP_DB_NAME:-dlbtrust}"
+VERIFY_TABLES="${VERIFY_TABLES:-bonds cash_accounts trust_accounts users canonical_payments}"
 PROXY_PORT="${PROXY_PORT:-15433}"
 DRY_RUN=false
 [[ "${1:-}" == "--dry-run" ]] && DRY_RUN=true
@@ -80,10 +86,23 @@ echo "resetting schemas on target: public ${DUMP_SCHEMAS[*]}"
   echo "GRANT ALL ON SCHEMA public TO \"$APP_DB_USER\";"
 } | psql "$TARGET" -v ON_ERROR_STOP=1 -q
 
+# Northflank addons ship monitoring extensions (pg_stat_kcache, ...) that Cloud
+# SQL does not offer; drop those TOC entries rather than fail the restore.
+mapfile -t UNAVAILABLE < <(
+  comm -23 \
+    <(pg_restore --list "$WORK_DIR/ledger.dump" | awk '$4 == "EXTENSION" && $5 == "-" {print $6}' | sort -u) \
+    <(psql "$TARGET" -tAc 'select name from pg_available_extensions' | sort -u)
+)
+pg_restore --list "$WORK_DIR/ledger.dump" > "$WORK_DIR/toc"
+for e in "${UNAVAILABLE[@]}"; do
+  echo "skipping extension not available on Cloud SQL: $e"
+  sed -i -E "/ EXTENSION (- )?${e}( |$)/d" "$WORK_DIR/toc"
+done
+
 echo "restoring"
 EXCLUDE_ARGS=()
 for s in "${EXCLUDE_SCHEMAS[@]}"; do EXCLUDE_ARGS+=(--exclude-schema "$s"); done
-pg_restore --no-owner --no-acl --exit-on-error "${EXCLUDE_ARGS[@]}" --dbname "$TARGET" "$WORK_DIR/ledger.dump"
+pg_restore --no-owner --no-acl --exit-on-error "${EXCLUDE_ARGS[@]}" --use-list "$WORK_DIR/toc" --dbname "$TARGET" "$WORK_DIR/ledger.dump"
 
 echo "handing ownership to $APP_DB_USER"
 SCHEMA_LIST="'public'"
@@ -108,6 +127,17 @@ BEGIN
            WHERE schemaname IN ($SCHEMA_LIST) AND viewowner <> '$APP_DB_USER' LOOP
     EXECUTE format('ALTER VIEW %I.%I OWNER TO %I', r.schemaname, r.name, '$APP_DB_USER');
   END LOOP;
+  FOR r IN SELECT n.nspname AS schemaname, p.oid::regprocedure AS name FROM pg_proc p
+           JOIN pg_namespace n ON n.oid = p.pronamespace
+           WHERE n.nspname IN ($SCHEMA_LIST) AND p.proowner <> '$APP_DB_USER'::regrole LOOP
+    EXECUTE format('ALTER ROUTINE %s OWNER TO %I', r.name, '$APP_DB_USER');
+  END LOOP;
+  FOR r IN SELECT n.nspname AS schemaname, t.typname AS name FROM pg_type t
+           JOIN pg_namespace n ON n.oid = t.typnamespace
+           WHERE n.nspname IN ($SCHEMA_LIST) AND t.typowner <> '$APP_DB_USER'::regrole
+             AND t.typtype IN ('e', 'c', 'd') AND t.typrelid = 0 LOOP
+    EXECUTE format('ALTER TYPE %I.%I OWNER TO %I', r.schemaname, r.name, '$APP_DB_USER');
+  END LOOP;
   FOR r IN SELECT nspname AS name FROM pg_namespace
            WHERE nspname IN ($SCHEMA_LIST) LOOP
     EXECUTE format('ALTER SCHEMA %I OWNER TO %I', r.name, '$APP_DB_USER');
@@ -117,8 +147,8 @@ END
 ALTER ROLE "$APP_DB_USER" LOGIN;
 SQL
 
-echo "row counts (source vs target) for the ledger tables"
-for t in bonds cash_accounts trust_accounts users canonical_payments; do
+echo "row counts (source vs target)"
+for t in $VERIFY_TABLES; do
   s=$(psql "$SOURCE_DATABASE_URL" -tAc "select count(*) from $t" 2>/dev/null || echo n/a)
   d=$(psql "$TARGET" -tAc "select count(*) from $t" 2>/dev/null || echo n/a)
   printf '  %-20s %10s %10s\n' "$t" "$s" "$d"

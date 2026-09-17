@@ -12,6 +12,12 @@
 //   NORTHFLANK_API_TOKEN=... node scripts/gcp/migrate-northflank-secrets.mjs [--dry-run] [--set KEY=VALUE ...]
 //       writes a new version of each secret (terraform must have created the
 //       containers first). Uses the active `gcloud` credentials.
+//   NORTHFLANK_SECRET_ID=openach-runtime node scripts/gcp/migrate-northflank-secrets.mjs \
+//       --only OPENACH_ENCRYPTION_KEY,OPENACH_VALIDATION_KEY
+//       copies just those variables from another group (the OpenACH keys must
+//       move verbatim: the encryption key cannot be rotated once data exists).
+//       An entry may be VARIABLE=SECRET to store it under a different id, e.g.
+//       --only FINERACT_DEFAULT_TENANTDB_PWD=FINERACT_DB_PASSWORD
 //
 // Env overrides: NORTHFLANK_PROJECT_ID (dlbtrust), NORTHFLANK_SECRET_ID
 // (dlbtrust-runtime), GCP_PROJECT (dlb-treasury-management).
@@ -21,6 +27,17 @@ import { execFileSync } from 'node:child_process';
 const argv = process.argv.slice(2);
 const LIST = argv.includes('--list');
 const DRY_RUN = argv.includes('--dry-run');
+// variable name → Secret Manager id
+const ONLY = new Map(
+  argv
+    .flatMap((arg, index) => (arg === '--only' ? [argv[index + 1]] : []))
+    .filter(Boolean)
+    .flatMap((list) => list.split(','))
+    .map((entry) => {
+      const [source, target = source] = entry.split('=');
+      return [source, target];
+    }),
+);
 const OVERRIDES = Object.fromEntries(
   argv
     .flatMap((arg, index) => (arg === '--set' ? [argv[index + 1]] : []))
@@ -95,8 +112,10 @@ function secretExists(name) {
 async function main() {
   const variables = { ...(await readNorthflankGroup()), ...OVERRIDES };
   const allNames = Object.keys(variables)
-    .filter((name) => !SKIP.has(name))
+    .filter((name) => (ONLY.size ? ONLY.has(name) : !SKIP.has(name)))
     .sort();
+  const absent = [...ONLY.keys()].filter((name) => !(name in variables));
+  if (absent.length) throw new Error(`not in ${NF_SECRET}: ${absent.join(', ')}`);
 
   // Secret Manager rejects empty payloads and Cloud Run refuses to start when a
   // referenced version is missing; an empty variable is the same as unset to
@@ -107,14 +126,15 @@ async function main() {
   }
   const names = allNames.filter((name) => !empty.includes(name));
 
-  const invalid = names.filter((name) => !SECRET_ID.test(name));
+  const secretId = (name) => ONLY.get(name) ?? name;
+  const invalid = names.filter((name) => !SECRET_ID.test(secretId(name)));
   if (invalid.length) {
     throw new Error(`not valid Secret Manager ids: ${invalid.join(', ')}`);
   }
 
   if (LIST) {
     console.log('secret_names = [');
-    for (const name of names) console.log(`  "${name}",`);
+    for (const name of names) console.log(`  "${secretId(name)}",`);
     console.log(']');
     return;
   }
@@ -122,16 +142,17 @@ async function main() {
   console.log(`${names.length} variables from ${NF_PROJECT}/${NF_SECRET} → Secret Manager (${GCP_PROJECT})`);
   const missing = [];
   for (const name of names) {
-    if (!secretExists(name)) {
-      missing.push(name);
+    const id = secretId(name);
+    if (!secretExists(id)) {
+      missing.push(id);
       continue;
     }
     if (DRY_RUN) {
-      console.log(`  would add version: ${name}`);
+      console.log(`  would add version: ${id}`);
       continue;
     }
-    gcloud(['secrets', 'versions', 'add', name, '--data-file=-'], variables[name]);
-    console.log(`  added version: ${name}`);
+    gcloud(['secrets', 'versions', 'add', id, '--data-file=-'], variables[name]);
+    console.log(`  added version: ${id}`);
   }
 
   if (missing.length) {
