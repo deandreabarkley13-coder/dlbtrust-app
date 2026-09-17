@@ -79,6 +79,21 @@ variable "runtime_environment" {
     MELIO_ALLOWED_SOURCE_ACCOUNTS  = "1010,cash:CA-OPERATING"
     TRUST_SEGREGATED_ACCOUNT_CODES = "1210"
     TRUST_SIGNATURE_DOCUMENT_PATH  = "/data/governance/Trustees_Signature_Page.pdf"
+
+    # Family Trust Company mandate + fixed-income distribution (docs/TRUST_CONTROL_PLANE.md)
+    TRUST_LEGAL_NAME                   = "DEANDREA LAVAR BARKLEY FAMILY TRUST"
+    TRUST_NAME                         = "DLB Trust"
+    TRUST_MANDATE_RESERVE_INCOME_PCT   = "10"
+    TRUST_MANDATE_ALLOW_CORPUS         = "false"
+    TRUST_MANDATE_REQUIRE_CANONICAL    = "false"
+    TRUST_MANDATE_ENFORCE              = "false"
+    FIXED_INCOME_DISTRIBUTION_ENABLED  = "true"
+    FIXED_INCOME_AUTO_STAGE            = "false"
+    FIXED_INCOME_AUTO_EXECUTE          = "false"
+    FIXED_INCOME_MIN_AMOUNT_USD        = "1"
+    DISTRIBUTION_LIMIT_BENEFICIARY_USD = "100000"
+    DISTRIBUTION_LIMIT_TRUSTEE_USD     = "500000"
+    DISTRIBUTION_PURPOSES              = "lifestyle,medical,travel,home,education"
   }
 }
 
