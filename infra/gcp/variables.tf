@@ -66,6 +66,8 @@ variable "runtime_environment" {
   type        = map(string)
   default = {
     NODE_ENV                       = "production"
+    APP_URL                        = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    AS2_MESSAGE_ID_DOMAIN          = "dlbtrust-app-r5oawu76jq-ue.a.run.app"
     PAYMENT_HUB_MODE               = "disabled"
     PAYMENT_HUB_LIVE               = "false"
     MELIO_EXPORT_DIR               = "/data/melio-exports"

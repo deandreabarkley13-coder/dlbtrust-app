@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_BASE_URL = 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run';
+const DEFAULT_BASE_URL = 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app';
 
 async function getSettings() {
   const stored = await chrome.storage.local.get(['baseUrl', 'token']);

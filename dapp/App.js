@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, SafeAreaView, StatusBar } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-const DAPP_URL = 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/dapp/mobile.html';
+const DAPP_URL = 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app/dapp/mobile.html';
 
 export default function App() {
   return (
