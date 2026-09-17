@@ -109,6 +109,77 @@ gcloud run deploy dlbtrust-app --region us-east1 \
 it was excluded from the Fly → Northflank move: it is derived from the Cloud
 SQL user so the app follows the instance if it is ever recreated.
 
+## Fineract and OpenACH
+
+Both backends move with the app (`infra/gcp/backends.tf`): internal-ingress
+Cloud Run services `dlbtrust-fineract` (pinned upstream image mirrored into
+Artifact Registry, 2 vCPU / 2 GiB, single instance) and `dlbtrust-openach`
+(`openach/Dockerfile`), with their own databases and roles
+(`fineract_tenants`, `fineract_default` / `fineract`; `openach` / `openach`)
+on the ledger's Cloud SQL instance. The app reaches them over their run.app
+URLs with all egress through the VPC connector; that in turn needs Cloud NAT,
+which gives the app one stable egress IP (`terraform output egress_ip`) for
+bank/rail allowlists. Cloud Run's IAM invoker check is disabled on both: they
+authenticate at the application layer and Cloud Run would otherwise reject
+their `Authorization` headers as malformed OIDC tokens. Reachability is what
+internal ingress restricts.
+
+GKE was not needed: Fineract 1.16 boots in ~2.5 min on 2 GiB with
+`-Xmx1536m`, and neither service keeps state on disk.
+
+```bash
+# 1. images
+docker pull apache/fineract@<digest running on Northflank>   # `git.commit.id` from /actuator/info
+docker tag ... us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/fineract:<commit> && docker push ...
+docker build -t us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/openach:latest openach && docker push ...
+
+# 2. databases, roles and secret containers (Cloud Run services come later)
+terraform apply -target google_sql_database.fineract -target google_sql_database.openach \
+  -target google_secret_manager_secret.fineract -target google_secret_manager_secret.openach \
+  -target google_sql_user.openach -target google_secret_manager_secret_version.openach_database_url
+
+# 3. secrets that must move verbatim. The Fineract role keeps its Northflank
+#    password because the tenant store holds it encrypted with Fineract's
+#    master password; OpenACH's keys encrypt data at rest.
+NORTHFLANK_SECRET_ID=fineract-runtime node scripts/gcp/migrate-northflank-secrets.mjs \
+  --only FINERACT_DEFAULT_TENANTDB_PWD=FINERACT_DB_PASSWORD
+NORTHFLANK_SECRET_ID=openach-runtime node scripts/gcp/migrate-northflank-secrets.mjs \
+  --only OPENACH_ENCRYPTION_KEY,OPENACH_VALIDATION_KEY
+terraform apply -target google_sql_user.fineract
+
+# 4. data: one migrate-postgres.sh run per database (same public-IP dance as
+#    the ledger; the fineract-db and openach-db addons need external access).
+#    Extensions Cloud SQL does not ship (pg_stat_kcache) are dropped from the
+#    restore list automatically.
+SOURCE_DATABASE_URL=<fineract-db admin URI>/fineract_tenants APP_DB_USER=fineract APP_DB_NAME=fineract_tenants \
+  VERIFY_TABLES='tenants tenant_server_connections' scripts/gcp/migrate-postgres.sh
+SOURCE_DATABASE_URL=<fineract-db admin URI>/fineract_default APP_DB_USER=fineract APP_DB_NAME=fineract_default \
+  VERIFY_TABLES='m_office m_appuser acc_gl_account acc_gl_journal_entry' scripts/gcp/migrate-postgres.sh
+SOURCE_DATABASE_URL=<openach-db admin URI> APP_DB_USER=openach APP_DB_NAME=openach scripts/gcp/migrate-postgres.sh
+
+# 5. the tenant store still names the Northflank host: repoint it, or Fineract
+#    fails its startup probe ("Tenant upgrades had exceptions").
+CLOUDSQL_CONNECTION_NAME=... CLOUDSQL_ADMIN_PASSWORD=... scripts/gcp/fineract-tenant-connection.sh
+
+# 6. services, then point the app at them
+terraform apply
+terraform output -raw fineract_url    | gcloud secrets versions add FINERACT_URL --data-file=-
+terraform output -raw openach_base_url | gcloud secrets versions add OPENACH_BASE_URL --data-file=-
+gcloud run services update dlbtrust-app --region us-east1 --update-labels rollout=$(date +%s)
+```
+
+Verified after the move: `GET /api/fineract/health` → `fineract_connected: true`
+with the migrated office; `GET /api/openach-rail/status` → ready against the
+Cloud Run base URL; from inside the VPC `POST $OPENACH_BASE_URL/connect` with
+the migrated API token/key → `success: true`, and Fineract
+`/actuator/health` → `UP`. Row counts matched the Northflank databases
+(2080 GL journal entries, 57 GL accounts, 3 users, 1 office; OpenACH empty).
+
+Still on Northflank until cutover: nothing that the app calls. Northflank's
+`fineract-db`/`openach-db` remain as rollback copies (external access off).
+OpenACH's inbound webhooks (`OPENACH_WEBHOOK_SECRET`) and any bank-side IP
+allowlist need the new egress IP / app URL at cutover.
+
 ## Smoke test before cutover
 
 Run against the Cloud Run URL with the Northflank service still taking
@@ -178,11 +249,6 @@ flag flip. None of those are touched by this migration.
 
 ## Out of scope for this phase
 
-- `dlbtrust-fineract` (Apache Fineract GL) and `openach` (PHP ACH
-  origination) keep running on Northflank; `FINERACT_URL` / OpenACH URLs must
-  stay reachable from Cloud Run (public HTTPS or a VPN). Moving them means
-  Cloud Run + a second Cloud SQL each, or GKE Autopilot for Fineract's memory
-  footprint — decide after the main service is stable.
 - Cloud Armor / IAP in front of the operator console — recommended, separate
   PR.
 - Fineract-side GL export to BigQuery.

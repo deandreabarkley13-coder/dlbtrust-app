@@ -21,6 +21,19 @@ variable "image" {
   default     = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/dlbtrust-app:latest"
 }
 
+# Pinned to the commit the Northflank instance runs (git.properties inside the
+# container); Fineract's Liquibase migrates forward at boot, never back, so the
+# image must not move ahead of a tested restore.
+variable "fineract_image" {
+  type    = string
+  default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/fineract:02b49e20fd9a0b705ddac74258fefe68e647cc61"
+}
+
+variable "openach_image" {
+  type    = string
+  default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/openach:latest"
+}
+
 variable "db_tier" {
   description = "Cloud SQL machine tier. db-g1-small matches the nf-compute-20 addon; use db-custom-2-7680 for production load"
   type        = string

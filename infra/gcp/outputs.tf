@@ -26,3 +26,15 @@ output "workload_identity_provider" {
   description = "Set as the GCP_WORKLOAD_IDENTITY_PROVIDER repo variable for .github/workflows/gcp-deploy.yml"
   value       = google_iam_workload_identity_pool_provider.github.name
 }
+
+output "fineract_url" {
+  value = "${google_cloud_run_v2_service.fineract.uri}/fineract-provider/api/v1"
+}
+
+output "openach_base_url" {
+  value = "${google_cloud_run_v2_service.openach.uri}/api"
+}
+
+output "egress_ip" {
+  value = google_compute_address.egress.address
+}
