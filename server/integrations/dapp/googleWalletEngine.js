@@ -63,7 +63,7 @@ class GoogleWalletEngine {
           classId: `${cfg.issuerId}.${cfg.classId}`,
           state: 'ACTIVE',
           hexBackgroundColor: '#0f172a',
-          logo: { sourceUri: { uri: `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/logo.png` } },
+          logo: { sourceUri: { uri: `${process.env.APP_URL || 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app'}/logo.png` } },
           cardTitle: { defaultValue: { language: 'en', value: walletName } },
           subheader: { defaultValue: { language: 'en', value: 'DLB Trust Stablecoin' } },
           header: { defaultValue: { language: 'en', value: walletAddress ? `${walletAddress.slice(0, 6)}…${walletAddress.slice(-4)}` : 'Wallet' } },
@@ -71,7 +71,7 @@ class GoogleWalletEngine {
             { id: 'walletAddress', header: 'Wallet Address', body: walletAddress || 'Not linked' },
             { id: 'email', header: 'Trustee/Beneficiary', body: email || 'Unknown' }
           ],
-          barcode: { type: 'QR_CODE', value: walletAddress || `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/` },
+          barcode: { type: 'QR_CODE', value: walletAddress || `${process.env.APP_URL || 'https://dlbtrust-app-r5oawu76jq-ue.a.run.app'}/` },
         }]
       }
     };

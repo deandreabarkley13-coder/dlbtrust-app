@@ -21,7 +21,7 @@ build-plan-sized ephemeral storage are all feature-flagged off on this account â
 the specs use `deployment`, `nvme` and Northflank's default 1 GiB ephemeral
 storage instead, and `nvme` has a 6 GiB minimum.)
 
-The live service URL is `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`.
+The live service URL was `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`; the service now runs on Cloud Run (see GCP_MIGRATION.md).
 
 Fineract runs in the same project as the private deployment service
 `dlbtrust-fineract` (`northflank/service-fineract.json`, image

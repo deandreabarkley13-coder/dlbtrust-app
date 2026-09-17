@@ -16,11 +16,15 @@ SERVICE_ID="${NORTHFLANK_SERVICE_ID:-dlbtrust-app}"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
-northflank login -t "$NORTHFLANK_API_TOKEN" -n dlbtrust --override >/dev/null
+# The CLI picks NORTHFLANK_API_TOKEN up from the environment on its own and
+# refuses `login` while it is set, so no stored context is needed.
 
 echo "archiving /data on Northflank service $SERVICE_ID"
+# `northflank exec` wraps stdout in banner/footer lines, so ship the archive as
+# a single base64 line and keep only that.
 northflank exec service --project "$PROJECT_ID" --service "$SERVICE_ID" \
-  --cmd "/bin/sh -c 'tar -cz -C / data'" > "$WORK_DIR/data.tar.gz"
+  --cmd "/bin/sh -c 'tar -cz -C / data | base64 -w0; echo'" \
+  | grep -E '^[A-Za-z0-9+/=]+$' | head -n1 | base64 -d > "$WORK_DIR/data.tar.gz"
 mkdir -p "$WORK_DIR/extract"
 tar -xzf "$WORK_DIR/data.tar.gz" -C "$WORK_DIR/extract"
 echo "archive size: $(du -h "$WORK_DIR/data.tar.gz" | cut -f1)"

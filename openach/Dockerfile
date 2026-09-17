@@ -8,7 +8,13 @@ FROM php:7.4-apache
 
 ARG OPENACH_REF=8c3df400823b2eced60ec4989a2d37d60133be2e
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# php:7.4 is built on Debian bullseye, whose repositories have moved to the
+# archive; the image's default sources 404 and the build fails without this.
+# bullseye-security/-updates no longer serve packages, so they are dropped.
+RUN sed -i -e 's#http://deb.debian.org/debian#http://archive.debian.org/debian#' \
+      -e '/bullseye-security/d' -e '/bullseye-updates/d' /etc/apt/sources.list \
+    && echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99archive \
+    && apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git patch unzip libpq-dev libzip-dev libpng-dev \
       libjpeg62-turbo-dev libfreetype6-dev libonig-dev postgresql-client \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \

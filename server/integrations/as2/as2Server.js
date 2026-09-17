@@ -27,7 +27,7 @@ const { PartnerManager } = require('./partnerManager');
 const LOCAL_AS2_ID = process.env.AS2_LOCAL_AS2_ID || 'DLBTRUST-AS2';
 const LOCAL_CERT_ALIAS = process.env.AS2_LOCAL_CERT_ALIAS || 'dlbtrust-as2';
 const MDN_BASE_URL = process.env.AS2_MDN_URL || '';
-const MESSAGE_ID_DOMAIN = process.env.AS2_MESSAGE_ID_DOMAIN || 'p01--dlbtrust-app--gcq8bn6c4zlp.code.run';
+const MESSAGE_ID_DOMAIN = process.env.AS2_MESSAGE_ID_DOMAIN || 'dlbtrust-app-r5oawu76jq-ue.a.run.app';
 
 function generateMessageId() {
   const rand = crypto.randomBytes(16).toString('hex');

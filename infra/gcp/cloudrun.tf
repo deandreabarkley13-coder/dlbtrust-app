@@ -22,9 +22,11 @@ resource "google_cloud_run_v2_service" "app" {
       "run.googleapis.com/cpu-throttling" = "false"
     }
 
+    # ALL_TRAFFIC so calls to the internal-ingress Fineract/OpenACH services
+    # arrive from the VPC; internet egress leaves via Cloud NAT (backends.tf).
     vpc_access {
       connector = google_vpc_access_connector.run.id
-      egress    = "PRIVATE_RANGES_ONLY"
+      egress    = "ALL_TRAFFIC"
     }
 
     volumes {
@@ -131,6 +133,7 @@ resource "google_cloud_run_v2_service" "app" {
     google_secret_manager_secret_iam_member.database_url_runtime,
     google_secret_manager_secret_iam_member.runtime_accessor,
     google_storage_bucket_iam_member.runtime_data,
+    google_compute_router_nat.egress,
   ]
 
   lifecycle {

@@ -11,7 +11,7 @@ BUCKET="${TF_STATE_BUCKET:-${PROJECT}-tfstate}"
 
 gcloud config set project "$PROJECT" >/dev/null
 
-if ! gcloud beta billing projects describe "$PROJECT" --format='value(billingEnabled)' | grep -q True; then
+if ! gcloud billing projects describe "$PROJECT" --format='value(billingEnabled)' | grep -q True; then
   echo "billing is not enabled on $PROJECT — Cloud SQL and Cloud Run cannot be created" >&2
   exit 1
 fi

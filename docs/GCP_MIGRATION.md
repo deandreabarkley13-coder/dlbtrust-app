@@ -78,15 +78,23 @@ gcloud auth configure-docker us-east1-docker.pkg.dev
 docker build -t us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/dlbtrust-app:bootstrap .
 docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/dlbtrust-app:bootstrap
 
-# 5. ledger database. Enable external access on the Northflank addon first,
-#    and keep the Cloud Run service at 0 traffic (it does not exist yet at
-#    this point if step 2 used image=bootstrap and failed the startup probe —
-#    that is fine; the restore must land before the app's first boot).
+# 5. ledger database. The script locks the `dlbtrust` role out and kills its
+#    sessions for the duration, so a running Cloud Run instance cannot re-seed
+#    tables mid-restore; it reconnects once the role is unlocked. Northflank
+#    keeps writing (schedulers) — expect a few +1 row deltas on log tables
+#    unless the Northflank service is paused (final cutover only).
+#    Cloud SQL is private-IP only; the proxy needs a public IP on the instance
+#    for the duration (IAM + TLS, no authorized networks).
+curl -X PATCH -H "Authorization: Bearer $NORTHFLANK_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"externalAccessEnabled":true,"tlsEnabled":true}' https://api.northflank.com/v1/projects/dlbtrust/addons/dlbtrust-db
+# EXTERNAL_POSTGRES_URI_ADMIN from GET .../addons/dlbtrust-db/credentials → SOURCE_DATABASE_URL
+gcloud sql instances patch <instance> --assign-ip
 gcloud sql users set-password postgres --instance <terraform output cloudsql_connection_name, last segment> --prompt-for-password
 SOURCE_DATABASE_URL=... CLOUDSQL_CONNECTION_NAME=$(cd infra/gcp && terraform output -raw cloudsql_connection_name) \
 CLOUDSQL_ADMIN_PASSWORD=... scripts/gcp/migrate-postgres.sh --dry-run
 ... scripts/gcp/migrate-postgres.sh
-# then disable external access on the addon again
+gcloud sql instances patch <instance> --no-assign-ip
+curl -X PATCH ... -d '{"externalAccessEnabled":false,"tlsEnabled":true}' .../addons/dlbtrust-db
 
 # 6. /data contents
 NORTHFLANK_API_TOKEN=... DATA_BUCKET=$(cd infra/gcp && terraform output -raw data_bucket) \
@@ -100,6 +108,77 @@ gcloud run deploy dlbtrust-app --region us-east1 \
 `DATABASE_URL` is deliberately excluded from the secret migration, exactly as
 it was excluded from the Fly → Northflank move: it is derived from the Cloud
 SQL user so the app follows the instance if it is ever recreated.
+
+## Fineract and OpenACH
+
+Both backends move with the app (`infra/gcp/backends.tf`): internal-ingress
+Cloud Run services `dlbtrust-fineract` (pinned upstream image mirrored into
+Artifact Registry, 2 vCPU / 2 GiB, single instance) and `dlbtrust-openach`
+(`openach/Dockerfile`), with their own databases and roles
+(`fineract_tenants`, `fineract_default` / `fineract`; `openach` / `openach`)
+on the ledger's Cloud SQL instance. The app reaches them over their run.app
+URLs with all egress through the VPC connector; that in turn needs Cloud NAT,
+which gives the app one stable egress IP (`terraform output egress_ip`) for
+bank/rail allowlists. Cloud Run's IAM invoker check is disabled on both: they
+authenticate at the application layer and Cloud Run would otherwise reject
+their `Authorization` headers as malformed OIDC tokens. Reachability is what
+internal ingress restricts.
+
+GKE was not needed: Fineract 1.16 boots in ~2.5 min on 2 GiB with
+`-Xmx1536m`, and neither service keeps state on disk.
+
+```bash
+# 1. images
+docker pull apache/fineract@<digest running on Northflank>   # `git.commit.id` from /actuator/info
+docker tag ... us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/fineract:<commit> && docker push ...
+docker build -t us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/openach:latest openach && docker push ...
+
+# 2. databases, roles and secret containers (Cloud Run services come later)
+terraform apply -target google_sql_database.fineract -target google_sql_database.openach \
+  -target google_secret_manager_secret.fineract -target google_secret_manager_secret.openach \
+  -target google_sql_user.openach -target google_secret_manager_secret_version.openach_database_url
+
+# 3. secrets that must move verbatim. The Fineract role keeps its Northflank
+#    password because the tenant store holds it encrypted with Fineract's
+#    master password; OpenACH's keys encrypt data at rest.
+NORTHFLANK_SECRET_ID=fineract-runtime node scripts/gcp/migrate-northflank-secrets.mjs \
+  --only FINERACT_DEFAULT_TENANTDB_PWD=FINERACT_DB_PASSWORD
+NORTHFLANK_SECRET_ID=openach-runtime node scripts/gcp/migrate-northflank-secrets.mjs \
+  --only OPENACH_ENCRYPTION_KEY,OPENACH_VALIDATION_KEY
+terraform apply -target google_sql_user.fineract
+
+# 4. data: one migrate-postgres.sh run per database (same public-IP dance as
+#    the ledger; the fineract-db and openach-db addons need external access).
+#    Extensions Cloud SQL does not ship (pg_stat_kcache) are dropped from the
+#    restore list automatically.
+SOURCE_DATABASE_URL=<fineract-db admin URI>/fineract_tenants APP_DB_USER=fineract APP_DB_NAME=fineract_tenants \
+  VERIFY_TABLES='tenants tenant_server_connections' scripts/gcp/migrate-postgres.sh
+SOURCE_DATABASE_URL=<fineract-db admin URI>/fineract_default APP_DB_USER=fineract APP_DB_NAME=fineract_default \
+  VERIFY_TABLES='m_office m_appuser acc_gl_account acc_gl_journal_entry' scripts/gcp/migrate-postgres.sh
+SOURCE_DATABASE_URL=<openach-db admin URI> APP_DB_USER=openach APP_DB_NAME=openach scripts/gcp/migrate-postgres.sh
+
+# 5. the tenant store still names the Northflank host: repoint it, or Fineract
+#    fails its startup probe ("Tenant upgrades had exceptions").
+CLOUDSQL_CONNECTION_NAME=... CLOUDSQL_ADMIN_PASSWORD=... scripts/gcp/fineract-tenant-connection.sh
+
+# 6. services, then point the app at them
+terraform apply
+terraform output -raw fineract_url    | gcloud secrets versions add FINERACT_URL --data-file=-
+terraform output -raw openach_base_url | gcloud secrets versions add OPENACH_BASE_URL --data-file=-
+gcloud run services update dlbtrust-app --region us-east1 --update-labels rollout=$(date +%s)
+```
+
+Verified after the move: `GET /api/fineract/health` → `fineract_connected: true`
+with the migrated office; `GET /api/openach-rail/status` → ready against the
+Cloud Run base URL; from inside the VPC `POST $OPENACH_BASE_URL/connect` with
+the migrated API token/key → `success: true`, and Fineract
+`/actuator/health` → `UP`. Row counts matched the Northflank databases
+(2080 GL journal entries, 57 GL accounts, 3 users, 1 office; OpenACH empty).
+
+Still on Northflank until cutover: nothing that the app calls. Northflank's
+`fineract-db`/`openach-db` remain as rollback copies (external access off).
+OpenACH's inbound webhooks (`OPENACH_WEBHOOK_SECRET`) and any bank-side IP
+allowlist need the new egress IP / app URL at cutover.
 
 ## Smoke test before cutover
 
@@ -122,28 +201,53 @@ production traffic. All calls are read-only or shadow-mode.
 6. Restart the revision (`gcloud run services update --no-traffic` then back)
    and confirm `/data/shutdown-state` and the journal were written and read
    back — this is the FUSE-semantics check from above.
+7. `GET /api/trust/mandate` and `GET /api/fixed-income/readiness` (operator
+   auth) → `legalName: DEANDREA LAVAR BARKLEY FAMILY TRUST`,
+   `fundingPolicy.source: fixed-income`, `enabled: true`, `autoStage`/
+   `autoExecute: false`. The trust mandate and distribution variables
+   (`TRUST_LEGAL_NAME`, `TRUST_MANDATE_*`, `FIXED_INCOME_*`,
+   `DISTRIBUTION_LIMIT_*`) were never in the Northflank secret group, so they
+   are set explicitly in `runtime_environment` rather than left to code
+   defaults (see `docs/TRUST_CONTROL_PLANE.md`).
 
 Keep `MELIO_USE_API=false`, `SPRITZ_BUY_LIVE` unset and `PAYMENT_HUB_LIVE=false`
 throughout: a live call creates real bills / debits.
 
-## Cutover
+## Cutover (done 2026-09-17)
 
-1. Take a final `scripts/gcp/migrate-postgres.sh` and
-   `migrate-data-volume.sh` run with the Northflank service scaled to zero
-   (short write freeze; the maker/checker queue is in PostgreSQL, so nothing
-   is lost, but approvals during the freeze fail).
-2. Map the domain: `gcloud run domain-mappings create --service dlbtrust-app
-   --domain <host>` and update DNS. Update `APP_URL`,
-   `AS2_MESSAGE_ID_DOMAIN` and the CSP `connect-src` default, which currently
-   point at `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`.
-3. Set the four `GCP_*` repository variables from `terraform output`, remove
-   `if: false` from `.github/workflows/gcp-deploy.yml`, delete
-   `.github/workflows/northflank-deploy.yml`.
-4. Rotate: `SPRITZ_API_KEY` (already replaced), `NORTHFLANK_API_TOKEN` (no
-   longer needed — revoke), and any credential that was ever read out of the
-   Fly container by `migrate-fly-secrets.mjs`.
-5. Keep the Northflank project for 14 days as rollback (DNS back + resume
-   secrets), then delete it.
+The production URL is now `https://dlbtrust-app-r5oawu76jq-ue.a.run.app`.
+There was no custom domain on Northflank (only the `*.code.run` host), so the
+cutover is a URL change rather than a DNS change: `APP_URL` /
+`AS2_MESSAGE_ID_DOMAIN` are set in `runtime_environment`, the code fallbacks
+and the browser extension / mobile dapp defaults point at the new host, and
+the CSP `connect-src` allows `https://*.run.app`.
+
+1. Done: `/data` synced (`migrate-data-volume.sh`, while the Northflank
+   container was still running — `northflank exec` needs it), then the
+   Northflank service was paused (`POST .../services/dlbtrust-app/pause`) and
+   the ledger re-migrated with `migrate-postgres.sh` (source and target row
+   counts equal; Cloud SQL public IP and addon external access turned back
+   off by the script's exit trap).
+2. Done: `terraform apply` with the new `APP_URL`; revision passes
+   `/api/health` (Fineract ok), `/api/fineract/health`,
+   `/api/openach-rail/status`, Spritz readiness (`live: false`).
+3. `.github/workflows/gcp-deploy.yml` is enabled on merge to `main` and
+   carries the `GCP_*` resource names as defaults (repository variables
+   override); `northflank-deploy.yml` is removed. The first run also
+   replaces the hand-pushed `:bootstrap` image.
+4. Still to do by hand, in provider dashboards: any webhook or redirect URL
+   registered with the old host (thirdweb webhook, MoonPay webhook, Cash App
+   redirect, Lili OAuth redirect if it was ever pointed at production) and
+   any bank/rail IP allowlist → the Cloud NAT address
+   (`terraform output egress_ip`).
+5. Rotate: `SPRITZ_API_KEY` (already replaced), `NORTHFLANK_API_TOKEN` (no
+   longer needed once the rollback window closes — revoke), and any
+   credential that was ever read out of the Fly container by
+   `migrate-fly-secrets.mjs`.
+6. Rollback = `POST .../services/dlbtrust-app/resume` on Northflank and
+   revert this commit; its database is a snapshot from the pause, so anything
+   written on GCP after the cutover would have to be replayed. Keep the
+   Northflank project for 14 days, then delete it.
 
 ## Financial-data gaps this closes (and does not)
 
@@ -170,11 +274,6 @@ flag flip. None of those are touched by this migration.
 
 ## Out of scope for this phase
 
-- `dlbtrust-fineract` (Apache Fineract GL) and `openach` (PHP ACH
-  origination) keep running on Northflank; `FINERACT_URL` / OpenACH URLs must
-  stay reachable from Cloud Run (public HTTPS or a VPN). Moving them means
-  Cloud Run + a second Cloud SQL each, or GKE Autopilot for Fineract's memory
-  footprint — decide after the main service is stable.
 - Cloud Armor / IAP in front of the operator console — recommended, separate
   PR.
 - Fineract-side GL export to BigQuery.

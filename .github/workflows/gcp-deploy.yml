@@ -4,14 +4,9 @@ name: GCP Deploy
 # service on every push to main. Authenticates through Workload Identity
 # Federation (infra/gcp/deploy_identity.tf) — no GCP key is stored in GitHub.
 #
-# Required repository variables (Settings > Secrets and variables > Actions > Variables):
-#   GCP_PROJECT_ID                  dlb-treasury-management
-#   GCP_REGION                      us-east1
-#   GCP_WORKLOAD_IDENTITY_PROVIDER  terraform output workload_identity_provider
-#   GCP_DEPLOYER_SERVICE_ACCOUNT    terraform output deployer_service_account
-#
-# Disabled until cutover: remove `if: false` once the Cloud Run service is live
-# and .github/workflows/northflank-deploy.yml has been removed.
+# The GCP_* values are resource names, not credentials (terraform output
+# workload_identity_provider / deployer_service_account); repository variables
+# of the same name override them.
 
 on:
   push:
@@ -27,14 +22,19 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'dlb-treasury-management' }}
+  GCP_REGION: ${{ vars.GCP_REGION || 'us-east1' }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/514695212719/locations/global/workloadIdentityPools/github/providers/github-oidc' }}
+  GCP_DEPLOYER_SERVICE_ACCOUNT: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT || 'dlbtrust-app-deployer@dlb-treasury-management.iam.gserviceaccount.com' }}
+
 jobs:
   deploy:
     name: Deploy to Cloud Run
-    if: false
     runs-on: ubuntu-latest
     env:
       SERVICE: dlbtrust-app
-      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dlbtrust/dlbtrust-app
+      IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/dlbtrust/dlbtrust-app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -42,14 +42,14 @@ jobs:
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+        run: gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
 
       - name: Build and push image
         run: |
@@ -60,14 +60,14 @@ jobs:
       - name: Deploy revision
         run: |
           gcloud run deploy "$SERVICE" \
-            --project "${{ vars.GCP_PROJECT_ID }}" \
-            --region "${{ vars.GCP_REGION }}" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
             --image "$IMAGE:$GITHUB_SHA" \
             --quiet
 
       - name: Smoke check
         run: |
           url=$(gcloud run services describe "$SERVICE" \
-            --project "${{ vars.GCP_PROJECT_ID }}" --region "${{ vars.GCP_REGION }}" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
             --format 'value(status.url)')
           curl -fsS "$url/api/health/ready"
