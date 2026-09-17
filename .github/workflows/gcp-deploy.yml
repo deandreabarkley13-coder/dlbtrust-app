@@ -34,10 +34,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SERVICE: dlbtrust-app
-      IMAGE: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/dlbtrust/dlbtrust-app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve image name
+        run: echo "IMAGE=$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/dlbtrust/dlbtrust-app" >> "$GITHUB_ENV"
 
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
