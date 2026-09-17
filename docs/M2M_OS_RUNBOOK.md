@@ -166,6 +166,13 @@ WIRE_H2H_MFT_CHANNEL=m2m-<partnerId>   # getWireChannelConfig() -> transport 'mf
 WIRE_H2H_RAILS=fedwire                 # must carry the settlement-funding rail
 ```
 
+Steps 2–4 can be driven from the deployment shell in one go with
+`node server/scripts/provisionM2mPartner.js identity | register | handshake --wait | status`;
+`register` reads the bank's host, username and host-key fingerprint from
+`M2M_PARTNER_HOST` / `M2M_PARTNER_USERNAME` / `M2M_PARTNER_HOST_KEY_FINGERPRINT`
+(secrets) and prints the exact `ACH_MFT_CHANNEL` / `WIRE_H2H_MFT_CHANNEL`
+lines to set. The partner of record is Lili Bank (DB NET MGMT).
+
 Set both only after step 4 reports the partner `verified`; the bound channel
 is what carries the bank host, pinned host key, username and directory
 `layout`, so:
