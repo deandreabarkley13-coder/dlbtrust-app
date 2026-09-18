@@ -8,13 +8,15 @@ const { PayoutRouteEngine } = require('../server/integrations/dapp/payoutRouteEn
 const { ApigeeGatewayEngine, ApacheApisixEngine } = require('../server/integrations/os/osEngine');
 const { VendorPaymentEngine } = require('../server/integrations/dapp/vendorPaymentEngine');
 const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canonicalConsensusEngine');
+const { LiliSettlementBankEngine } = require('../server/integrations/payments/liliSettlementBankEngine');
+const { LiliMcpEngine } = require('../server/integrations/payments/liliMcpEngine');
 
 const ENV_KEYS = [
   'APIGEE_LIVE', 'APIGEE_HOSTNAME', 'APIGEE_BASE_URL', 'APIGEE_API_KEY', 'APIGEE_CLIENT_ID',
   'APIGEE_ODFI_ROUTING', 'APIGEE_ODFI_ACCOUNT', 'APISIX_LIVE', 'API_GATEWAY_PROVIDER',
   'API_GATEWAY_REQUIRE_APPROVAL_REF', 'API_GATEWAY_REQUIRE_SCREENING_REF',
   'GCS_CLEARING_EVIDENCE_BUCKET', 'GOOGLE_WALLET_LIVE', 'GOOGLE_WALLET_SERVICE_ACCOUNT_KEY',
-  'GOOGLE_WALLET_ISSUER_ID',
+  'GOOGLE_WALLET_ISSUER_ID', 'LILI_CLEARING_LIVE', 'LILI_BUSINESS_USER_ID',
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -55,6 +57,16 @@ describe('gateway rail registration', () => {
     expect(ApiGatewayClearingEngine.resolveProvider('api_gateway')).toBe('apisix');
     expect(ApiGatewayClearingEngine.engineFor('apigee')).toBe(ApigeeGatewayEngine);
     expect(ApiGatewayClearingEngine.engineFor('apisix')).toBe(ApacheApisixEngine);
+  });
+
+  it('selects Lili as the settlement bank via API_GATEWAY_PROVIDER or LILI_CLEARING_LIVE', () => {
+    process.env.API_GATEWAY_PROVIDER = 'lili';
+    expect(ApiGatewayClearingEngine.resolveProvider('api_gateway')).toBe('lili');
+    delete process.env.API_GATEWAY_PROVIDER;
+    process.env.LILI_CLEARING_LIVE = 'true';
+    expect(ApiGatewayClearingEngine.resolveProvider('api_gateway')).toBe('lili');
+    expect(ApiGatewayClearingEngine.resolveProvider('apigee')).toBe('apigee');
+    expect(ApiGatewayClearingEngine.engineFor('lili')).toBe(LiliSettlementBankEngine);
   });
 
   it('accepts gateway rails on canonical vendor_bill proposals', () => {
@@ -110,6 +122,57 @@ describe('ApiGatewayClearingEngine.clearPayment (fail-closed)', () => {
     expect(result.walletPass.objectId).toContain(GoogleWalletEngine.passKey({ email: 'jane@example.com' }));
     expect(result.walletPass.addToWalletLink).toMatch(/^https:\/\/pay\.google\.com\/gp\/v\/save\//);
     expect(String(result.walletPass.cardFunding)).toMatch(/TSP|Token Service Provider/);
+  });
+});
+
+describe('Lili settlement bank', () => {
+  it('stays shadow by default: no MCP call, simulated reference', async () => {
+    process.env.API_GATEWAY_PROVIDER = 'lili';
+    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee');
+    const result = await ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'vendor_bill', amount: 40, approvalRef: 'REQ-L1', screeningRef: 'SCR-L1', destination,
+    });
+    expect(pay).not.toHaveBeenCalled();
+    expect(result.provider).toBe('lili');
+    expect(result.shadow).toBe(true);
+    expect(result.gatewayReference).toMatch(/^LILI-TX-/);
+  });
+
+  it('live: fails closed when Lili MCP is not configured', async () => {
+    process.env.LILI_CLEARING_LIVE = 'true';
+    vi.spyOn(LiliMcpEngine, 'getConfig').mockResolvedValue({ mcpEnabled: false });
+    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee');
+    await expect(ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L2', screeningRef: 'SCR-L2', destination,
+    })).rejects.toThrow(/Lili MCP is not configured/);
+    expect(pay).not.toHaveBeenCalled();
+    expect(ApiGatewayClearingEngine._update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: 'failed' }));
+  });
+
+  it('live: originates through LiliMcpEngine.payToPayee and rejects anything but api_pending', async () => {
+    process.env.LILI_CLEARING_LIVE = 'true';
+    process.env.LILI_BUSINESS_USER_ID = 'biz-1';
+    vi.spyOn(LiliMcpEngine, 'getConfig').mockResolvedValue({ mcpEnabled: true, mcpUrl: 'https://mcp.lili.co/mcp', clientId: 'c', accessToken: 't' });
+    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee').mockResolvedValue({ status: 'api_pending', billId: 'BILL-9', supplierId: 'SUP-1' });
+    const result = await ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L3', screeningRef: 'SCR-L3', destination,
+    });
+    expect(pay).toHaveBeenCalledWith(expect.objectContaining({ amount: 40, recipientRouting: '021000021', recipientAccount: '123456789', businessUserId: 'biz-1' }));
+    expect(result.live).toBe(true);
+    expect(result.status).toBe('originated');
+    expect(result.gatewayReference).toBe('BILL-9');
+
+    pay.mockResolvedValue({ status: 'manual_pending', reason: 'lili_pay_bill tool not available' });
+    await expect(ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L4', screeningRef: 'SCR-L4', destination,
+    })).rejects.toThrow(/Lili did not accept/);
+  });
+
+  it('readiness names the Lili live flag', async () => {
+    process.env.API_GATEWAY_PROVIDER = 'lili';
+    const readiness = await ApiGatewayClearingEngine.readiness();
+    expect(readiness.provider).toBe('lili');
+    expect(readiness.blockers.join(' ')).toContain('LILI_CLEARING_LIVE=false');
   });
 });
 

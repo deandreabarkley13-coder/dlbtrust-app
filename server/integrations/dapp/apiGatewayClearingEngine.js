@@ -38,9 +38,12 @@ const { getAccessToken, googleFetch, loadServiceAccount, onGoogleRuntime } = req
 
 let GoogleWalletEngine;
 try { ({ GoogleWalletEngine } = require('./googleWalletEngine')); } catch (e) { GoogleWalletEngine = null; }
+let LiliSettlementBankEngine;
+try { ({ LiliSettlementBankEngine } = require('../payments/liliSettlementBankEngine')); } catch (e) { LiliSettlementBankEngine = null; }
 
 const GATEWAY_RAILS = ['api_gateway', 'apigee', 'apisix'];
-const PROVIDERS = ['apigee', 'apisix'];
+const PROVIDERS = ['lili', 'apigee', 'apisix'];
+const LIVE_FLAG = { lili: 'LILI_CLEARING_LIVE', apigee: 'APIGEE_LIVE', apisix: 'APISIX_LIVE' };
 const GCS_SCOPE = 'https://www.googleapis.com/auth/devstorage.read_write';
 const GCS_UPLOAD = 'https://storage.googleapis.com/upload/storage/v1/b';
 
@@ -81,9 +84,11 @@ class ApiGatewayClearingEngine {
   static getConfig() {
     const env = process.env;
     const apigeeConfigured = Boolean(env.APIGEE_BASE_URL || env.APIGEE_HOSTNAME);
+    const liliConfigured = String(env.LILI_CLEARING_LIVE || '').toLowerCase() === 'true';
     const explicit = String(env.API_GATEWAY_PROVIDER || '').toLowerCase();
+    const auto = liliConfigured ? 'lili' : (apigeeConfigured ? 'apigee' : 'apisix');
     return {
-      provider: PROVIDERS.includes(explicit) ? explicit : (apigeeConfigured ? 'apigee' : 'apisix'),
+      provider: PROVIDERS.includes(explicit) ? explicit : auto,
       providerExplicit: PROVIDERS.includes(explicit),
       requireApproval: env.API_GATEWAY_REQUIRE_APPROVAL_REF !== 'false',
       requireScreening: env.API_GATEWAY_REQUIRE_SCREENING_REF !== 'false',
@@ -94,7 +99,7 @@ class ApiGatewayClearingEngine {
     };
   }
 
-  /** `apigee` / `apisix` from an explicit rail alias or the configured default. */
+  /** `lili` / `apigee` / `apisix` from an explicit rail alias or the configured default. */
   static resolveProvider(rail) {
     const r = String(rail || '').toLowerCase();
     if (PROVIDERS.includes(r)) return r;
@@ -102,6 +107,10 @@ class ApiGatewayClearingEngine {
   }
 
   static engineFor(provider) {
+    if (provider === 'lili') {
+      if (!LiliSettlementBankEngine) throw new Error('Lili settlement bank engine is not available');
+      return LiliSettlementBankEngine;
+    }
     const os = osEngines();
     if (!os) throw new Error('OS engines are not available');
     const Engine = provider === 'apigee' ? os.ApigeeGatewayEngine : os.ApacheApisixEngine;
@@ -428,7 +437,7 @@ class ApiGatewayClearingEngine {
 
     const blockers = [];
     if (!gateway.ok) blockers.push(`gateway: ${gateway.error}`);
-    else if (!gateway.value.live) blockers.push(`gateway ${cfg.provider} is in shadow mode (${cfg.provider.toUpperCase()}_LIVE=false)`);
+    else if (!gateway.value.live) blockers.push(`gateway ${cfg.provider} is in shadow mode (${LIVE_FLAG[cfg.provider]}=false)`);
     else if (!gateway.value.healthy) blockers.push(`gateway ${cfg.provider} unreachable: ${gateway.value.message}`);
     if (!compliance.ok) blockers.push(`compliance: ${compliance.error}`);
     else if (!compliance.value.ready) blockers.push(`compliance: ${(compliance.value.issues || []).join('; ')}`);

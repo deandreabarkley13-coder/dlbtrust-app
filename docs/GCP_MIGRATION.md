@@ -288,15 +288,25 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
   `api_gateway|apigee|apisix`), Payer OS direct deposits (PPD) and vendor
   payouts (CCD) with `PAYER_OS_ACH_CHANNEL=api_gateway`, and settlement orders
   (`SettlementEngine.executeSettlement`, same rails).
-- **Gateway**: `api_gateway` resolves to Apigee when `APIGEE_*` is configured
-  (or `API_GATEWAY_PROVIDER=apigee`), otherwise to the existing APISIX engine.
+- **Settlement bank — Lili**: `API_GATEWAY_PROVIDER=lili` (or auto when
+  `LILI_CLEARING_LIVE=true`) routes clearing to
+  `server/integrations/payments/liliSettlementBankEngine.js`, which settles
+  through the Lili MCP Bill Pay tools (`LiliMcpEngine.payToPayee`: supplier →
+  bill → `lili_pay_bill`). Live requires `LILI_CLEARING_LIVE=true` plus
+  `LILI_MCP_ENABLED=true`, `LILI_OAUTH_CLIENT_ID`, an access/refresh token and
+  `LILI_BUSINESS_USER_ID`; if Lili does not return `api_pending` the event is
+  marked `failed` (never silently "manual"). Lili Bill Pay is ACH-credit to a
+  US routing/account (vendor bills, distributions, direct-deposit pushes); it
+  does not originate wires.
+- **Gateway**: otherwise `api_gateway` resolves to Apigee when `APIGEE_*` is
+  configured (or `API_GATEWAY_PROVIDER=apigee`), else to the existing APISIX engine.
   `ApigeeGatewayEngine` in `osEngine.js` is a sibling of the APISIX engine and
   sends through `genericRestConnector` (OAuth2 client credentials / API key,
   optional mTLS, SSRF + DNS-rebinding guards, host allowlist).
 - **Fail-closed**: every clearing needs an `approvalRef` (the approved
   request / consensus proposal / Payer OS approval) and a `screeningRef`
   (`PaymentComplianceGate` result). Shadow is the default; a real payout only
-  happens with `APIGEE_LIVE=true` (or `APISIX_LIVE=true`) plus credentials
+  happens with `LILI_CLEARING_LIVE=true`, `APIGEE_LIVE=true` or `APISIX_LIVE=true` plus credentials
   and an allowlisted HTTPS host. Shadow runs still record the event so the
   full pipeline can be exercised without moving money.
 - **Storage**: Cloud SQL table `gateway_clearing_events` (created on first
