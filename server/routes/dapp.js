@@ -1794,7 +1794,7 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
       recipientType, recipientIdentifier, amount, asset, description,
       rail, railOptions,
     } = req.body;
-    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay','lili','lili_bank'];
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay','lili','lili_bank','api_gateway','apigee','apisix','google_wallet'];
     const allowedAssets = ['SIT','USDC','USD','ETH','WETH','DAI','CASH','BTC'];
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
     if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
