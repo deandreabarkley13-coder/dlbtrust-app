@@ -52,13 +52,18 @@ try { LiveFinTechEndpointEngine = require('./liveFintechEndpointEngine').LiveFin
 let HostToHostEngine;
 try { HostToHostEngine = require('./hostToHostEngine').HostToHostEngine; } catch (e) { HostToHostEngine = null; }
 
+let ApiGatewayClearingEngine;
+try { ApiGatewayClearingEngine = require('./apiGatewayClearingEngine').ApiGatewayClearingEngine; } catch (e) { ApiGatewayClearingEngine = null; }
+
 const HOLD_ACCOUNT = 'SETTLEMENT_HOLD';
 const SETTLED_ACCOUNT = 'SETTLEMENT_SETTLED';
 
 const VALID_RAILS = new Set([
   'external_endpoint', 'wire', 'ach', 'open_banking', 'iso20022',
-  'mft_sftp', 'as2', 'host_to_host', 'stablecoin', 'manual', 'live_fintech'
+  'mft_sftp', 'as2', 'host_to_host', 'stablecoin', 'manual', 'live_fintech',
+  'api_gateway', 'apigee', 'apisix'
 ]);
+const RAIL_CHECK_SQL = `rail IN (${[...VALID_RAILS].map((r) => `'${r}'`).join(',')})`;
 
 function generateId(prefix = 'SETL') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -87,7 +92,7 @@ class SettlementEngine {
         source_type TEXT DEFAULT 'manual',
         source_id TEXT,
         source_account_id TEXT,
-        rail TEXT NOT NULL CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','host_to_host','stablecoin','manual','live_fintech')),
+        rail TEXT NOT NULL CHECK (${RAIL_CHECK_SQL}),
         endpoint_id TEXT,
         connector TEXT,
         amount_cents BIGINT NOT NULL,
@@ -116,7 +121,7 @@ class SettlementEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_source_id ON settlements(source_id)`);
     await pool.query(`ALTER TABLE settlements DROP CONSTRAINT IF EXISTS settlements_rail_check`);
-    await pool.query(`ALTER TABLE settlements ADD CONSTRAINT settlements_rail_check CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','host_to_host','stablecoin','manual','live_fintech'))`);
+    await pool.query(`ALTER TABLE settlements ADD CONSTRAINT settlements_rail_check CHECK (${RAIL_CHECK_SQL})`);
     await this._ensureHoldAccounts();
   }
 
@@ -233,6 +238,8 @@ class SettlementEngine {
       result = await this._executeWireOrAch(settlement);
     } else if (settlement.rail === 'open_banking' || settlement.rail === 'iso20022') {
       result = await this._executeOpenBanking(settlement);
+    } else if (settlement.rail === 'api_gateway' || settlement.rail === 'apigee' || settlement.rail === 'apisix') {
+      result = await this._executeApiGateway(settlement);
     } else {
       throw new Error(`Unsupported rail: ${settlement.rail}`);
     }
@@ -578,6 +585,71 @@ class SettlementEngine {
       [
         settlement.settlement_id, status, payout.payout_id, result && (result.wire_id || result.ach_batch_id) ? (result.wire_id || result.ach_batch_id) : null,
         rawRequest, JSON.stringify(result), error || (result && result.error_message ? result.error_message : null)
+      ]
+    );
+    if (error) throw new Error(error);
+    return this.getSettlement(settlement.settlement_id);
+  }
+
+  /**
+   * API-gateway clearing (Apigee / APISIX). The gateway engine refuses without
+   * the maker/checker and compliance references, which settlement orders carry
+   * in `config.approvalRef` / `config.screeningRef`.
+   */
+  static async _executeApiGateway(settlement) {
+    if (!ApiGatewayClearingEngine) throw new Error('ApiGatewayClearingEngine not available');
+    const config = settlement.config || {};
+    const rawRequest = JSON.stringify({
+      rail: settlement.rail,
+      flow: 'settlement',
+      amount: settlement.amount_cents / 100,
+      currency: settlement.currency,
+      creditorName: settlement.creditor_name,
+      creditorRouting: settlement.creditor_routing,
+      creditorAccountLast4: settlement.creditor_account ? String(settlement.creditor_account).slice(-4) : null,
+      paymentType: settlement.payment_type,
+    });
+
+    let cleared;
+    let error = null;
+    try {
+      cleared = await ApiGatewayClearingEngine.clearPayment({
+        rail: settlement.rail,
+        flow: 'settlement',
+        paymentType: config.paymentType === 'push' || settlement.payment_type === 'push' ? 'push' : 'wire',
+        amount: settlement.amount_cents / 100,
+        currency: settlement.currency,
+        reference: settlement.settlement_id,
+        description: settlement.description,
+        sourceType: 'settlement',
+        sourceId: settlement.settlement_id,
+        approvalRef: config.approvalRef || config.consensusProposalId || null,
+        screeningRef: config.screeningRef || config.complianceScreeningId || null,
+        source: settlement.debtor_account ? {
+          name: settlement.debtor_name,
+          bankName: settlement.debtor_bank,
+          routingNumber: settlement.debtor_routing,
+          accountNumber: settlement.debtor_account,
+        } : undefined,
+        destination: {
+          name: settlement.creditor_name,
+          bankName: settlement.creditor_bank,
+          routingNumber: settlement.creditor_routing,
+          accountNumber: settlement.creditor_account,
+          accountType: config.creditorAccountType || 'checking',
+        },
+        walletPass: config.walletPass || null,
+        initiatedBy: 'settlement-engine',
+      });
+    } catch (e) { error = e.message; }
+
+    const status = error ? 'failed' : (cleared.shadow ? 'submitted' : (cleared.status === 'completed' || cleared.status === 'settled' ? 'settled' : 'originated'));
+    await pool.query(
+      `UPDATE settlements SET status = $2, external_id = $3, raw_request = $4, raw_response = $5, error_message = $6, updated_at = NOW() WHERE settlement_id = $1`,
+      [
+        settlement.settlement_id, status, cleared ? cleared.gatewayReference : null,
+        rawRequest, cleared ? JSON.stringify({ eventId: cleared.eventId, provider: cleared.provider, status: cleared.status, live: cleared.live, evidenceUri: cleared.evidenceUri, walletPass: cleared.walletPass ? { objectId: cleared.walletPass.objectId, mode: cleared.walletPass.mode } : null }) : null,
+        error,
       ]
     );
     if (error) throw new Error(error);

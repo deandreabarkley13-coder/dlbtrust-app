@@ -19,11 +19,13 @@
 const pool = require('../bonds/pgPool');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
 
-const RAILS = ['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay'];
+const RAILS = ['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay', 'api_gateway', 'apigee', 'apisix'];
+const GATEWAY_RAILS = new Set(['api_gateway', 'apigee', 'apisix']);
 const RAIL_SQL = RAILS.map((r) => `'${r}'`).join(',');
 
-let BankTransferEngine, OpenBankingEngine, WireOriginationEngine, MelioEngine, SpritzBillPayEngine;
+let BankTransferEngine, OpenBankingEngine, WireOriginationEngine, MelioEngine, SpritzBillPayEngine, ApiGatewayClearingEngine;
 function loadDeps() {
+  try { ({ ApiGatewayClearingEngine } = require('./apiGatewayClearingEngine')); } catch (e) { ApiGatewayClearingEngine = null; }
   try { ({ BankTransferEngine } = require('./bankTransferEngine')); } catch (e) { BankTransferEngine = null; }
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ WireOriginationEngine } = require('./wireOriginationEngine')); } catch (e) { WireOriginationEngine = null; }
@@ -308,6 +310,43 @@ class VendorPaymentEngine {
         remittance: memo || bill.memo || `Vendor payment ${runId}`,
       });
       status = payment.status === 'originated' ? 'initiated' : (payment.status || 'pending');
+    } else if (GATEWAY_RAILS.has(rail)) {
+      // Approved bill -> API gateway (Apigee / APISIX) clearing. The consensus
+      // proposal and the screening above are the gateway's admission tickets.
+      loadDeps();
+      if (!ApiGatewayClearingEngine) throw new Error('ApiGatewayClearingEngine not available');
+      if (!vendor.routing_number || !vendor.account_number) throw new Error('Vendor bank routing and account numbers are required for the gateway rail');
+      const cleared = await ApiGatewayClearingEngine.clearPayment({
+        rail,
+        flow: 'vendor_bill',
+        paymentType: 'wire',
+        amount: bill.amount_cents / 100,
+        currency: bill.currency || 'USD',
+        reference: billId,
+        description: memo || bill.memo || `Vendor payment ${runId}`,
+        sourceType: 'vendor_bill',
+        sourceId: billId,
+        approvalRef: consensusProposalId,
+        screeningRef: compliance.screeningId,
+        destination: {
+          name: vendor.name,
+          bankName: vendor.bank_name,
+          routingNumber: vendor.routing_number,
+          accountNumber: vendor.account_number,
+          accountType: vendor.account_type || 'checking',
+        },
+        initiatedBy,
+      });
+      payment = {
+        paymentId: cleared.eventId,
+        provider: cleared.provider,
+        gatewayReference: cleared.gatewayReference,
+        status: cleared.status,
+        live: cleared.live,
+        shadow: cleared.shadow,
+        evidenceUri: cleared.evidenceUri,
+      };
+      status = cleared.shadow ? 'pending' : (cleared.status === 'completed' || cleared.status === 'settled' ? 'completed' : (cleared.status === 'failed' ? 'failed' : 'initiated'));
     } else {
       throw new Error(`Unsupported or unavailable rail: ${rail}`);
     }

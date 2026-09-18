@@ -7,7 +7,7 @@
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
- * ptc-treasury, settlement-endpoint, moov-paygate, apisix, nickel, canonical-money,
+ * ptc-treasury, settlement-endpoint, moov-paygate, apisix, apigee, nickel, canonical-money,
  * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os,
  * live-value-runbook, and live-money.
  */
@@ -41,6 +41,7 @@ const {
   SettlementEndpointEngine,
   MoovPaygateEngine,
   ApacheApisixEngine,
+  ApigeeGatewayEngine,
   NickelMcpEngine,
   CanonicalMoneyOSEngine,
   CanonicalLiquidityOSEngine,
@@ -64,6 +65,8 @@ const APPROVAL_GATED_ACTIONS = {
     'settle',
   ]),
   nickel: new Set(['payBill', 'submitInvoice', 'settlePayment', 'settle']),
+  apisix: new Set(['sendPayment', 'sendWire', 'createPayment', 'sendPush', 'pushToCard']),
+  apigee: new Set(['sendPayment', 'sendWire', 'createPayment', 'sendPush', 'pushToCard']),
 };
 
 const ENGINES = {
@@ -93,6 +96,7 @@ const ENGINES = {
   'settlement-endpoint': SettlementEndpointEngine,
   'moov-paygate': MoovPaygateEngine,
   apisix: ApacheApisixEngine,
+  apigee: ApigeeGatewayEngine,
   nickel: NickelMcpEngine,
   'canonical-money': CanonicalMoneyOSEngine,
   'canonical-liquidity': CanonicalLiquidityOSEngine,
@@ -175,7 +179,7 @@ router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async 
     if (APPROVAL_GATED_ACTIONS[req.params.engine]?.has(payload.action)) {
       return res.status(409).json({
         success: false,
-        error: 'Vendor bill payments must use the authenticated maker-checker workflow',
+        error: 'Money movement must use the authenticated maker-checker workflow (distribution requests, vendor bills, Payer OS or settlement orders)',
       });
     }
     const data = await req.osEngine.process(payload);

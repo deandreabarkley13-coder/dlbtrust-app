@@ -4,6 +4,7 @@ const express = require('express');
 const { DappEngine } = require('../integrations/dapp/dappEngine');
 const { CashAppEngine } = require('../integrations/dapp/cashAppEngine');
 const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine');
+const { ApiGatewayClearingEngine } = require('../integrations/dapp/apiGatewayClearingEngine');
 const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
@@ -456,6 +457,45 @@ router.post('/payment-rails/google/pass', operatorAuth, writeRateLimiter(), asyn
   try {
     const data = await GoogleWalletEngine.createPass(req.body);
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── API Gateway Clearing & Settlement (Apigee / APISIX) ────────────────────────
+// Read-only surfaces. Money movement is never triggered here: it enters via the
+// maker-checker flows (distribution requests, vendor bills, Payer OS, settlement
+// orders) which route gateway rails through ApiGatewayClearingEngine.
+router.get('/clearing-pipeline/readiness', async (req, res) => {
+  try { res.json({ success: true, data: await ApiGatewayClearingEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing-pipeline', operatorAuth, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+    res.json({ success: true, data: await ApiGatewayClearingEngine.pipeline({ limit }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing-pipeline/events', operatorAuth, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 500);
+    const data = await ApiGatewayClearingEngine.listEvents({ limit, status: req.query.status, flow: req.query.flow });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing-pipeline/events/:eventId', operatorAuth, async (req, res) => {
+  try {
+    const data = await ApiGatewayClearingEngine.getEvent(req.params.eventId);
+    if (!data) return res.status(404).json({ success: false, error: 'Gateway clearing event not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing-pipeline/events/:eventId/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { gatewayReference, status, note } = req.body || {};
+    const data = await ApiGatewayClearingEngine.reconcile({ eventId: req.params.eventId, gatewayReference, status, note });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

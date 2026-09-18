@@ -107,3 +107,9 @@ variable "secret_names" {
   type        = list(string)
   default     = []
 }
+
+variable "clearing_evidence_retention_days" {
+  description = "Bucket-lock retention for API-gateway clearing evidence objects (immutable for this long)."
+  type        = number
+  default     = 2555 # 7 years
+}

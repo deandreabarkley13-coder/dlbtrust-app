@@ -6679,6 +6679,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
 
 class ApacheApisixEngine extends BaseOSEngine {
   static get engineName() { return 'apisix'; }
+  static get label() { return 'APISIX'; }
 
   static _cfg() {
     return {
@@ -6710,10 +6711,10 @@ class ApacheApisixEngine extends BaseOSEngine {
     try {
       parsed = new URL(urlString);
     } catch {
-      throw new Error(`Invalid APISIX URL: ${urlString}`);
+      throw new Error(`Invalid ${this.label} URL: ${urlString}`);
     }
     if (cfg.live && parsed.protocol === 'http:' && !cfg.allowHttp) {
-      throw new Error(`APISIX live mode requires HTTPS unless APISIX_ALLOW_HTTP=true: ${urlString}`);
+      throw new Error(`${this.label} live mode requires HTTPS unless ${this.label}_ALLOW_HTTP=true: ${urlString}`);
     }
     if (cfg.allowedHosts && cfg.allowedHosts.length > 0) {
       const host = parsed.hostname.toLowerCase();
@@ -6723,7 +6724,7 @@ class ApacheApisixEngine extends BaseOSEngine {
         if (pattern.startsWith('*.')) return host.endsWith(pattern.slice(2)) || host === pattern.slice(2);
         return false;
       });
-      if (!allowed) throw new Error(`APISIX URL host not allowed: ${host}`);
+      if (!allowed) throw new Error(`${this.label} URL host not allowed: ${host}`);
     }
     return parsed;
   }
@@ -6787,12 +6788,12 @@ class ApacheApisixEngine extends BaseOSEngine {
     const amountCents = this._normalizeAmount(amount);
     const isPush = pushToCard === true || type === 'push';
     const body = {
-      reference: reference || paymentId || `APISIX-${Date.now()}`,
+      reference: reference || paymentId || `${this.label}-${Date.now()}`,
       amount: Number((amountCents / 100).toFixed(2)),
       amount_cents: amountCents,
       currency,
       type: isPush ? 'push' : 'wire',
-      description: description || `Apache APISIX ${isPush ? 'push-to-card' : 'wire'}`,
+      description: description || `${this.label} gateway ${isPush ? 'push credit' : 'wire'}`,
       odfi: {
         routingNumber: source?.routingNumber || source?.routing || cfg.sourceRouting,
         accountNumber: source?.accountNumber || source?.account || cfg.sourceAccount,
@@ -6815,25 +6816,25 @@ class ApacheApisixEngine extends BaseOSEngine {
     }
 
     if (!body.odfi.routingNumber || !body.odfi.accountNumber) {
-      throw new Error('ODFI routing and account number required for APISIX payment (set source or APISIX_ODFI_ROUTING/APISIX_ODFI_ACCOUNT)');
+      throw new Error(`ODFI routing and account number required for ${this.label} payment (set source or ${this.label}_ODFI_ROUTING/${this.label}_ODFI_ACCOUNT)`);
     }
     if (!body.rdfi.routingNumber || !body.rdfi.accountNumber) {
-      throw new Error('RDFI routing and account number required for APISIX payment (set destination)');
+      throw new Error(`RDFI routing and account number required for ${this.label} payment (set destination)`);
     }
 
     if (cfg.live) {
       const path = isPush ? cfg.pushPath : cfg.wirePath;
       const url = this._url(cfg.apiUrl, path);
       const result = await this._http('POST', url, body);
-      if (!result.ok) throw new Error(`APISIX payment failed: ${result.statusCode} ${result.body.slice(0, 200)}`);
-      const txId = result.json?.referenceNumber || result.json?.txId || result.json?.reference || `APISIX-TX-${Date.now()}`;
+      if (!result.ok) throw new Error(`${this.label} payment failed: ${result.statusCode} ${String(result.body || '').slice(0, 200)}`);
+      const txId = result.json?.referenceNumber || result.json?.txId || result.json?.reference || result.json?.id || `${this.label}-TX-${Date.now()}`;
       const rawStatus = result.json?.status || 'submitted';
       const status = rawStatus === 'submitted' ? 'originated' : (['completed', 'settled', 'originated'].includes(rawStatus) ? rawStatus : 'originated');
-      return { transferId: txId, status, raw: result };
+      return { transferId: txId, status, gateway: this.engineName, live: true, raw: result };
     }
 
-    const txId = `APISIX-TX-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    return { transferId: txId, status: 'completed', shadow: true, body };
+    const txId = `${this.label}-TX-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    return { transferId: txId, status: 'completed', gateway: this.engineName, live: false, shadow: true, body };
   }
 
   static async _process(action, payload = {}) {
@@ -6851,6 +6852,138 @@ class ApacheApisixEngine extends BaseOSEngine {
       default:
         return await this.status();
     }
+  }
+}
+
+// ─── Google Apigee Gateway Engine ─────────────────────────────────────────────
+//
+// Sibling of the APISIX engine for trusts that front clearing/settlement with
+// Google Cloud Apigee (Apigee X / hybrid). Same payload contract, same
+// shadow-by-default gating (`APIGEE_LIVE=true` to move money), but outbound
+// HTTP goes through the hardened generic REST connector so the proxy can be
+// authenticated with OAuth2 client credentials (Apigee OAuthV2 policy), an
+// API key (VerifyAPIKey policy) or mutual TLS, with SSRF/DNS-rebinding guards.
+
+class ApigeeGatewayEngine extends ApacheApisixEngine {
+  static get engineName() { return 'apigee'; }
+  static get label() { return 'APIGEE'; }
+
+  static _cfg() {
+    const env = process.env;
+    const org = env.APIGEE_ORG || env.GCP_PROJECT || env.GOOGLE_CLOUD_PROJECT || '';
+    const envName = env.APIGEE_ENV || '';
+    const hostname = env.APIGEE_HOSTNAME || '';
+    const apiUrl = env.APIGEE_BASE_URL || (hostname ? `https://${hostname}` : '');
+    return {
+      live: env.APIGEE_LIVE === 'true',
+      org,
+      env: envName,
+      apiUrl,
+      adminUrl: org ? `https://apigee.googleapis.com/v1/organizations/${org}` : '',
+      apiKey: env.APIGEE_API_KEY || '',
+      apiKeyHeader: env.APIGEE_API_KEY_HEADER || 'x-apikey',
+      authType: env.APIGEE_AUTH_TYPE || (env.APIGEE_CLIENT_ID ? 'oauth2_client_credentials' : (env.APIGEE_API_KEY ? 'api_key' : 'none')),
+      tokenUrl: env.APIGEE_TOKEN_URL || (apiUrl ? `${apiUrl.replace(/\/$/, '')}/oauth/token` : ''),
+      clientId: env.APIGEE_CLIENT_ID || '',
+      clientSecret: env.APIGEE_CLIENT_SECRET || '',
+      scope: env.APIGEE_OAUTH_SCOPE || '',
+      wirePath: env.APIGEE_WIRE_PATH || '/v1/clearing/wire',
+      pushPath: env.APIGEE_PUSH_PATH || '/v1/clearing/push',
+      settlementPath: env.APIGEE_SETTLEMENT_PATH || '/v1/clearing/settlements',
+      statusPath: env.APIGEE_STATUS_PATH || '/v1/clearing/status',
+      useMtls: env.APIGEE_MTLS === 'true',
+      clientCertPath: env.APIGEE_CLIENT_CERT_PATH || '',
+      clientKeyPath: env.APIGEE_CLIENT_KEY_PATH || '',
+      clientCaPath: env.APIGEE_CLIENT_CA_PATH || '',
+      sourceName: env.APIGEE_ODFI_NAME || env.APISIX_ODFI_NAME || env.PTC_BANK_NAME || env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      sourceBankName: env.APIGEE_ODFI_BANK_NAME || env.APISIX_ODFI_BANK_NAME || env.PTC_BANK_NAME || env.TRUST_BANK_NAME || 'ODFI Bank',
+      sourceRouting: env.APIGEE_ODFI_ROUTING || env.APISIX_ODFI_ROUTING || env.PTC_BANK_ROUTING || env.TRUST_BANK_ROUTING || '',
+      sourceAccount: env.APIGEE_ODFI_ACCOUNT || env.APISIX_ODFI_ACCOUNT || env.PTC_BANK_SETTLEMENT_ACCOUNT || env.TRUST_BANK_ACCOUNT || '',
+      allowHttp: env.APIGEE_ALLOW_HTTP === 'true',
+      allowedHosts: (env.APIGEE_ALLOWED_HOSTS || (hostname ? hostname : '')).split(',').map((h) => h.trim()).filter(Boolean),
+    };
+  }
+
+  static _connectorConfig() {
+    const cfg = this._cfg();
+    const auth = { type: cfg.authType };
+    if (cfg.authType === 'oauth2_client_credentials') {
+      Object.assign(auth, { tokenUrl: cfg.tokenUrl, clientId: cfg.clientId, clientSecret: cfg.clientSecret, scope: cfg.scope || undefined });
+    } else if (cfg.authType === 'api_key') {
+      Object.assign(auth, { apiKey: cfg.apiKey, headerName: cfg.apiKeyHeader });
+    }
+    return {
+      baseUrl: cfg.apiUrl,
+      auth,
+      headers: cfg.apiKey && cfg.authType !== 'api_key' ? { [cfg.apiKeyHeader]: cfg.apiKey } : {},
+      useMtls: cfg.useMtls,
+      clientCertPath: cfg.clientCertPath,
+      clientKeyPath: cfg.clientKeyPath,
+      clientCaPath: cfg.clientCaPath,
+      allowPrivateNetwork: cfg.allowHttp,
+    };
+  }
+
+  static readinessBlockers() {
+    const cfg = this._cfg();
+    const blockers = [];
+    if (!cfg.apiUrl) blockers.push('APIGEE_BASE_URL or APIGEE_HOSTNAME is not set');
+    if (cfg.authType === 'oauth2_client_credentials' && (!cfg.clientId || !cfg.clientSecret)) blockers.push('APIGEE_CLIENT_ID/APIGEE_CLIENT_SECRET are not both set');
+    if (cfg.authType === 'api_key' && !cfg.apiKey) blockers.push('APIGEE_API_KEY is not set');
+    if (cfg.authType === 'none' && cfg.live) blockers.push('live mode requires APIGEE_CLIENT_ID/SECRET or APIGEE_API_KEY');
+    if (!cfg.sourceRouting || !cfg.sourceAccount) blockers.push('ODFI settlement account (APIGEE_ODFI_ROUTING/APIGEE_ODFI_ACCOUNT) is not set');
+    return blockers;
+  }
+
+  static async _http(method, url, body, timeoutMs = 30000) {
+    this._validateUrl(url);
+    const connector = tryRequire('../aggregator/connectors/genericRestConnector');
+    if (!connector || typeof connector.request !== 'function') throw new Error('genericRestConnector is not available');
+    const conn = { id: `apigee:${this._cfg().org || 'default'}` };
+    try {
+      const res = await Promise.race([
+        connector.request(method, url, this._connectorConfig(), body, conn),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`APIGEE request timed out after ${timeoutMs}ms`)), timeoutMs)),
+      ]);
+      return { statusCode: res.statusCode, ok: true, headers: {}, body: res.raw, json: res.json };
+    } catch (e) {
+      const m = /^HTTP (\d{3}) from/.exec(e.message || '');
+      if (m) return { statusCode: Number(m[1]), ok: false, headers: {}, body: e.message, json: null };
+      throw e;
+    }
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const blockers = this.readinessBlockers();
+    let reachable = false;
+    let message = 'shadow/simulated';
+    if (cfg.live && blockers.length === 0) {
+      try {
+        const r = await this._http('GET', this._url(cfg.apiUrl, cfg.statusPath), undefined, 5000);
+        reachable = r.statusCode < 500;
+        message = reachable ? `apigee proxy reachable (http ${r.statusCode})` : `apigee proxy returned http ${r.statusCode}`;
+      } catch (e) { message = e.message; }
+    } else if (cfg.live) {
+      message = `live mode blocked: ${blockers.join('; ')}`;
+    }
+    return {
+      engine: this.engineName,
+      healthy: cfg.live ? reachable : true,
+      mode: cfg.live ? 'live' : 'shadow',
+      live: cfg.live,
+      ready: cfg.live ? reachable && blockers.length === 0 : blockers.length === 0,
+      blockers,
+      org: cfg.org || null,
+      env: cfg.env || null,
+      apiUrl: cfg.apiUrl || null,
+      adminUrl: cfg.adminUrl || null,
+      authType: cfg.authType,
+      mtls: cfg.useMtls,
+      reachable,
+      message,
+      timestamp: new Date().toISOString(),
+    };
   }
 }
 
@@ -8117,18 +8250,21 @@ async function unifiedPipeline({ limit = 20 } = {}) {
   const ControlPlane = tryRequire('../trust/trustControlPlaneEngine')?.TrustControlPlaneEngine;
   const Collateral = tryRequire('./collateralOsEngine')?.CollateralOsEngine;
   const Funding = tryRequire('../fineract/canonicalFundingSource')?.CanonicalFundingSource;
-  const [treasuryLeg, controlPlane, collateral, canonicalFunding] = await Promise.all([
+  const GatewayClearing = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
+  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing] = await Promise.all([
     SpritzLeg ? settle(SpritzLeg.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'SpritzTreasuryLegEngine not available' }),
     ControlPlane ? settle(ControlPlane.controlPlane()) : Promise.resolve({ ok: false, error: 'TrustControlPlaneEngine not available' }),
     Collateral ? settle(Collateral.status()) : Promise.resolve({ ok: false, error: 'CollateralOsEngine not available' }),
     Funding ? settle(Promise.resolve(Funding.readiness())) : Promise.resolve({ ok: false, error: 'CanonicalFundingSource not available' }),
+    GatewayClearing ? settle(GatewayClearing.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'ApiGatewayClearingEngine not available' }),
   ]);
   return {
-    stages: ['erp', 'policy_contract', 'spritz', 'settlement'],
+    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing'],
     canonicalFunding,
     treasuryLeg,
     controlPlane,
     collateral,
+    gatewayClearing,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -8661,6 +8797,7 @@ const ENGINES = {
   'settlement-endpoint': SettlementEndpointEngine,
   'moov-paygate': MoovPaygateEngine,
   'apisix': ApacheApisixEngine,
+  'apigee': ApigeeGatewayEngine,
   nickel: NickelMcpEngine,
   'canonical-money': CanonicalMoneyOSEngine,
   'canonical-liquidity': CanonicalLiquidityOSEngine,
@@ -8708,6 +8845,7 @@ module.exports = {
   PtcTreasuryEngine,
   MoovPaygateEngine,
   ApacheApisixEngine,
+  ApigeeGatewayEngine,
   NickelMcpEngine,
   SettlementEndpointEngine,
   CanonicalMoneyOSEngine,

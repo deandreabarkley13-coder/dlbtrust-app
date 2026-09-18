@@ -210,6 +210,7 @@ class DistributionRequestEngine {
     destinationAddress,
     bank,
     biller,
+    googleWallet,
     payoutRail,
     memo,
     purpose,
@@ -235,6 +236,9 @@ class DistributionRequestEngine {
       destinationAddress,
       bank,
       biller,
+      googleWallet: googleWallet || (String(destinationType || '').toLowerCase() === 'google_wallet' || String(payoutRail || '').toLowerCase() === 'google_wallet'
+        ? { email: beneficiaryEmail, name: beneficiaryName, walletAddress: destinationAddress || undefined, bank, role: requesterRole === 'trustee' && !beneficiaryId ? 'trustee' : 'beneficiary' }
+        : undefined),
       payoutRail: payoutRail || metadata.payoutRail,
       currency,
     });

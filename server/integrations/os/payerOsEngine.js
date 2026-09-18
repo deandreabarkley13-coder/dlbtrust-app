@@ -58,6 +58,11 @@ const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate')
 const { StablecoinPayoutRail } = require('./stablecoinPayoutRail');
 const { MftOsEngine } = require('./mftOsEngine');
 
+let ApiGatewayClearingEngine;
+try { ({ ApiGatewayClearingEngine } = require('../dapp/apiGatewayClearingEngine')); } catch (e) { ApiGatewayClearingEngine = null; }
+
+const GATEWAY_CHANNELS = new Set(['api_gateway', 'apigee', 'apisix']);
+
 /**
  * What the trust is allowed to push, and how. `rail` is not negotiable per
  * disbursement: funding a settlement account is a wire because same-day
@@ -170,6 +175,10 @@ function getPayerOsConfig() {
     // this asset, never the cash account a wire or an ACH credit draws on.
     stablecoinAssetAccount: text('STABLECOIN_ASSET_ACCOUNT', '1210'),
     achEffectiveDateOffsetDays: Number(text('PAYER_OS_ACH_EFFECTIVE_OFFSET_DAYS', '1')) || 0,
+    // `nacha` (default) originates PPD/CCD credits as NACHA files over the
+    // configured bank channel; `api_gateway` / `apigee` / `apisix` push the
+    // same credit through the API gateway clearing engine instead.
+    achChannel: text('PAYER_OS_ACH_CHANNEL', 'nacha').toLowerCase(),
   };
 }
 
@@ -856,6 +865,46 @@ const PayerOsEngine = {
 
     const credit = this.payee(row.disbursement_type, row.payee_key);
     await this._update(disbursementId, { status: 'sending' }, 'sending');
+
+    if (channel.via === 'api_gateway') {
+      let cleared;
+      try {
+        cleared = await ApiGatewayClearingEngine.clearPayment({
+          rail: channel.rail,
+          flow: row.disbursement_type,
+          paymentType: 'push',
+          amount: Number(row.amount_cents) / 100,
+          currency: 'USD',
+          reference: row.disbursement_id,
+          description: `${row.sec_code} ${metadata.entryDescription || DISBURSEMENT_TYPES[row.disbursement_type].entryDescription} ${row.memo || ''}`.trim(),
+          sourceType: 'payer_os',
+          sourceId: row.disbursement_id,
+          approvalRef: `${row.disbursement_id}:${row.approved_by}`,
+          screeningRef: metadata.screeningId || null,
+          destination: {
+            name: credit.name,
+            routingNumber: credit.routingNumber,
+            accountNumber: credit.accountNumber,
+            accountType: credit.transactionCode === '32' ? 'savings' : 'checking',
+          },
+          initiatedBy: row.approved_by || row.initiated_by,
+        });
+      } catch (error) {
+        await this._update(disbursementId, { status: 'failed', failure_reason: error.message }, 'failed', null, { error: error.message });
+        throw new PayerOsError(
+          `Gateway origination failed for ${row.disbursement_id}: ${error.message}`,
+          'PAYER_OS_GATEWAY_FAILED',
+          502
+        );
+      }
+      const updated = await this._update(disbursementId, {
+        status: 'sent',
+        sent_at: 'NOW()',
+        rail_reference: cleared.gatewayReference || cleared.eventId,
+      }, 'sent', null, { gatewayEventId: cleared.eventId, provider: cleared.provider, shadow: cleared.shadow, channel: channel.provider });
+      return { disbursement: updated, gateway: cleared };
+    }
+
     let batch;
     try {
       batch = await ACHEngine.createBatch({
@@ -1050,6 +1099,27 @@ const PayerOsEngine = {
   async achChannel() {
     let mode = 'unknown';
     try { mode = await SystemSettings.getMode(); } catch { mode = 'unknown'; }
+
+    const configuredChannel = getPayerOsConfig().achChannel;
+    if (GATEWAY_CHANNELS.has(configuredChannel)) {
+      if (!ApiGatewayClearingEngine) {
+        return { ready: false, mode, via: 'api_gateway', rail: configuredChannel, provider: null, partnerId: null, reason: 'ApiGatewayClearingEngine not available' };
+      }
+      let readiness = null;
+      let reason = null;
+      try { readiness = await ApiGatewayClearingEngine.readiness(); } catch (error) { reason = error.message; }
+      const provider = readiness ? readiness.provider : ApiGatewayClearingEngine.resolveProvider(configuredChannel);
+      const ready = Boolean(readiness && readiness.ready);
+      return {
+        ready,
+        mode,
+        via: 'api_gateway',
+        rail: configuredChannel,
+        provider: `API gateway (${provider})`,
+        partnerId: null,
+        reason: ready ? null : (reason || `API gateway ${provider} cannot clear: ${(readiness.blockers || []).join('; ')}`),
+      };
+    }
 
     const mftChannelId = ACHEngine.mftChannelId();
     if (mftChannelId) {
