@@ -184,7 +184,7 @@ class CanonicalConsensusEngine {
       if (!Number.isFinite(Number(payload.amount)) || Number(payload.amount) <= 0) {
         throw new Error('vendor_bill amount must be positive');
       }
-      if (!['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay'].includes(String(payload.rail || 'melio'))) {
+      if (!['melio', 'bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment', 'spritz_bill_pay', 'api_gateway', 'apigee', 'apisix'].includes(String(payload.rail || 'melio'))) {
         throw new Error('vendor_bill rail is not supported');
       }
       if (String(payload.rail) === 'spritz_bill_pay' && !(payload.spritzBillId || (payload.vendor && payload.vendor.metadata && (payload.vendor.metadata.spritzBillId || payload.vendor.metadata.spritz_bill_id)))) {

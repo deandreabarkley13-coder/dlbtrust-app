@@ -78,6 +78,11 @@ resource "google_cloud_run_v2_service" "app" {
       }
 
       env {
+        name  = "GCS_CLEARING_EVIDENCE_BUCKET"
+        value = google_storage_bucket.clearing_evidence.name
+      }
+
+      env {
         name = "DATABASE_URL"
         value_source {
           secret_key_ref {
@@ -133,6 +138,7 @@ resource "google_cloud_run_v2_service" "app" {
     google_secret_manager_secret_iam_member.database_url_runtime,
     google_secret_manager_secret_iam_member.runtime_accessor,
     google_storage_bucket_iam_member.runtime_data,
+    google_storage_bucket_iam_member.runtime_clearing_evidence,
     google_compute_router_nat.egress,
   ]
 

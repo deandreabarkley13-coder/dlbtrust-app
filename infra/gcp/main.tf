@@ -85,3 +85,27 @@ resource "google_storage_bucket_iam_member" "runtime_data" {
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.runtime.email}"
 }
+
+# Immutable request/response evidence for every API-gateway (Apigee / APISIX)
+# clearing event. The runtime may only create objects here, never overwrite or
+# delete them; Cloud SQL `gateway_clearing_events` stays the ledger of record.
+resource "google_storage_bucket" "clearing_evidence" {
+  name                        = "${var.project_id}-${var.service_name}-clearing-evidence"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true
+  }
+
+  retention_policy {
+    retention_period = var.clearing_evidence_retention_days * 24 * 60 * 60
+  }
+}
+
+resource "google_storage_bucket_iam_member" "runtime_clearing_evidence" {
+  bucket = google_storage_bucket.clearing_evidence.name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${google_service_account.runtime.email}"
+}

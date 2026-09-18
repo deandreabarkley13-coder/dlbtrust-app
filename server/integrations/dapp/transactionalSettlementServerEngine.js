@@ -80,10 +80,11 @@ const VALID_DIRECTIONS = new Set(['inbound', 'outbound']);
 const VALID_RAILS = new Set([
   'wire', 'ach', 'open_banking', 'iso20022', 'mft_sftp', 'as2', 'host_to_host',
   'external_endpoint', 'live_fintech', 'lili', 'bill', 'manual',
-  'stablecoin', 'sovereign', 'dex', 'stablecoin_dex', 'cross_chain', 'btcpay', 'cashapp', 'module', 'deposit'
+  'stablecoin', 'sovereign', 'dex', 'stablecoin_dex', 'cross_chain', 'btcpay', 'cashapp', 'module', 'deposit',
+  'api_gateway', 'apigee', 'apisix'
 ]);
 
-const SETTLEMENT_RAILS = new Set(['wire', 'ach', 'open_banking', 'iso20022', 'mft_sftp', 'as2', 'host_to_host', 'external_endpoint', 'live_fintech', 'stablecoin', 'sovereign', 'manual']);
+const SETTLEMENT_RAILS = new Set(['wire', 'ach', 'open_banking', 'iso20022', 'mft_sftp', 'as2', 'host_to_host', 'external_endpoint', 'live_fintech', 'stablecoin', 'sovereign', 'manual', 'api_gateway', 'apigee', 'apisix']);
 
 async function query(sql, params) {
   if (!pool || !pool.query) throw new Error('Postgres pool unavailable');

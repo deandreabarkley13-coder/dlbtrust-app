@@ -272,6 +272,60 @@ What still requires product work, not infrastructure: a linked Spritz funding
 source (Plaid, dashboard-only), `MELIO_API_CONTRACT_VERIFIED`, and any live
 flag flip. None of those are touched by this migration.
 
+## API-gateway clearing & settlement pipeline (Apigee / APISIX)
+
+Money movement that leaves the trust over REST goes through one pipeline,
+`server/integrations/dapp/apiGatewayClearingEngine.js`:
+
+```
+request -> two_trustee_approval -> compliance_gate -> rail_routing
+        -> gateway_settlement -> google_wallet_pass (optional) -> ledger_reconciliation
+```
+
+- **Entry points** (all existing maker/checker flows, none new):
+  distribution requests / one-click disbursements (`payoutRail`), the payout
+  center, vendor bills (`VendorPaymentEngine.payBill`, rail
+  `api_gateway|apigee|apisix`), Payer OS direct deposits (PPD) and vendor
+  payouts (CCD) with `PAYER_OS_ACH_CHANNEL=api_gateway`, and settlement orders
+  (`SettlementEngine.executeSettlement`, same rails).
+- **Gateway**: `api_gateway` resolves to Apigee when `APIGEE_*` is configured
+  (or `API_GATEWAY_PROVIDER=apigee`), otherwise to the existing APISIX engine.
+  `ApigeeGatewayEngine` in `osEngine.js` is a sibling of the APISIX engine and
+  sends through `genericRestConnector` (OAuth2 client credentials / API key,
+  optional mTLS, SSRF + DNS-rebinding guards, host allowlist).
+- **Fail-closed**: every clearing needs an `approvalRef` (the approved
+  request / consensus proposal / Payer OS approval) and a `screeningRef`
+  (`PaymentComplianceGate` result). Shadow is the default; a real payout only
+  happens with `APIGEE_LIVE=true` (or `APISIX_LIVE=true`) plus credentials
+  and an allowlisted HTTPS host. Shadow runs still record the event so the
+  full pipeline can be exercised without moving money.
+- **Storage**: Cloud SQL table `gateway_clearing_events` (created on first
+  use) is the ledger of record. When `GCS_CLEARING_EVIDENCE_BUCKET` is set
+  (Terraform: `clearing_evidence` bucket, object-creator only, 7-year
+  bucket lock) the redacted request/response is also written as an immutable
+  object; on Cloud Run the runtime service account is used, elsewhere
+  `GCP_CLEARING_SERVICE_ACCOUNT_KEY`.
+- **Google Wallet**: when a destination is `google_wallet`, the money leg
+  (SIT wallet or gateway bank push) runs first, then
+  `GoogleWalletEngine.createPass` provisions a Generic pass keyed by the
+  trustee/beneficiary email or wallet address and returns a signed
+  Save-to-Google-Wallet link (`GOOGLE_WALLET_LIVE=true` calls
+  `walletobjects.googleapis.com`; shadow signs locally or returns a demo
+  link). This is a pass/link, **not** a funded NFC card — funded card credit
+  needs a bank / Token Service Provider issued card and is out of scope.
+- **REST**: `GET /api/dapp/clearing-pipeline/readiness`,
+  `GET /api/dapp/clearing-pipeline` (stages + recent events),
+  `GET /api/dapp/clearing-pipeline/events[/:id]`,
+  `POST /api/dapp/clearing-pipeline/events/:id/reconcile`,
+  `GET|POST /api/dapp/payment-rails/google/{readiness,pass}`. Direct
+  `sendPayment`-style calls on the `apisix` / `apigee` OS engines are
+  rejected by `routes/os.js`; money must enter through the flows above.
+  `POST /api/os/canonical-money/process {"action":"pipeline"}`
+  (`unifiedPipeline`) includes a `gateway_clearing` stage.
+
+Secrets to add to `secret_names` when going live: `APIGEE_API_KEY` or
+`APIGEE_CLIENT_ID`/`APIGEE_CLIENT_SECRET`, `GOOGLE_WALLET_SERVICE_ACCOUNT_KEY`.
+
 ## Out of scope for this phase
 
 - Cloud Armor / IAP in front of the operator console — recommended, separate

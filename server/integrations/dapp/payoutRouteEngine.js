@@ -7,8 +7,12 @@
  *
  * - A wallet destination stays on the crypto path: the SIT mint by default, or
  *   the thirdweb server wallet when the record asks for it.
- * - A bank destination settles over ACH (NACHA file + AS2 transmission).
+ * - A bank destination settles over ACH (NACHA file + AS2 transmission), or
+ *   over the API gateway (Apigee / APISIX) when `payoutRail` asks for it.
  * - A biller destination settles over the bill-pay provider.
+ * - A google_wallet destination provisions a Save-to-Google-Wallet pass for
+ *   the trustee/beneficiary and funds them over the gateway (bank details) or
+ *   the SIT mint (wallet address). The pass itself is not a funded card.
  *
  * The routing decision is derived from the canonical request, so the same
  * maker/checker approval covers either side and neither rail can be reached
@@ -21,13 +25,15 @@ try { viem = require('viem'); } catch (e) { viem = null; }
 let validateRouting;
 try { ({ validateRouting } = require('../ach/nachaGenerator')); } catch (e) { validateRouting = null; }
 
-const DESTINATION_TYPES = ['wallet', 'bank', 'biller'];
+const DESTINATION_TYPES = ['wallet', 'bank', 'biller', 'google_wallet'];
+const GATEWAY_RAILS = ['api_gateway', 'apigee', 'apisix'];
+const BANK_RAILS = ['ach', ...GATEWAY_RAILS];
 const ACCOUNT_TYPES = ['checking', 'savings'];
 const HOLDER_TYPES = ['individual', 'business'];
 
 // Rails this engine will hand to the payout center on its own. Anything else
 // has to be executed deliberately, so an override cannot auto-release funds.
-const ROUTED_RAILS = ['sit', 'ach', 'bill_pay'];
+const ROUTED_RAILS = ['sit', 'ach', 'bill_pay', 'google_wallet', ...GATEWAY_RAILS];
 
 // A payout receipt is stored on the request, which beneficiaries can read. The
 // NACHA file and raw account fields belong in the ACH tables, not there.
@@ -58,7 +64,7 @@ function badRequest(message) {
 // Which rail a wallet destination takes when the request does not name one.
 // `sit` mints from the trust supply; `thirdweb_server_wallet` sends existing
 // tokens from the Vault-held treasury wallet, which is released deliberately.
-const WALLET_RAILS = ['sit', 'thirdweb', 'thirdweb_server_wallet'];
+const WALLET_RAILS = ['sit', 'thirdweb', 'thirdweb_server_wallet', 'google_wallet'];
 
 function defaultWalletRail() {
   const configured = String(process.env.DAPP_WALLET_PAYOUT_RAIL || '').toLowerCase().trim();
@@ -74,6 +80,8 @@ function pick(...values) {
 
 class PayoutRouteEngine {
   static get DESTINATION_TYPES() { return [...DESTINATION_TYPES]; }
+  static get GATEWAY_RAILS() { return [...GATEWAY_RAILS]; }
+  static isGatewayRail(rail) { return GATEWAY_RAILS.includes(String(rail || '').toLowerCase()); }
 
   /**
    * Resolve the destination type. An explicit type wins; otherwise the record
@@ -145,13 +153,85 @@ class PayoutRouteEngine {
   }
 
   /**
+   * Validate and normalize a Google Wallet destination. The pass is keyed by
+   * the trustee/beneficiary email or wallet address; the money leg needs either
+   * bank details (gateway push credit) or a wallet address (SIT mint).
+   */
+  static normalizeGoogleWallet(googleWallet = {}, { destinationAddress, payoutRail } = {}) {
+    const email = pick(googleWallet.email, googleWallet.beneficiaryEmail);
+    const walletAddress = pick(googleWallet.walletAddress, googleWallet.address, destinationAddress);
+    if (!email && !walletAddress) throw badRequest('googleWallet.email or googleWallet.walletAddress required for a google_wallet destination');
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw badRequest('googleWallet.email is not a valid email');
+    if (walletAddress && !isAddress(walletAddress)) throw badRequest('googleWallet.walletAddress is not a valid address');
+    const role = String(pick(googleWallet.role, 'beneficiary')).toLowerCase();
+    if (!['trustee', 'beneficiary'].includes(role)) throw badRequest('googleWallet.role must be trustee or beneficiary');
+
+    const bankInput = googleWallet.bank || (googleWallet.routingNumber ? googleWallet : null);
+    const bank = bankInput ? this.normalizeBank(bankInput) : null;
+    const requested = payoutRail ? String(payoutRail).toLowerCase() : null;
+    let fundingRail;
+    if (bank) {
+      fundingRail = requested && GATEWAY_RAILS.includes(requested) ? requested : 'api_gateway';
+    } else if (walletAddress) {
+      fundingRail = 'sit';
+    } else {
+      throw badRequest('googleWallet.bank (gateway push credit) or googleWallet.walletAddress (SIT) required to fund a google_wallet payout');
+    }
+    return {
+      email,
+      walletAddress,
+      role,
+      name: pick(googleWallet.name, googleWallet.fullName, bank && bank.accountHolderName),
+      userId: pick(googleWallet.userId),
+      bank,
+      fundingRail,
+    };
+  }
+
+  /**
    * Build the route for a new request. Returns the rail, the rail options the
    * payout center needs, the label to store as the record's destination, and
    * the redacted copy that is safe to persist in metadata or show in the UI.
    */
-  static plan({ destinationType, destinationAddress, bank, biller, payoutRail, currency = 'USD' } = {}) {
+  static plan({ destinationType, destinationAddress, bank, biller, googleWallet, payoutRail, currency = 'USD' } = {}) {
     const type = this.resolveDestinationType(destinationType, destinationAddress);
     const override = payoutRail ? String(payoutRail).toLowerCase() : null;
+
+    if (type === 'google_wallet' || (type === 'wallet' && override === 'google_wallet')) {
+      if (String(currency).toUpperCase() !== 'USD') throw badRequest(`google_wallet destinations settle in USD, not ${currency}`);
+      const gw = this.normalizeGoogleWallet(googleWallet || {}, { destinationAddress, payoutRail: override === 'google_wallet' ? null : override });
+      const walletPass = { email: gw.email, walletAddress: gw.walletAddress, role: gw.role, name: gw.name, userId: gw.userId };
+      const bankOptions = gw.bank ? {
+        routingNumber: gw.bank.routingNumber,
+        accountNumber: gw.bank.accountNumber,
+        accountType: gw.bank.accountType,
+        holderType: gw.bank.holderType,
+        recipientName: gw.bank.accountHolderName,
+        bankName: gw.bank.bankName,
+        secCode: gw.bank.secCode,
+      } : {};
+      return {
+        destinationType: 'google_wallet',
+        rail: 'google_wallet',
+        engine: 'payout_center',
+        asset: gw.fundingRail === 'sit' ? 'SIT' : 'USD',
+        destinationLabel: `google_wallet:${gw.email || gw.walletAddress}`,
+        railOptions: { walletPass, fundingRail: gw.fundingRail, walletAddress: gw.walletAddress, ...bankOptions },
+        redacted: {
+          destinationType: 'google_wallet',
+          rail: 'google_wallet',
+          fundingRail: gw.fundingRail,
+          email: gw.email,
+          walletAddress: gw.walletAddress,
+          role: gw.role,
+          bankName: gw.bank ? gw.bank.bankName : null,
+          routingNumber: gw.bank ? gw.bank.routingNumber : null,
+          accountNumber: gw.bank ? mask(gw.bank.accountNumber) : null,
+          cardFunding: 'not_provisioned: pass/link only; funded NFC card credit requires a Token Service Provider',
+        },
+        autoExecutable: true,
+      };
+    }
 
     if (type === 'wallet') {
       if (!destinationAddress) throw badRequest('destinationAddress required for a wallet destination');
@@ -178,13 +258,16 @@ class PayoutRouteEngine {
 
     if (type === 'bank') {
       const normalized = this.normalizeBank(bank || {});
+      if (override && !BANK_RAILS.includes(override)) {
+        throw badRequest(`payoutRail for a bank destination must be one of ${BANK_RAILS.join(', ')}`);
+      }
       const rail = override || 'ach';
       return {
         destinationType: type,
         rail,
         engine: 'payout_center',
         asset: 'USD',
-        destinationLabel: `ach:${mask(normalized.accountNumber)}`,
+        destinationLabel: `${GATEWAY_RAILS.includes(rail) ? rail : 'ach'}:${mask(normalized.accountNumber)}`,
         railOptions: {
           routingNumber: normalized.routingNumber,
           accountNumber: normalized.accountNumber,
@@ -256,7 +339,10 @@ class PayoutRouteEngine {
       destinationAddress: record.destination_address,
       bank: stored.destinationType === 'bank' ? stored : undefined,
       biller: stored.destinationType === 'biller' ? stored : undefined,
-      payoutRail: metadata.payoutRail,
+      googleWallet: stored.destinationType === 'google_wallet'
+        ? { ...(stored.walletPass || {}), bank: stored.routingNumber ? stored : undefined }
+        : undefined,
+      payoutRail: stored.destinationType === 'google_wallet' ? (stored.fundingRail || metadata.payoutRail) : metadata.payoutRail,
       currency: record.currency || 'USD',
     });
   }

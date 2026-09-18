@@ -49,9 +49,16 @@ try { ({ ACHEngine } = require('../ach/achEngine')); } catch (e) { ACHEngine = n
 let getMelioClient;
 try { ({ getClient: getMelioClient } = require('../melio/melioClient')); } catch (e) { getMelioClient = null; }
 
+let ApiGatewayClearingEngine;
+try { ({ ApiGatewayClearingEngine } = require('./apiGatewayClearingEngine')); } catch (e) { ApiGatewayClearingEngine = null; }
+
+let GoogleWalletEngine;
+try { ({ GoogleWalletEngine } = require('./googleWalletEngine')); } catch (e) { GoogleWalletEngine = null; }
+
 // Rails that pay a bank account or a biller: the recipient is an external
 // party, not a wallet the dApp knows about.
-const FIAT_EXTERNAL_RAILS = new Set(['ach', 'bill_pay', 'melio']);
+const GATEWAY_RAILS = new Set(['api_gateway', 'apigee', 'apisix']);
+const FIAT_EXTERNAL_RAILS = new Set(['ach', 'bill_pay', 'melio', 'google_wallet', ...GATEWAY_RAILS]);
 
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
@@ -387,6 +394,39 @@ class PayoutCenterEngine {
         base.status = melio.shadow ? 'manual_pending' : (payment.status === 'completed' ? 'completed' : 'api_pending');
         break;
       }
+      case 'api_gateway':
+      case 'apigee':
+      case 'apisix': {
+        result = await this._clearThroughGateway({ base, chosenRail, amount, description, paymentType, recipientIdentifier, railOptions, walletPass: railOptions.walletPass || null });
+        break;
+      }
+      case 'google_wallet': {
+        // Money leg first (gateway push credit or SIT mint), then the pass.
+        const { walletPass, fundingRail, ...fundingOptions } = railOptions;
+        if (!walletPass || !(walletPass.email || walletPass.walletAddress || walletPass.userId)) {
+          throw new Error('google_wallet rail requires railOptions.walletPass keyed by email or walletAddress');
+        }
+        if (fundingRail === 'sit') {
+          if (!railOptions.walletAddress) throw new Error('google_wallet rail with SIT funding requires railOptions.walletAddress');
+          const funding = await this.createPayment({
+            paymentType, sourceType, sourceAccountId,
+            recipientType: 'external', recipientIdentifier: railOptions.walletAddress,
+            amount, asset: 'SIT', description, rail: 'sit', railOptions: fundingOptions,
+          });
+          let pass = null;
+          let passError = null;
+          if (GoogleWalletEngine) {
+            try { pass = await GoogleWalletEngine.createPass({ ...walletPass, walletName: 'DLB Trust Distribution Account' }); } catch (e) { passError = e.message; }
+          } else { passError = 'GoogleWalletEngine not available'; }
+          result = { fundingRail: 'sit', funding: { id: funding.id, status: funding.status, tx_hash: funding.tx_hash }, walletPass: pass, walletPassError: passError };
+          base.tx_hash = funding.tx_hash;
+          base.status = funding.status;
+        } else {
+          if (!GATEWAY_RAILS.has(fundingRail || 'api_gateway')) throw new Error(`google_wallet fundingRail must be sit or one of ${[...GATEWAY_RAILS].join(', ')}`);
+          result = await this._clearThroughGateway({ base, chosenRail: fundingRail || 'api_gateway', amount, description, paymentType, recipientIdentifier, railOptions: fundingOptions, walletPass });
+        }
+        break;
+      }
       default:
         throw new Error(`Unsupported rail: ${rail}`);
     }
@@ -404,6 +444,53 @@ class PayoutCenterEngine {
     }, () => {});
 
     return { ...base, result };
+  }
+
+  /**
+   * API-gateway clearing (Apigee / APISIX). Only reachable for a payout that
+   * carries its maker/checker reference (the approved distribution request or
+   * an explicit approvalRef) — the gateway engine refuses without it and
+   * without the compliance screening recorded above.
+   */
+  static async _clearThroughGateway({ base, chosenRail, amount, description, paymentType, recipientIdentifier, railOptions, walletPass }) {
+    if (!ApiGatewayClearingEngine) throw new Error('ApiGatewayClearingEngine not available');
+    const approvalRef = railOptions.ptc_request_id || railOptions.approvalRef || railOptions.consensusProposalId || null;
+    if (!approvalRef) {
+      const err = new Error('gateway payouts require the approved request reference (railOptions.ptc_request_id / approvalRef); use the distribution-request or vendor-bill maker/checker workflow');
+      err.status = 409;
+      throw err;
+    }
+    const holderName = railOptions.recipientName || railOptions.fullName || railOptions.businessName || (walletPass && walletPass.name) || String(recipientIdentifier);
+    const cleared = await ApiGatewayClearingEngine.clearPayment({
+      rail: chosenRail,
+      flow: paymentType === 'disbursement' ? 'disbursement' : (paymentType === 'vendor_bill' ? 'vendor_bill' : 'distribution'),
+      paymentType: railOptions.paymentType === 'wire' ? 'wire' : 'push',
+      amount,
+      currency: 'USD',
+      reference: railOptions.ptc_request_id || base.id,
+      description,
+      sourceType: 'payout_center',
+      sourceId: base.id,
+      approvalRef,
+      screeningRef: base.metadata.complianceScreeningId || railOptions.screeningRef || null,
+      destination: {
+        name: holderName,
+        bankName: railOptions.bankName,
+        routingNumber: railOptions.routingNumber || railOptions.routing,
+        accountNumber: railOptions.accountNumber || railOptions.account,
+        accountType: railOptions.accountType || 'checking',
+      },
+      walletPass,
+      initiatedBy: railOptions.initiatedBy || 'payout-center',
+    });
+    base.tx_hash = cleared.gatewayReference || cleared.eventId;
+    base.status = cleared.shadow ? 'manual_pending' : (cleared.status === 'completed' || cleared.status === 'settled' ? 'completed' : 'api_pending');
+    return {
+      eventId: cleared.eventId, provider: cleared.provider, rail: cleared.rail, status: cleared.status, live: cleared.live, shadow: cleared.shadow,
+      gatewayReference: cleared.gatewayReference, evidenceUri: cleared.evidenceUri,
+      walletPass: cleared.walletPass ? { objectId: cleared.walletPass.objectId, addToWalletLink: cleared.walletPass.addToWalletLink, mode: cleared.walletPass.mode, signed: cleared.walletPass.signed } : null,
+      walletPassError: cleared.walletPassError,
+    };
   }
 
   static async getLatestPoolAddress(asset) {
