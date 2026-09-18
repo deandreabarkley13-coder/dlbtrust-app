@@ -440,6 +440,7 @@ class ApiGatewayClearingEngine {
       provider: cfg.provider,
       providerSource: cfg.providerExplicit ? 'API_GATEWAY_PROVIDER' : 'auto',
       rails: GATEWAY_RAILS,
+      stages: STAGES,
       mode: gateway.ok && gateway.value.live ? 'live' : 'shadow',
       ready: blockers.length === 0,
       blockers,

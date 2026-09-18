@@ -120,6 +120,7 @@ describe('readiness / pipeline', () => {
     expect(readiness.mode).toBe('shadow');
     expect(readiness.provider).toBe('apigee');
     expect(readiness.blockers.join(' ')).toMatch(/shadow/);
+    expect(readiness.stages).toEqual(ApiGatewayClearingEngine.STAGES);
     expect(ApiGatewayClearingEngine.STAGES).toEqual([
       'request', 'two_trustee_approval', 'compliance_gate', 'rail_routing',
       'gateway_settlement', 'google_wallet_pass', 'ledger_reconciliation',
