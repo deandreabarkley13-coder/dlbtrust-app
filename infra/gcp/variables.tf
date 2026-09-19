@@ -72,6 +72,7 @@ variable "runtime_environment" {
     PAYMENT_HUB_LIVE               = "false"
     API_GATEWAY_PROVIDER           = "lili"
     LILI_CLEARING_LIVE             = "false"
+    LILI_BUSINESS_USER_ID          = "aa9ffea8-a548-4ab6-af66-8abc0e0f910e"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
     COMPLIANCE_PROVIDER            = "opensanctions"
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
