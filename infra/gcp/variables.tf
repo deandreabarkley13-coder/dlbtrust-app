@@ -70,6 +70,8 @@ variable "runtime_environment" {
     AS2_MESSAGE_ID_DOMAIN          = "dlbtrust-app-r5oawu76jq-ue.a.run.app"
     PAYMENT_HUB_MODE               = "disabled"
     PAYMENT_HUB_LIVE               = "false"
+    API_GATEWAY_PROVIDER           = "lili"
+    LILI_CLEARING_LIVE             = "false"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
     COMPLIANCE_PROVIDER            = "opensanctions"
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
