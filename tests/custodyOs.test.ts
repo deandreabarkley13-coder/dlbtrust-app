@@ -16,6 +16,7 @@ interface FakeState {
   attestations: Row[];
   bonds: Row[];
   distributions: Row[];
+  tablesMissing: boolean;
 }
 
 /**
@@ -29,10 +30,16 @@ function fakeDb(state: FakeState) {
     if (/^(CREATE|ALTER)/i.test(text)) return { rows: [] };
 
     if (text.includes('FROM bonds b')) {
+      if (state.tablesMissing) {
+        throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      }
       return { rows: state.bonds };
     }
 
     if (text.includes('FROM fixed_income_distributions')) {
+      if (state.tablesMissing) {
+        throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      }
       const groups = new Map<string, Row>();
       for (const row of state.distributions) {
         const key = `${row.bond_id || 'trust'}:${row.bucket}:${row.status}`;
@@ -281,7 +288,14 @@ describe('custody OS engine', () => {
 
   beforeEach(() => {
     state = {
-      accounts: [], positions: [], receipts: [], events: [], attestations: [], bonds: [], distributions: [],
+      accounts: [],
+      positions: [],
+      receipts: [],
+      events: [],
+      attestations: [],
+      bonds: [],
+      distributions: [],
+      tablesMissing: false,
     };
     saved = {};
     for (const key of ENV_KEYS) {
@@ -318,6 +332,18 @@ describe('custody OS engine', () => {
   }
 
   describe('fixed income feed', () => {
+    it('treats missing bond and distribution tables as empty', async () => {
+      state.tablesMissing = true;
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.bonds).toBe(0);
+      expect(result.cashBuckets).toBe(0);
+      expect(result.created).toEqual([]);
+      expect(state.accounts).toHaveLength(1);
+      expect(state.accounts[0].custody_account_id).toBe('CUS-ISSUER-FIXED-INCOME');
+    });
+
     it('mirrors an active bond and open distributions into the issuer register as unverified self-custody positions', async () => {
       state.bonds = [{
         id: 1,

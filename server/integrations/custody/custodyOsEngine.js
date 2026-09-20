@@ -776,18 +776,22 @@ class CustodyOsEngine {
   static async syncFixedIncome({ syncedBy = FEED_ACTOR, proposeReceipts = true } = {}) {
     await this.ensureTables();
     const account = await this.ensureIssuerAccount({ openedBy: syncedBy });
-    const bondResult = await pool.query(
+    const rowsOrEmpty = (p) => p.then((r) => r.rows).catch((e) => {
+      if (e && e.code === '42P01') return [];
+      throw e;
+    });
+    const bondRows = await rowsOrEmpty(pool.query(
       `SELECT b.id, b.bond_name, b.isin, b.issuer, b.face_value, b.status,
               bb.principal_balance, bb.accrued_interest
          FROM bonds b
          JOIN bond_balances bb ON bb.bond_id = b.id
         ORDER BY b.id ASC`
-    );
-    const distributionResult = await pool.query(
+    ));
+    const distributionRows = await rowsOrEmpty(pool.query(
       `SELECT bond_id, bucket, status, SUM(amount_usd) AS amount, COUNT(*)::int AS count
          FROM fixed_income_distributions
         GROUP BY bond_id, bucket, status`
-    );
+    ));
     const positions = await this.listPositions({ custodyAccountId: account.custody_account_id });
     const pendingReceipts = proposeReceipts
       ? await this.listReceipts({ status: 'pending' })
@@ -797,7 +801,7 @@ class CustodyOsEngine {
     );
     const desired = new Map();
     const bondEvidence = new Map();
-    const activeBonds = bondResult.rows.filter((bond) => String(bond.status).toLowerCase() === 'active');
+    const activeBonds = bondRows.filter((bond) => String(bond.status).toLowerCase() === 'active');
     for (const bond of activeBonds) {
       const id = `BOND-${bond.id}`;
       const evidenceReference = `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`;
@@ -813,7 +817,7 @@ class CustodyOsEngine {
         evidenceReference,
       });
     }
-    for (const bond of bondResult.rows) {
+    for (const bond of bondRows) {
       const id = `BOND-${bond.id}`;
       if (!bondEvidence.has(id)) {
         bondEvidence.set(id, `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`);
@@ -822,7 +826,7 @@ class CustodyOsEngine {
 
     const openStatuses = new Set(['planned', 'funding', 'funded', 'proposed']);
     const cashBuckets = new Map();
-    for (const row of distributionResult.rows) {
+    for (const row of distributionRows) {
       if (!openStatuses.has(String(row.status).toLowerCase())) continue;
       const key = `${row.bond_id || 'trust'}:${row.bucket}`;
       const current = cashBuckets.get(key) || {
