@@ -621,6 +621,10 @@ async function initializeDatabase() {
     var CustodyOsEngine = require(path.join(HD, 'server', 'integrations', 'custody', 'custodyOsEngine')).CustodyOsEngine;
     await CustodyOsEngine.ensureTables();
     console.log('[custody-os] tables ensured; signatures required =', CustodyOsEngine.config().requiredSignatures);
+    if (String(process.env.CUSTODY_FIXED_INCOME_SYNC || 'true').toLowerCase() !== 'false') {
+      const fed = await CustodyOsEngine.syncFixedIncome();
+      console.log('[custody-os] fixed-income feed:', fed.bonds, 'bonds,', fed.cashBuckets, 'cash buckets,', fed.receiptsProposed, 'receipts proposed');
+    }
   } catch(e) { console.warn('[custody-os] table init:', e.message); }
 
   try {

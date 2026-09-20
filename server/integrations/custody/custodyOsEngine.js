@@ -42,6 +42,10 @@ const ASSET_CLASSES = ['cash', 'fixed_income', 'digital_asset', 'physical'];
 
 const RECEIPT_ACTIONS = ['safekeeping', 'release', 'revaluation'];
 
+const ISSUER_CUSTODY_ACCOUNT_ID = 'CUS-ISSUER-FIXED-INCOME';
+const ISSUER_NAME = process.env.CUSTODY_ISSUER_NAME || 'DEANDREA LAVAR BARKLEY TRUST COMPANY';
+const FEED_ACTOR = 'fixed-income-feed';
+
 /**
  * Which reserve source a countersigned third-party receipt records. Digital and
  * physical holdings are deliberately absent: an on-chain balance is verified by
@@ -93,6 +97,8 @@ class CustodyOsEngine {
         return Number.isFinite(n) && n >= 1 && n <= 5 ? Math.round(n) : 2;
       })(),
       reserveLinked: String(process.env.CUSTODY_RESERVE_SYNC || 'true').toLowerCase() !== 'false',
+      issuerAccountId: ISSUER_CUSTODY_ACCOUNT_ID,
+      issuerName: process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME,
     };
   }
 
@@ -754,16 +760,207 @@ class CustodyOsEngine {
     return { synced: synced.length, positions: synced };
   }
 
+  static async ensureIssuerAccount({ openedBy = FEED_ACTOR } = {}) {
+    const existing = await this.getAccount(ISSUER_CUSTODY_ACCOUNT_ID);
+    if (existing) return existing;
+    return this.openAccount({
+      custodyAccountId: ISSUER_CUSTODY_ACCOUNT_ID,
+      accountName: `${process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME} — Issuer Register`,
+      custodyType: 'self_custody',
+      jurisdiction: process.env.CUSTODY_ISSUER_JURISDICTION || null,
+      notes: 'Bond inventory and fixed-income cash mirrored from the bond and distribution engines',
+      openedBy,
+    });
+  }
+
+  static async syncFixedIncome({ syncedBy = FEED_ACTOR, proposeReceipts = true } = {}) {
+    await this.ensureTables();
+    const account = await this.ensureIssuerAccount({ openedBy: syncedBy });
+    const bondResult = await pool.query(
+      `SELECT b.id, b.bond_name, b.isin, b.issuer, b.face_value, b.status,
+              bb.principal_balance, bb.accrued_interest
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+        ORDER BY b.id ASC`
+    );
+    const distributionResult = await pool.query(
+      `SELECT bond_id, bucket, status, SUM(amount_usd) AS amount, COUNT(*)::int AS count
+         FROM fixed_income_distributions
+        GROUP BY bond_id, bucket, status`
+    );
+    const positions = await this.listPositions({ custodyAccountId: account.custody_account_id });
+    const pendingReceipts = proposeReceipts
+      ? await this.listReceipts({ status: 'pending' })
+      : [];
+    const pendingRelease = new Set(
+      pendingReceipts
+        .filter((receipt) => receipt.action === 'release')
+        .map((receipt) => receipt.position_id)
+    );
+    const desired = new Map();
+    const bondEvidence = new Map();
+    const activeBonds = bondResult.rows.filter((bond) => String(bond.status).toLowerCase() === 'active');
+    for (const bond of activeBonds) {
+      const id = `BOND-${bond.id}`;
+      const evidenceReference = `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`;
+      bondEvidence.set(id, evidenceReference);
+      desired.set(id, {
+        assetClass: 'fixed_income',
+        instrumentRef: id,
+        instrumentName: bond.bond_name || bond.isin || `Bond #${bond.id}`,
+        quantity: Number(bond.face_value),
+        valuationCents: Math.round(
+          (Number(bond.principal_balance) + Number(bond.accrued_interest)) * 100
+        ),
+        evidenceReference,
+      });
+    }
+    for (const bond of bondResult.rows) {
+      const id = `BOND-${bond.id}`;
+      if (!bondEvidence.has(id)) {
+        bondEvidence.set(id, `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`);
+      }
+    }
+
+    const openStatuses = new Set(['planned', 'funding', 'funded', 'proposed']);
+    const cashBuckets = new Map();
+    for (const row of distributionResult.rows) {
+      if (!openStatuses.has(String(row.status).toLowerCase())) continue;
+      const key = `${row.bond_id || 'trust'}:${row.bucket}`;
+      const current = cashBuckets.get(key) || {
+        bondId: row.bond_id || null,
+        bucket: row.bucket,
+        amount: 0,
+        count: 0,
+      };
+      current.amount += Number(row.amount || 0);
+      current.count += Number(row.count || 0);
+      cashBuckets.set(key, current);
+    }
+    for (const bucket of cashBuckets.values()) {
+      if (bucket.amount <= 0) continue;
+      const key = `FID-${bucket.bondId || 'trust'}-${bucket.bucket}`;
+      desired.set(key, {
+        assetClass: 'cash',
+        instrumentRef: key,
+        instrumentName: bucket.bucket === 'coupon_income'
+          ? 'Coupon income awaiting distribution'
+          : 'Trust operating allocation awaiting payout',
+        quantity: bucket.count,
+        valuationCents: Math.round(bucket.amount * 100),
+        evidenceReference: `fixed_income_distributions:${bucket.bondId || 'trust'}:${bucket.bucket}`,
+      });
+    }
+
+    const created = [];
+    const revalued = [];
+    const released = [];
+    let unchanged = 0;
+    let receiptsProposed = 0;
+    const propose = async (position, action, evidenceReference) => {
+      if (!proposeReceipts) return;
+      await this.proposeReceipt({
+        positionId: position.position_id,
+        action,
+        evidenceReference,
+        proposedBy: syncedBy,
+      });
+      receiptsProposed += 1;
+    };
+
+    for (const item of desired.values()) {
+      const existing = positions.find((position) => position.instrument_ref === item.instrumentRef);
+      if (!existing) {
+        const position = await this.recordPosition({
+          custodyAccountId: account.custody_account_id,
+          assetClass: item.assetClass,
+          instrumentRef: item.instrumentRef,
+          instrumentName: item.instrumentName,
+          quantity: item.quantity,
+          valuationCents: item.valuationCents,
+          recordedBy: syncedBy,
+        });
+        created.push(item.instrumentRef);
+        await propose(position, 'safekeeping', item.evidenceReference);
+        continue;
+      }
+      if (
+        Number(existing.quantity) === Number(item.quantity)
+        && cents(existing.valuation_cents) === item.valuationCents
+      ) {
+        unchanged += 1;
+        continue;
+      }
+      const position = await this.recordPosition({
+        custodyAccountId: account.custody_account_id,
+        assetClass: item.assetClass,
+        instrumentRef: item.instrumentRef,
+        instrumentName: item.instrumentName,
+        quantity: item.quantity,
+        valuationCents: item.valuationCents,
+        recordedBy: syncedBy,
+      });
+      revalued.push(item.instrumentRef);
+      await propose(position, 'revaluation', item.evidenceReference);
+    }
+
+    const managedPositions = positions.filter((position) => (
+      position.instrument_ref.startsWith('BOND-')
+      || position.instrument_ref.startsWith('FID-')
+    ));
+    for (const position of managedPositions) {
+      if (desired.has(position.instrument_ref) || position.control_status === 'released') continue;
+      if (!proposeReceipts || pendingRelease.has(position.position_id)) continue;
+      const evidenceReference = position.instrument_ref.startsWith('BOND-')
+        ? (bondEvidence.get(position.instrument_ref)
+          || `bonds:${position.instrument_ref.slice('BOND-'.length)}`)
+        : `fixed_income_distributions:${position.instrument_ref.slice('FID-'.length)}`;
+      await propose(position, 'release', evidenceReference);
+      released.push(position.instrument_ref);
+    }
+
+    const summary = {
+      bonds: activeBonds.length,
+      cashBuckets: [...desired.values()].filter((item) => item.assetClass === 'cash').length,
+      created,
+      revalued,
+      released,
+      unchanged,
+      receiptsProposed,
+    };
+    if (created.length || revalued.length || released.length) {
+      await this._appendEvent({
+        eventType: 'fixed_income_synced',
+        custodyAccountId: account.custody_account_id,
+        actor: syncedBy,
+        payload: summary,
+      });
+    }
+    return { account: account.custody_account_id, ...summary };
+  }
+
   static async status() {
     const cfg = this.config();
     const statement = await this.statement().catch((e) => ({ error: e.message }));
     const chain = await this.verifyChain().catch((e) => ({ error: e.message }));
     const pending = await this.listReceipts({ status: 'pending' }).catch(() => []);
+    const latestFeed = await pool.query(
+      `SELECT created_at
+         FROM custody_events
+        WHERE event_type = 'fixed_income_synced'
+        ORDER BY sequence DESC
+        LIMIT 1`
+    ).catch(() => ({ rows: [] }));
     return {
       requiredSignatures: cfg.requiredSignatures,
       reserveLinked: cfg.reserveLinked,
       reserveEngineAvailable: Boolean(ReserveEngine),
       pendingReceipts: pending.length,
+      fixedIncomeFeed: {
+        issuerAccountId: cfg.issuerAccountId,
+        issuerName: cfg.issuerName,
+        lastSyncedAt: latestFeed.rows[0] ? latestFeed.rows[0].created_at : null,
+      },
       chain,
       statement,
     };
@@ -776,4 +973,7 @@ module.exports = {
   ASSET_CLASSES,
   RECEIPT_ACTIONS,
   RESERVE_SOURCE_BY_ASSET_CLASS,
+  ISSUER_CUSTODY_ACCOUNT_ID,
+  ISSUER_NAME,
+  FEED_ACTOR,
 };

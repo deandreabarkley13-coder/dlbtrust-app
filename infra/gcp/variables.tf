@@ -133,12 +133,15 @@ variable "runtime_environment" {
     TRUST_SIGNATURE_DOCUMENT_PATH  = "/data/governance/Trustees_Signature_Page.pdf"
 
     # Family Trust Company mandate + fixed-income distribution (docs/TRUST_CONTROL_PLANE.md)
-    TRUST_LEGAL_NAME                   = "DEANDREA LAVAR BARKLEY FAMILY TRUST"
-    TRUST_NAME                         = "DLB Trust"
-    TRUST_MANDATE_RESERVE_INCOME_PCT   = "10"
-    TRUST_MANDATE_ALLOW_CORPUS         = "false"
-    TRUST_MANDATE_REQUIRE_CANONICAL    = "false"
-    TRUST_MANDATE_ENFORCE              = "false"
+    TRUST_LEGAL_NAME                 = "DEANDREA LAVAR BARKLEY FAMILY TRUST"
+    TRUST_NAME                       = "DLB Trust"
+    TRUST_MANDATE_RESERVE_INCOME_PCT = "10"
+    TRUST_MANDATE_ALLOW_CORPUS       = "false"
+    TRUST_MANDATE_REQUIRE_CANONICAL  = "false"
+    TRUST_MANDATE_ENFORCE            = "false"
+    # Custody OS issuer register feed is self-custody and does not add reserve.
+    CUSTODY_ISSUER_NAME                = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    CUSTODY_FIXED_INCOME_SYNC          = "true"
     FIXED_INCOME_DISTRIBUTION_ENABLED  = "true"
     FIXED_INCOME_AUTO_STAGE            = "false"
     FIXED_INCOME_AUTO_EXECUTE          = "false"

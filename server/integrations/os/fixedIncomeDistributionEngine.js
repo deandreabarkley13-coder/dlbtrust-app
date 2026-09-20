@@ -36,6 +36,9 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
 
+let CustodyOsEngine;
+try { ({ CustodyOsEngine } = require('../custody/custodyOsEngine')); } catch (e) { CustodyOsEngine = null; }
+
 const POLICY_CONFIG = path.join(__dirname, '..', '..', '..', 'contracts', 'policy.base.json');
 const YEAR_SECONDS = 31536000;
 const PERIODS_PER_YEAR = { monthly: 12, quarterly: 4, 'semi-annual': 2, annual: 1 };
@@ -444,7 +447,23 @@ const FixedIncomeDistributionEngine = {
       }
     }
     const reconciled = await this.reconcile({ actor });
-    return { planned: planned.planned, plannedUsd: planned.totalUsd, staged: staged.length, stagedErrors: staged.filter((s) => s.error).length, reconciled: reconciled.reconciled, summary: await this.summary() };
+    let custody = null;
+    if (CustodyOsEngine) {
+      try {
+        custody = await CustodyOsEngine.syncFixedIncome({ syncedBy: actor || 'fixed-income-auto' });
+      } catch (e) {
+        custody = { error: e.message };
+      }
+    }
+    return {
+      planned: planned.planned,
+      plannedUsd: planned.totalUsd,
+      staged: staged.length,
+      stagedErrors: staged.filter((s) => s.error).length,
+      reconciled: reconciled.reconciled,
+      summary: await this.summary(),
+      custody,
+    };
   },
 };
 
