@@ -159,11 +159,14 @@ variable "runtime_environment" {
     # and PAYMENT_DATA_ENCRYPTION_KEY come from the dlbtrust-runtime secret
     # group via migrate-northflank-secrets.mjs; the cloudrun.tf precondition
     # refuses this setting if they are not in secret_names.
-    CROSS_CHAIN_ENABLED            = "true"
-    CROSS_CHAIN_SHADOW             = "false"
-    CROSS_CHAIN_SOURCE_CHAIN       = "ethereum"
-    CROSS_CHAIN_BRIDGE             = "circle-cctp"
-    MELIO_EXPORT_DIR               = "/data/melio-exports"
+    CROSS_CHAIN_ENABLED      = "true"
+    CROSS_CHAIN_SHADOW       = "false"
+    CROSS_CHAIN_SOURCE_CHAIN = "ethereum"
+    CROSS_CHAIN_BRIDGE       = "circle-cctp"
+    MELIO_EXPORT_DIR         = "/data/melio-exports"
+    # Compliance gate (paymentComplianceGate.js): "live" permits real vendor
+    # payment execution through the gateway clearing engine.
+    VENDOR_PAYMENT_EXECUTION_MODE  = "live"
     COMPLIANCE_PROVIDER            = "opensanctions"
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
     TRUST_CHECKER_EMAIL            = "deandreabarkley13@gmail.com"
