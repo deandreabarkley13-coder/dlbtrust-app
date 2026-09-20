@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { CustodyOsEngine } = require('../server/integrations/custody/custodyOsEngine');
 const { ReserveEngine } = require('../server/integrations/finops/reserveEngine');
+const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 type Row = Record<string, any>;
@@ -14,6 +15,12 @@ interface FakeState {
   receipts: Row[];
   events: Row[];
   attestations: Row[];
+  trustAccounts: Row[];
+  journalEntries: Row[];
+  journalLines: Row[];
+  cashAccounts: Row[];
+  cashMovements: Row[];
+  collateralPositions: Row[];
   bonds: Row[];
   distributions: Row[];
   tablesMissing: boolean;
@@ -27,7 +34,130 @@ interface FakeState {
 function fakeDb(state: FakeState) {
   return vi.fn(async (sql: string, params: any[] = []) => {
     const text = String(sql).replace(/\s+/g, ' ').trim();
-    if (/^(CREATE|ALTER)/i.test(text)) return { rows: [] };
+    if (/^(CREATE|ALTER|BEGIN|COMMIT|ROLLBACK)/i.test(text)) return { rows: [] };
+
+    if (text.startsWith('SELECT * FROM trust_accounts WHERE account_code')) {
+      const account = state.trustAccounts.find((row) => row.account_code === params[0]);
+      return { rows: account ? [account] : [] };
+    }
+
+    if (text.startsWith('INSERT INTO trust_accounts')) {
+      const row = {
+        account_code: params[0],
+        account_name: params[1],
+        account_type: params[2],
+        sub_type: params[3],
+        linked_cash_account: params[4],
+        linked_fineract_gl: params[5],
+        description: params[6],
+        balance: 0,
+        is_active: true,
+      };
+      state.trustAccounts.push(row);
+      return { rows: [row] };
+    }
+
+    if (text.startsWith('SELECT account_type FROM trust_accounts')) {
+      const account = state.trustAccounts.find((row) => row.account_code === params[0]);
+      return { rows: account ? [{ account_type: account.account_type }] : [] };
+    }
+
+    if (text.startsWith('UPDATE trust_accounts SET balance')) {
+      const account = state.trustAccounts.find((row) => row.account_code === params[1]);
+      if (account) account.balance += Number(params[0]);
+      return { rows: [] };
+    }
+
+    if (text.startsWith('INSERT INTO trust_journal_entries')) {
+      state.journalEntries.push({
+        entry_id: params[0],
+        entry_date: params[1],
+        description: params[2],
+        reference_type: params[3],
+        reference_id: params[4],
+        bond_id: params[5],
+        posted_by: params[6],
+        status: 'posted',
+      });
+      return { rows: [] };
+    }
+
+    if (text.startsWith('INSERT INTO trust_journal_lines')) {
+      state.journalLines.push({
+        id: state.journalLines.length + 1,
+        entry_id: params[0],
+        account_code: params[1],
+        debit_amount: params[2],
+        credit_amount: params[3],
+        memo: params[4],
+      });
+      return { rows: [] };
+    }
+
+    if (text.startsWith('SELECT * FROM trust_journal_entries WHERE entry_id')) {
+      const entry = state.journalEntries.find((row) => row.entry_id === params[0]);
+      return { rows: entry ? [entry] : [] };
+    }
+
+    if (text.startsWith('SELECT * FROM trust_journal_lines WHERE entry_id')) {
+      return { rows: state.journalLines.filter((row) => row.entry_id === params[0]) };
+    }
+
+    if (text.startsWith('SELECT entry_id FROM trust_journal_entries')) {
+      const entry = state.journalEntries.find((row) => (
+        row.reference_type === 'custody_receipt'
+        && row.reference_id === String(params[0])
+        && row.status === 'posted'
+      ));
+      return { rows: entry ? [{ entry_id: entry.entry_id }] : [] };
+    }
+
+    if (text.startsWith('SELECT * FROM cash_accounts WHERE account_id')) {
+      const account = state.cashAccounts.find((row) => row.account_id === params[0]);
+      return { rows: account ? [account] : [] };
+    }
+
+    if (text.startsWith('INSERT INTO cash_accounts')) {
+      const row = {
+        account_id: params[0],
+        account_name: params[1],
+        account_type: params[2],
+        linked_fineract_account_id: params[3],
+        notes: params[4],
+        balance_cents: 0,
+        status: 'active',
+      };
+      state.cashAccounts.push(row);
+      return { rows: [row] };
+    }
+
+    if (text.startsWith('SELECT movement_id FROM cash_movements')) {
+      const movement = state.cashMovements.find((row) => row.reference_id === String(params[0]));
+      return { rows: movement ? [{ movement_id: movement.movement_id }] : [] };
+    }
+
+    if (text.startsWith('UPDATE cash_accounts SET balance_cents = balance_cents +')) {
+      const account = state.cashAccounts.find((row) => row.account_id === params[1]);
+      if (account) {
+        account.balance_cents += Number(params[0]);
+        return { rows: [account] };
+      }
+      return { rows: [] };
+    }
+
+    if (text.startsWith('INSERT INTO cash_movements')) {
+      const row = {
+        movement_id: params[0],
+        to_account_id: params[1],
+        amount_cents: params[2],
+        movement_type: 'deposit',
+        reference_id: params[3] === undefined || params[3] === null ? null : String(params[3]),
+        memo: params[4],
+        initiated_by: params[5],
+      };
+      state.cashMovements.push(row);
+      return { rows: [row] };
+    }
 
     if (text.includes('FROM bonds b')) {
       if (state.tablesMissing) {
@@ -55,6 +185,10 @@ function fakeDb(state: FakeState) {
         groups.set(key, current);
       }
       return { rows: Array.from(groups.values()) };
+    }
+
+    if (text.includes('FROM collateral_positions') && text.includes("status = 'pledged'")) {
+      return { rows: state.collateralPositions };
     }
 
     if (text.startsWith('INSERT INTO custody_accounts')) {
@@ -215,6 +349,24 @@ function fakeDb(state: FakeState) {
       return { rows: matching.length ? [matching[matching.length - 1]] : [] };
     }
 
+    if (text.includes("event_type = 'collateral_synced'")) {
+      const matching = state.events.filter((event) => event.event_type === 'collateral_synced');
+      return { rows: matching.length ? [matching[matching.length - 1]] : [] };
+    }
+
+    if (text.startsWith('SELECT * FROM custody_events ORDER BY sequence ASC FOR UPDATE')) {
+      return { rows: state.events };
+    }
+
+    if (text.startsWith('UPDATE custody_events SET prev_hash')) {
+      const event = state.events.find((row) => row.sequence === params[0]);
+      if (event) {
+        event.prev_hash = params[1];
+        event.event_hash = params[2];
+      }
+      return { rows: [] };
+    }
+
     if (text.includes('FROM custody_events ORDER BY sequence DESC LIMIT 1')) {
       const tip = state.events[state.events.length - 1];
       return { rows: tip ? [tip] : [] };
@@ -293,6 +445,12 @@ describe('custody OS engine', () => {
       receipts: [],
       events: [],
       attestations: [],
+      trustAccounts: [],
+      journalEntries: [],
+      journalLines: [],
+      cashAccounts: [],
+      cashMovements: [],
+      collateralPositions: [],
       bonds: [],
       distributions: [],
       tablesMissing: false,
@@ -303,6 +461,11 @@ describe('custody OS engine', () => {
       delete process.env[key];
     }
     vi.spyOn(pool, 'query').mockImplementation(fakeDb(state) as any);
+    const query = (pool.query as any).getMockImplementation();
+    vi.spyOn(pool, 'connect').mockResolvedValue({
+      query,
+      release: vi.fn(),
+    } as any);
   });
 
   afterEach(() => {
@@ -594,6 +757,143 @@ describe('custody OS engine', () => {
       expect(settled.status).toBe('countersigned');
       expect(settled.controlStatus).toBe('receipted');
     });
+
+    it('posts a balanced custody journal once when a receipt is countersigned', async () => {
+      const account = await thirdPartyAccount();
+      const position = await CustodyOsEngine.recordPosition({
+        custodyAccountId: account.custody_account_id,
+        assetClass: 'fixed_income',
+        instrumentRef: 'US912810TM09',
+        valuationCents: 25000000,
+        recordedBy: MAKER,
+      });
+      const receipt = await CustodyOsEngine.proposeReceipt({
+        positionId: position.position_id,
+        evidenceReference: 'SCHWAB-STMT-2026-08',
+        proposedBy: MAKER,
+      });
+
+      await CustodyOsEngine.countersignReceipt(receipt.receipt_id, MAKER);
+      const settled = await CustodyOsEngine.countersignReceipt(receipt.receipt_id, CHECKER);
+
+      expect(settled.accounting.status).toBe('booked');
+      expect(state.journalEntries).toHaveLength(1);
+      expect(state.journalEntries[0]).toMatchObject({
+        reference_type: 'custody_receipt',
+        reference_id: receipt.receipt_id,
+      });
+      expect(state.journalLines).toHaveLength(2);
+      expect(state.journalLines.reduce((sum, line) => sum + Number(line.debit_amount), 0))
+        .toBe(250000);
+      expect(state.journalLines.reduce((sum, line) => sum + Number(line.credit_amount), 0))
+        .toBe(250000);
+
+      await expect(CustodyOsEngine.countersignReceipt(receipt.receipt_id, 'replay'))
+        .rejects.toThrow(/already countersigned/);
+      expect(state.journalEntries).toHaveLength(1);
+    });
+
+    it('still countersigns when accounting is unavailable', async () => {
+      const account = await thirdPartyAccount();
+      const position = await CustodyOsEngine.recordPosition({
+        custodyAccountId: account.custody_account_id,
+        assetClass: 'fixed_income',
+        instrumentRef: 'US912810TM09',
+        valuationCents: 25000000,
+        recordedBy: MAKER,
+      });
+      const receipt = await CustodyOsEngine.proposeReceipt({
+        positionId: position.position_id,
+        evidenceReference: 'SCHWAB-STMT-2026-08',
+        proposedBy: MAKER,
+      });
+      const original = TrustAccountingEngine.postJournalEntry;
+      TrustAccountingEngine.postJournalEntry = undefined;
+      try {
+        await CustodyOsEngine.countersignReceipt(receipt.receipt_id, MAKER);
+        const settled = await CustodyOsEngine.countersignReceipt(receipt.receipt_id, CHECKER);
+        expect(settled.status).toBe('countersigned');
+        expect(settled.accounting.status).toBe('accounting_unavailable');
+      } finally {
+        TrustAccountingEngine.postJournalEntry = original;
+      }
+    });
+
+    it('syncs third-party cash to CashEngine but excludes self-custody cash', async () => {
+      const thirdParty = await thirdPartyAccount();
+      const externalPosition = await CustodyOsEngine.recordPosition({
+        custodyAccountId: thirdParty.custody_account_id,
+        assetClass: 'cash',
+        instrumentRef: 'SCHWAB-CASH',
+        valuationCents: 100000,
+        recordedBy: MAKER,
+      });
+      const externalReceipt = await CustodyOsEngine.proposeReceipt({
+        positionId: externalPosition.position_id,
+        evidenceReference: 'SCHWAB-CASH-2026-08',
+        proposedBy: MAKER,
+      });
+      await CustodyOsEngine.countersignReceipt(externalReceipt.receipt_id, MAKER);
+      const externalSettled = await CustodyOsEngine.countersignReceipt(externalReceipt.receipt_id, CHECKER);
+
+      expect(externalSettled.cash.status).toBe('synced');
+      expect(state.cashAccounts[0].account_id).toBe('CUS-THIRD-PARTY-CASH');
+      expect(state.cashMovements).toHaveLength(1);
+      expect(state.cashMovements[0].amount_cents).toBe(100000);
+
+      const self = await selfCustodyAccount();
+      const selfPosition = await CustodyOsEngine.recordPosition({
+        custodyAccountId: self.custody_account_id,
+        assetClass: 'cash',
+        instrumentRef: 'TRUST-CASH',
+        valuationCents: 50000,
+        recordedBy: MAKER,
+      });
+      const selfReceipt = await CustodyOsEngine.proposeReceipt({
+        positionId: selfPosition.position_id,
+        evidenceReference: 'TRUST-CASH-LOG',
+        proposedBy: MAKER,
+      });
+      await CustodyOsEngine.countersignReceipt(selfReceipt.receipt_id, MAKER);
+      const selfSettled = await CustodyOsEngine.countersignReceipt(selfReceipt.receipt_id, CHECKER);
+      expect(selfSettled.cash.status).toBe('not_applicable');
+      expect(state.cashMovements).toHaveLength(1);
+    });
+  });
+
+  describe('collateral feed', () => {
+    it('mirrors pledged collateral and proposes a release when it disappears', async () => {
+      state.collateralPositions = [{
+        position_id: 'COLL-1',
+        token_symbol: 'DLB-PRB',
+        token_address: '0xabc',
+        chain_id: 8453,
+        decimals: 6,
+        quantity_units: '1250000',
+        value_usd: '42.50',
+        status: 'pledged',
+        custody_wallet: '0xwallet',
+      }];
+
+      const result = await CustodyOsEngine.syncCollateral();
+      expect(result.created).toEqual(['COL-COLL-1']);
+      expect(state.positions[0]).toMatchObject({
+        asset_class: 'digital_asset',
+        quantity: 1.25,
+        valuation_cents: 4250,
+      });
+      expect(state.receipts[0]).toMatchObject({
+        action: 'safekeeping',
+        evidence_reference: 'collateral_positions:COLL-1',
+      });
+      await CustodyOsEngine.countersignReceipt(state.receipts[0].receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(state.receipts[0].receipt_id, CHECKER);
+
+      state.collateralPositions = [];
+      const released = await CustodyOsEngine.syncCollateral();
+      expect(released.released).toEqual(['COL-COLL-1']);
+      expect(state.receipts.filter((receipt) => receipt.action === 'release')).toHaveLength(1);
+    });
   });
 
   describe('reserve linkage', () => {
@@ -783,6 +1083,42 @@ describe('custody OS engine', () => {
       const tampered = await CustodyOsEngine.verifyChain();
       expect(tampered.intact).toBe(false);
       expect(tampered.breaks[0].sequence).toBe(2);
+    });
+
+    it('reseals hash-function changes and detects later payload edits', async () => {
+      const account = await thirdPartyAccount();
+      const position = await CustodyOsEngine.recordPosition({
+        custodyAccountId: account.custody_account_id,
+        assetClass: 'cash',
+        instrumentRef: 'Betterment Trust Checking',
+        valuationCents: 100000,
+        recordedBy: MAKER,
+      });
+      await CustodyOsEngine.proposeReceipt({
+        positionId: position.position_id,
+        evidenceReference: 'BETTERMENT-STMT-2026-08',
+        proposedBy: MAKER,
+      });
+      state.events[0].event_hash = 'old-hash-one';
+      state.events[1].event_hash = 'old-hash-two';
+      const broken = await CustodyOsEngine.verifyChain();
+      expect(broken.intact).toBe(false);
+
+      const resealed = await CustodyOsEngine.resealChain({
+        actor: CHECKER,
+        reason: 'Canonical JSONB hash migration',
+      });
+      expect(resealed.intact).toBe(true);
+      expect(state.events.at(-1).event_type).toBe('chain_resealed');
+      expect(JSON.parse(state.events.at(-1).payload)).toMatchObject({
+        events: 3,
+        rewritten: 2,
+        reason: 'Canonical JSONB hash migration',
+      });
+
+      state.events[0].payload = JSON.stringify({ valuationCents: 999999999 });
+      const tampered = await CustodyOsEngine.verifyChain();
+      expect(tampered.intact).toBe(false);
     });
   });
 });

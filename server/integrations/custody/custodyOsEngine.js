@@ -36,6 +36,12 @@ const pool = require('../bonds/pgPool');
 let ReserveEngine;
 try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { ReserveEngine = null; }
 
+let TrustAccountingEngine;
+try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
+
+let CashEngine;
+try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
+
 const CUSTODY_TYPES = ['self_custody', 'third_party'];
 
 const ASSET_CLASSES = ['cash', 'fixed_income', 'digital_asset', 'physical'];
@@ -45,6 +51,8 @@ const RECEIPT_ACTIONS = ['safekeeping', 'release', 'revaluation'];
 const ISSUER_CUSTODY_ACCOUNT_ID = 'CUS-ISSUER-FIXED-INCOME';
 const ISSUER_NAME = process.env.CUSTODY_ISSUER_NAME || 'DEANDREA LAVAR BARKLEY TRUST COMPANY';
 const FEED_ACTOR = 'fixed-income-feed';
+const COLLATERAL_CUSTODY_ACCOUNT_ID = 'CUS-COLLATERAL-PLEDGES';
+const GENESIS = null;
 
 /**
  * Which reserve source a countersigned third-party receipt records. Digital and
@@ -73,6 +81,11 @@ function requireText(value, message) {
   const text = String(value === undefined || value === null ? '' : value).trim();
   if (!text) throw new Error(message);
   return text;
+}
+
+function boolEnv(name, fallback) {
+  const value = process.env[name];
+  return value === undefined || value === '' ? fallback : String(value).toLowerCase() === 'true';
 }
 
 function canonical(value) {
@@ -109,6 +122,11 @@ class CustodyOsEngine {
       reserveLinked: String(process.env.CUSTODY_RESERVE_SYNC || 'true').toLowerCase() !== 'false',
       issuerAccountId: ISSUER_CUSTODY_ACCOUNT_ID,
       issuerName: process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME,
+      glBookingEnabled: boolEnv('CUSTODY_GL_BOOKING_ENABLED', true),
+      assetGlAccount: process.env.CUSTODY_ASSET_GL_ACCOUNT || '1250',
+      controlGlAccount: process.env.CUSTODY_CONTROL_GL_ACCOUNT || '1251',
+      cashSyncEnabled: boolEnv('CUSTODY_CASH_SYNC', true),
+      cashAccountId: process.env.CUSTODY_CASH_ACCOUNT_ID || 'CUS-THIRD-PARTY-CASH',
     };
   }
 
@@ -183,22 +201,27 @@ class CustodyOsEngine {
       `CREATE INDEX IF NOT EXISTS idx_custody_positions_account
          ON custody_positions (custody_account_id)`
     );
+    try { await this.ensureAccountingAccounts(); } catch (e) { /* accounting is optional */ }
     return true;
   }
 
   // ── Chain of title ─────────────────────────────────────────────────────────
 
-  static async _appendEvent({ eventType, custodyAccountId = null, positionId = null, receiptId = null, actor = null, payload = {} }) {
-    const tip = await pool.query(
+  static async _appendEvent({
+    eventType, custodyAccountId = null, positionId = null, receiptId = null,
+    actor = null, payload = {}, transactionClient = null,
+  }) {
+    const query = transactionClient ? transactionClient.query.bind(transactionClient) : pool.query.bind(pool);
+    const tip = await query(
       'SELECT event_hash FROM custody_events ORDER BY sequence DESC LIMIT 1'
     );
-    const prevHash = (tip.rows[0] && tip.rows[0].event_hash) || null;
+    const prevHash = (tip.rows[0] && tip.rows[0].event_hash) || GENESIS;
     const createdAt = new Date().toISOString();
     const eventId = id('CEV');
     const eventHash = hashEvent({
       prevHash, eventType, custodyAccountId, positionId, receiptId, actor, payload, createdAt,
     });
-    const rows = await pool.query(
+    const rows = await query(
       `INSERT INTO custody_events
          (event_id, event_type, custody_account_id, position_id, receipt_id, actor,
           payload, prev_hash, event_hash, created_at)
@@ -229,7 +252,7 @@ class CustodyOsEngine {
   static async verifyChain() {
     await this.ensureTables();
     const rows = await pool.query('SELECT * FROM custody_events ORDER BY sequence ASC');
-    let prevHash = null;
+    let prevHash = GENESIS;
     const breaks = [];
     for (const row of rows.rows) {
       let payload = row.payload || {};
@@ -259,6 +282,67 @@ class CustodyOsEngine {
       note: breaks.length === 0
         ? 'Every custody event hashes to its predecessor; the chain of title is intact.'
         : 'The custody log has been altered: the listed events no longer hash to their predecessor.',
+    };
+  }
+
+  static async resealChain({ actor = 'operator', reason } = {}) {
+    const resealReason = requireText(reason, 'reason is required to reseal the custody chain');
+    await this.ensureTables();
+    const client = await pool.connect();
+    let events = [];
+    let rewritten = 0;
+    let previousTipHash = GENESIS;
+    try {
+      await client.query('BEGIN');
+      const result = await client.query('SELECT * FROM custody_events ORDER BY sequence ASC FOR UPDATE');
+      events = result.rows;
+      previousTipHash = events.length ? events[events.length - 1].event_hash : GENESIS;
+      let prevHash = GENESIS;
+      for (const row of events) {
+        let payload = row.payload || {};
+        if (typeof payload === 'string') {
+          try { payload = JSON.parse(payload); } catch { payload = {}; }
+        }
+        const createdAt = new Date(row.created_at).toISOString();
+        const eventHash = hashEvent({
+          prevHash,
+          eventType: row.event_type,
+          custodyAccountId: row.custody_account_id,
+          positionId: row.position_id,
+          receiptId: row.receipt_id,
+          actor: row.actor,
+          payload,
+          createdAt,
+        });
+        if ((row.prev_hash || GENESIS) !== prevHash || row.event_hash !== eventHash) {
+          await client.query(
+            'UPDATE custody_events SET prev_hash = $2, event_hash = $3 WHERE sequence = $1',
+            [row.sequence, prevHash, eventHash]
+          );
+          rewritten += 1;
+        }
+        prevHash = eventHash;
+      }
+      await this._appendEvent({
+        eventType: 'chain_resealed',
+        actor,
+        payload: { events: events.length, rewritten, previousTipHash, reason: resealReason },
+        transactionClient: client,
+      });
+      await client.query('COMMIT');
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch (rollbackError) { /* preserve original */ }
+      throw e;
+    } finally {
+      client.release();
+    }
+    const verification = await this.verifyChain();
+    return {
+      events: events.length,
+      rewritten,
+      previousTipHash,
+      tipHash: verification.tipHash,
+      intact: verification.intact,
     };
   }
 
@@ -293,7 +377,7 @@ class CustodyOsEngine {
       [
         accountId, name, type,
         type === 'third_party' ? String(custodianName).trim() : null,
-        type === 'third_party' ? String(custodianAccountRef).trim() : null,
+        custodianAccountRef ? String(custodianAccountRef).trim() : null,
         jurisdiction || null, notes || null, actor,
       ]
     );
@@ -467,6 +551,195 @@ class CustodyOsEngine {
     return Array.isArray(signatures) ? signatures : [];
   }
 
+  static async ensureAccountingAccounts() {
+    const cfg = this.config();
+    if (!cfg.glBookingEnabled || !TrustAccountingEngine) return { status: 'accounting_unavailable', booked: false };
+    const accounts = [
+      {
+        accountCode: cfg.assetGlAccount,
+        accountName: 'Assets in Custody',
+        accountType: 'asset',
+        subType: 'custody',
+        description: `Countersigned custody positions (memo, offset by ${cfg.controlGlAccount})`,
+      },
+      {
+        accountCode: cfg.controlGlAccount,
+        accountName: 'Custody Control (contra)',
+        accountType: 'asset',
+        subType: 'custody_contra',
+        description: 'Custody control offset for countersigned positions',
+      },
+    ];
+    try {
+      for (const account of accounts) {
+        if (!await TrustAccountingEngine.getAccount(account.accountCode)) {
+          await TrustAccountingEngine.createAccount({
+            ...account,
+            ...(account.accountCode === cfg.assetGlAccount
+              ? { linkedCashAccount: cfg.cashAccountId }
+              : {}),
+          });
+        }
+      }
+    } catch (e) {
+      return {
+        status: e && e.code === '42P01' ? 'accounting_unavailable' : 'error',
+        booked: false,
+        error: e.message,
+      };
+    }
+    return { status: 'ready', booked: true };
+  }
+
+  static async _existingAccountingEntry(receiptId) {
+    try {
+      const rows = await pool.query(
+        `SELECT entry_id FROM trust_journal_entries
+         WHERE reference_type = 'custody_receipt'
+           AND reference_id = $1
+           AND status = 'posted'
+         LIMIT 1`,
+        [String(receiptId)]
+      );
+      return rows.rows[0] ? rows.rows[0].entry_id : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static async _bookReceipt(receipt, position, previousValuationCents, postedBy) {
+    const cfg = this.config();
+    if (!cfg.glBookingEnabled) return { status: 'booking_disabled', booked: false };
+    if (!TrustAccountingEngine || typeof TrustAccountingEngine.postJournalEntry !== 'function') {
+      return { status: 'accounting_unavailable', booked: false };
+    }
+    const existing = await this._existingAccountingEntry(receipt.receipt_id);
+    if (existing) return { status: 'already_booked', booked: true, entryId: existing };
+    try {
+      const value = cents(receipt.valuation_cents);
+      const previous = cents(previousValuationCents);
+      let amount = value;
+      let lines;
+      if (receipt.action === 'revaluation') {
+        const delta = value - previous;
+        if (delta === 0) return { status: 'no_change', booked: false };
+        amount = Math.abs(delta);
+        lines = delta > 0
+          ? [
+            { accountCode: cfg.assetGlAccount, debitAmount: dollars(amount), creditAmount: 0 },
+            { accountCode: cfg.controlGlAccount, debitAmount: 0, creditAmount: dollars(amount) },
+          ]
+          : [
+            { accountCode: cfg.controlGlAccount, debitAmount: dollars(amount), creditAmount: 0 },
+            { accountCode: cfg.assetGlAccount, debitAmount: 0, creditAmount: dollars(amount) },
+          ];
+      } else if (receipt.action === 'release') {
+        amount = previous;
+        if (amount <= 0) return { status: 'no_change', booked: false };
+        lines = [
+          { accountCode: cfg.controlGlAccount, debitAmount: dollars(amount), creditAmount: 0 },
+          { accountCode: cfg.assetGlAccount, debitAmount: 0, creditAmount: dollars(amount) },
+        ];
+      } else {
+        if (amount <= 0) return { status: 'no_change', booked: false };
+        lines = [
+          { accountCode: cfg.assetGlAccount, debitAmount: dollars(amount), creditAmount: 0 },
+          { accountCode: cfg.controlGlAccount, debitAmount: 0, creditAmount: dollars(amount) },
+        ];
+      }
+      const entry = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date().toISOString().slice(0, 10),
+        description: `Custody ${receipt.action} ${position.instrument_ref} @ ${position.custody_account_id}`,
+        lines,
+        referenceType: 'custody_receipt',
+        referenceId: String(receipt.receipt_id),
+        postedBy,
+        postToFineract: false,
+      });
+      return {
+        status: 'booked',
+        booked: true,
+        entryId: entry.entry_id || entry.entryId || null,
+      };
+    } catch (e) {
+      return { status: 'error', booked: false, error: e.message };
+    }
+  }
+
+  static async _cashMovementExists(receiptId) {
+    try {
+      const rows = await pool.query(
+        'SELECT movement_id FROM cash_movements WHERE reference_id = $1 LIMIT 1',
+        [String(receiptId)]
+      );
+      return rows.rows[0] || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  static async _syncCashReceipt(receipt, position, previousValuationCents, initiatedBy) {
+    const cfg = this.config();
+    if (!cfg.cashSyncEnabled) return { status: 'sync_disabled', synced: false };
+    if (!CashEngine) return { status: 'cash_unavailable', synced: false };
+    if (position.asset_class !== 'cash' || position.custody_type !== 'third_party') {
+      return { status: 'not_applicable', synced: false };
+    }
+    try {
+      const existing = await this._cashMovementExists(receipt.receipt_id);
+      if (existing) return { status: 'already_synced', synced: true, movementId: existing.movement_id };
+      const account = await CashEngine.getAccount(cfg.cashAccountId)
+        || await CashEngine.createAccount({
+          accountId: cfg.cashAccountId,
+          accountName: 'Cash at third-party custodians',
+          accountType: 'reserve',
+          notes: 'Mirror of countersigned third-party custody cash receipts',
+        });
+      if (!account) return { status: 'cash_unavailable', synced: false };
+      const value = cents(receipt.valuation_cents);
+      const previous = cents(previousValuationCents);
+      const delta = receipt.action === 'safekeeping'
+        ? value
+        : receipt.action === 'release'
+          ? -previous
+          : value - previous;
+      if (delta === 0) return { status: 'no_change', synced: false };
+      if (delta < 0) {
+        return {
+          status: 'unsupported',
+          synced: false,
+          note: 'Negative custody cash deltas require a counter-account; CashEngine.transfer cannot infer one and cash_movements rejects non-positive amounts.',
+        };
+      }
+      const movement = await CashEngine.deposit({
+        toAccountId: cfg.cashAccountId,
+        amountCents: delta,
+        memo: `Custody ${receipt.action} ${position.instrument_ref} @ ${position.custody_account_id}`,
+        referenceId: receipt.receipt_id,
+        initiatedBy,
+      });
+      return { status: 'synced', synced: true, movementId: movement && movement.movement_id };
+    } catch (e) {
+      return { status: 'error', synced: false, error: e.message };
+    }
+  }
+
+  static async _previousReceiptedValuation(position) {
+    if (!position.last_receipt_id) return cents(position.valuation_cents);
+    try {
+      const result = await pool.query(
+        'SELECT valuation_cents, status FROM custody_receipts WHERE receipt_id = $1',
+        [position.last_receipt_id]
+      );
+      const prior = result.rows[0];
+      return prior && prior.status === 'countersigned'
+        ? cents(prior.valuation_cents)
+        : cents(position.valuation_cents);
+    } catch (e) {
+      return cents(position.valuation_cents);
+    }
+  }
+
   /**
    * Countersign a receipt. Once the required number of distinct trustees have
    * signed, the position takes the receipted valuation and — for third-party
@@ -514,6 +787,7 @@ class CustodyOsEngine {
     }
 
     const controlStatus = receipt.action === 'release' ? 'released' : 'receipted';
+    const previousValuationCents = await this._previousReceiptedValuation(position);
     const valuationCents = receipt.action === 'release' ? 0 : cents(receipt.valuation_cents);
     await pool.query(
       `UPDATE custody_positions
@@ -534,6 +808,8 @@ class CustodyOsEngine {
         RETURNING *`,
       [rid, JSON.stringify(signatures), reserve.attestationId, reserve.note]
     );
+    const accounting = await this._bookReceipt(receipt, position, previousValuationCents, signer);
+    const cash = await this._syncCashReceipt(receipt, position, previousValuationCents, signer);
     await this._appendEvent({
       eventType: 'receipt_countersigned',
       custodyAccountId: position.custody_account_id,
@@ -552,6 +828,8 @@ class CustodyOsEngine {
       signatures,
       controlStatus,
       reserve,
+      accounting,
+      cash,
     };
   }
 
@@ -770,100 +1048,21 @@ class CustodyOsEngine {
     return { synced: synced.length, positions: synced };
   }
 
-  static async ensureIssuerAccount({ openedBy = FEED_ACTOR } = {}) {
-    const existing = await this.getAccount(ISSUER_CUSTODY_ACCOUNT_ID);
-    if (existing) return existing;
-    return this.openAccount({
-      custodyAccountId: ISSUER_CUSTODY_ACCOUNT_ID,
-      accountName: `${process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME} — Issuer Register`,
-      custodyType: 'self_custody',
-      jurisdiction: process.env.CUSTODY_ISSUER_JURISDICTION || null,
-      notes: 'Bond inventory and fixed-income cash mirrored from the bond and distribution engines',
-      openedBy,
-    });
-  }
-
-  static async syncFixedIncome({ syncedBy = FEED_ACTOR, proposeReceipts = true } = {}) {
-    await this.ensureTables();
-    const account = await this.ensureIssuerAccount({ openedBy: syncedBy });
-    const rowsOrEmpty = (p) => p.then((r) => r.rows).catch((e) => {
-      if (e && e.code === '42P01') return [];
-      throw e;
-    });
-    const bondRows = await rowsOrEmpty(pool.query(
-      `SELECT b.id, b.bond_name, b.isin, b.issuer, b.face_value, b.status,
-              bb.principal_balance, bb.accrued_interest
-         FROM bonds b
-         JOIN bond_balances bb ON bb.bond_id = b.id
-        ORDER BY b.id ASC`
-    ));
-    const distributionRows = await rowsOrEmpty(pool.query(
-      `SELECT bond_id, bucket, status, SUM(amount_usd) AS amount, COUNT(*)::int AS count
-         FROM fixed_income_distributions
-        GROUP BY bond_id, bucket, status`
-    ));
+  static async _reconcileFeed({
+    account,
+    desired,
+    managedPrefixes,
+    syncedBy,
+    proposeReceipts,
+    eventType,
+    summary = {},
+    releaseEvidenceReference,
+  }) {
     const positions = await this.listPositions({ custodyAccountId: account.custody_account_id });
     const pendingReceipts = proposeReceipts
       ? await this.listReceipts({ status: 'pending' })
       : [];
-    const pendingByPosition = new Set(
-      pendingReceipts.map((receipt) => receipt.position_id)
-    );
-    const desired = new Map();
-    const bondEvidence = new Map();
-    const activeBonds = bondRows.filter((bond) => String(bond.status).toLowerCase() === 'active');
-    for (const bond of activeBonds) {
-      const id = `BOND-${bond.id}`;
-      const evidenceReference = `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`;
-      bondEvidence.set(id, evidenceReference);
-      desired.set(id, {
-        assetClass: 'fixed_income',
-        instrumentRef: id,
-        instrumentName: bond.bond_name || bond.isin || `Bond #${bond.id}`,
-        quantity: Number(bond.face_value),
-        valuationCents: Math.round(
-          (Number(bond.principal_balance) + Number(bond.accrued_interest)) * 100
-        ),
-        evidenceReference,
-      });
-    }
-    for (const bond of bondRows) {
-      const id = `BOND-${bond.id}`;
-      if (!bondEvidence.has(id)) {
-        bondEvidence.set(id, `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`);
-      }
-    }
-
-    const openStatuses = new Set(['planned', 'funding', 'funded', 'proposed']);
-    const cashBuckets = new Map();
-    for (const row of distributionRows) {
-      if (!openStatuses.has(String(row.status).toLowerCase())) continue;
-      const key = `${row.bond_id || 'trust'}:${row.bucket}`;
-      const current = cashBuckets.get(key) || {
-        bondId: row.bond_id || null,
-        bucket: row.bucket,
-        amount: 0,
-        count: 0,
-      };
-      current.amount += Number(row.amount || 0);
-      current.count += Number(row.count || 0);
-      cashBuckets.set(key, current);
-    }
-    for (const bucket of cashBuckets.values()) {
-      if (bucket.amount <= 0) continue;
-      const key = `FID-${bucket.bondId || 'trust'}-${bucket.bucket}`;
-      desired.set(key, {
-        assetClass: 'cash',
-        instrumentRef: key,
-        instrumentName: bucket.bucket === 'coupon_income'
-          ? 'Coupon income awaiting distribution'
-          : 'Trust operating allocation awaiting payout',
-        quantity: bucket.count,
-        valuationCents: Math.round(bucket.amount * 100),
-        evidenceReference: `fixed_income_distributions:${bucket.bondId || 'trust'}:${bucket.bucket}`,
-      });
-    }
-
+    const pendingByPosition = new Set(pendingReceipts.map((receipt) => receipt.position_id));
     const created = [];
     const revalued = [];
     const released = [];
@@ -919,24 +1118,23 @@ class CustodyOsEngine {
     }
 
     const managedPositions = positions.filter((position) => (
-      position.instrument_ref.startsWith('BOND-')
-      || position.instrument_ref.startsWith('FID-')
+      managedPrefixes.some((prefix) => position.instrument_ref.startsWith(prefix))
     ));
     for (const position of managedPositions) {
       if (desired.has(position.instrument_ref) || position.control_status === 'released') continue;
-      if (!proposeReceipts) continue;
-      const evidenceReference = position.instrument_ref.startsWith('BOND-')
-        ? (bondEvidence.get(position.instrument_ref)
-          || `bonds:${position.instrument_ref.slice('BOND-'.length)}`)
-        : `fixed_income_distributions:${position.instrument_ref.slice('FID-'.length)}`;
-      if (await propose(position, 'release', evidenceReference)) {
-        released.push(position.instrument_ref);
-      }
+      const item = position.instrument_ref;
+      const evidenceReference = releaseEvidenceReference
+        ? releaseEvidenceReference(position)
+        : item.startsWith('BOND-')
+          ? `bonds:${item.slice('BOND-'.length)}`
+          : item.startsWith('FID-')
+            ? `fixed_income_distributions:${item.slice('FID-'.length)}`
+            : `collateral_positions:${item.slice('COL-'.length)}`;
+      if (await propose(position, 'release', evidenceReference)) released.push(item);
     }
 
-    const summary = {
-      bonds: activeBonds.length,
-      cashBuckets: [...desired.values()].filter((item) => item.assetClass === 'cash').length,
+    const result = {
+      ...summary,
       created,
       revalued,
       released,
@@ -945,13 +1143,163 @@ class CustodyOsEngine {
     };
     if (created.length || revalued.length || released.length) {
       await this._appendEvent({
-        eventType: 'fixed_income_synced',
+        eventType,
         custodyAccountId: account.custody_account_id,
         actor: syncedBy,
-        payload: summary,
+        payload: result,
       });
     }
-    return { account: account.custody_account_id, ...summary };
+    return { account: account.custody_account_id, ...result };
+  }
+
+  static async ensureIssuerAccount({ openedBy = FEED_ACTOR } = {}) {
+    const existing = await this.getAccount(ISSUER_CUSTODY_ACCOUNT_ID);
+    if (existing) return existing;
+    return this.openAccount({
+      custodyAccountId: ISSUER_CUSTODY_ACCOUNT_ID,
+      accountName: `${process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME} — Issuer Register`,
+      custodyType: 'self_custody',
+      jurisdiction: process.env.CUSTODY_ISSUER_JURISDICTION || null,
+      notes: 'Bond inventory and fixed-income cash mirrored from the bond and distribution engines',
+      openedBy,
+    });
+  }
+
+  static async syncFixedIncome({ syncedBy = FEED_ACTOR, proposeReceipts = true } = {}) {
+    await this.ensureTables();
+    const account = await this.ensureIssuerAccount({ openedBy: syncedBy });
+    const rowsOrEmpty = (p) => p.then((r) => r.rows).catch((e) => {
+      if (e && e.code === '42P01') return [];
+      throw e;
+    });
+    const bondRows = await rowsOrEmpty(pool.query(
+      `SELECT b.id, b.bond_name, b.isin, b.issuer, b.face_value, b.status,
+              bb.principal_balance, bb.accrued_interest
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+        ORDER BY b.id ASC`
+    ));
+    const distributionRows = await rowsOrEmpty(pool.query(
+      `SELECT bond_id, bucket, status, SUM(amount_usd) AS amount, COUNT(*)::int AS count
+         FROM fixed_income_distributions
+        GROUP BY bond_id, bucket, status`
+    ));
+    const desired = new Map();
+    const bondEvidence = new Map();
+    const activeBonds = bondRows.filter((bond) => String(bond.status).toLowerCase() === 'active');
+    for (const bond of activeBonds) {
+      const id = `BOND-${bond.id}`;
+      const evidenceReference = `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`;
+      bondEvidence.set(id, evidenceReference);
+      desired.set(id, {
+        assetClass: 'fixed_income',
+        instrumentRef: id,
+        instrumentName: bond.bond_name || bond.isin || `Bond #${bond.id}`,
+        quantity: Number(bond.face_value),
+        valuationCents: Math.round(
+          (Number(bond.principal_balance) + Number(bond.accrued_interest)) * 100
+        ),
+        evidenceReference,
+      });
+    }
+    for (const bond of bondRows) {
+      const id = `BOND-${bond.id}`;
+      if (!bondEvidence.has(id)) {
+        bondEvidence.set(id, `bonds:${bond.id}${bond.isin ? `:${bond.isin}` : ''}`);
+      }
+    }
+
+    const openStatuses = new Set(['planned', 'funding', 'funded', 'proposed']);
+    const cashBuckets = new Map();
+    for (const row of distributionRows) {
+      if (!openStatuses.has(String(row.status).toLowerCase())) continue;
+      const key = `${row.bond_id || 'trust'}:${row.bucket}`;
+      const current = cashBuckets.get(key) || {
+        bondId: row.bond_id || null,
+        bucket: row.bucket,
+        amount: 0,
+        count: 0,
+      };
+      current.amount += Number(row.amount || 0);
+      current.count += Number(row.count || 0);
+      cashBuckets.set(key, current);
+    }
+    for (const bucket of cashBuckets.values()) {
+      if (bucket.amount <= 0) continue;
+      const key = `FID-${bucket.bondId || 'trust'}-${bucket.bucket}`;
+      desired.set(key, {
+        assetClass: 'cash',
+        instrumentRef: key,
+        instrumentName: bucket.bucket === 'coupon_income'
+          ? 'Coupon income awaiting distribution'
+          : 'Trust operating allocation awaiting payout',
+        quantity: bucket.count,
+        valuationCents: Math.round(bucket.amount * 100),
+        evidenceReference: `fixed_income_distributions:${bucket.bondId || 'trust'}:${bucket.bucket}`,
+      });
+    }
+
+    return this._reconcileFeed({
+      account,
+      desired,
+      managedPrefixes: ['BOND-', 'FID-'],
+      syncedBy,
+      proposeReceipts,
+      eventType: 'fixed_income_synced',
+      releaseEvidenceReference: (position) => (
+        bondEvidence.get(position.instrument_ref)
+        || `bonds:${position.instrument_ref.slice('BOND-'.length)}`
+      ),
+      summary: {
+        bonds: activeBonds.length,
+        cashBuckets: [...desired.values()].filter((item) => item.assetClass === 'cash').length,
+      },
+    });
+  }
+
+  static async syncCollateral({ syncedBy = 'collateral-feed', proposeReceipts = true } = {}) {
+    await this.ensureTables();
+    const account = await this.getAccount(COLLATERAL_CUSTODY_ACCOUNT_ID)
+      || await this.openAccount({
+        custodyAccountId: COLLATERAL_CUSTODY_ACCOUNT_ID,
+        accountName: `${process.env.CUSTODY_ISSUER_NAME || ISSUER_NAME} — Collateral Pledges`,
+        custodyType: 'self_custody',
+        custodianAccountRef: process.env.COLLATERAL_CUSTODY_WALLET || null,
+        notes: 'Collateral positions mirrored from Collateral OS',
+        openedBy: syncedBy,
+      });
+    const rowsOrEmpty = (p) => p.then((r) => r.rows).catch((e) => {
+      if (e && e.code === '42P01') return [];
+      throw e;
+    });
+    const rows = await rowsOrEmpty(pool.query(
+      `SELECT position_id, token_symbol, token_address, chain_id, decimals,
+              quantity_units, value_usd, status, custody_wallet
+         FROM collateral_positions
+        WHERE status = 'pledged'
+        ORDER BY position_id ASC`
+    ));
+    const desired = new Map();
+    for (const row of rows) {
+      const instrumentRef = `COL-${row.position_id}`;
+      desired.set(instrumentRef, {
+        assetClass: 'digital_asset',
+        instrumentRef,
+        instrumentName: `${row.token_symbol || row.token_address} (chain ${row.chain_id})`,
+        quantity: Number(row.quantity_units || 0) / (10 ** Number(row.decimals || 0)),
+        valuationCents: Math.round(Number(row.value_usd || 0) * 100),
+        evidenceReference: `collateral_positions:${row.position_id}`,
+      });
+    }
+    return this._reconcileFeed({
+      account,
+      desired,
+      managedPrefixes: ['COL-'],
+      syncedBy,
+      proposeReceipts,
+      eventType: 'collateral_synced',
+      summary: { pledged: desired.size },
+    });
   }
 
   static async status() {
@@ -966,6 +1314,13 @@ class CustodyOsEngine {
         ORDER BY sequence DESC
         LIMIT 1`
     ).catch(() => ({ rows: [] }));
+    const latestCollateralFeed = await pool.query(
+      `SELECT created_at
+         FROM custody_events
+        WHERE event_type = 'collateral_synced'
+        ORDER BY sequence DESC
+        LIMIT 1`
+    ).catch(() => ({ rows: [] }));
     return {
       requiredSignatures: cfg.requiredSignatures,
       reserveLinked: cfg.reserveLinked,
@@ -975,6 +1330,10 @@ class CustodyOsEngine {
         issuerAccountId: cfg.issuerAccountId,
         issuerName: cfg.issuerName,
         lastSyncedAt: latestFeed.rows[0] ? latestFeed.rows[0].created_at : null,
+      },
+      collateralFeed: {
+        accountId: COLLATERAL_CUSTODY_ACCOUNT_ID,
+        lastSyncedAt: latestCollateralFeed.rows[0] ? latestCollateralFeed.rows[0].created_at : null,
       },
       chain,
       statement,
