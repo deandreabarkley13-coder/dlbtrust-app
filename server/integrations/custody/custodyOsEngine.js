@@ -554,41 +554,62 @@ class CustodyOsEngine {
   static async ensureAccountingAccounts() {
     const cfg = this.config();
     if (!cfg.glBookingEnabled || !TrustAccountingEngine) return { status: 'accounting_unavailable', booked: false };
+    let cashAccount = null;
+    let cashError = null;
+    if (CashEngine) {
+      try {
+        cashAccount = await this._ensureCashAccount();
+      } catch (e) {
+        cashError = e;
+      }
+    }
     const accounts = [
       {
         accountCode: cfg.assetGlAccount,
         accountName: 'Assets in Custody',
         accountType: 'asset',
-        subType: 'custody',
+        subType: 'investment',
         description: `Countersigned custody positions (memo, offset by ${cfg.controlGlAccount})`,
       },
       {
         accountCode: cfg.controlGlAccount,
         accountName: 'Custody Control (contra)',
         accountType: 'asset',
-        subType: 'custody_contra',
+        subType: 'other',
         description: 'Custody control offset for countersigned positions',
       },
     ];
+    const ensuredAccounts = [];
     try {
       for (const account of accounts) {
-        if (!await TrustAccountingEngine.getAccount(account.accountCode)) {
-          await TrustAccountingEngine.createAccount({
-            ...account,
-            ...(account.accountCode === cfg.assetGlAccount
-              ? { linkedCashAccount: cfg.cashAccountId }
-              : {}),
-          });
+        let ensured = await TrustAccountingEngine.getAccount(account.accountCode);
+        if (!ensured) {
+          const values = { ...account };
+          const linkedCashAccount = cashAccount && (cashAccount.account_id || cashAccount.accountId);
+          if (account.accountCode === cfg.assetGlAccount && linkedCashAccount) {
+            values.linkedCashAccount = linkedCashAccount;
+          }
+          ensured = await TrustAccountingEngine.createAccount(values);
         }
+        ensuredAccounts.push(ensured);
       }
     } catch (e) {
       return {
         status: e && e.code === '42P01' ? 'accounting_unavailable' : 'error',
         booked: false,
         error: e.message,
+        accounts: ensuredAccounts,
       };
     }
-    return { status: 'ready', booked: true };
+    return {
+      status: 'ready',
+      booked: true,
+      accounts: ensuredAccounts,
+      cashAccount: cashAccount
+        ? { accountId: cashAccount.account_id || cashAccount.accountId }
+        : null,
+      ...(cashError ? { cashError: cashError.message } : {}),
+    };
   }
 
   static async _existingAccountingEntry(receiptId) {
@@ -678,6 +699,18 @@ class CustodyOsEngine {
     }
   }
 
+  static async _ensureCashAccount() {
+    const cfg = this.config();
+    if (!CashEngine) return null;
+    const existing = await CashEngine.getAccount(cfg.cashAccountId);
+    return existing || CashEngine.createAccount({
+        accountId: cfg.cashAccountId,
+        accountName: 'Cash at third-party custodians',
+        accountType: 'reserve',
+        notes: 'Mirror of countersigned third-party custody cash receipts',
+      });
+  }
+
   static async _syncCashReceipt(receipt, position, previousValuationCents, initiatedBy) {
     const cfg = this.config();
     if (!cfg.cashSyncEnabled) return { status: 'sync_disabled', synced: false };
@@ -688,13 +721,7 @@ class CustodyOsEngine {
     try {
       const existing = await this._cashMovementExists(receipt.receipt_id);
       if (existing) return { status: 'already_synced', synced: true, movementId: existing.movement_id };
-      const account = await CashEngine.getAccount(cfg.cashAccountId)
-        || await CashEngine.createAccount({
-          accountId: cfg.cashAccountId,
-          accountName: 'Cash at third-party custodians',
-          accountType: 'reserve',
-          notes: 'Mirror of countersigned third-party custody cash receipts',
-        });
+      const account = await this._ensureCashAccount();
       if (!account) return { status: 'cash_unavailable', synced: false };
       const value = cents(receipt.valuation_cents);
       const previous = cents(previousValuationCents);

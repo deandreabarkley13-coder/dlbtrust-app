@@ -1650,6 +1650,12 @@ router.post('/custody/chain/reseal', operatorAuth, writeRateLimiter(), async (re
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/custody/ensure-accounting', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await CustodyOsEngine.ensureAccountingAccounts() });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await CustodyOsEngine.syncReserve({
