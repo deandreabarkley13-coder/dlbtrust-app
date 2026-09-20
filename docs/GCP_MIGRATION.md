@@ -231,6 +231,41 @@ and the approval gate, and cancelled.
   `/channel/transfer` fails fast with 412 "Process definition not found".
   Redis idempotency is disabled (`REDIS_IDEMPOTENCY_ENABLED=false`).
 
+## Mifos X web app (Fineract admin UI)
+
+The optional `dlbtrust-mifos` Cloud Run service runs the Mifos X browser
+application against the internal `dlbtrust-fineract` service. Because the SPA
+calls Fineract from the browser, the service includes an nginx sidecar that
+reverse-proxies `/fineract-provider/` on the same origin; the Fineract service
+remains internal-only. The app is protected by IAP, and access is limited to
+the principals in `mifos_operators`.
+
+Mirror the two upstream images into Artifact Registry before applying:
+
+```bash
+docker pull openmf/web-app:latest
+docker tag openmf/web-app:latest us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/mifos-web-app:latest
+docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/mifos-web-app:latest
+
+docker pull nginx:1.27-alpine
+docker tag nginx:1.27-alpine us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/nginx:1.27-alpine
+docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/nginx:1.27-alpine
+```
+
+Then create/update the service:
+
+```bash
+cd infra/gcp
+terraform apply
+terraform output -raw mifos_url
+cd -
+```
+
+Open the output URL through IAP and log in with the Fineract administrator
+(`mifos`) and the `FINERACT_PASSWORD` value from Secret Manager. This is an
+administrative/read UI: money still exists only as ledger entries in Fineract
+GL; opening the web app does not create or move funds.
+
 ## EDI 820 go-live (MFT Gateway remittance rail)
 
 `EDI_820_TRANSPORT=mftgateway` is wired in `variables.tf` with the rail in

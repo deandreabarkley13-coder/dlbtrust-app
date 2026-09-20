@@ -47,3 +47,7 @@ output "payment_hub_base_url" {
   description = "PHEE channel connector the app is pointed at (PAYMENT_HUB_BASE_URL); empty when neither deploy_phee nor payment_hub_base_url is set"
   value       = local.payment_hub_base_url
 }
+
+output "mifos_url" {
+  value = var.deploy_mifos ? local.mifos_url : null
+}

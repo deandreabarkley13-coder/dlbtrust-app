@@ -12,6 +12,7 @@ locals {
     "storage.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
+    "iap.googleapis.com",
   ]
 }
 

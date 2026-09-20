@@ -42,6 +42,37 @@ variable "phee_image" {
   default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/ph-ee-connector-channel:mifos-v2.0.0"
 }
 
+# Mifos X web app (openmf/web-app), mirrored into Artifact Registry because
+# Cloud Run only pulls from registries it can authenticate to. Mirror with:
+#   docker pull openmf/web-app:latest
+#   docker tag openmf/web-app:latest us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/mifos-web-app:latest
+#   docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/mifos-web-app:latest
+variable "mifos_image" {
+  type    = string
+  default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/mifos-web-app:latest"
+}
+
+# Mifos X reverse proxy, mirrored from nginx:1.27-alpine. Mirror with:
+#   docker pull nginx:1.27-alpine
+#   docker tag nginx:1.27-alpine us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/nginx:1.27-alpine
+#   docker push us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/nginx:1.27-alpine
+variable "mifos_proxy_image" {
+  type    = string
+  default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/nginx:1.27-alpine"
+}
+
+variable "deploy_mifos" {
+  description = "Run the Mifos X web app and same-origin Fineract proxy on Cloud Run."
+  type        = bool
+  default     = true
+}
+
+variable "mifos_operators" {
+  description = "IAM principals allowed through IAP to the Mifos X web app."
+  type        = list(string)
+  default     = ["user:deandreabarkley13@gmail.com"]
+}
+
 variable "deploy_phee" {
   description = "Run the PHEE channel connector as the dlbtrust-phee Cloud Run service. Ignored when payment_hub_base_url is set."
   type        = bool
