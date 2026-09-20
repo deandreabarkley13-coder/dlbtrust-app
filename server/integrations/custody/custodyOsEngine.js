@@ -725,7 +725,7 @@ class CustodyOsEngine {
   }
 
   static async _previousReceiptedValuation(position) {
-    if (!position.last_receipt_id) return cents(position.valuation_cents);
+    if (!position.last_receipt_id) return 0;
     try {
       const result = await pool.query(
         'SELECT valuation_cents, status FROM custody_receipts WHERE receipt_id = $1',
@@ -734,9 +734,9 @@ class CustodyOsEngine {
       const prior = result.rows[0];
       return prior && prior.status === 'countersigned'
         ? cents(prior.valuation_cents)
-        : cents(position.valuation_cents);
+        : 0;
     } catch (e) {
-      return cents(position.valuation_cents);
+      return 0;
     }
   }
 

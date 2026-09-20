@@ -598,6 +598,33 @@ describe('custody OS engine', () => {
       expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(10112462751);
     });
 
+    it('books the full valuation when a revaluation is the first countersigned receipt', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome({ proposeReceipts: false });
+      state.bonds[0].accrued_interest = '2600000.00';
+      const result = await CustodyOsEngine.syncFixedIncome();
+      expect(result.revalued).toEqual(['BOND-1']);
+
+      const receipt = state.receipts.find((r) => r.action === 'revaluation');
+      await CustodyOsEngine.countersignReceipt(receipt.receipt_id, MAKER);
+      const settled = await CustodyOsEngine.countersignReceipt(receipt.receipt_id, CHECKER);
+
+      expect(settled.accounting.status).toBe('booked');
+      expect(state.journalLines).toHaveLength(2);
+      expect(state.journalLines.reduce((sum, line) => sum + Number(line.debit_amount), 0))
+        .toBe(101124627.51);
+      expect(state.journalLines.reduce((sum, line) => sum + Number(line.credit_amount), 0))
+        .toBe(101124627.51);
+    });
+
     it('does not stack receipts while one is pending', async () => {
       state.bonds = [{
         id: 1,
