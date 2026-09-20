@@ -82,6 +82,18 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_storage_bucket.clearing_evidence.name
       }
 
+      # Engine readiness (server/integrations/os/engineWiringReadiness.js)
+      # checks these against the expected project, dlb-treasury-management.
+      env {
+        name  = "GCP_PROJECT"
+        value = var.project_id
+      }
+
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+
       dynamic "env" {
         for_each = merge(
           { PAYMENT_HUB_LIVE = var.payment_hub_live ? "true" : "false" },
@@ -157,6 +169,14 @@ resource "google_cloud_run_v2_service" "app" {
     # The deploy workflow rolls new images with `gcloud run deploy`; terraform
     # should not revert them on the next apply.
     ignore_changes = [template[0].containers[0].image, client, client_version]
+
+    # Fail-closed: a live flag in runtime_environment must ship with the
+    # Secret Manager credentials that engine needs, or the plan stops here
+    # naming the missing secret instead of a 503 at payout time.
+    precondition {
+      condition     = length(local.missing_live_secrets) == 0
+      error_message = "runtime_environment enables a live engine but secret_names lacks: ${join(", ", local.missing_live_secrets)}"
+    }
   }
 }
 

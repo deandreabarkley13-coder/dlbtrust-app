@@ -120,6 +120,21 @@ class BaseOSEngine {
 
   static async health() { return this.status(); }
 
+  /** Platform-engine key in engineWiringReadiness (null = generic GCP wiring only). */
+  static get platformEngine() { return null; }
+
+  static async readiness() {
+    const { EngineWiringReadiness } = require('./engineWiringReadiness');
+    if (this.platformEngine) return EngineWiringReadiness.engineReadiness(this.platformEngine);
+    const status = await this.status();
+    const gcp = EngineWiringReadiness.gcpContext();
+    const ledger = await EngineWiringReadiness.ledgerStatus();
+    const blockers = [];
+    if (!ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+    if (!gcp.projectMatches) blockers.push(`GCP_PROJECT is ${gcp.project || 'unset'}, expected ${gcp.expectedProject}`);
+    return { engine: this.engineName, ready: blockers.length === 0, status, gcp: { ...gcp, ledger }, blockers, generatedAt: new Date().toISOString() };
+  }
+
   static async list({ limit = 50, status } = {}) {
     if (!pool) return [];
     let sql = 'SELECT event_id, engine, action, status, payload, result, created_at FROM os_events WHERE engine = $1';
@@ -287,6 +302,7 @@ class TreasuryEngine extends BaseOSEngine {
 
 class PaymentEngine extends BaseOSEngine {
   static get engineName() { return 'payment'; }
+  static get platformEngine() { return 'payment'; }
 
   static async status() {
     const Gateway = tryRequire('../payments/paymentGatewayServerEngine')?.PaymentGatewayServerEngine;
@@ -367,6 +383,7 @@ class PaymentEngine extends BaseOSEngine {
 
 class ClearingEngine extends BaseOSEngine {
   static get engineName() { return 'clearing'; }
+  static get platformEngine() { return 'clearing'; }
 
   static async status() {
     const ClearingApi = tryRequire('../payments/clearingApiEngine')?.ClearingApiEngine;
@@ -416,6 +433,7 @@ class ClearingEngine extends BaseOSEngine {
 
 class SettlementEngine extends BaseOSEngine {
   static get engineName() { return 'settlement'; }
+  static get platformEngine() { return 'clearing'; }
 
   static async status() {
     const Settle = tryRequire('../dapp/settlementEngine')?.SettlementEngine;
@@ -6679,6 +6697,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
 
 class ApacheApisixEngine extends BaseOSEngine {
   static get engineName() { return 'apisix'; }
+  static get platformEngine() { return 'gateway'; }
   static get label() { return 'APISIX'; }
 
   static _cfg() {
@@ -6866,6 +6885,7 @@ class ApacheApisixEngine extends BaseOSEngine {
 
 class ApigeeGatewayEngine extends ApacheApisixEngine {
   static get engineName() { return 'apigee'; }
+  static get platformEngine() { return 'gateway'; }
   static get label() { return 'APIGEE'; }
 
   static _cfg() {
@@ -8770,6 +8790,143 @@ class LiveMoneyEngine extends BaseOSEngine {
   }
 }
 
+// ─── Reconciliation & Matching Engine ──────────────────────────────────────────
+// Front door for the recon jobs (ACH settlement recon, DataBridge ledger recon,
+// bookkeeping agent, gateway clearing reconcile) so they share one OS status /
+// readiness surface and their Cloud SQL tables are ensured on boot.
+
+class ReconciliationEngine extends BaseOSEngine {
+  static get engineName() { return 'reconciliation'; }
+  static get platformEngine() { return 'reconciliation'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const ACHRecon = tryRequire('../ach/achReconciliation')?.ACHReconciliation;
+    const Gateway = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
+    const Bookkeeping = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
+    const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+    for (const Engine of [ACHRecon, Gateway, Bookkeeping, DataBridge]) {
+      if (Engine && typeof Engine.ensureTables === 'function') await Engine.ensureTables();
+    }
+  }
+
+  static async status() {
+    const ACHRecon = tryRequire('../ach/achReconciliation')?.ACHReconciliation;
+    const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+    const Bookkeeping = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
+    const Gateway = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
+    const all = !!(ACHRecon && DataBridge && Bookkeeping && Gateway);
+    return {
+      engine: 'reconciliation',
+      healthy: all,
+      mode: all && pool ? 'ready' : 'shadow',
+      integrations: { achReconciliation: !!ACHRecon, dataBridge: !!DataBridge, bookkeepingAgent: !!Bookkeeping, gatewayReconcile: !!Gateway },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const ACHRecon = tryRequire('../ach/achReconciliation')?.ACHReconciliation;
+    const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+    const Bookkeeping = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
+    const Gateway = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
+    switch (action) {
+      case 'runAch':
+        if (ACHRecon) return await ACHRecon.runReconciliation({ settledItems: payload.settledItems, returnedItems: payload.returnedItems });
+        return { mode: 'shadow', note: 'ACHReconciliation not available' };
+      case 'achHistory':
+        if (ACHRecon) return await ACHRecon.listReconciliations({ limit: payload.limit, offset: payload.offset });
+        return { mode: 'shadow', note: 'ACHReconciliation not available' };
+      case 'report':
+        if (DataBridge) return await DataBridge.getReconciliationReport();
+        return { mode: 'shadow', note: 'DataBridge not available' };
+      case 'cash':
+        if (DataBridge) return await DataBridge.reconcileCashToAccounting();
+        return { mode: 'shadow', note: 'DataBridge not available' };
+      case 'fineract':
+        if (DataBridge) return await DataBridge.reconcileFineractGL();
+        return { mode: 'shadow', note: 'DataBridge not available' };
+      case 'subLedgers':
+        if (DataBridge) return await DataBridge.reconcileSubLedgers();
+        return { mode: 'shadow', note: 'DataBridge not available' };
+      case 'bookkeepingAch':
+        if (Bookkeeping) return await Bookkeeping.reconcileACH();
+        return { mode: 'shadow', note: 'BookkeepingAgent not available' };
+      case 'bookkeepingWires':
+        if (Bookkeeping) return await Bookkeeping.reconcileWires();
+        return { mode: 'shadow', note: 'BookkeepingAgent not available' };
+      case 'gateway':
+        if (Gateway) return await Gateway.reconcile({ eventId: payload.eventId, gatewayReference: payload.gatewayReference, status: payload.status, note: payload.note });
+        return { mode: 'shadow', note: 'ApiGatewayClearingEngine not available' };
+      case 'readiness':
+        return await this.readiness();
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Interoperability OS Engine ─────────────────────────────────────────────────
+// Cross-chain conversion (CrossChainConversionEngine, /api/finops/cross-chain)
+// + machine-to-machine partner OS (M2mOsEngine, /api/m2m-os) under one OS key.
+
+class InteropEngine extends BaseOSEngine {
+  static get engineName() { return 'interop'; }
+  static get platformEngine() { return 'interop'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    const Cross = tryRequire('../dapp/crossChainConversionEngine')?.CrossChainConversionEngine;
+    const M2m = tryRequire('./m2mOsEngine')?.M2mOsEngine;
+    if (Cross) await Cross.ensureTables();
+    if (M2m) await M2m.ensureTables();
+  }
+
+  static async status() {
+    const Cross = tryRequire('../dapp/crossChainConversionEngine')?.CrossChainConversionEngine;
+    const M2m = tryRequire('./m2mOsEngine')?.M2mOsEngine;
+    const cfg = Cross ? Cross.getConfig() : null;
+    return {
+      engine: 'interop',
+      healthy: !!(Cross && M2m),
+      mode: cfg && cfg.enabled && !cfg.shadow ? 'live' : 'shadow',
+      integrations: { crossChainConversion: !!Cross, m2mOs: !!M2m },
+      crossChain: cfg ? { enabled: cfg.enabled, shadow: cfg.shadow, sourceChain: cfg.sourceChain, bridge: cfg.defaultBridge } : null,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const Cross = tryRequire('../dapp/crossChainConversionEngine')?.CrossChainConversionEngine;
+    const M2m = tryRequire('./m2mOsEngine')?.M2mOsEngine;
+    switch (action) {
+      case 'quote':
+        if (Cross) return await Cross.quote(payload);
+        return { mode: 'shadow', note: 'CrossChainConversionEngine not available' };
+      case 'chains':
+        if (Cross) return Cross.listChains();
+        return { mode: 'shadow', note: 'CrossChainConversionEngine not available' };
+      case 'assets':
+        if (Cross) return Cross.listAssets();
+        return { mode: 'shadow', note: 'CrossChainConversionEngine not available' };
+      case 'requests':
+        if (Cross) return await Cross.listRequests(payload);
+        return { mode: 'shadow', note: 'CrossChainConversionEngine not available' };
+      case 'm2mStatus':
+        if (M2m) return await M2m.status();
+        return { mode: 'shadow', note: 'M2mOsEngine not available' };
+      case 'readiness':
+        return await this.readiness();
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -8806,6 +8963,8 @@ const ENGINES = {
   'collateral-os': CollateralOSEngine,
   'live-value-runbook': LiveValueRunbookOSEngine,
   'live-money': LiveMoneyEngine,
+  reconciliation: ReconciliationEngine,
+  interop: InteropEngine,
 };
 
 async function ensureAll() {
@@ -8823,6 +8982,8 @@ module.exports = {
   BankEngine,
   TreasuryEngine,
   PaymentEngine,
+  ReconciliationEngine,
+  InteropEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

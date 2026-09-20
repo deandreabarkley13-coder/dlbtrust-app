@@ -27,6 +27,7 @@ const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiqu
 const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngine');
 const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainConversionEngine');
+const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { DecentralizedRampEngine } = require('../integrations/dapp/decentralizedRampEngine');
@@ -1238,6 +1239,13 @@ router.post('/redemption-gateway/:id/execute', operatorAuth, writeRateLimiter(),
 // ═════════════════════════════════════════════════════════════════════════════
 // Cross-Chain Conversion & Interoperability Engine
 // ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/cross-chain/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await EngineWiringReadiness.engineReadiness('interop');
+    res.status(data.ready ? 200 : 503).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
 
 router.get('/cross-chain', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CrossChainConversionEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }

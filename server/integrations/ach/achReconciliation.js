@@ -18,6 +18,28 @@ const { ACHEngine } = require('./achEngine');
 
 class ACHReconciliation {
 
+  /** Idempotent copy of the ach_reconciliations DDL in server/scripts/migrate-ach.sql. */
+  static async ensureTables() {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ach_reconciliations (
+        id                   SERIAL PRIMARY KEY,
+        reconciliation_id    TEXT UNIQUE NOT NULL,
+        run_date             TIMESTAMPTZ DEFAULT NOW(),
+        batches_checked      INTEGER NOT NULL DEFAULT 0,
+        batches_settled      INTEGER NOT NULL DEFAULT 0,
+        batches_returned     INTEGER NOT NULL DEFAULT 0,
+        entries_settled      INTEGER NOT NULL DEFAULT 0,
+        entries_returned     INTEGER NOT NULL DEFAULT 0,
+        total_settled_cents  BIGINT NOT NULL DEFAULT 0,
+        total_returned_cents BIGINT NOT NULL DEFAULT 0,
+        discrepancies        TEXT,
+        status               TEXT NOT NULL DEFAULT 'completed'
+                               CHECK (status IN ('running','completed','failed')),
+        completed_at         TIMESTAMPTZ
+      )
+    `);
+  }
+
   /**
    * Run a reconciliation job comparing bank-reported settlements against local batches.
    *
