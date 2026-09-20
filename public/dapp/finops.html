@@ -5971,13 +5971,22 @@
     const s = dd || { destination: { configured: false }, odfi: { ready: false, channels: [] }, mcp: { configured: false }, counts: {} };
     const dest = s.destination || {};
     const badge = (ok, yes, no) => ok ? `<span class="badge completed">${yes}</span>` : `<span class="badge manual_pending">${no}</span>`;
-    const rows = (deposits || []).map(d => `<tr><td>${d.deposit_id}</td><td>$${Number(d.amount_usd || 0).toFixed(2)}</td><td>${d.sec_code}</td><td>${String(d.effective_date).slice(0,10)}</td><td>${d.ach_batch_id || ''}</td><td>${d.status}</td><td>${d.lili_transaction_id || d.error_message || ''}</td>` +
+    const mft = s.mft || null;
+    const mftOrder = ['built', 'approved', 'transmitted', 'acknowledged', 'settled', 'rejected', 'returned'];
+    const mftCounts = mft ? Object.keys(mft.counts || {}).sort((a, b) => mftOrder.indexOf(a) - mftOrder.indexOf(b)).map(k => `<span class="badge ${liliMftBadgeClass(k)}" title="MFT files ${k}">${k}: ${mft.counts[k]}</span>`).join(' ') : '';
+    const mftLine = mft
+      ? `<p class="muted">MFT register (channel <code>${mft.channel}</code>${mft.requireApproval === false ? ', auto-approve' : ', four-eyes approval required'}): ${mftCounts || 'no files yet'}</p>`
+      : '';
+    const mftCell = d => mft && d.ach_batch_id ? `<td id="lili-dd-mft-${d.deposit_id}" class="muted">…</td>` : '<td class="muted">—</td>';
+    const rows = (deposits || []).map(d => `<tr><td>${d.deposit_id}</td><td>$${Number(d.amount_usd || 0).toFixed(2)}</td><td>${d.sec_code}</td><td>${String(d.effective_date).slice(0,10)}</td><td>${d.ach_batch_id || ''}</td><td>${d.status}</td>${mftCell(d)}<td>${d.lili_transaction_id || d.error_message || ''}</td>` +
       `<td>${d.status === 'awaiting_odfi' ? `<button class="btn" onclick="transmitLiliDirectDeposit('${d.deposit_id}')">Transmit</button> <button class="btn" onclick="cancelLiliDirectDeposit('${d.deposit_id}')">Cancel</button>` : ''}</td></tr>`).join('') ||
-      '<tr><td colspan="8" class="muted">No direct deposits yet</td></tr>';
+      '<tr><td colspan="9" class="muted">No direct deposits yet</td></tr>';
+    if (mft) setTimeout(() => fillLiliDirectDepositMftCells(deposits || []), 0);
     return '<div class="card" style="background:#0b1220;">' +
       '<h3>Direct Deposit into Lili (ACH credit)</h3>' +
       `<p class="muted">${s.flow || 'Ledger → NACHA credit → ODFI → Lili → MCP reconciliation'}. Lili is a receiving bank only: the NACHA file is generated and journaled here, transmitted through the trust's ODFI channel, and reconciled when the credit shows on the Lili transaction feed.</p>` +
       `<p class="muted">Destination: ${badge(dest.configured, (dest.accountName || 'Lili') + ' ' + (dest.accountNumberMasked || '') + ' / ' + (dest.routingNumber || ''), 'not set')} &nbsp; ODFI channel: ${badge(s.odfi && s.odfi.ready, (s.odfi.channels || []).join(', '), 'none configured — files queue as awaiting_odfi')} &nbsp; Lili MCP: ${badge(s.mcp && s.mcp.configured, 'connected', 'not connected')}</p>` +
+      mftLine +
       '<div class="token-bar"><input id="lili-dd-routing" style="flex:1" placeholder="Lili routing number" /><input id="lili-dd-account" style="flex:1" placeholder="Lili account number" /><input id="lili-dd-name" style="flex:1" placeholder="Account name (DB NET MGMT LLC)" />' +
       '<button class="btn" onclick="saveLiliDirectDepositDestination()">Save Destination</button><button class="btn" onclick="syncLiliDirectDepositDestination()">Pull from Lili MCP</button></div>' +
       '<div class="token-bar"><input id="lili-dd-amount" type="number" step="0.01" style="flex:1" placeholder="Amount (USD)" />' +
@@ -5987,8 +5996,41 @@
       '<button class="btn" onclick="createLiliDirectDeposit()">Generate NACHA Credit</button></div>' +
       '<div class="token-bar"><button class="btn" onclick="transmitQueuedLiliDirectDeposits()">Transmit Queued</button><button class="btn" onclick="reconcileLiliDirectDeposits()">Reconcile via Lili MCP</button></div>' +
       '<div id="lili-dd-status" class="status hidden"></div>' +
-      '<table class="table"><thead><tr><th>Deposit</th><th>Amount</th><th>SEC</th><th>Effective</th><th>ACH Batch</th><th>Status</th><th>Lili TX / Note</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table class="table"><thead><tr><th>Deposit</th><th>Amount</th><th>SEC</th><th>Effective</th><th>ACH Batch</th><th>Status</th><th>MFT File</th><th>Lili TX / Note</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
     '</div>';
+  }
+
+  function liliMftBadgeClass(status) {
+    if (status === 'settled' || status === 'acknowledged') return 'completed';
+    if (status === 'rejected' || status === 'returned') return 'failed';
+    return 'manual_pending';
+  }
+
+  function renderLiliDirectDepositMftCell(f) {
+    if (!f) return '<span class="muted">not in register</span>';
+    const when = f.settledAt || f.acknowledgedAt || f.transmittedAt || f.approvedAt || f.builtAt;
+    return `<span class="badge ${liliMftBadgeClass(f.status)}" title="${f.fileId} · ${f.filename || ''} · sha256 ${f.contentHash || ''}">${f.status}</span>` +
+      `<div style="font-size:11px" class="muted">${f.filename || f.fileId}${f.approvedBy ? ' · approved by ' + f.approvedBy : ''}${when ? ' · ' + String(when).replace('T', ' ').slice(0, 16) : ''}${f.failureReason ? ' · ' + f.failureReason : ''}</div>` +
+      (f.status === 'built' ? `<button class="btn" onclick="approveLiliDirectDepositMftFile('${f.fileId}')">Approve (checker)</button>` : '');
+  }
+
+  async function fillLiliDirectDepositMftCells(deposits) {
+    for (const d of deposits) {
+      if (!d.ach_batch_id) continue;
+      const cell = el('lili-dd-mft-' + d.deposit_id);
+      if (!cell) continue;
+      try {
+        const res = await api('/api/finops/lili/direct-deposits/' + encodeURIComponent(d.deposit_id) + '/mft-file');
+        cell.innerHTML = renderLiliDirectDepositMftCell(res.data);
+      } catch (e) { cell.innerHTML = '<span class="muted">' + e.message + '</span>'; }
+    }
+  }
+
+  function approveLiliDirectDepositMftFile(fileId) {
+    return liliDirectDepositAction(async () => {
+      const res = await api('/api/mft-os/files/' + encodeURIComponent(fileId) + '/approve', { method: 'POST', body: '{}' });
+      return 'MFT file ' + fileId + ' → ' + (res.data && res.data.status);
+    });
   }
 
   function renderLiliBankPanel(config, items, mcpStatus, ddStatus, ddList) {

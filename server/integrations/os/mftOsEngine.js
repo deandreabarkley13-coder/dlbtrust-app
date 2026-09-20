@@ -1114,6 +1114,16 @@ const MftOsEngine = {
     return rows.map(r => mapFile(r));
   },
 
+  /** Latest register entry built from an upstream record (e.g. `ach:<batchId>`), or null. */
+  async getBySourceRef(sourceRef) {
+    if (!sourceRef) return null;
+    const { rows } = await pool.query(
+      'SELECT * FROM mft_files WHERE source_ref = $1 ORDER BY built_at DESC LIMIT 1',
+      [sourceRef]
+    );
+    return rows[0] ? mapFile(rows[0]) : null;
+  },
+
   async events(fileId) {
     const { rows } = await pool.query('SELECT * FROM mft_events WHERE file_id = $1 ORDER BY created_at', [fileId]);
     return rows.map(r => ({ eventId: r.event_id, eventType: r.event_type, actor: r.actor, detail: parseJson(r.detail, {}), createdAt: r.created_at }));
