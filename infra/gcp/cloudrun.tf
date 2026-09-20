@@ -82,6 +82,17 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_storage_bucket.clearing_evidence.name
       }
 
+      dynamic "env" {
+        for_each = merge(
+          { PAYMENT_HUB_LIVE = var.payment_hub_live ? "true" : "false" },
+          local.payment_hub_base_url != "" ? { PAYMENT_HUB_BASE_URL = local.payment_hub_base_url } : {},
+        )
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
       env {
         name = "DATABASE_URL"
         value_source {

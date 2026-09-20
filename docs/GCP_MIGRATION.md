@@ -180,6 +180,52 @@ Still on Northflank until cutover: nothing that the app calls. Northflank's
 OpenACH's inbound webhooks (`OPENACH_WEBHOOK_SECRET`) and any bank-side IP
 allowlist need the new egress IP / app URL at cutover.
 
+## Payment Hub EE (PHEE) — enabled 2026-09-20
+
+**Endpoint source decision:** no existing PHEE deployment existed in
+`dlb-treasury-management`, so `infra/gcp/paymenthub.tf` runs the Apache
+PHEE channel connector (`openmf/ph-ee-connector-channel:mifos-v2.0.0`,
+mirrored to Artifact Registry as `phee_image`) as the internal-ingress Cloud
+Run service `dlbtrust-phee`, following the OpenACH pattern. Resolved URL:
+`https://dlbtrust-phee-r5oawu76jq-ue.a.run.app` (Terraform output
+`payment_hub_base_url`, injected into the app as `PAYMENT_HUB_BASE_URL`).
+To reuse an external PHEE instead, set `payment_hub_base_url` (HTTPS or a
+private `*.internal`/`*.svc` host) and the Cloud Run service is skipped.
+
+Runtime settings in `variables.tf`: `PAYMENT_HUB_MODE=phee`,
+`PAYMENT_HUB_TENANT_ID=dlbtrust`, `PAYMENT_HUB_TRANSFER_PATH=/channel/transfer`
+(the route this image actually exposes; `/channel/ach/transfer` is 404),
+callback/connector URLs on the app, `PAYMENT_APPROVAL_THRESHOLD=2`.
+`PAYMENT_HUB_LIVE` comes from `var.payment_hub_live` so the rollout can be
+staged: `terraform apply -var payment_hub_live=false` for the shadow check,
+then plain `terraform apply` for live.
+
+Secrets: `PAYMENT_HUB_AUTH_TOKEN`, `PAYMENT_HUB_SERVICE_TOKEN`,
+`PAYMENT_HUB_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY` are always
+declared by `secrets.tf` and mounted on the app. Seed missing versions with
+`scripts/gcp/payment-hub-secrets.sh` (never overwrites an existing version).
+
+`terraform.tfvars` is git-ignored; regenerate `secret_names` from
+`terraform state list` before applying or the plan will destroy every
+runtime secret.
+
+Verified 2026-09-20 via `GET /api/payment-hub/health`:
+`readiness.ready: true`, `canTransmit: true`, `phee.connected: true`
+(`status: UP`). A $0.01 shadow intent was created, blocked by maker-checker
+and the approval gate, and cancelled.
+
+**Known gaps (origination remains queued):**
+
+- `achConnector.ready: false` — "A verified external ODFI endpoint is
+  required". No `ACH_PARTNER_ID`, no `bank_endpoint` System Setting, and
+  `LILI_CLEARING_LIVE=false`. PHEE orchestrates only; until an ODFI/settlement
+  channel (AS2/MFT/REST/SFTP or Lili) is registered, `submitIntent` refuses
+  ACH transmission and `/health` returns 503.
+- The connector image needs a Zeebe/ph-ee-engine cluster with an ACH BPMN
+  deployed. `phee_zeebe_gateway` points at an unreachable loopback, so
+  `/channel/transfer` fails fast with 412 "Process definition not found".
+  Redis idempotency is disabled (`REDIS_IDEMPOTENCY_ENABLED=false`).
+
 ## Smoke test before cutover
 
 Run against the Cloud Run URL with the Northflank service still taking
