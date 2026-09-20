@@ -217,10 +217,15 @@ and the approval gate, and cancelled.
 **Known gaps (origination remains queued):**
 
 - `achConnector.ready: false` — "A verified external ODFI endpoint is
-  required". No `ACH_PARTNER_ID`, no `bank_endpoint` System Setting, and
-  `LILI_CLEARING_LIVE=false`. PHEE orchestrates only; until an ODFI/settlement
-  channel (AS2/MFT/REST/SFTP or Lili) is registered, `submitIntent` refuses
-  ACH transmission and `/health` returns 503.
+  required". Decision (2026-09-20): Lili live + a REST bank endpoint.
+  `LILI_CLEARING_LIVE=true` is set (Lili MCP OAuth is configured in System
+  Settings) — this drives the API-gateway clearing engine's Lili bill-pay
+  rail; Lili exposes no ACH-origination REST API. The PHEE ACH connector
+  uses the System Settings production partner instead: `POST
+  /api/admin/system/settings` with `bank_name`, `bank_endpoint` (HTTPS),
+  `bank_auth_type` (bearer|basic|api_key|hmac), `bank_api_key`,
+  `bank_api_secret` (basic/hmac), and `bank_webhook_secret`. Until those are
+  set `submitIntent` refuses ACH transmission and `/health` returns 503.
 - The connector image needs a Zeebe/ph-ee-engine cluster with an ACH BPMN
   deployed. `phee_zeebe_gateway` points at an unreachable loopback, so
   `/channel/transfer` fails fast with 412 "Process definition not found".
