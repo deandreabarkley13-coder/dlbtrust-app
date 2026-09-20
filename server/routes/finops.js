@@ -3425,7 +3425,7 @@ router.get('/edi/820/:id/preview', operatorAuth, async (req, res) => {
     const rendered = Edi820RemittanceEngine.render(run);
     const gate = Edi820RemittanceEngine.transmissionGate({ fundingCommitted: workflow ? Boolean(workflow.metadata && workflow.metadata.execution && workflow.metadata.execution.funding && workflow.metadata.execution.funding.committed) : undefined });
     if (req.query.format === 'raw') {
-      res.type(rendered.contentType).attachment(Edi820RemittanceEngine.filename(rendered));
+      res.attachment(Edi820RemittanceEngine.filename(rendered)).type(rendered.contentType);
       return res.send(rendered.payload);
     }
     res.json({ success: true, data: { ...rendered, workflowId: workflow ? workflow.workflow_id : null, workflowStatus: workflow ? workflow.status : null, mode: gate.allowed ? 'live' : 'shadow', transmissionBlockers: gate.reasons } });
