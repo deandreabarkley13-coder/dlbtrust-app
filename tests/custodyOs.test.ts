@@ -397,6 +397,9 @@ describe('custody OS engine', () => {
         accrued_interest: '2560209.60',
       }];
       await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
       state.bonds[0].accrued_interest = '2600000.00';
 
       const result = await CustodyOsEngine.syncFixedIncome();
@@ -404,6 +407,33 @@ describe('custody OS engine', () => {
       expect(result.revalued).toEqual(['BOND-1']);
       expect(state.receipts.some((r) => r.action === 'revaluation')).toBe(true);
       expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(10112462751);
+    });
+
+    it('does not stack receipts while one is pending', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+
+      state.bonds[0].accrued_interest = '2600000.00';
+      const first = await CustodyOsEngine.syncFixedIncome();
+      state.bonds[0].accrued_interest = '2700000.00';
+      const second = await CustodyOsEngine.syncFixedIncome();
+
+      expect(first.revalued).toEqual(['BOND-1']);
+      expect(second.revalued).toEqual(['BOND-1']);
+      expect(state.receipts.filter((r) => (
+        r.position_id === state.positions.find((p) => p.instrument_ref === 'BOND-1').position_id
+        && r.status === 'pending'
+      ))).toHaveLength(1);
+      expect(state.receipts.find((r) => r.evidence_reference === 'bonds:1').action).toBe('safekeeping');
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(10122462751);
     });
 
     it('proposes a release when a bond is called and does not re-record it', async () => {
@@ -417,6 +447,9 @@ describe('custody OS engine', () => {
         accrued_interest: '2560209.60',
       }];
       await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
       state.bonds[0].status = 'called';
       const valuation = state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents;
 

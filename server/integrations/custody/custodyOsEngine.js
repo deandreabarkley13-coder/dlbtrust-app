@@ -792,10 +792,8 @@ class CustodyOsEngine {
     const pendingReceipts = proposeReceipts
       ? await this.listReceipts({ status: 'pending' })
       : [];
-    const pendingRelease = new Set(
-      pendingReceipts
-        .filter((receipt) => receipt.action === 'release')
-        .map((receipt) => receipt.position_id)
+    const pendingByPosition = new Set(
+      pendingReceipts.map((receipt) => receipt.position_id)
     );
     const desired = new Map();
     const bondEvidence = new Map();
@@ -858,14 +856,16 @@ class CustodyOsEngine {
     let unchanged = 0;
     let receiptsProposed = 0;
     const propose = async (position, action, evidenceReference) => {
-      if (!proposeReceipts) return;
+      if (!proposeReceipts || pendingByPosition.has(position.position_id)) return false;
       await this.proposeReceipt({
         positionId: position.position_id,
         action,
         evidenceReference,
         proposedBy: syncedBy,
       });
+      pendingByPosition.add(position.position_id);
       receiptsProposed += 1;
+      return true;
     };
 
     for (const item of desired.values()) {
@@ -910,13 +910,14 @@ class CustodyOsEngine {
     ));
     for (const position of managedPositions) {
       if (desired.has(position.instrument_ref) || position.control_status === 'released') continue;
-      if (!proposeReceipts || pendingRelease.has(position.position_id)) continue;
+      if (!proposeReceipts) continue;
       const evidenceReference = position.instrument_ref.startsWith('BOND-')
         ? (bondEvidence.get(position.instrument_ref)
           || `bonds:${position.instrument_ref.slice('BOND-'.length)}`)
         : `fixed_income_distributions:${position.instrument_ref.slice('FID-'.length)}`;
-      await propose(position, 'release', evidenceReference);
-      released.push(position.instrument_ref);
+      if (await propose(position, 'release', evidenceReference)) {
+        released.push(position.instrument_ref);
+      }
     }
 
     const summary = {
