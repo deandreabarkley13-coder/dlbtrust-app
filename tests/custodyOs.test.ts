@@ -14,6 +14,9 @@ interface FakeState {
   receipts: Row[];
   events: Row[];
   attestations: Row[];
+  bonds: Row[];
+  distributions: Row[];
+  tablesMissing: boolean;
 }
 
 /**
@@ -25,6 +28,34 @@ function fakeDb(state: FakeState) {
   return vi.fn(async (sql: string, params: any[] = []) => {
     const text = String(sql).replace(/\s+/g, ' ').trim();
     if (/^(CREATE|ALTER)/i.test(text)) return { rows: [] };
+
+    if (text.includes('FROM bonds b')) {
+      if (state.tablesMissing) {
+        throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      }
+      return { rows: state.bonds };
+    }
+
+    if (text.includes('FROM fixed_income_distributions')) {
+      if (state.tablesMissing) {
+        throw Object.assign(new Error('relation does not exist'), { code: '42P01' });
+      }
+      const groups = new Map<string, Row>();
+      for (const row of state.distributions) {
+        const key = `${row.bond_id || 'trust'}:${row.bucket}:${row.status}`;
+        const current = groups.get(key) || {
+          bond_id: row.bond_id || null,
+          bucket: row.bucket,
+          status: row.status,
+          amount: 0,
+          count: 0,
+        };
+        current.amount += Number(row.amount_usd || 0);
+        current.count += 1;
+        groups.set(key, current);
+      }
+      return { rows: Array.from(groups.values()) };
+    }
 
     if (text.startsWith('INSERT INTO custody_accounts')) {
       const row = {
@@ -179,6 +210,11 @@ function fakeDb(state: FakeState) {
       return { rows: [row] };
     }
 
+    if (text.includes("event_type = 'fixed_income_synced'")) {
+      const matching = state.events.filter((event) => event.event_type === 'fixed_income_synced');
+      return { rows: matching.length ? [matching[matching.length - 1]] : [] };
+    }
+
     if (text.includes('FROM custody_events ORDER BY sequence DESC LIMIT 1')) {
       const tip = state.events[state.events.length - 1];
       return { rows: tip ? [tip] : [] };
@@ -251,7 +287,16 @@ describe('custody OS engine', () => {
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
-    state = { accounts: [], positions: [], receipts: [], events: [], attestations: [] };
+    state = {
+      accounts: [],
+      positions: [],
+      receipts: [],
+      events: [],
+      attestations: [],
+      bonds: [],
+      distributions: [],
+      tablesMissing: false,
+    };
     saved = {};
     for (const key of ENV_KEYS) {
       saved[key] = process.env[key];
@@ -285,6 +330,185 @@ describe('custody OS engine', () => {
       openedBy: CHECKER,
     });
   }
+
+  describe('fixed income feed', () => {
+    it('treats missing bond and distribution tables as empty', async () => {
+      state.tablesMissing = true;
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.bonds).toBe(0);
+      expect(result.cashBuckets).toBe(0);
+      expect(result.created).toEqual([]);
+      expect(state.accounts).toHaveLength(1);
+      expect(state.accounts[0].custody_account_id).toBe('CUS-ISSUER-FIXED-INCOME');
+    });
+
+    it('mirrors an active bond and open distributions into the issuer register as unverified self-custody positions', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        issuer: 'X',
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      state.distributions = [
+        { bond_id: 1, bucket: 'coupon_income', status: 'planned', amount_usd: 500 },
+        { bond_id: 1, bucket: 'coupon_income', status: 'planned', amount_usd: 250 },
+        { bond_id: 1, bucket: 'trust_operating', status: 'executed', amount_usd: 100 },
+      ];
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.created).toEqual(['BOND-1', 'FID-1-coupon_income']);
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1')).toMatchObject({
+        asset_class: 'fixed_income',
+        valuation_cents: 10108483711,
+        quantity: 100000000,
+      });
+      expect(state.positions.find((p) => p.instrument_ref === 'FID-1-coupon_income')).toMatchObject({
+        asset_class: 'cash',
+        valuation_cents: 75000,
+        quantity: 2,
+      });
+      expect(state.positions.some((p) => p.instrument_ref === 'FID-1-trust_operating')).toBe(false);
+      expect(state.accounts[0].custody_type).toBe('self_custody');
+      expect(state.receipts).toHaveLength(2);
+      expect(state.receipts.every((r) => r.status === 'pending')).toBe(true);
+      expect(state.receipts.map((r) => r.evidence_reference)).toEqual([
+        'bonds:1',
+        'fixed_income_distributions:1:coupon_income',
+      ]);
+      expect(state.positions.every((p) => p.control_status === 'unverified')).toBe(true);
+    });
+
+    it('is idempotent and leaves a countersigned position alone', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      state.distributions = [
+        { bond_id: 1, bucket: 'coupon_income', status: 'planned', amount_usd: 500 },
+      ];
+      await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
+      const eventsAfterFirstSync = state.events.length;
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.unchanged).toBe(2);
+      expect(result.receiptsProposed).toBe(0);
+      expect(state.events.length).toBe(eventsAfterFirstSync);
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').control_status).toBe('receipted');
+    });
+
+    it('revalues when accrued interest moves and proposes a revaluation receipt', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
+      state.bonds[0].accrued_interest = '2600000.00';
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.revalued).toEqual(['BOND-1']);
+      expect(state.receipts.some((r) => r.action === 'revaluation')).toBe(true);
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(10112462751);
+    });
+
+    it('does not stack receipts while one is pending', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+
+      state.bonds[0].accrued_interest = '2600000.00';
+      const first = await CustodyOsEngine.syncFixedIncome();
+      state.bonds[0].accrued_interest = '2700000.00';
+      const second = await CustodyOsEngine.syncFixedIncome();
+
+      expect(first.revalued).toEqual(['BOND-1']);
+      expect(second.revalued).toEqual(['BOND-1']);
+      expect(state.receipts.filter((r) => (
+        r.position_id === state.positions.find((p) => p.instrument_ref === 'BOND-1').position_id
+        && r.status === 'pending'
+      ))).toHaveLength(1);
+      expect(state.receipts.find((r) => r.evidence_reference === 'bonds:1').action).toBe('safekeeping');
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(10122462751);
+    });
+
+    it('proposes a release when a bond is called and does not re-record it', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
+      state.bonds[0].status = 'called';
+      const valuation = state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents;
+
+      const result = await CustodyOsEngine.syncFixedIncome();
+      const third = await CustodyOsEngine.syncFixedIncome();
+
+      expect(result.released).toEqual(['BOND-1']);
+      expect(state.receipts.filter((r) => r.action === 'release')).toHaveLength(1);
+      expect(state.positions.find((p) => p.instrument_ref === 'BOND-1').valuation_cents).toBe(valuation);
+      expect(third.released).toEqual([]);
+      expect(state.receipts.filter((r) => r.action === 'release')).toHaveLength(1);
+    });
+
+    it('never raises the reserve from the issuer register', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      const result = await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
+
+      expect(result.reserve.attestationId).toBeNull();
+      expect(state.attestations).toHaveLength(0);
+    });
+  });
 
   describe('custody accounts', () => {
     it('refuses a third-party account with no named custodian or account reference', async () => {

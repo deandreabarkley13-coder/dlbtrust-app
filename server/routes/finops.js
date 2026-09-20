@@ -1649,6 +1649,16 @@ router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (re
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/custody/sync-fixed-income', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.syncFixedIncome({
+      syncedBy: (req.body && req.body.syncedBy) || sessionActor(req),
+      proposeReceipts: !(req.body && req.body.proposeReceipts === false),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Series OS — master trust / series register, asset identification, ring fencing
 // ═════════════════════════════════════════════════════════════════════════════
