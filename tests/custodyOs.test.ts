@@ -16,6 +16,7 @@ interface FakeState {
   events: Row[];
   attestations: Row[];
   trustAccounts: Row[];
+  trustAccountCreationCashReady: boolean[];
   journalEntries: Row[];
   journalLines: Row[];
   cashAccounts: Row[];
@@ -42,14 +43,17 @@ function fakeDb(state: FakeState) {
     }
 
     if (text.startsWith('INSERT INTO trust_accounts')) {
+      state.trustAccountCreationCashReady.push(state.cashAccounts.some(
+        (row) => row.account_id === params[5]
+      ));
       const row = {
         account_code: params[0],
         account_name: params[1],
         account_type: params[2],
         sub_type: params[3],
-        linked_cash_account: params[4],
-        linked_fineract_gl: params[5],
-        description: params[6],
+        linked_cash_account: params[5],
+        linked_fineract_gl: params[6],
+        description: params[7],
         balance: 0,
         is_active: true,
       };
@@ -446,6 +450,7 @@ describe('custody OS engine', () => {
       events: [],
       attestations: [],
       trustAccounts: [],
+      trustAccountCreationCashReady: [],
       journalEntries: [],
       journalLines: [],
       cashAccounts: [],
@@ -783,6 +788,29 @@ describe('custody OS engine', () => {
       const settled = await CustodyOsEngine.countersignReceipt(receipt.receipt_id, CHECKER);
       expect(settled.status).toBe('countersigned');
       expect(settled.controlStatus).toBe('receipted');
+    });
+
+    it('provisions valid custody GL subtypes after creating the cash mirror', async () => {
+      const result = await CustodyOsEngine.ensureAccountingAccounts();
+
+      expect(result.status).toBe('ready');
+      expect(state.cashAccounts).toHaveLength(1);
+      expect(state.cashAccounts[0].account_id).toBe('CUS-THIRD-PARTY-CASH');
+      expect(state.trustAccounts).toHaveLength(2);
+      expect(state.trustAccounts[0]).toMatchObject({
+        account_code: '1250',
+        sub_type: 'investment',
+        linked_cash_account: 'CUS-THIRD-PARTY-CASH',
+      });
+      expect(state.trustAccounts[1]).toMatchObject({
+        account_code: '1251',
+        sub_type: 'other',
+      });
+      expect(state.trustAccountCreationCashReady[0]).toBe(true);
+
+      await CustodyOsEngine.ensureAccountingAccounts();
+      expect(state.cashAccounts).toHaveLength(1);
+      expect(state.trustAccounts).toHaveLength(2);
     });
 
     it('posts a balanced custody journal once when a receipt is countersigned', async () => {
