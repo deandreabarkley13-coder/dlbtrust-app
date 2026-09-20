@@ -506,12 +506,13 @@ Status on `dlb-treasury-management` at the time of writing:
 
 Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
 the admin token): Cloud SQL connected, evidence bucket present, all five
-engines in `live` mode. Remaining blockers are environment-only and clear on
-the next `terraform apply` (`GCP_PROJECT`/`GOOGLE_CLOUD_PROJECT` are injected by
-cloudrun.tf; the GitHub deploy workflow only swaps the image and keeps env).
-The gateway additionally reports `VENDOR_PAYMENT_EXECUTION_MODE is not live`
-— a deliberate compliance switch, not a missing secret; set it to `live` in
-`runtime_environment` only when vendor payment execution is approved.
+engines in `live` mode. `GCP_PROJECT`/`GOOGLE_CLOUD_PROJECT` are injected by
+cloudrun.tf on `terraform apply` (the GitHub deploy workflow only swaps the
+image and keeps env). `VENDOR_PAYMENT_EXECUTION_MODE=live` is set in
+`runtime_environment` (trustee-approved): it is the compliance switch that
+lets the gateway clearing engine execute real vendor payments. Note
+`LILI_MCP_ENABLED` is a plain runtime var and must not also be in
+`secret_names` (Cloud Run rejects duplicate env names).
 Not present anywhere in Northflank (so not copyable): `APIGEE_*`,
 `APISIX_API_KEY` (Apigee/APISIX stay shadow), and the Lili OAuth
 `CLIENT_SECRET`/`REFRESH_TOKEN`/`BUSINESS_USER_ID`, which live in encrypted
