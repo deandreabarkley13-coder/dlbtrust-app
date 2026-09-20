@@ -285,6 +285,100 @@ describe('Edi820RemittanceEngine idempotency', () => {
   });
 });
 
+describe('Edi820RemittanceEngine over MFT Gateway', () => {
+  const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  function jsonResponse(status: number, body: Record<string, unknown>, headers: Record<string, string> = {}) {
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
+  }
+
+  beforeEach(() => {
+    process.env.EDI_820_TRANSPORT = 'mftgateway';
+    process.env.MFTGATEWAY_API_TOKEN_ID = 'token-id';
+    process.env.MFTGATEWAY_API_TOKEN_SECRET = 'token-secret';
+    process.env.MFTGATEWAY_STATION_AS2_ID = 'DLBTRUST-AS2';
+    process.env.MFTGATEWAY_PARTNER_AS2_ID = 'BANK-MFT';
+    MftGatewayClient._resetSession();
+    fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+      if (String(url).endsWith('/authorize')) return jsonResponse(200, { apiToken: 'jwt-1', apiTokenExpiryIn: 3600, refreshToken: 'r' });
+      if (String(url).includes('/message/submit')) {
+        expect((init.headers as Record<string, string>).Authorization).toBe('jwt-1');
+        return jsonResponse(202, { message: 'Message queued successfully', messageIdentifier: '<mft-1@mftgateway.com>' }, { link: 'https://api.mftgateway.com/message/outbox/x' });
+      }
+      if (String(url).endsWith('/station')) return jsonResponse(200, { stations: [{ identifier: 'DLBTRUST-AS2', name: 'DLB Trust Treasury' }] });
+      return jsonResponse(404, { message: 'nope' });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('shadow by default: nothing is posted to MFT Gateway', async () => {
+    const result = await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: false });
+    expect(result.transmitted).toBe(false);
+    expect(result.shadow).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(transmit).not.toHaveBeenCalled();
+  });
+
+  it('both gates open: authorizes with the token pair and submits AS2-From station → AS2-To partner', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    const result = await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true });
+    expect(result).toMatchObject({ transmitted: true, shadow: false, status: 'transmitted', as2MessageId: '<mft-1@mftgateway.com>', partnerId: 'BANK-MFT' });
+    expect(result.transmission.transport).toBe('mftgateway');
+    expect(transmit).not.toHaveBeenCalled();
+
+    const [authUrl, authInit] = fetchMock.mock.calls[0];
+    expect(authUrl).toBe('https://api.mftgateway.com/authorize');
+    expect(JSON.parse(authInit.body)).toEqual({ tokenID: 'token-id', tokenSecret: 'token-secret' });
+    const [submitUrl, submitInit] = fetchMock.mock.calls[1];
+    expect(submitUrl).toBe('https://api.mftgateway.com/message/submit?service=as2');
+    expect(submitInit.headers).toMatchObject({ 'AS2-From': 'DLBTRUST-AS2', 'AS2-To': 'BANK-MFT', 'Content-Type': 'application/edi-x12' });
+    expect(submitInit.headers['Attachment-Name']).toMatch(/^EDI820-ERP-INV-1001-\d{9}\.edi$/);
+    expect(submitInit.body.toString('utf8')).toBe(result.payload);
+
+    await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gates stay closed without an API token even when both live flags are on', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    delete process.env.MFTGATEWAY_API_TOKEN_SECRET;
+    const result = await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true });
+    expect(result.transmitted).toBe(false);
+    expect(result.reason).toContain('MFT Gateway API token not configured');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a rejected submission is recorded as failed and re-thrown', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    fetchMock.mockImplementation(async (url: string) => (
+      String(url).endsWith('/authorize')
+        ? jsonResponse(200, { apiToken: 'jwt-1', apiTokenExpiryIn: 3600 })
+        : jsonResponse(422, { message: 'Unable to find partner with AS2 identifier: BANK-MFT' })
+    ));
+    await expect(Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true })).rejects.toMatchObject({ code: 'EDI_820_TRANSMIT_FAILED' });
+    const stored = await Edi820RemittanceEngine.get('ERP-INV-1001');
+    expect(stored.status).toBe('failed');
+    expect(stored.errorMessage).toContain('Unable to find partner');
+  });
+
+  it('readiness reports the station and the missing partner id', async () => {
+    delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
+    delete process.env.EDI_820_RECEIVER_ID;
+    const readiness = await Edi820RemittanceEngine.readiness();
+    expect(readiness.transport).toBe('mftgateway');
+    expect(readiness.station).toEqual({ identifier: 'DLBTRUST-AS2', name: 'DLB Trust Treasury' });
+    expect(readiness.ready).toBe(false);
+    expect(readiness.issues).toContain('MFTGATEWAY_PARTNER_AS2_ID not configured');
+    expect(readiness.mode).toBe('shadow');
+  });
+});
+
 describe('ErpPayoutWorkflowEngine', () => {
   it('enforces maker/checker: unapproved, self-approved or maker-less workflows are refused before any funding call', async () => {
     await expect(ErpPayoutWorkflowEngine.execute(workflow({ status: 'pending' }))).rejects.toMatchObject({ code: 'ERP_PAYOUT_NOT_APPROVED' });

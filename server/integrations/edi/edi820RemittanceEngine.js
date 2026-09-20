@@ -4,7 +4,11 @@
  * EDI 820 remittance engine — renders, stores and (when allowed) transmits
  * the X12 820 that accompanies a committed ERP payout.
  *
- * Two gates, both required before anything leaves over AS2:
+ * Transport is EDI_820_TRANSPORT: `as2` (our own AS2Client to a registered
+ * as2_partners row) or `mftgateway` (hosted MFT Gateway station via its REST
+ * API — the station signs/encrypts and delivers to the named partner).
+ *
+ * Two gates, both required before anything leaves over either transport:
  *
  *   CANONICAL_FUNDING_LIVE=true   the ERP draw the 820 describes actually
  *                                 happened (CanonicalFundingSource.commit
@@ -28,6 +32,9 @@ let AS2Client = null;
 try { ({ AS2Client } = require('../ach/as2Client')); } catch (e) { /* optional */ }
 let AS2Partners = null;
 try { ({ AS2Partners } = require('../ach/as2Partners')); } catch (e) { /* optional */ }
+const { MftGatewayClient } = require('./mftGatewayClient');
+
+const TRANSPORTS = ['as2', 'mftgateway'];
 
 let pool = null;
 try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
@@ -50,7 +57,7 @@ class Edi820RemittanceEngine {
   static getConfig() {
     return {
       rail: 'edi_820',
-      transport: 'as2',
+      transport: TRANSPORTS.includes(str('EDI_820_TRANSPORT', 'as2').toLowerCase()) ? str('EDI_820_TRANSPORT', 'as2').toLowerCase() : 'as2',
       senderId: str('EDI_820_SENDER_ID') || str('AS2_LOCAL_AS2_ID', 'DLBTRUST-AS2'),
       senderQualifier: str('EDI_820_SENDER_QUALIFIER', 'ZZ'),
       receiverId: str('EDI_820_RECEIVER_ID') || str('AS2_PARTNER_AS2_ID'),
@@ -79,7 +86,9 @@ class Edi820RemittanceEngine {
     if (!cfg.canonicalLive) reasons.push('CANONICAL_FUNDING_LIVE=false');
     if (!cfg.live) reasons.push('EDI_820_LIVE=false');
     if (fundingCommitted === false) reasons.push('ERP draw was a shadow plan, not a committed posting');
-    if (!AS2Client) reasons.push('AS2 client not available');
+    if (cfg.transport === 'mftgateway') {
+      if (!MftGatewayClient.configured()) reasons.push('MFT Gateway API token not configured');
+    } else if (!AS2Client) reasons.push('AS2 client not available');
     return { allowed: reasons.length === 0, reasons, live: cfg.live, canonicalLive: cfg.canonicalLive };
   }
 
@@ -88,15 +97,31 @@ class Edi820RemittanceEngine {
     const issues = [];
     if (!cfg.senderId) issues.push('EDI_820_SENDER_ID not configured');
     if (!cfg.receiverId) issues.push('EDI_820_RECEIVER_ID not configured');
-    if (!AS2Client) issues.push('AS2 client not available');
     let partner = null;
-    try {
-      partner = await this.resolvePartner();
-    } catch (err) {
-      issues.push(`AS2 partner lookup failed: ${err.message}`);
+    let station = null;
+    if (cfg.transport === 'mftgateway') {
+      const mft = MftGatewayClient.getConfig();
+      issues.push(...MftGatewayClient.issues());
+      partner = { partnerId: mft.partnerAs2Id || null, partnerName: 'MFT Gateway partner', partnerUrl: mft.apiUrl, partnerAs2Id: mft.partnerAs2Id || null };
+      if (MftGatewayClient.configured()) {
+        try {
+          const stations = await MftGatewayClient.listStations();
+          station = stations.find((s) => s.identifier === mft.stationAs2Id) || null;
+          if (!station) issues.push(`MFT Gateway station ${mft.stationAs2Id} not found on the account`);
+        } catch (err) {
+          issues.push(`MFT Gateway unreachable: ${err.message}`);
+        }
+      }
+    } else {
+      if (!AS2Client) issues.push('AS2 client not available');
+      try {
+        partner = await this.resolvePartner();
+      } catch (err) {
+        issues.push(`AS2 partner lookup failed: ${err.message}`);
+      }
+      if (!partner) issues.push(cfg.as2PartnerId ? `AS2 partner ${cfg.as2PartnerId} is not registered or inactive` : 'no default AS2 partner registered');
+      else if (!partner.partnerUrl) issues.push(`AS2 partner ${partner.partnerId} has no partner URL`);
     }
-    if (!partner) issues.push(cfg.as2PartnerId ? `AS2 partner ${cfg.as2PartnerId} is not registered or inactive` : 'no default AS2 partner registered');
-    else if (!partner.partnerUrl) issues.push(`AS2 partner ${partner.partnerId} has no partner URL`);
     const gate = this.transmissionGate();
     return {
       rail: cfg.rail,
@@ -108,6 +133,7 @@ class Edi820RemittanceEngine {
       usageIndicator: cfg.usageIndicator,
       as2PartnerId: cfg.as2PartnerId || null,
       partner: partner ? { partnerId: partner.partnerId, partnerName: partner.partnerName, partnerUrl: partner.partnerUrl, partnerAs2Id: partner.partnerAs2Id } : null,
+      station: station ? { identifier: station.identifier, name: station.name } : null,
       live: cfg.live,
       canonicalLive: cfg.canonicalLive,
       transmissionAllowed: gate.allowed,
@@ -322,6 +348,7 @@ class Edi820RemittanceEngine {
   }
 
   static async _transmit(doc, { duplicate }) {
+    if (this.getConfig().transport === 'mftgateway') return this._transmitViaMftGateway(doc, { duplicate });
     const partner = await this.resolvePartner();
     if (!partner || !partner.partnerUrl) {
       throw new Edi820Error(
@@ -351,6 +378,36 @@ class Edi820RemittanceEngine {
       return { ...sent, transmitted: true, shadow: false, duplicate, filename };
     } catch (err) {
       await this._save({ ...doc, status: 'failed', partnerId: partner.partnerId || null, errorMessage: err.message });
+      throw new Edi820Error(`820 transmission for ${doc.erpReference} failed: ${err.message}`, 'EDI_820_TRANSMIT_FAILED', 502);
+    }
+  }
+
+  static async _transmitViaMftGateway(doc, { duplicate }) {
+    const mft = MftGatewayClient.getConfig();
+    if (!MftGatewayClient.configured() || !mft.partnerAs2Id) {
+      throw new Edi820Error(`MFT Gateway transport not configured: ${MftGatewayClient.issues().join('; ')}`, 'EDI_820_NO_AS2_PARTNER', 503);
+    }
+    const filename = this.filename(doc);
+    try {
+      const result = await MftGatewayClient.submit(doc.payload, filename, {
+        subject: `X12 820 ${doc.erpReference}`,
+      });
+      if (!result.success) {
+        throw new Error(`MFT Gateway answered ${result.status_code}: ${result.response_body || 'no body'}`);
+      }
+      const sent = {
+        ...doc,
+        status: 'transmitted',
+        partnerId: mft.partnerAs2Id,
+        as2MessageId: result.message_id || null,
+        transmission: result,
+        errorMessage: null,
+        transmittedAt: result.transmitted_at,
+      };
+      await this._save(sent);
+      return { ...sent, transmitted: true, shadow: false, duplicate, filename };
+    } catch (err) {
+      await this._save({ ...doc, status: 'failed', partnerId: mft.partnerAs2Id, errorMessage: err.message });
       throw new Edi820Error(`820 transmission for ${doc.erpReference} failed: ${err.message}`, 'EDI_820_TRANSMIT_FAILED', 502);
     }
   }
