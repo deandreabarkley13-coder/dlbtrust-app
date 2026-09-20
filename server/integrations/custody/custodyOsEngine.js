@@ -75,6 +75,16 @@ function requireText(value, message) {
   return text;
 }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonical(value[key])])
+    );
+  }
+  return value;
+}
+
 /** Stable digest over the fields that make a custody event what it is. */
 function hashEvent({ prevHash, eventType, custodyAccountId, positionId, receiptId, actor, payload, createdAt }) {
   return crypto.createHash('sha256').update(JSON.stringify([
@@ -84,7 +94,7 @@ function hashEvent({ prevHash, eventType, custodyAccountId, positionId, receiptI
     positionId || '',
     receiptId || '',
     actor || '',
-    payload || {},
+    canonical(payload || {}),
     createdAt,
   ])).digest('hex');
 }
