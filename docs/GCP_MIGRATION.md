@@ -459,6 +459,50 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
 Secrets to add to `secret_names` when going live: `APIGEE_API_KEY` or
 `APIGEE_CLIENT_ID`/`APIGEE_CLIENT_SECRET`, `GOOGLE_WALLET_SERVICE_ACCOUNT_KEY`.
 
+## Platform engines — wiring state on `dlb-treasury-management`
+
+The five platform engines are audited by one module,
+`server/integrations/os/engineWiringReadiness.js`, exposed as
+`GET /api/os/readiness` (all five; HTTP 503 until every engine is `ready`) and
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop}`.
+Every OS engine also answers `GET /api/os/:engine/readiness`
+(`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
+`interop` map onto the five reports; other engines get the generic Cloud SQL +
+project check). Each report carries `gcp` (project vs. the expected
+`dlb-treasury-management`, Cloud Run revision, Cloud SQL connectivity, evidence
+bucket), `tables` (which Cloud SQL tables exist), `liveFlags`, `secrets` and
+`blockers` — the exact flag/secret that stops the engine from going live.
+`ready` means the engine is wired to the project (modules load, Cloud SQL
+reachable, project matches, required tables exist); `mode` is `live` or
+`shadow`. Cloud Run injects `GCP_PROJECT` / `GOOGLE_CLOUD_PROJECT =
+var.project_id` (`cloudrun.tf`) so a deploy against any other project is
+reported as a blocker.
+
+| Engine | Modules | Routes | Provider / live flag | Cloud SQL tables | GCS | Secrets to go live |
+| --- | --- | --- | --- | --- | --- | --- |
+| Payment Initiation | OS `PaymentEngine` → `paymentGatewayServerEngine`, `paymentProcessorServerEngine`; `paymentHubEngine` (PHEE) | `/api/os/payment/*`, `/api/payment-hub/*` | `PAYMENT_HUB_MODE=phee`, `PAYMENT_HUB_LIVE` (`var.payment_hub_live`) | `os_events`, `payment_methods`, `payment_gateway_transactions`, `payment_processor_transactions`, `payment_intents`, `payment_approvals`, `payment_events` | — | `PAYMENT_HUB_AUTH_TOKEN`, `PAYMENT_HUB_SERVICE_TOKEN`, `PAYMENT_HUB_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY` (always declared, seeded by `scripts/gcp/payment-hub-secrets.sh`) |
+| Integration & Gateway | `apiGatewayClearingEngine`; OS `ApigeeGatewayEngine`, `ApacheApisixEngine` | `/api/dapp/clearing-pipeline/*`, `/api/os/{apigee,apisix}/*` | `API_GATEWAY_PROVIDER=lili`, `LILI_CLEARING_LIVE=true`, `LILI_MCP_ENABLED=true` (runtime_environment); `APIGEE_LIVE` / `APISIX_LIVE` off | `gateway_clearing_events`, `os_events` | `clearing_evidence` bucket → `GCS_CLEARING_EVIDENCE_BUCKET` | Lili: `LILI_OAUTH_CLIENT_ID`, `LILI_OAUTH_CLIENT_SECRET`, `LILI_OAUTH_REFRESH_TOKEN`, `LILI_BUSINESS_USER_ID` (Secret Manager **or** encrypted `system_settings` via the dashboard OAuth flow; `check "lili_clearing_secrets"` warns when absent from `secret_names`). Apigee: `APIGEE_CLIENT_ID`/`APIGEE_CLIENT_SECRET` or `APIGEE_API_KEY`. APISIX: `APISIX_API_KEY` |
+| Bank Clearing & Settlement | OS `ClearingEngine`, `SettlementEngine` → `clearingApiEngine`, `dapp/settlementEngine`, `stablecoin/clearingAndSettlementEngine`, `clearingAutoFormatEngine` | `/api/os/{clearing,settlement}/*`, `/api/dapp/settlements` | `LILI_CLEARING_LIVE` (rail), `PAYMENT_HUB_LIVE` (ACH), `CLEARING_API_ENDPOINT` (external clearing API, unset) | `clearing_settlements`, `settlements`, `stablecoin_clearing_orders`, `os_events` | evidence bucket via the gateway pipeline | none beyond the gateway/payment-hub sets; `CLEARING_API_KEY` only if `CLEARING_API_ENDPOINT` is set |
+| Reconciliation & Matching | OS `ReconciliationEngine` → `ACHReconciliation.runReconciliation`, `DataBridge.getReconciliationReport` / `reconcile*`, `BookkeepingAgent.reconcileACH/Wires`, `ApiGatewayClearingEngine.reconcile` | `/api/os/reconciliation/*`, `/api/ach-pipeline/reconciliation/*`, `/api/accounting/bridge/{report,reconcile/*}`, `/api/agents/bookkeeping/reconcile-*`, `/api/dapp/clearing-pipeline/events/:id/reconcile` | internal ledger; live whenever Cloud SQL is reachable | `ach_reconciliations`, `ach_batches`, `gateway_clearing_events`, `bookkeeping_reconciliations`, `data_bridge_discrepancies` (ensured at boot by `OSEngine.ensureAll` → `ReconciliationEngine.ensureTables`, except `ach_batches`, which comes from `server/scripts/migrate-ach.sql` / the Northflank restore and is flagged by readiness if absent) | — | none (`DATABASE_URL` only) |
+| Interoperability OS | OS `InteropEngine` → `crossChainConversionEngine`, `m2mOsEngine` | `/api/os/interop/*`, `/api/finops/cross-chain/*` (`/readiness` included), `/api/m2m-os/*` | `CROSS_CHAIN_ENABLED=true`, `CROSS_CHAIN_SHADOW=true` (**shadow**), `CROSS_CHAIN_SOURCE_CHAIN=ethereum`, `CROSS_CHAIN_BRIDGE=circle-cctp` | `cross_chain_requests`, `m2m_identities`, `m2m_partners`, `m2m_events` | — | `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY` (cloudrun.tf precondition refuses `CROSS_CHAIN_SHADOW=false` without them); M2M uses `PAYMENT_DATA_ENCRYPTION_KEY` |
+
+Status on `dlb-treasury-management` at the time of writing:
+
+- **Payment Initiation** — wired; live iff `var.payment_hub_live=true` and the
+  four PHEE secrets have versions.
+- **Integration & Gateway** — wired to Lili (`LILI_CLEARING_LIVE=true`); can
+  only move money once the Lili OAuth client/refresh token and business user id
+  are present (Secret Manager or dashboard OAuth). Apigee/APISIX stay shadow —
+  no `APIGEE_*` / `APISIX_API_KEY` secrets are declared.
+- **Bank Clearing & Settlement** — wired; live through the Lili rail and PHEE
+  ACH; the external clearing API is intentionally unset.
+- **Reconciliation & Matching** — wired and live against Cloud SQL; no
+  external secret.
+- **Interoperability OS** — wired but **shadow**: `DAPP_RPC_URL` and
+  `DAPP_PRIVATE_KEY` are not in `secret_names`. Add both (and set
+  `CROSS_CHAIN_SHADOW=false`) to go live; M2M partner cycling is live as soon
+  as `PAYMENT_DATA_ENCRYPTION_KEY` is seeded.
+
 ## Out of scope for this phase
 
 - Cloud Armor / IAP in front of the operator console — recommended, separate

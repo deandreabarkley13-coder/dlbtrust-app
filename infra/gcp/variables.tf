@@ -144,15 +144,23 @@ variable "runtime_environment" {
     # Payment Hub EE (server/integrations/paymentHub). PAYMENT_HUB_BASE_URL is
     # derived in cloudrun.tf from paymenthub.tf; tokens/keys are Secret Manager
     # entries (secrets.tf payment_hub_secret_names).
-    PAYMENT_HUB_MODE               = "phee"
-    PAYMENT_HUB_ACCOUNTING_OWNER   = "dlbtrust"
-    PAYMENT_HUB_TENANT_ID          = "dlbtrust"
-    PAYMENT_HUB_TRANSFER_PATH      = "/channel/transfer"
-    PAYMENT_HUB_CALLBACK_URL       = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/webhooks/status"
-    PAYMENT_HUB_ACH_CONNECTOR_URL  = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/connectors/us-ach/execute"
-    PAYMENT_APPROVAL_THRESHOLD     = "2"
-    API_GATEWAY_PROVIDER           = "lili"
-    LILI_CLEARING_LIVE             = "true"
+    PAYMENT_HUB_MODE              = "phee"
+    PAYMENT_HUB_ACCOUNTING_OWNER  = "dlbtrust"
+    PAYMENT_HUB_TENANT_ID         = "dlbtrust"
+    PAYMENT_HUB_TRANSFER_PATH     = "/channel/transfer"
+    PAYMENT_HUB_CALLBACK_URL      = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/webhooks/status"
+    PAYMENT_HUB_ACH_CONNECTOR_URL = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/connectors/us-ach/execute"
+    PAYMENT_APPROVAL_THRESHOLD    = "2"
+    API_GATEWAY_PROVIDER          = "lili"
+    LILI_CLEARING_LIVE            = "true"
+    LILI_MCP_ENABLED              = "true"
+    # Interoperability OS (crossChainConversionEngine / m2mOsEngine). Shadow
+    # until DAPP_RPC_URL + DAPP_PRIVATE_KEY are in secret_names (cloudrun.tf
+    # precondition); M2M keys are encrypted with PAYMENT_DATA_ENCRYPTION_KEY.
+    CROSS_CHAIN_ENABLED            = "true"
+    CROSS_CHAIN_SHADOW             = "true"
+    CROSS_CHAIN_SOURCE_CHAIN       = "ethereum"
+    CROSS_CHAIN_BRIDGE             = "circle-cctp"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
     COMPLIANCE_PROVIDER            = "opensanctions"
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"

@@ -50,7 +50,10 @@ const {
   CollateralOSEngine,
   LiveValueRunbookOSEngine,
   LiveMoneyEngine,
+  ReconciliationEngine,
+  InteropEngine,
 } = require('../integrations/os/osEngine');
+const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -105,6 +108,8 @@ const ENGINES = {
   'collateral-os': CollateralOSEngine,
   'live-value-runbook': LiveValueRunbookOSEngine,
   'live-money': LiveMoneyEngine,
+  reconciliation: ReconciliationEngine,
+  interop: InteropEngine,
 };
 
 function sendError(res, err) {
@@ -137,7 +142,31 @@ router.get('/', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// ─── Consolidated GCP wiring readiness (dlb-treasury-management) ──────────────
+// Five platform engines: payment, gateway, clearing, reconciliation, interop.
+
+router.get('/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await EngineWiringReadiness.readiness();
+    res.status(data.ready ? 200 : 503).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/readiness/:platformEngine', operatorAuth, async (req, res) => {
+  try {
+    const data = await EngineWiringReadiness.engineReadiness(req.params.platformEngine);
+    res.status(data.ready ? 200 : 503).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 // ─── Per-engine status and health ─────────────────────────────────────────────
+
+router.get('/:engine/readiness', operatorAuth, getEngine, async (req, res) => {
+  try {
+    const data = await req.osEngine.readiness();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
 
 router.get('/:engine/status', operatorAuth, getEngine, async (req, res) => {
   try {
