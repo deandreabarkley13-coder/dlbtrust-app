@@ -734,6 +734,32 @@ describe('custody OS engine', () => {
   });
 
   describe('chain of title', () => {
+    it('verifies the chain when Postgres returns payload keys in a different order', async () => {
+      state.bonds = [{
+        id: 1,
+        bond_name: 'Series A',
+        isin: null,
+        face_value: '100000000.00',
+        status: 'active',
+        principal_balance: '98524627.51',
+        accrued_interest: '2560209.60',
+      }];
+      await CustodyOsEngine.syncFixedIncome();
+      const bondReceipt = state.receipts.find((r) => r.evidence_reference === 'bonds:1');
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, MAKER);
+      await CustodyOsEngine.countersignReceipt(bondReceipt.receipt_id, CHECKER);
+
+      for (const event of state.events) {
+        const payload = typeof event.payload === 'string'
+          ? JSON.parse(event.payload)
+          : event.payload;
+        event.payload = Object.fromEntries(Object.entries(payload).reverse());
+      }
+
+      const intact = await CustodyOsEngine.verifyChain();
+      expect(intact.intact).toBe(true);
+    });
+
     it('hash-chains every custody event and detects an altered one', async () => {
       const account = await thirdPartyAccount();
       const position = await CustodyOsEngine.recordPosition({
