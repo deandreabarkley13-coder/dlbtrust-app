@@ -15,6 +15,11 @@
 var pool = require('../bonds/pgPool');
 var { FineractClient } = require('../fineract/fineractClient');
 
+var SUB_ACCOUNT_TYPES = [
+  'bond_investment', 'distribution', 'accrued_interest',
+  'fee', 'escrow', 'operating', 'general', 'trustee_fee',
+];
+
 class SubLedgerEngine {
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -30,10 +35,7 @@ class SubLedgerEngine {
         parent_account_code TEXT NOT NULL,
         sub_account_name    TEXT NOT NULL,
         sub_account_type    TEXT NOT NULL DEFAULT 'general'
-                              CHECK (sub_account_type IN (
-                                'bond_investment','distribution','accrued_interest',
-                                'fee','escrow','operating','general'
-                              )),
+                              CHECK (sub_account_type IN (${SUB_ACCOUNT_TYPES.map(function(t) { return "'" + t + "'"; }).join(',')})),
         balance             NUMERIC(18,2) NOT NULL DEFAULT 0,
         currency            TEXT NOT NULL DEFAULT 'USD',
         status              TEXT NOT NULL DEFAULT 'active'
@@ -66,6 +68,10 @@ class SubLedgerEngine {
       )
     `);
 
+    await pool.query(`ALTER TABLE client_sub_ledgers DROP CONSTRAINT IF EXISTS client_sub_ledgers_sub_account_type_check`);
+    await pool.query(`ALTER TABLE client_sub_ledgers ADD CONSTRAINT client_sub_ledgers_sub_account_type_check
+      CHECK (sub_account_type IN (${SUB_ACCOUNT_TYPES.map(function(t) { return "'" + t + "'"; }).join(',')}))`);
+
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sub_ledger_contact ON client_sub_ledgers(contact_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sub_ledger_parent ON client_sub_ledgers(parent_account_code)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sub_txn_ledger ON sub_ledger_transactions(sub_ledger_id)`);
@@ -80,6 +86,9 @@ class SubLedgerEngine {
     contactId, parentAccountCode, subAccountName, subAccountType,
     openingBalance, currency, notes,
   }) {
+    if (subAccountType && SUB_ACCOUNT_TYPES.indexOf(subAccountType) === -1) {
+      throw new Error('Invalid subAccountType ' + subAccountType + '; expected one of ' + SUB_ACCOUNT_TYPES.join(', '));
+    }
     var subLedgerId = 'SL-' + contactId.replace('CRM-', '') + '-' + parentAccountCode + '-' + Date.now().toString(36).toUpperCase();
     var balance = parseFloat(openingBalance || 0);
 
@@ -674,5 +683,7 @@ class SubLedgerEngine {
     return { synced: synced, skipped: skipped, errors: errors };
   }
 }
+
+SubLedgerEngine.SUB_ACCOUNT_TYPES = SUB_ACCOUNT_TYPES;
 
 module.exports = { SubLedgerEngine };

@@ -132,6 +132,11 @@
     </div>
 
     <div id="trustee" class="tab-content hidden">
+      <div class="card panel" style="margin-bottom:1.5rem">
+        <h2>Trustee Sub-Ledger Accounts</h2>
+        <p>Trustee Compensation (GL 5100) and Trustee Fees (GL 2100) sub-ledgers for each trustee.</p>
+        <div id="trustee-sub-ledgers">Loading…</div>
+      </div>
       <div class="grid-2">
         <div class="card panel">
           <h2>Pending Distribution Requests</h2>
@@ -520,7 +525,42 @@
       el('tax-list').innerHTML = `<table><tbody>${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</tbody></table>`;
     }
 
+    function subLedgerGroup(sl) {
+      const parent = String(sl.parent_account_code || '');
+      const type = String(sl.sub_account_type || '');
+      if (parent === '5100' && type === 'trustee_fee') return 'Trustee Compensation';
+      if (parent === '2100' && type === 'fee') return 'Trustee Fees';
+      if (parent === '2000' && type === 'distribution') return 'Trust Sub-Ledger';
+      return type;
+    }
+
+    function subLedgerTable(rows, opts) {
+      const showMember = opts && opts.showMember;
+      if (!rows || !rows.length) return `<p class="muted">${escapeHtml((opts && opts.empty) || 'No sub-ledger accounts.')}</p>`;
+      return `<table><thead><tr>${showMember ? '<th>Member</th>' : ''}<th>Account</th><th>Group</th><th>Parent GL</th><th>Balance</th></tr></thead><tbody>${rows.map(sl => `<tr>
+        ${showMember ? `<td>${escapeHtml(((sl.first_name || '') + ' ' + (sl.last_name || '')).trim() || sl.contact_id)}</td>` : ''}
+        <td>${escapeHtml(sl.sub_account_name)}<br/><span class="muted">${escapeHtml(sl.sub_ledger_id)}</span></td>
+        <td>${escapeHtml(subLedgerGroup(sl))}</td>
+        <td>${escapeHtml(sl.parent_account_code)}${sl.parent_account_name ? ' — ' + escapeHtml(sl.parent_account_name) : ''}</td>
+        <td>${fmtMoney(Number(sl.balance) || 0)}</td>
+      </tr>`).join('')}</tbody></table>`;
+    }
+
     function renderTrustee(d) {
+      const subLedgers = d.subLedgers || {};
+      const trusteeLedgers = subLedgers.trustee || [];
+      const myLedgers = subLedgers.mine || [];
+      const adminLedgers = subLedgers.scope === 'admin' ? (subLedgers.all || []) : [];
+      let slHtml = '';
+      if (myLedgers.length) {
+        slHtml += `<h3 class="section-title" style="font-size:1rem">My Sub-Ledgers</h3>` + subLedgerTable(myLedgers);
+      }
+      slHtml += `<h3 class="section-title" style="font-size:1rem">Trustee Compensation &amp; Fees</h3>` + subLedgerTable(trusteeLedgers, { showMember: true, empty: 'No trustee sub-ledgers provisioned yet.' });
+      if (subLedgers.scope === 'admin') {
+        slHtml += `<h3 class="section-title" style="font-size:1rem">All Sub-Ledger Accounts (admin)</h3>` + subLedgerTable(adminLedgers, { showMember: true });
+      }
+      el('trustee-sub-ledgers').innerHTML = slHtml;
+
       const requests = d.pendingRequests || [];
       el('pending-requests').innerHTML = requests.length ? `<table><thead><tr><th>Date</th><th>Member</th><th>Amount</th><th>Purpose</th><th>Rail</th><th>Status</th><th>Actions</th></tr></thead><tbody>${requests.map(r => `<tr>
         <td>${new Date(r.created_at).toLocaleDateString()}</td>
@@ -549,8 +589,11 @@
       const distributions = stmt.distributions || [];
       const requests = d.pendingRequests || [];
       const payouts = d.recentPayouts || [];
+      const myLedgers = (d.subLedgers && d.subLedgers.mine) || [];
       let html = `<p class="muted">Support balance</p>`;
       html += balances.map(b => `<p class="value">${fmtMoney((b.balance_cents || 0) / 100)}</p><p class="sub">${b.form}${b.asset_code ? ' / ' + b.asset_code : ''}</p>`).join('') || '<p class="muted">No balance.</p>';
+      html += `<h3 class="section-title" style="font-size:1rem">My Trust Sub-Ledger</h3>`;
+      html += myLedgers.map(sl => `<p class="value">${fmtMoney(Number(sl.balance) || 0)}</p><p class="sub">${escapeHtml(sl.sub_account_name)} · GL ${escapeHtml(sl.parent_account_code)}${sl.parent_account_name ? ' ' + escapeHtml(sl.parent_account_name) : ''}</p>`).join('') || '<p class="muted">No trust sub-ledger provisioned yet.</p>';
       html += `<h3 class="section-title" style="font-size:1rem">Recent Distributions</h3>`;
       html += distributions.length ? `<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th></tr></thead><tbody>${distributions.map(x => `<tr><td>${new Date(x.created_at).toLocaleDateString()}</td><td>${x.type}</td><td>${fmtMoney((x.total_cents || x.amount_cents || 0) / 100)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No distributions yet.</p>';
       html += `<h3 class="section-title" style="font-size:1rem">Pending Requests</h3>`;

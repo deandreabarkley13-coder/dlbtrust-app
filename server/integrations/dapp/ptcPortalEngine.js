@@ -12,7 +12,7 @@ const pool = require('../bonds/pgPool');
 const { PrivateTrustCompanyEngine } = require('./privateTrustCompanyEngine');
 const { getTrusteeByRole } = require('./trustees');
 
-let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine, CustomerIdentificationEngine;
+let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine, CustomerIdentificationEngine, SubLedgerEngine;
 const CIP_REQUIRED_FOR_STRIPE = process.env.STRIPE_TREASURY_CIP_REQUIRED === 'true';
 function loadDeps() {
   try { ({ TaxEngine } = require('../tax/taxEngine')); } catch (e) { TaxEngine = null; }
@@ -27,6 +27,65 @@ function loadDeps() {
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
   try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
   try { ({ CustomerIdentificationEngine } = require('../compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
+  loadSubLedgerEngine();
+}
+
+function loadSubLedgerEngine() {
+  if (SubLedgerEngine !== undefined) return;
+  try { ({ SubLedgerEngine } = require('../accounting/subLedgerEngine')); } catch (e) { SubLedgerEngine = null; }
+}
+
+/**
+ * Sub-ledger accounts provisioned for every PTC member, keyed by the member role
+ * that entitles them to the account. Parent GL codes follow the trust chart of
+ * accounts (server/scripts/migrate-docs-accounting.sql).
+ */
+const SUB_LEDGER_PLAN = {
+  beneficiaryTrust: {
+    key: 'beneficiaryTrust',
+    memberRole: 'beneficiary',
+    parentAccountCode: '2000',
+    parentAccountName: 'Distributions Payable',
+    subAccountType: 'distribution',
+    label: 'Beneficiary Trust Sub-Ledger',
+  },
+  trusteeCompensation: {
+    key: 'trusteeCompensation',
+    memberRole: 'trustee',
+    parentAccountCode: '5100',
+    parentAccountName: 'Trustee Fees',
+    subAccountType: 'trustee_fee',
+    label: 'Trustee Compensation',
+  },
+  trusteeFees: {
+    key: 'trusteeFees',
+    memberRole: 'trustee',
+    parentAccountCode: '2100',
+    parentAccountName: 'Fees Payable',
+    subAccountType: 'fee',
+    label: 'Trustee Fees',
+  },
+};
+const TRUSTEE_PLANS = [SUB_LEDGER_PLAN.trusteeCompensation, SUB_LEDGER_PLAN.trusteeFees];
+function isTrusteeSubLedger(sl) {
+  return TRUSTEE_PLANS.some(p => p.parentAccountCode === sl.parent_account_code && p.subAccountType === sl.sub_account_type);
+}
+
+function memberIsTrustee(m) {
+  return (m.roles || []).some(role => String(role).startsWith('trustee_')) || String(m.type || '').includes('trustee');
+}
+function memberIsBeneficiary(m) {
+  return (m.roles || []).includes('beneficiary') || String(m.type || '').includes('beneficiary');
+}
+function subLedgerPlansForMember(m) {
+  const plans = [];
+  if (memberIsBeneficiary(m)) plans.push(SUB_LEDGER_PLAN.beneficiaryTrust);
+  if (memberIsTrustee(m)) plans.push(SUB_LEDGER_PLAN.trusteeCompensation, SUB_LEDGER_PLAN.trusteeFees);
+  return plans;
+}
+function splitName(name) {
+  const parts = String(name || '').trim().split(/\s+/);
+  return { firstName: parts[0] || 'Unknown', lastName: parts.slice(1).join(' ') || 'Unknown' };
 }
 
 function id(prefix = 'PTC') {
@@ -231,6 +290,99 @@ class PtcPortalEngine {
     }
   }
 
+  /**
+   * Ensure a CRM contact exists for a PTC member with the contact_type that
+   * SubLedgerEngine._postFineractJE requires (trustee or beneficiary). A member
+   * holding both roles is recorded as a trustee.
+   */
+  static async ensureCrmContact(m) {
+    if (!m || !m.crmContactId) return null;
+    const contactType = memberIsTrustee(m) ? 'trustee' : 'beneficiary';
+    const { firstName, lastName } = splitName(m.name);
+    const existing = (await query('SELECT contact_id, contact_type FROM crm_contacts WHERE contact_id = $1', [m.crmContactId])).rows[0];
+    if (!existing) {
+      await query(`
+        INSERT INTO crm_contacts (contact_id, contact_type, first_name, last_name, email, kyc_status, notes)
+        VALUES ($1, $2, $3, $4, LOWER($5), 'pending', $6)
+        ON CONFLICT (contact_id) DO NOTHING
+      `, [m.crmContactId, contactType, firstName, lastName, m.email, `PTC member (${(m.roles || []).join(', ')})`]);
+      return { contactId: m.crmContactId, contactType, created: true };
+    }
+    if (existing.contact_type !== contactType && !(existing.contact_type === 'trustee' && contactType === 'beneficiary')) {
+      await query('UPDATE crm_contacts SET contact_type = $1, updated_at = NOW() WHERE contact_id = $2', [contactType, m.crmContactId]);
+      return { contactId: m.crmContactId, contactType, updated: true };
+    }
+    return { contactId: m.crmContactId, contactType: existing.contact_type, created: false };
+  }
+
+  /**
+   * Idempotently provision the per-member sub-ledger accounts:
+   *   beneficiaries -> Trust Sub-Ledger under 2000 (distribution)
+   *   trustees      -> Trustee Compensation under 5100 (trustee_fee)
+   *                    Trustee Fees under 2100 (fee)
+   * Existing accounts are matched on contact + parent GL + sub-account type, so
+   * this is safe to run on every boot.
+   */
+  static async ensureSubLedgerAccounts(members = DEFAULT_MEMBERS) {
+    loadSubLedgerEngine();
+    if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+    const created = [];
+    const existing = [];
+    const contacts = [];
+    for (const m of members) {
+      if (!m.crmContactId) continue;
+      try {
+        const contact = await this.ensureCrmContact(m);
+        if (contact) contacts.push(contact);
+      } catch (e) { console.warn('[PtcPortalEngine] crm contact ensure failed:', e.message); }
+
+      for (const plan of subLedgerPlansForMember(m)) {
+        const matches = await SubLedgerEngine.listSubLedgers({
+          contactId: m.crmContactId,
+          parentAccountCode: plan.parentAccountCode,
+          subAccountType: plan.subAccountType,
+        });
+        const match = (matches || []).find(sl => sl.status !== 'closed');
+        if (match) { existing.push(match); continue; }
+        const subLedger = await SubLedgerEngine.createSubLedger({
+          contactId: m.crmContactId,
+          parentAccountCode: plan.parentAccountCode,
+          subAccountName: `${m.name} — ${plan.label}`,
+          subAccountType: plan.subAccountType,
+          openingBalance: 0,
+          currency: 'USD',
+          notes: `Seeded PTC ${plan.label} for ${m.email} (parent ${plan.parentAccountCode} ${plan.parentAccountName})`,
+        });
+        created.push(subLedger);
+      }
+    }
+    return { created, existing, contacts, plan: SUB_LEDGER_PLAN };
+  }
+
+  /**
+   * RBAC-scoped sub-ledger view for the PTC dashboard.
+   *   beneficiary -> own beneficiary Trust Sub-Ledger(s) only
+   *   trustee     -> own ledgers + every trustee compensation/fee ledger
+   *   admin       -> everything
+   */
+  static async getSubLedgerView(me, { isTrustee, isAdmin }) {
+    loadSubLedgerEngine();
+    const empty = { scope: isAdmin ? 'admin' : isTrustee ? 'trustee' : 'self', mine: [], trustee: [], all: [], plan: SUB_LEDGER_PLAN };
+    if (!SubLedgerEngine) return empty;
+    try {
+      const active = await SubLedgerEngine.listSubLedgers({ status: 'active' });
+      const contactId = me?.crm_contact_id || null;
+      const mine = contactId ? active.filter(sl => sl.contact_id === contactId) : [];
+      if (!isTrustee && !isAdmin) {
+        return { ...empty, mine: mine.filter(sl => sl.sub_account_type === SUB_LEDGER_PLAN.beneficiaryTrust.subAccountType) };
+      }
+      const trustee = active.filter(isTrusteeSubLedger);
+      return { ...empty, mine, trustee, all: isAdmin ? active : [] };
+    } catch (e) {
+      return { ...empty, error: e.message };
+    }
+  }
+
   static async getMemberByEmail(email) {
     if (!email) return null;
     const res = await query('SELECT * FROM ptc_members WHERE LOWER(email) = LOWER($1)', [email]);
@@ -281,11 +433,16 @@ class PtcPortalEngine {
       || ['admin', 'operator'].includes(String(viewerRole || '').toLowerCase());
   }
 
-  static _buildDashboardPayload({ viewerRole, viewerRoles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement }) {
+  static _isAdminRole(viewerRole, viewerRoles = []) {
+    const roles = Array.isArray(viewerRoles) ? viewerRoles : [viewerRoles];
+    return [viewerRole, ...roles].some((role) => ['admin', 'operator', 'trustee_admin'].includes(String(role || '').toLowerCase()));
+  }
+
+  static _buildDashboardPayload({ viewerRole, viewerRoles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement, subLedgers }) {
     if (!this._isTrusteeRole(viewerRole, viewerRoles)) {
-      return { viewerRole, pendingRequests, recentPayouts, myStatement };
+      return { viewerRole, pendingRequests, recentPayouts, myStatement, subLedgers };
     }
-    return { viewerRole, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement };
+    return { viewerRole, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement, subLedgers };
   }
 
   static async getDashboard(email, viewerRole, viewerRoles = []) {
@@ -304,7 +461,8 @@ class PtcPortalEngine {
       const recentPayouts = memberId
         ? (await query('SELECT p.*, m.name as member_name, m.email as member_email FROM ptc_payouts p JOIN ptc_members m ON p.member_id = m.member_id WHERE p.member_id = $1 ORDER BY p.created_at DESC LIMIT 20', [memberId])).rows
         : [];
-      return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, pendingRequests, recentPayouts, myStatement });
+      const subLedgers = await this.getSubLedgerView(me, { isTrustee: false, isAdmin: false });
+      return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, pendingRequests, recentPayouts, myStatement, subLedgers });
     }
     const sourceOfTruth = await this.getSourceOfTruth();
     const members = await this.listMembers();
@@ -312,7 +470,8 @@ class PtcPortalEngine {
     const recentPayouts = (await query('SELECT p.*, m.name as member_name, m.email as member_email FROM ptc_payouts p JOIN ptc_members m ON p.member_id = m.member_id ORDER BY p.created_at DESC LIMIT 20')).rows;
     let myStatement = null;
     if (me) myStatement = await this.getMemberStatement(me.member_id);
-    return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement });
+    const subLedgers = await this.getSubLedgerView(me, { isTrustee: true, isAdmin: this._isAdminRole(resolvedRole, roles) });
+    return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement, subLedgers });
   }
 
   static async requestDistribution({ email, amount, purpose, railPreference, recipientDetails }) {
@@ -517,4 +676,4 @@ class PtcPortalEngine {
   }
 }
 
-module.exports = { PtcPortalEngine };
+module.exports = { PtcPortalEngine, SUB_LEDGER_PLAN, isTrusteeSubLedger };

@@ -369,6 +369,11 @@
             <h2>Hold Accounts</h2>
             <div id="hold-list" class="muted">Loading…</div>
           </div>
+          <div class="card" data-roles="trustee,admin">
+            <h2>Trustee Sub-Ledgers</h2>
+            <p class="muted">Trustee Compensation (GL 5100 · trustee_fee) and Trustee Fees (GL 2100 · fee) sub-ledgers provisioned for each trustee. Admins also see beneficiary Trust Sub-Ledgers.</p>
+            <div id="sub-ledger-list" class="muted">Loading…</div>
+          </div>
         </div>
       </div>
 
@@ -875,6 +880,25 @@
     return ['maker', 'checker'];
   }
 
+  // Same data-roles gating as legacy.html applyRoleUI: elements list the
+  // roles that may see them ("trustee" covers every trustee_* seat).
+  function roleAllowed(allowed, roles) {
+    if (allowed.includes('all')) return true;
+    return roles.some(role =>
+      allowed.includes(role)
+      || (allowed.includes('trustee') && (role.startsWith('trustee') || role === 'operator' || role === 'admin'))
+      || (allowed.includes('admin') && (role === 'trustee_admin' || role === 'operator' || role === 'admin')));
+  }
+
+  function applyRoleUI(roles, role) {
+    const effective = (Array.isArray(roles) ? roles : []).concat([role, isAdmin() ? 'admin' : ''])
+      .map(r => String(r || '').toLowerCase()).filter(Boolean);
+    document.querySelectorAll('[data-roles]').forEach(e => {
+      const allowed = (e.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+      e.classList.toggle('hidden', !roleAllowed(allowed, effective));
+    });
+  }
+
   async function initDashboard() {
     const token = getToken();
     if (!token) { nav('/dapp'); return; }
@@ -891,6 +915,7 @@
       session.email = authenticatedUser.email || '';
       session.role = authenticatedRole || '';
       session.consensusRole = consensusRoleFrom(authenticatedRoles, authenticatedRole);
+      applyRoleUI(authenticatedRoles, authenticatedRole);
       DashboardBoot.ready();
       el('token-card').classList.add('hidden');
       el('dashboard').classList.remove('hidden');
@@ -1597,6 +1622,45 @@
       state.holds = res.data || [];
       el('hold-list').innerHTML = state.holds.length ? `<table class="table"><thead><tr><th>Account</th><th>Customer</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>${state.holds.map(a => `<tr><td>${a.account_name}</td><td>${a.customer_id}</td><td>${a.account_type}</td><td>${fmtUsd(a.balance_cents / 100)}</td><td><span class="badge">${a.status}</span></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No hold accounts yet.</p>';
     } catch (e) { el('hold-list').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+    loadSubLedgers();
+  }
+
+  function subLedgerGroup(sl) {
+    const parent = String(sl.parent_account_code || '');
+    const type = String(sl.sub_account_type || '');
+    if (parent === '5100' && type === 'trustee_fee') return 'Trustee Compensation';
+    if (parent === '2100' && type === 'fee') return 'Trustee Fees';
+    if (parent === '2000' && type === 'distribution') return 'Beneficiary Trust Sub-Ledger';
+    return type;
+  }
+
+  function subLedgerRows(rows) {
+    return `<table class="table"><thead><tr><th>Member</th><th>Account</th><th>Group</th><th>Parent GL</th><th>Balance</th></tr></thead><tbody>${rows.map(sl => `<tr>
+      <td>${escapeHtml(((sl.first_name || '') + ' ' + (sl.last_name || '')).trim() || sl.contact_id)}</td>
+      <td>${escapeHtml(sl.sub_account_name)}<br/><span class="muted" style="font-size:.75rem">${escapeHtml(sl.sub_ledger_id)}</span></td>
+      <td><span class="badge">${escapeHtml(subLedgerGroup(sl))}</span></td>
+      <td>${escapeHtml(sl.parent_account_code)}${sl.parent_account_name ? ' — ' + escapeHtml(sl.parent_account_name) : ''}</td>
+      <td>${fmtUsd(Number(sl.balance) || 0)}</td>
+    </tr>`).join('')}</tbody></table>`;
+  }
+
+  // Sub-ledgers come RBAC-scoped from the PTC dashboard payload:
+  // trustees see trustee comp/fee ledgers, admins see every ledger.
+  async function loadSubLedgers() {
+    const target = el('sub-ledger-list');
+    if (!target) return;
+    try {
+      const res = await api('/api/dapp/ptc/dashboard');
+      const sub = (res.data && res.data.subLedgers) || {};
+      const trustee = sub.trustee || [];
+      const all = sub.scope === 'admin' ? (sub.all || []) : [];
+      let html = trustee.length ? subLedgerRows(trustee) : '<p class="muted">No trustee sub-ledgers provisioned yet.</p>';
+      const others = all.filter(sl => !trustee.some(t => t.sub_ledger_id === sl.sub_ledger_id));
+      if (sub.scope === 'admin' && others.length) {
+        html += `<h3 style="margin-top:1rem;font-size:.95rem">All Other Sub-Ledgers (admin)</h3>` + subLedgerRows(others);
+      }
+      target.innerHTML = html;
+    } catch (e) { target.innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>'; }
   }
 
   async function createHoldAccount() {

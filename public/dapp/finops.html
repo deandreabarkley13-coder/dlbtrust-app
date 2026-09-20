@@ -4928,7 +4928,7 @@
         api('/api/finops/holdings/accounts').catch(()=>null),
       ]);
       body.innerHTML = renderHoldingManagementPanel(holdings && holdings.data, accounts && accounts.data);
-      await loadHoldingsTable();
+      await Promise.all([loadHoldingsTable(), loadTrusteeSubLedgers()]);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
@@ -4949,7 +4949,47 @@
         '<h3>Holdings</h3>' +
         '<div id="hm-holdings">Loading…</div>' +
       '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Trustee Sub-Ledgers</h3>' +
+        '<p class="muted">Trustee Compensation (GL 5100 · trustee_fee) and Trustee Fees (GL 2100 · fee) sub-ledgers alongside hold accounts. Admins also see beneficiary Trust Sub-Ledgers.</p>' +
+        '<div id="hm-sub-ledgers">Loading…</div>' +
+      '</div>' +
     '</div>';
+  }
+
+  function subLedgerGroupLabel(sl) {
+    const parent = String(sl.parent_account_code || '');
+    const type = String(sl.sub_account_type || '');
+    if (parent === '5100' && type === 'trustee_fee') return 'Trustee Compensation';
+    if (parent === '2100' && type === 'fee') return 'Trustee Fees';
+    if (parent === '2000' && type === 'distribution') return 'Beneficiary Trust Sub-Ledger';
+    return type;
+  }
+
+  function renderSubLedgerRows(rows) {
+    return '<table class="table"><thead><tr><th>Member</th><th>Account</th><th>Group</th><th>Parent GL</th><th>Balance</th></tr></thead><tbody>' +
+      rows.map(sl => '<tr>' +
+        '<td>' + escapeHtml(((sl.first_name || '') + ' ' + (sl.last_name || '')).trim() || sl.contact_id) + '</td>' +
+        '<td>' + escapeHtml(sl.sub_account_name) + '<br/><span class="muted" style="font-size:.75rem">' + escapeHtml(sl.sub_ledger_id) + '</span></td>' +
+        '<td><span class="badge">' + escapeHtml(subLedgerGroupLabel(sl)) + '</span></td>' +
+        '<td>' + escapeHtml(sl.parent_account_code) + (sl.parent_account_name ? ' — ' + escapeHtml(sl.parent_account_name) : '') + '</td>' +
+        '<td>$' + Number(sl.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '</td>' +
+      '</tr>').join('') + '</tbody></table>';
+  }
+
+  // RBAC-scoped by the server: trustees get trustee comp/fee ledgers, admins get all.
+  async function loadTrusteeSubLedgers() {
+    const target = el('hm-sub-ledgers');
+    if (!target) return;
+    try {
+      const res = await api('/api/dapp/ptc/dashboard');
+      const sub = (res.data && res.data.subLedgers) || {};
+      const trustee = sub.trustee || [];
+      const others = sub.scope === 'admin' ? (sub.all || []).filter(sl => !trustee.some(t => t.sub_ledger_id === sl.sub_ledger_id)) : [];
+      let html = trustee.length ? renderSubLedgerRows(trustee) : '<div class="muted">No trustee sub-ledgers provisioned yet.</div>';
+      if (others.length) html += '<h4 style="margin-top:12px;">All Other Sub-Ledgers (admin)</h4>' + renderSubLedgerRows(others);
+      target.innerHTML = html;
+    } catch (e) { target.innerHTML = '<div class="status err">' + escapeHtml(e.message) + '</div>'; }
   }
 
   async function createHolding() {
