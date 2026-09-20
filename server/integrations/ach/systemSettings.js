@@ -21,6 +21,7 @@ const DEFAULTS = {
   bank_auth_type: 'none',
   bank_api_key: '',
   bank_api_secret: '',
+  bank_webhook_secret: '',
   bank_routing_number: '',
   wire_endpoint: '',
   wire_auth_type: 'none',
@@ -251,6 +252,7 @@ class SystemSettings {
     const authType = await SystemSettings.get('bank_auth_type') || 'none';
     const apiKey = await SystemSettings.get('bank_api_key') || '';
     const apiSecret = await SystemSettings.get('bank_api_secret') || '';
+    const webhookSecret = await SystemSettings.get('bank_webhook_secret') || '';
     const useMtls = (await SystemSettings.get('bank_use_mtls')) === 'true';
     const clientCertPath = await SystemSettings.get('bank_client_cert_path') || '';
     const clientKeyPath = await SystemSettings.get('bank_client_key_path') || '';
@@ -267,6 +269,7 @@ class SystemSettings {
       apiAuthType: isBill ? 'bill_api' : (authType === 'none' ? 'bearer' : authType),
       apiKey: apiKey,
       apiSecret: apiSecret,
+      webhookSecret: webhookSecret || null,
       localAs2Id: 'DLBTRUST-AS2',
       isProduction: true,
       isBill: isBill,

@@ -121,7 +121,7 @@ variable "runtime_environment" {
     PAYMENT_HUB_ACH_CONNECTOR_URL  = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/connectors/us-ach/execute"
     PAYMENT_APPROVAL_THRESHOLD     = "2"
     API_GATEWAY_PROVIDER           = "lili"
-    LILI_CLEARING_LIVE             = "false"
+    LILI_CLEARING_LIVE             = "true"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
     COMPLIANCE_PROVIDER            = "opensanctions"
     TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
