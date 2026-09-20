@@ -231,6 +231,43 @@ and the approval gate, and cancelled.
   `/channel/transfer` fails fast with 412 "Process definition not found".
   Redis idempotency is disabled (`REDIS_IDEMPOTENCY_ENABLED=false`).
 
+## EDI 820 go-live (MFT Gateway remittance rail)
+
+`EDI_820_TRANSPORT=mftgateway` is wired in `variables.tf` with the rail in
+shadow (`EDI_820_LIVE=false`). The token pair is Secret Manager only; the
+partner IDs are plain env. Operator steps, in order:
+
+1. **Create the REST API token pair** in the MFT Gateway console
+   (Settings → API tokens) for the `DLBTRUST-AS2` station account.
+2. **Store the token pair as secrets.** Add `MFTGATEWAY_API_TOKEN_ID` and
+   `MFTGATEWAY_API_TOKEN_SECRET` to `secret_names` in the untracked
+   `infra/gcp/terraform.tfvars`, run `terraform apply` (creates the empty
+   secrets and mounts them on the service), then write the values:
+
+   ```sh
+   NORTHFLANK_API_TOKEN=... node scripts/gcp/migrate-northflank-secrets.mjs \
+     --only MFTGATEWAY_API_TOKEN_ID,MFTGATEWAY_API_TOKEN_SECRET \
+     --set MFTGATEWAY_API_TOKEN_ID=... \
+     --set MFTGATEWAY_API_TOKEN_SECRET=...
+   ```
+
+   (`--only` restricts the run to the two new secrets; without it every
+   Northflank variable is re-written too. Neither name is in the script's
+   `SKIP` set, so they flow through as secrets.) Never add either name to
+   `runtime_environment` — Cloud Run rejects a name that is both plain env
+   and secret-backed.
+3. **Register the bank as a Partner** in the MFT Gateway console (its AS2 ID,
+   URL and certificate). Then set `MFTGATEWAY_PARTNER_AS2_ID` and
+   `EDI_820_RECEIVER_ID` in `runtime_environment` to the bank's registered
+   AS2 identifier (the same value for both) and `terraform apply`.
+4. **Confirm readiness.** `GET /api/finops/edi/820/readiness` (operator
+   auth; `Edi820RemittanceEngine.readiness()` in `server/routes/finops.js`)
+   must report `ready: true`, `issues: []`, and `station.identifier ===
+   "DLBTRUST-AS2"` (the station was found on the account via the token).
+5. **Only then** set `EDI_820_LIVE = "true"` in `runtime_environment` and
+   `terraform apply`. Transmission also requires `CANONICAL_FUNDING_LIVE=true`
+   and the payout's funding to be committed.
+
 ## Smoke test before cutover
 
 Run against the Cloud Run URL with the Northflank service still taking
