@@ -66,6 +66,12 @@ function fakeDb(state: FakeState) {
       return { rows: account ? [{ account_type: account.account_type }] : [] };
     }
 
+    if (text.startsWith('UPDATE trust_accounts SET linked_cash_account')) {
+      const account = state.trustAccounts.find((row) => row.account_code === params[1]);
+      if (account) account.linked_cash_account = params[0];
+      return { rows: account ? [account] : [] };
+    }
+
     if (text.startsWith('UPDATE trust_accounts SET balance')) {
       const account = state.trustAccounts.find((row) => row.account_code === params[1]);
       if (account) account.balance += Number(params[0]);
@@ -811,6 +817,41 @@ describe('custody OS engine', () => {
       await CustodyOsEngine.ensureAccountingAccounts();
       expect(state.cashAccounts).toHaveLength(1);
       expect(state.trustAccounts).toHaveLength(2);
+    });
+
+    it('heals an existing unlinked asset account when the cash mirror appears', async () => {
+      state.cashAccounts = [{
+        account_id: 'CUS-THIRD-PARTY-CASH',
+        account_name: 'Cash at third-party custodians',
+        account_type: 'reserve',
+      }];
+      state.trustAccounts = [
+        {
+          account_code: '1250',
+          account_name: 'Assets in Custody',
+          account_type: 'asset',
+          sub_type: 'investment',
+          linked_cash_account: null,
+          balance: 0,
+          is_active: true,
+        },
+        {
+          account_code: '1251',
+          account_name: 'Custody Control (contra)',
+          account_type: 'asset',
+          sub_type: 'other',
+          linked_cash_account: null,
+          balance: 0,
+          is_active: true,
+        },
+      ];
+
+      const result = await CustodyOsEngine.ensureAccountingAccounts();
+
+      expect(result.status).toBe('ready');
+      expect(result.accounts[0].linked_cash_account).toBe('CUS-THIRD-PARTY-CASH');
+      expect(state.trustAccounts[0].linked_cash_account).toBe('CUS-THIRD-PARTY-CASH');
+      expect(state.trustAccountCreationCashReady).toEqual([]);
     });
 
     it('posts a balanced custody journal once when a receipt is countersigned', async () => {
