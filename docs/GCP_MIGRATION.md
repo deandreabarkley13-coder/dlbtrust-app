@@ -484,7 +484,7 @@ reported as a blocker.
 | Integration & Gateway | `apiGatewayClearingEngine`; OS `ApigeeGatewayEngine`, `ApacheApisixEngine` | `/api/dapp/clearing-pipeline/*`, `/api/os/{apigee,apisix}/*` | `API_GATEWAY_PROVIDER=lili`, `LILI_CLEARING_LIVE=true`, `LILI_MCP_ENABLED=true` (runtime_environment); `APIGEE_LIVE` / `APISIX_LIVE` off | `gateway_clearing_events`, `os_events` | `clearing_evidence` bucket → `GCS_CLEARING_EVIDENCE_BUCKET` | Lili: `LILI_OAUTH_CLIENT_ID`, `LILI_OAUTH_CLIENT_SECRET`, `LILI_OAUTH_REFRESH_TOKEN`, `LILI_BUSINESS_USER_ID` (Secret Manager **or** encrypted `system_settings` via the dashboard OAuth flow; `check "lili_clearing_secrets"` warns when absent from `secret_names`). Apigee: `APIGEE_CLIENT_ID`/`APIGEE_CLIENT_SECRET` or `APIGEE_API_KEY`. APISIX: `APISIX_API_KEY` |
 | Bank Clearing & Settlement | OS `ClearingEngine`, `SettlementEngine` → `clearingApiEngine`, `dapp/settlementEngine`, `stablecoin/clearingAndSettlementEngine`, `clearingAutoFormatEngine` | `/api/os/{clearing,settlement}/*`, `/api/dapp/settlements` | `LILI_CLEARING_LIVE` (rail), `PAYMENT_HUB_LIVE` (ACH), `CLEARING_API_ENDPOINT` (external clearing API, unset) | `clearing_settlements`, `settlements`, `stablecoin_clearing_orders`, `os_events` | evidence bucket via the gateway pipeline | none beyond the gateway/payment-hub sets; `CLEARING_API_KEY` only if `CLEARING_API_ENDPOINT` is set |
 | Reconciliation & Matching | OS `ReconciliationEngine` → `ACHReconciliation.runReconciliation`, `DataBridge.getReconciliationReport` / `reconcile*`, `BookkeepingAgent.reconcileACH/Wires`, `ApiGatewayClearingEngine.reconcile` | `/api/os/reconciliation/*`, `/api/ach-pipeline/reconciliation/*`, `/api/accounting/bridge/{report,reconcile/*}`, `/api/agents/bookkeeping/reconcile-*`, `/api/dapp/clearing-pipeline/events/:id/reconcile` | internal ledger; live whenever Cloud SQL is reachable | `ach_reconciliations`, `ach_batches`, `gateway_clearing_events`, `bookkeeping_reconciliations`, `data_bridge_discrepancies` (ensured at boot by `OSEngine.ensureAll` → `ReconciliationEngine.ensureTables`, except `ach_batches`, which comes from `server/scripts/migrate-ach.sql` / the Northflank restore and is flagged by readiness if absent) | — | none (`DATABASE_URL` only) |
-| Interoperability OS | OS `InteropEngine` → `crossChainConversionEngine`, `m2mOsEngine` | `/api/os/interop/*`, `/api/finops/cross-chain/*` (`/readiness` included), `/api/m2m-os/*` | `CROSS_CHAIN_ENABLED=true`, `CROSS_CHAIN_SHADOW=true` (**shadow**), `CROSS_CHAIN_SOURCE_CHAIN=ethereum`, `CROSS_CHAIN_BRIDGE=circle-cctp` | `cross_chain_requests`, `m2m_identities`, `m2m_partners`, `m2m_events` | — | `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY` (cloudrun.tf precondition refuses `CROSS_CHAIN_SHADOW=false` without them); M2M uses `PAYMENT_DATA_ENCRYPTION_KEY` |
+| Interoperability OS | OS `InteropEngine` → `crossChainConversionEngine`, `m2mOsEngine` | `/api/os/interop/*`, `/api/finops/cross-chain/*` (`/readiness` included), `/api/m2m-os/*` | `CROSS_CHAIN_ENABLED=true`, `CROSS_CHAIN_SHADOW=false` (live, parity with Northflank `DAPP_SHADOW=false`), `CROSS_CHAIN_SOURCE_CHAIN=ethereum`, `CROSS_CHAIN_BRIDGE=circle-cctp` | `cross_chain_requests`, `m2m_identities`, `m2m_partners`, `m2m_events` | — | `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY` (cloudrun.tf precondition refuses `CROSS_CHAIN_SHADOW=false` without them); M2M uses `PAYMENT_DATA_ENCRYPTION_KEY` |
 
 Status on `dlb-treasury-management` at the time of writing:
 
@@ -498,10 +498,24 @@ Status on `dlb-treasury-management` at the time of writing:
   ACH; the external clearing API is intentionally unset.
 - **Reconciliation & Matching** — wired and live against Cloud SQL; no
   external secret.
-- **Interoperability OS** — wired but **shadow**: `DAPP_RPC_URL` and
-  `DAPP_PRIVATE_KEY` are not in `secret_names`. Add both (and set
-  `CROSS_CHAIN_SHADOW=false`) to go live; M2M partner cycling is live as soon
-  as `PAYMENT_DATA_ENCRYPTION_KEY` is seeded.
+- **Interoperability OS** — wired and live: `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY`
+  and `PAYMENT_DATA_ENCRYPTION_KEY` exist in the Northflank `dlbtrust-runtime`
+  group and are copied by `migrate-northflank-secrets.mjs`, so they are in
+  `secret_names` and `CROSS_CHAIN_SHADOW=false` passes the cloudrun.tf
+  precondition.
+
+Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
+the admin token): Cloud SQL connected, evidence bucket present, all five
+engines in `live` mode. Remaining blockers are environment-only and clear on
+the next `terraform apply` (`GCP_PROJECT`/`GOOGLE_CLOUD_PROJECT` are injected by
+cloudrun.tf; the GitHub deploy workflow only swaps the image and keeps env).
+The gateway additionally reports `VENDOR_PAYMENT_EXECUTION_MODE is not live`
+— a deliberate compliance switch, not a missing secret; set it to `live` in
+`runtime_environment` only when vendor payment execution is approved.
+Not present anywhere in Northflank (so not copyable): `APIGEE_*`,
+`APISIX_API_KEY` (Apigee/APISIX stay shadow), and the Lili OAuth
+`CLIENT_SECRET`/`REFRESH_TOKEN`/`BUSINESS_USER_ID`, which live in encrypted
+`system_settings` from the dashboard OAuth flow (restored with the database).
 
 ## Out of scope for this phase
 

@@ -154,11 +154,13 @@ variable "runtime_environment" {
     API_GATEWAY_PROVIDER          = "lili"
     LILI_CLEARING_LIVE            = "true"
     LILI_MCP_ENABLED              = "true"
-    # Interoperability OS (crossChainConversionEngine / m2mOsEngine). Shadow
-    # until DAPP_RPC_URL + DAPP_PRIVATE_KEY are in secret_names (cloudrun.tf
-    # precondition); M2M keys are encrypted with PAYMENT_DATA_ENCRYPTION_KEY.
+    # Interoperability OS (crossChainConversionEngine / m2mOsEngine). Live, as
+    # on Northflank (DAPP_SHADOW=false there): DAPP_RPC_URL, DAPP_PRIVATE_KEY
+    # and PAYMENT_DATA_ENCRYPTION_KEY come from the dlbtrust-runtime secret
+    # group via migrate-northflank-secrets.mjs; the cloudrun.tf precondition
+    # refuses this setting if they are not in secret_names.
     CROSS_CHAIN_ENABLED            = "true"
-    CROSS_CHAIN_SHADOW             = "true"
+    CROSS_CHAIN_SHADOW             = "false"
     CROSS_CHAIN_SOURCE_CHAIN       = "ethereum"
     CROSS_CHAIN_BRIDGE             = "circle-cctp"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
