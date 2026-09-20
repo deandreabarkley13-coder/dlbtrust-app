@@ -96,6 +96,25 @@ variable "runtime_environment" {
     DISTRIBUTION_LIMIT_BENEFICIARY_USD = "100000"
     DISTRIBUTION_LIMIT_TRUSTEE_USD     = "500000"
     DISTRIBUTION_PURPOSES              = "lifestyle,medical,travel,home,education"
+
+    # Lili (DB NET MGMT LLC) on-us ACH: ODFI = RDFI. Routing is from Lili's ACH
+    # instructions letter (Sunrise Banks N.A.). Account numbers live in Secret
+    # Manager (APISIX_ODFI_ACCOUNT / APISIX_RDFI_ACCOUNT), never here.
+    PAYMENT_MODE                     = "production"
+    NACHA_ODFI_ROUTING               = "091017138"
+    NACHA_ORIGINATOR_NAME            = "DB NET MGMT"
+    NACHA_COMPANY_NAME               = "DB NET MGMT"
+    NACHA_IMMEDIATE_ORIGIN_NAME      = "DB NET MGMT"
+    NACHA_IMMEDIATE_DESTINATION_NAME = "SUNRISE BANKS NA"
+    ACH_IMMEDIATE_ORIGIN             = "1091017138"
+    ACH_COMPANY_ID                   = "1091017138"
+    APISIX_ODFI_ROUTING              = "091017138"
+    APISIX_ODFI_NAME                 = "DB NET MGMT"
+    APISIX_ODFI_BANK_NAME            = "Lili (Sunrise Banks N.A.)"
+    APISIX_RDFI_ROUTING              = "091017138"
+    APISIX_RDFI_NAME                 = "DB NET MGMT"
+    APISIX_RDFI_BANK_NAME            = "Lili (Sunrise Banks N.A.)"
+    APISIX_ALLOW_HTTP                = "false"
   }
 }
 
