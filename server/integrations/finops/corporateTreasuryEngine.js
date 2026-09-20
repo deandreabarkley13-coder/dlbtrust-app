@@ -23,6 +23,19 @@ let ErpPayoutWorkflowEngine = null;
 try { ErpPayoutWorkflowEngine = require('./erpPayoutWorkflowEngine').ErpPayoutWorkflowEngine; } catch (e) { ErpPayoutWorkflowEngine = null; }
 
 const ERP_PAYOUT_REFERENCE_TYPE = 'erp_payout';
+const INTERNAL_LEDGER_SOURCE_TYPES = new Set([
+  'treasury',
+  'treasury_hot',
+  'cash',
+  'trust',
+  'trust_account',
+  'bond',
+  'fixed_income',
+  'bond_interest',
+  'fineract',
+  'core_banking',
+  'sub_ledger',
+]);
 
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -41,6 +54,12 @@ async function query(sql, params) {
 }
 
 class CorporateTreasuryEngine {
+  static _accountEvidence(a) {
+    return !a.linked_source_type || INTERNAL_LEDGER_SOURCE_TYPES.has(a.linked_source_type)
+      ? 'internal_ledger'
+      : 'external';
+  }
+
   static async ensureTables() {
     await query(`
       CREATE TABLE IF NOT EXISTS corporate_treasury_accounts (
@@ -227,20 +246,62 @@ class CorporateTreasuryEngine {
     const investCents = investments.filter(i => i.status === 'active').reduce((s, i) => s + Number(i.amount_cents || 0), 0);
     const forecast = await this.getLiquidityForecast({ days: 30 });
 
-    const custodianCents = accounts.filter(a => a.custodian || ['custodian','beneficiary','escrow'].includes(a.category)).reduce((s, a) => s + Number(a.available_cents || 0), 0);
-    const issuerCents = accounts.filter(a => a.issuer || a.category === 'issuer').reduce((s, a) => s + Number(a.available_cents || 0), 0);
+    let attestedCustodyCents = 0;
+    try {
+      const { AttestationOsEngine } = require('../os/attestationOsEngine');
+      const snapshot = await AttestationOsEngine.snapshot();
+      attestedCustodyCents = Number(snapshot && snapshot.attestedCents) || 0;
+    } catch (e) {}
+
+    const evidenceAccounts = accounts.map(a => ({ account: a, evidence: this._accountEvidence(a) }));
+    const custodianLedgerCents = evidenceAccounts
+      .filter(({ account: a }) => a.custodian || ['custodian', 'beneficiary', 'escrow'].includes(a.category))
+      .filter(({ evidence }) => evidence === 'internal_ledger')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
+    const issuerLedgerCents = evidenceAccounts
+      .filter(({ account: a }) => a.issuer || a.category === 'issuer')
+      .filter(({ evidence }) => evidence === 'internal_ledger')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
+    const custodianCents = evidenceAccounts
+      .filter(({ account: a }) => a.custodian || ['custodian', 'beneficiary', 'escrow'].includes(a.category))
+      .filter(({ evidence }) => evidence === 'external')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
+    const issuerCents = evidenceAccounts
+      .filter(({ account: a }) => a.issuer || a.category === 'issuer')
+      .filter(({ evidence }) => evidence === 'external')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
+    const ledgerCashCents = evidenceAccounts
+      .filter(({ evidence }) => evidence === 'internal_ledger')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
+    const externalCashCents = evidenceAccounts
+      .filter(({ evidence }) => evidence === 'external')
+      .reduce((s, { account: a }) => s + Number(a.available_cents || 0), 0);
     const trustCorpusCents = accounts.filter(a => a.category === 'trust_corpus').reduce((s, a) => s + Number(a.available_cents || 0), 0);
-    const reserveRatio = totalCents ? Math.round((custodianCents / totalCents) * 10000) : 0;
+    const reserveRatio = issuerLedgerCents ? Math.round((attestedCustodyCents / issuerLedgerCents) * 10000) : 0;
 
     return {
       totalCashCents: totalCents,
       totalInvestmentsCents: investCents,
       custodianCashCents: custodianCents,
       issuerCashCents: issuerCents,
+      ledgerCashCents,
+      externalCashCents,
+      attestedCustodyCents,
+      custodianLedgerCents,
+      issuerLedgerCents,
       trustCorpusCents,
       ptcReserveRatioBps: reserveRatio,
+      evidence: {
+        note: 'Ledger balances are the trust\'s own records; only attestedCustodyCents is confirmed at an outside custodian.',
+      },
       availableByCurrency: byCurrency,
-      accounts: accounts.map(a => ({ ...a, balance: dollars(a.balance_cents), available: dollars(a.available_cents), hold: dollars(a.hold_cents) })),
+      accounts: accounts.map(a => ({
+        ...a,
+        balance: dollars(a.balance_cents),
+        available: dollars(a.available_cents),
+        hold: dollars(a.hold_cents),
+        evidence: this._accountEvidence(a),
+      })),
       pools: pools.map(p => ({ ...p, targetBalance: dollars(p.target_balance_cents), sweepThreshold: dollars(p.sweep_threshold_cents) })),
       upcomingInflowsCents: flows.filter(f => f.type === 'inflow' && f.status !== 'completed').reduce((s, f) => s + Number(f.amount_cents || 0), 0),
       upcomingOutflowsCents: flows.filter(f => f.type === 'outflow' && f.status !== 'completed').reduce((s, f) => s + Number(f.amount_cents || 0), 0),
