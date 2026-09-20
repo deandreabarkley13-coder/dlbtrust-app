@@ -436,9 +436,9 @@ class LiliDirectDepositEngine {
       const res = await pool.query(
         `SELECT f.status, COUNT(*)::int AS n
            FROM (SELECT ach_batch_id FROM lili_direct_deposits WHERE ach_batch_id IS NOT NULL ORDER BY created_at DESC LIMIT $1) d
-           JOIN LATERAL (SELECT status FROM mft_files WHERE source_ref = 'ach:' || d.ach_batch_id ORDER BY built_at DESC LIMIT 1) f ON TRUE
+           JOIN LATERAL (SELECT status FROM mft_files WHERE source_ref = 'ach:' || d.ach_batch_id AND channel_id = $2 ORDER BY built_at DESC LIMIT 1) f ON TRUE
           GROUP BY f.status`,
-        [Number(limit) || 200]
+        [Number(limit) || 200, channel]
       );
       for (const r of res.rows) counts[r.status] = Number(r.n);
     }
