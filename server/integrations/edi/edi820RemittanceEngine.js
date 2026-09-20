@@ -57,7 +57,7 @@ class Edi820RemittanceEngine {
   static getConfig() {
     return {
       rail: 'edi_820',
-      transport: TRANSPORTS.includes(str('EDI_820_TRANSPORT', 'as2').toLowerCase()) ? str('EDI_820_TRANSPORT', 'as2').toLowerCase() : 'as2',
+      transport: str('EDI_820_TRANSPORT', 'as2').toLowerCase(),
       senderId: str('EDI_820_SENDER_ID') || str('AS2_LOCAL_AS2_ID', 'DLBTRUST-AS2'),
       senderQualifier: str('EDI_820_SENDER_QUALIFIER', 'ZZ'),
       receiverId: str('EDI_820_RECEIVER_ID') || str('AS2_PARTNER_AS2_ID'),
@@ -86,8 +86,14 @@ class Edi820RemittanceEngine {
     if (!cfg.canonicalLive) reasons.push('CANONICAL_FUNDING_LIVE=false');
     if (!cfg.live) reasons.push('EDI_820_LIVE=false');
     if (fundingCommitted === false) reasons.push('ERP draw was a shadow plan, not a committed posting');
-    if (cfg.transport === 'mftgateway') {
-      if (!MftGatewayClient.configured()) reasons.push('MFT Gateway API token not configured');
+    if (!TRANSPORTS.includes(cfg.transport)) {
+      reasons.push(`EDI_820_TRANSPORT=${cfg.transport} is not a supported transport (${TRANSPORTS.join(', ')})`);
+    } else if (cfg.transport === 'mftgateway') {
+      try {
+        if (!MftGatewayClient.configured()) reasons.push('MFT Gateway API token not configured');
+      } catch (err) {
+        reasons.push(err.message);
+      }
     } else if (!AS2Client) reasons.push('AS2 client not available');
     return { allowed: reasons.length === 0, reasons, live: cfg.live, canonicalLive: cfg.canonicalLive };
   }
@@ -99,17 +105,22 @@ class Edi820RemittanceEngine {
     if (!cfg.receiverId) issues.push('EDI_820_RECEIVER_ID not configured');
     let partner = null;
     let station = null;
-    if (cfg.transport === 'mftgateway') {
-      const mft = MftGatewayClient.getConfig();
-      issues.push(...MftGatewayClient.issues());
-      partner = { partnerId: mft.partnerAs2Id || null, partnerName: 'MFT Gateway partner', partnerUrl: mft.apiUrl, partnerAs2Id: mft.partnerAs2Id || null };
-      if (MftGatewayClient.configured()) {
-        try {
-          const stations = await MftGatewayClient.listStations();
-          station = stations.find((s) => s.identifier === mft.stationAs2Id) || null;
-          if (!station) issues.push(`MFT Gateway station ${mft.stationAs2Id} not found on the account`);
-        } catch (err) {
-          issues.push(`MFT Gateway unreachable: ${err.message}`);
+    if (!TRANSPORTS.includes(cfg.transport)) {
+      issues.push(`EDI_820_TRANSPORT=${cfg.transport} is not a supported transport (${TRANSPORTS.join(', ')})`);
+    } else if (cfg.transport === 'mftgateway') {
+      let mft = null;
+      try { mft = MftGatewayClient.getConfig(); } catch (err) { issues.push(err.message); }
+      if (mft) {
+        issues.push(...MftGatewayClient.issues());
+        partner = { partnerId: mft.partnerAs2Id || null, partnerName: 'MFT Gateway partner', partnerUrl: mft.apiUrl, partnerAs2Id: mft.partnerAs2Id || null };
+        if (MftGatewayClient.configured()) {
+          try {
+            const stations = await MftGatewayClient.listStations();
+            station = stations.find((s) => s.identifier === mft.stationAs2Id) || null;
+            if (!station) issues.push(`MFT Gateway station ${mft.stationAs2Id} not found on the account`);
+          } catch (err) {
+            issues.push(`MFT Gateway unreachable: ${err.message}`);
+          }
         }
       }
     } else {
@@ -348,7 +359,11 @@ class Edi820RemittanceEngine {
   }
 
   static async _transmit(doc, { duplicate }) {
-    if (this.getConfig().transport === 'mftgateway') return this._transmitViaMftGateway(doc, { duplicate });
+    const { transport } = this.getConfig();
+    if (!TRANSPORTS.includes(transport)) {
+      throw new Edi820Error(`EDI_820_TRANSPORT=${transport} is not a supported transport`, 'EDI_820_BAD_TRANSPORT', 503);
+    }
+    if (transport === 'mftgateway') return this._transmitViaMftGateway(doc, { duplicate });
     const partner = await this.resolvePartner();
     if (!partner || !partner.partnerUrl) {
       throw new Edi820Error(
