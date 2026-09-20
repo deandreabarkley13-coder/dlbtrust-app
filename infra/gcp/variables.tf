@@ -173,10 +173,15 @@ variable "runtime_environment" {
 
     # ERP payout → X12 820 remittance over AS2 (server/integrations/edi). Shadow
     # by default: transmission needs EDI_820_LIVE=true AND CANONICAL_FUNDING_LIVE=true.
-    # Receiver/partner IDs are agreed with the bank; EDI_820_ODFI_ACCOUNT stays in Secret Manager.
-    # MFTGATEWAY_API_TOKEN_ID / MFTGATEWAY_API_TOKEN_SECRET live in Secret Manager;
-    # MFTGATEWAY_PARTNER_AS2_ID / EDI_820_RECEIVER_ID are set once the bank's
-    # partner profile exists on the MFT Gateway account.
+    # Secret Manager only (list in var.secret_names, never here):
+    # MFTGATEWAY_API_TOKEN_ID, MFTGATEWAY_API_TOKEN_SECRET, EDI_820_ODFI_ACCOUNT.
+    # Deliberately unset until the bank is registered as a Partner in the MFT
+    # Gateway console: MFTGATEWAY_PARTNER_AS2_ID and EDI_820_RECEIVER_ID. Both
+    # take the SAME value — the bank's registered AS2 identifier — and are added
+    # to this block once that partner profile exists. Go-live order (see
+    # docs/GCP_MIGRATION.md "EDI 820 go-live"): token secrets → partner IDs →
+    # GET /api/finops/edi/820/readiness reports ready:true with the station
+    # found → only then flip EDI_820_LIVE to "true".
     EDI_820_LIVE                 = "false"
     EDI_820_TRANSPORT            = "mftgateway"
     MFTGATEWAY_API_URL           = "https://api.mftgateway.com"
@@ -198,6 +203,10 @@ variable "secret_names" {
     the same name. Populate with scripts/gcp/migrate-northflank-secrets.mjs
     --list, which prints the names in the dlbtrust-runtime secret group.
     DATABASE_URL is always added by cloudsql.tf and must not be listed here.
+    MFTGATEWAY_API_TOKEN_ID and MFTGATEWAY_API_TOKEN_SECRET (EDI 820 / MFT
+    Gateway REST token pair) MUST be included in this list (in the untracked
+    infra/gcp/terraform.tfvars) and must NOT appear in runtime_environment —
+    Cloud Run rejects a name that is both plain env and secret-backed.
   EOT
   type        = list(string)
   default     = []
