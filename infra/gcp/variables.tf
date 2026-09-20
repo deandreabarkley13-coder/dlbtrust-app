@@ -174,7 +174,13 @@ variable "runtime_environment" {
     # ERP payout → X12 820 remittance over AS2 (server/integrations/edi). Shadow
     # by default: transmission needs EDI_820_LIVE=true AND CANONICAL_FUNDING_LIVE=true.
     # Receiver/partner IDs are agreed with the bank; EDI_820_ODFI_ACCOUNT stays in Secret Manager.
+    # MFTGATEWAY_API_TOKEN_ID / MFTGATEWAY_API_TOKEN_SECRET live in Secret Manager;
+    # MFTGATEWAY_PARTNER_AS2_ID / EDI_820_RECEIVER_ID are set once the bank's
+    # partner profile exists on the MFT Gateway account.
     EDI_820_LIVE                 = "false"
+    EDI_820_TRANSPORT            = "mftgateway"
+    MFTGATEWAY_API_URL           = "https://api.mftgateway.com"
+    MFTGATEWAY_STATION_AS2_ID    = "DLBTRUST-AS2"
     EDI_820_SENDER_ID            = "DLBTRUST-AS2"
     EDI_820_SENDER_QUALIFIER     = "ZZ"
     EDI_820_RECEIVER_QUALIFIER   = "ZZ"
