@@ -34,6 +34,48 @@ variable "openach_image" {
   default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/openach:latest"
 }
 
+# Payment Hub EE channel connector (paymenthub.tf). Mirrored from Docker Hub
+# openmf/ph-ee-connector-channel into Artifact Registry; Cloud Run only pulls
+# from registries it can authenticate to.
+variable "phee_image" {
+  type    = string
+  default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/ph-ee-connector-channel:mifos-v2.0.0"
+}
+
+variable "deploy_phee" {
+  description = "Run the PHEE channel connector as the dlbtrust-phee Cloud Run service. Ignored when payment_hub_base_url is set."
+  type        = bool
+  default     = true
+}
+
+variable "payment_hub_base_url" {
+  description = "Existing/external PHEE channel connector base URL (https:// or a private *.internal/*.svc host). Empty = use the dlbtrust-phee Cloud Run service."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.payment_hub_base_url == "" || can(regex("^https://", var.payment_hub_base_url)) || can(regex("^http://[^/]+\\.(internal|svc|svc\\.cluster\\.local)(:[0-9]+)?(/|$)", var.payment_hub_base_url))
+    error_message = "payment_hub_base_url must be HTTPS or a private *.internal / *.svc address (paymentHubConfig.js isSecureEndpoint)."
+  }
+}
+
+variable "phee_zeebe_gateway" {
+  description = "Zeebe gateway host:port the channel connector orchestrates through (private address reachable from the VPC connector). Points at an unreachable loopback until a Zeebe/ph-ee-engine cluster exists, so transfers fail fast with 412 instead of hanging."
+  type        = string
+  default     = "127.0.0.1:26500"
+}
+
+variable "payment_hub_live" {
+  description = "PAYMENT_HUB_LIVE. Apply with false for the shadow/tiny end-to-end check, then true to allow transmission."
+  type        = bool
+  default     = true
+}
+
+variable "payment_hub_tenant_id" {
+  type    = string
+  default = "dlbtrust"
+}
+
 variable "db_tier" {
   description = "Cloud SQL machine tier. db-g1-small matches the nf-compute-20 addon; use db-custom-2-7680 for production load"
   type        = string
@@ -65,11 +107,19 @@ variable "runtime_environment" {
   description = "Non-secret runtime variables (mirrors northflank/service-dlbtrust-app.json runtimeEnvironment)"
   type        = map(string)
   default = {
-    NODE_ENV                       = "production"
-    APP_URL                        = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
-    AS2_MESSAGE_ID_DOMAIN          = "dlbtrust-app-r5oawu76jq-ue.a.run.app"
-    PAYMENT_HUB_MODE               = "disabled"
-    PAYMENT_HUB_LIVE               = "false"
+    NODE_ENV              = "production"
+    APP_URL               = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    AS2_MESSAGE_ID_DOMAIN = "dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    # Payment Hub EE (server/integrations/paymentHub). PAYMENT_HUB_BASE_URL is
+    # derived in cloudrun.tf from paymenthub.tf; tokens/keys are Secret Manager
+    # entries (secrets.tf payment_hub_secret_names).
+    PAYMENT_HUB_MODE               = "phee"
+    PAYMENT_HUB_ACCOUNTING_OWNER   = "dlbtrust"
+    PAYMENT_HUB_TENANT_ID          = "dlbtrust"
+    PAYMENT_HUB_TRANSFER_PATH      = "/channel/transfer"
+    PAYMENT_HUB_CALLBACK_URL       = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/webhooks/status"
+    PAYMENT_HUB_ACH_CONNECTOR_URL  = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/connectors/us-ach/execute"
+    PAYMENT_APPROVAL_THRESHOLD     = "2"
     API_GATEWAY_PROVIDER           = "lili"
     LILI_CLEARING_LIVE             = "false"
     MELIO_EXPORT_DIR               = "/data/melio-exports"
@@ -108,13 +158,18 @@ variable "runtime_environment" {
     NACHA_IMMEDIATE_DESTINATION_NAME = "SUNRISE BANKS NA"
     ACH_IMMEDIATE_ORIGIN             = "1091017138"
     ACH_COMPANY_ID                   = "1091017138"
-    APISIX_ODFI_ROUTING              = "091017138"
-    APISIX_ODFI_NAME                 = "DB NET MGMT"
-    APISIX_ODFI_BANK_NAME            = "Lili (Sunrise Banks N.A.)"
-    APISIX_RDFI_ROUTING              = "091017138"
-    APISIX_RDFI_NAME                 = "DB NET MGMT"
-    APISIX_RDFI_BANK_NAME            = "Lili (Sunrise Banks N.A.)"
-    APISIX_ALLOW_HTTP                = "false"
+    # usAchConnector.js originator block (what PHEE hands to /connectors/us-ach/execute)
+    ACH_ODFI_ROUTING      = "091017138"
+    ACH_ODFI_NAME         = "SUNRISE BANKS NA"
+    ACH_ORIGINATOR_NAME   = "DB NET MGMT"
+    ACH_COMPANY_NAME      = "DB NET MGMT"
+    APISIX_ODFI_ROUTING   = "091017138"
+    APISIX_ODFI_NAME      = "DB NET MGMT"
+    APISIX_ODFI_BANK_NAME = "Lili (Sunrise Banks N.A.)"
+    APISIX_RDFI_ROUTING   = "091017138"
+    APISIX_RDFI_NAME      = "DB NET MGMT"
+    APISIX_RDFI_BANK_NAME = "Lili (Sunrise Banks N.A.)"
+    APISIX_ALLOW_HTTP     = "false"
   }
 }
 

@@ -42,3 +42,8 @@ output "openach_base_url" {
 output "egress_ip" {
   value = google_compute_address.egress.address
 }
+
+output "payment_hub_base_url" {
+  description = "PHEE channel connector the app is pointed at (PAYMENT_HUB_BASE_URL); empty when neither deploy_phee nor payment_hub_base_url is set"
+  value       = local.payment_hub_base_url
+}
