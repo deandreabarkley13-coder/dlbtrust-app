@@ -142,6 +142,11 @@ variable "runtime_environment" {
     # Custody OS issuer register feed is self-custody and does not add reserve.
     CUSTODY_ISSUER_NAME                = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     CUSTODY_FIXED_INCOME_SYNC          = "true"
+    CUSTODY_GL_BOOKING_ENABLED         = "true"
+    CUSTODY_ASSET_GL_ACCOUNT           = "1250"
+    CUSTODY_CONTROL_GL_ACCOUNT         = "1251"
+    CUSTODY_CASH_SYNC                  = "true"
+    CUSTODY_CASH_ACCOUNT_ID            = "CUS-THIRD-PARTY-CASH"
     FIXED_INCOME_DISTRIBUTION_ENABLED  = "true"
     FIXED_INCOME_AUTO_STAGE            = "false"
     FIXED_INCOME_AUTO_EXECUTE          = "false"

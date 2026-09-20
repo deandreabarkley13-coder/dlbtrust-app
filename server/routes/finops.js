@@ -1640,6 +1640,16 @@ router.get('/custody/chain', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CustodyOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/custody/chain/reseal', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.resealChain({
+      reason: req.body && req.body.reason,
+      actor: (req.body && req.body.actor) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await CustodyOsEngine.syncReserve({
@@ -1652,6 +1662,16 @@ router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (re
 router.post('/custody/sync-fixed-income', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await CustodyOsEngine.syncFixedIncome({
+      syncedBy: (req.body && req.body.syncedBy) || sessionActor(req),
+      proposeReceipts: !(req.body && req.body.proposeReceipts === false),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/sync-collateral', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.syncCollateral({
       syncedBy: (req.body && req.body.syncedBy) || sessionActor(req),
       proposeReceipts: !(req.body && req.body.proposeReceipts === false),
     });

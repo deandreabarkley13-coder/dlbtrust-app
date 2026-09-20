@@ -48,6 +48,9 @@ const { TrustAllocationEngine } = require('../dapp/trustAllocationEngine');
 let TrustAccountingEngine;
 try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
 
+let CustodyOsEngine;
+try { ({ CustodyOsEngine } = require('../custody/custodyOsEngine')); } catch (e) { CustodyOsEngine = null; }
+
 const POSITION_STATUSES = ['pledged', 'margin_call', 'released'];
 const DRAW_STATUSES = ['proposed', 'funded', 'settling', 'settled', 'repaid', 'cancelled'];
 
@@ -113,6 +116,15 @@ function amountToUnits(amount, decimals) {
 }
 
 function bps(n) { return Math.round(Number(n)); }
+
+async function syncCustodyFeed(actor) {
+  if (!CustodyOsEngine) return { status: 'custody_unavailable', synced: false };
+  try {
+    return await CustodyOsEngine.syncCollateral({ syncedBy: actor || 'collateral-feed' });
+  } catch (e) {
+    return { status: 'error', synced: false, error: e.message };
+  }
+}
 
 /** Advance rate for a position: per-token override, then per-asset-class, then default. */
 function advanceRateFor({ assetClass, tokenSymbol, override }) {
@@ -350,6 +362,27 @@ const CollateralOsEngine = {
     let leg = null;
     try { leg = await SpritzTreasuryLegEngine.readiness(); } catch (e) { leg = { ready: false, issues: [e.message] }; }
     if (!leg.ready) issues.push(...(leg.issues || []).map((i) => `treasury leg: ${i}`));
+    let custody = null;
+    if (CustodyOsEngine) {
+      try {
+        const accountId = 'CUS-COLLATERAL-PLEDGES';
+        const statement = await CustodyOsEngine.statement();
+        const account = statement.accounts.find((entry) => entry.custodyAccountId === accountId);
+        const pending = await CustodyOsEngine.listReceipts({ status: 'pending' });
+        const positionIds = new Set((account && account.positions || []).map((position) => position.positionId));
+        custody = {
+          linked: Boolean(account),
+          accountId,
+          positions: account ? account.positions.length : 0,
+          receipted: account
+            ? account.positions.filter((position) => position.controlStatus === 'receipted').length
+            : 0,
+          pending: pending.filter((receipt) => positionIds.has(receipt.position_id)).length,
+        };
+      } catch {
+        custody = null;
+      }
+    }
     return {
       provider: 'collateral-os',
       ready: issues.length === 0,
@@ -365,6 +398,7 @@ const CollateralOsEngine = {
       advanceRates: cfg.advanceRates,
       maxUtilizationBps: cfg.maxUtilizationBps,
       gl: cfg.gl,
+      custody,
     };
   },
 
@@ -476,7 +510,11 @@ const CollateralOsEngine = {
     );
     const position = mapPosition(res.rows[0]);
     await this._event(positionId, 'pledged', pledgedBy, { tokenSymbol: position.tokenSymbol, quantityUnits: position.quantityUnits, valueUsd, advanceRateBps: rate, verification });
-    return { ...position, glImpact: 'none (off-balance-sheet pledge)' };
+    return {
+      ...position,
+      glImpact: 'none (off-balance-sheet pledge)',
+      custody: await syncCustodyFeed(pledgedBy),
+    };
   },
 
   async positions({ status = null, limit = 200 } = {}) {
@@ -559,7 +597,19 @@ const CollateralOsEngine = {
       }
     }
     await this._event('FACILITY', 'revalued', actor, { collateralUsd: math.collateralUsd, spendableUsd: math.spendableUsd, drawnUsd: math.drawnUsd, utilizationBps: math.utilizationBps, marginCall: math.marginCall });
-    return { ...math, positions: repriced.map((p) => ({ positionId: p.positionId, tokenSymbol: p.tokenSymbol, status: p.status, previousValueUsd: p.previousValueUsd, valueUsd: p.valueUsd, priceUsd: p.priceUsd, priceSource: p.priceSource })) };
+    return {
+      ...math,
+      positions: repriced.map((p) => ({
+        positionId: p.positionId,
+        tokenSymbol: p.tokenSymbol,
+        status: p.status,
+        previousValueUsd: p.previousValueUsd,
+        valueUsd: p.valueUsd,
+        priceUsd: p.priceUsd,
+        priceSource: p.priceSource,
+      })),
+      custody: await syncCustodyFeed(actor),
+    };
   },
 
   // ─── Draw / settle / repay ─────────────────────────────────────────────────
@@ -739,7 +789,11 @@ const CollateralOsEngine = {
     }
     await pool.query(`UPDATE collateral_positions SET status = 'released', released_at = NOW(), updated_at = NOW() WHERE position_id = $1`, [positionId]);
     await this._event(positionId, 'released', actor, { reason: reason || null, facilityAfter: after });
-    return { ...(await this.position(positionId)), facility: after };
+    return {
+      ...(await this.position(positionId)),
+      facility: after,
+      custody: await syncCustodyFeed(actor),
+    };
   },
 };
 
