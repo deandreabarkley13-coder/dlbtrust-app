@@ -590,6 +590,16 @@ class CustodyOsEngine {
             values.linkedCashAccount = linkedCashAccount;
           }
           ensured = await TrustAccountingEngine.createAccount(values);
+        } else if (
+          account.accountCode === cfg.assetGlAccount
+          && !ensured.linked_cash_account
+          && cashAccount
+          && (cashAccount.account_id || cashAccount.accountId)
+          && typeof TrustAccountingEngine.updateAccount === 'function'
+        ) {
+          ensured = await TrustAccountingEngine.updateAccount(account.accountCode, {
+            linkedCashAccount: cashAccount.account_id || cashAccount.accountId,
+          });
         }
         ensuredAccounts.push(ensured);
       }
