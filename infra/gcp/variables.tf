@@ -170,6 +170,19 @@ variable "runtime_environment" {
     APISIX_RDFI_NAME      = "DB NET MGMT"
     APISIX_RDFI_BANK_NAME = "Lili (Sunrise Banks N.A.)"
     APISIX_ALLOW_HTTP     = "false"
+
+    # ERP payout → X12 820 remittance over AS2 (server/integrations/edi). Shadow
+    # by default: transmission needs EDI_820_LIVE=true AND CANONICAL_FUNDING_LIVE=true.
+    # Receiver/partner IDs are agreed with the bank; EDI_820_ODFI_ACCOUNT stays in Secret Manager.
+    EDI_820_LIVE                 = "false"
+    EDI_820_SENDER_ID            = "DLBTRUST-AS2"
+    EDI_820_SENDER_QUALIFIER     = "ZZ"
+    EDI_820_RECEIVER_QUALIFIER   = "ZZ"
+    EDI_820_PAYER_NAME           = "DB NET MGMT"
+    EDI_820_ODFI_ROUTING         = "091017138"
+    ERP_PAYOUT_CASH_GL_CODE      = "1000"
+    ERP_PAYOUT_CLEARING_GL_CODE  = "1150"
+    ERP_PAYOUT_SOURCE_ACCOUNT_ID = "CA-OPERATING"
   }
 }
 

@@ -19,6 +19,10 @@ try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { CashE
 
 let SettlementEngine;
 try { SettlementEngine = require('../dapp/settlementEngine').SettlementEngine; } catch (e) { SettlementEngine = null; }
+let ErpPayoutWorkflowEngine = null;
+try { ErpPayoutWorkflowEngine = require('./erpPayoutWorkflowEngine').ErpPayoutWorkflowEngine; } catch (e) { ErpPayoutWorkflowEngine = null; }
+
+const ERP_PAYOUT_REFERENCE_TYPE = 'erp_payout';
 
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -660,13 +664,25 @@ class CorporateTreasuryEngine {
 
   static async createWorkflow(opts = {}) {
     const workflowId = opts.workflowId || id('CTW');
+    const isErpPayout = opts.referenceType === ERP_PAYOUT_REFERENCE_TYPE;
+    let payoutMetadata = null;
+    if (isErpPayout) {
+      if (!ErpPayoutWorkflowEngine) throw new Error('ERP payout workflows unavailable');
+      payoutMetadata = ErpPayoutWorkflowEngine.buildPayoutMetadata({ ...(opts.payout || {}), erpReference: (opts.payout && opts.payout.erpReference) || opts.referenceId });
+      opts = { ...opts, referenceId: payoutMetadata.erpReference, counterparty: opts.counterparty || payoutMetadata.payee.name };
+      const dup = await query('SELECT workflow_id, status FROM corporate_treasury_workflows WHERE reference_type = $1 AND reference_id = $2 AND status NOT IN (\'rejected\',\'cancelled\')', [ERP_PAYOUT_REFERENCE_TYPE, payoutMetadata.erpReference]);
+      if (dup.rows[0]) throw new Error(`ERP reference ${payoutMetadata.erpReference} already has workflow ${dup.rows[0].workflow_id} (${dup.rows[0].status})`);
+    }
     const evalResult = await this.evaluatePayment({
       amountCents: toCents(opts.amount),
       currency: opts.currency || 'USD',
       accountId: opts.accountId,
       counterparty: opts.counterparty || '',
     });
-    const requiredApprovals = evalResult.requiresApproval ? Math.max(1, opts.requiredApprovals || 1) : 0;
+    // ERP payouts are maker/checker regardless of policy: never auto-approved.
+    const requiredApprovals = (evalResult.requiresApproval || isErpPayout) ? Math.max(1, opts.requiredApprovals || 1) : 0;
+    const createdBy = opts.createdBy ? String(opts.createdBy) : null;
+    if (isErpPayout && !createdBy) throw new Error('createdBy (maker) is required for ERP payout workflows');
     await query(`
       INSERT INTO corporate_treasury_workflows
         (workflow_id, type, reference_type, reference_id, amount_cents, currency, required_approvals, approvals, status, policy_id, description, metadata)
@@ -676,7 +692,7 @@ class CorporateTreasuryEngine {
       workflowId, opts.type || 'payment', opts.referenceType || '', opts.referenceId || '',
       toCents(opts.amount), opts.currency || 'USD', requiredApprovals, '[]',
       requiredApprovals ? 'pending' : 'approved', opts.policyId || null, opts.description || '',
-      JSON.stringify({ ...opts.metadata || {}, evaluation: evalResult })
+      JSON.stringify({ ...opts.metadata || {}, ...(createdBy ? { createdBy } : {}), ...(payoutMetadata ? { payout: payoutMetadata } : {}), evaluation: evalResult })
     ]);
     const rows = await query('SELECT * FROM corporate_treasury_workflows WHERE workflow_id = $1', [workflowId]);
     return rows.rows[0];
@@ -698,23 +714,44 @@ class CorporateTreasuryEngine {
   static async approveWorkflow(workflowId, { approver = 'operator' } = {}) {
     const wf = await this.getWorkflow(workflowId);
     if (!wf) throw new Error('Workflow not found');
+    if (wf.status !== 'pending') throw new Error(`Workflow is ${wf.status}, not pending`);
+    const maker = wf.metadata && wf.metadata.createdBy ? String(wf.metadata.createdBy) : null;
+    if (maker && String(approver) === maker) {
+      const err = new Error('Maker cannot approve their own workflow (dual control)');
+      err.code = 'CT_SELF_APPROVAL'; err.status = 403;
+      throw err;
+    }
     const approvals = Array.isArray(wf.approvals) ? wf.approvals : (wf.approvals || []);
+    if (approvals.some(a => a && String(a.approver) === String(approver))) {
+      const err = new Error(`${approver} has already approved this workflow`);
+      err.code = 'CT_DUPLICATE_APPROVAL'; err.status = 409;
+      throw err;
+    }
     approvals.push({ approver, at: new Date().toISOString() });
     const status = approvals.length >= wf.required_approvals ? 'approved' : 'pending';
     await query(`UPDATE corporate_treasury_workflows SET approvals = $2, status = $3, updated_at = NOW() WHERE workflow_id = $1`, [workflowId, JSON.stringify(approvals), status]);
     return this.getWorkflow(workflowId);
   }
 
-  static async executeWorkflow(workflowId) {
+  static async executeWorkflow(workflowId, { executedBy } = {}) {
     const wf = await this.getWorkflow(workflowId);
     if (!wf) throw new Error('Workflow not found');
     if (wf.status !== 'approved') throw new Error('Workflow not approved');
+    let execution = null;
     // If tied to a settlement, execute it
     if (SettlementEngine && wf.reference_type === 'settlement' && wf.reference_id) {
       await SettlementEngine.executeSettlement(wf.reference_id);
     }
+    // ERP-funded payout: canonical draw → external leg → 820 (fail-closed, shadow unless live).
+    if (wf.reference_type === ERP_PAYOUT_REFERENCE_TYPE) {
+      if (!ErpPayoutWorkflowEngine) throw new Error('ERP payout workflows unavailable');
+      execution = await ErpPayoutWorkflowEngine.execute({ ...wf, id: wf.workflow_id }, { executedBy });
+      const metadata = { ...(wf.metadata || {}), execution: { ...execution, executedBy: executedBy || null, at: new Date().toISOString() } };
+      await query(`UPDATE corporate_treasury_workflows SET metadata = $2, updated_at = NOW() WHERE workflow_id = $1`, [workflowId, JSON.stringify(metadata)]);
+    }
     await query(`UPDATE corporate_treasury_workflows SET status = 'executed', updated_at = NOW() WHERE workflow_id = $1`, [workflowId]);
-    return this.getWorkflow(workflowId);
+    const updated = await this.getWorkflow(workflowId);
+    return execution ? { ...updated, execution } : updated;
   }
 
   // ─── PTC Custodian / Issuer utilities ─────────────────────────────────────────

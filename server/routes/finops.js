@@ -76,6 +76,8 @@ const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorE
 const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
 const { LiveFinTechEndpointEngine } = require('../integrations/dapp/liveFintechEndpointEngine');
 const { CorporateTreasuryEngine } = require('../integrations/finops/corporateTreasuryEngine');
+const { ErpPayoutWorkflowEngine } = require('../integrations/finops/erpPayoutWorkflowEngine');
+const { Edi820RemittanceEngine } = require('../integrations/edi/edi820RemittanceEngine');
 const { PtcCashManagementEngine } = require('../integrations/finops/ptcCashManagementEngine');
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
@@ -3370,15 +3372,89 @@ router.get('/corporate-treasury/workflows', operatorAuth, async (req, res) => {
 });
 
 router.post('/corporate-treasury/workflows', operatorAuth, async (req, res) => {
-  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createWorkflow(req.body) }); } catch (err) { sendError(res, err); }
+  try {
+    const body = req.body || {};
+    const createdBy = body.referenceType === 'erp_payout' ? getUserId(req) : body.createdBy;
+    res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createWorkflow({ ...body, createdBy }) });
+  } catch (err) { sendError(res, err); }
 });
 
+router.get('/corporate-treasury/workflows/:id', operatorAuth, async (req, res) => {
+  try {
+    const wf = await CorporateTreasuryEngine.getWorkflow(req.params.id);
+    if (!wf) return res.status(404).json({ success: false, error: 'Workflow not found' });
+    res.json({ success: true, data: wf });
+  } catch (err) { sendError(res, err); }
+});
+
+// Checker identity is the authenticated operator — never taken from the body.
 router.post('/corporate-treasury/workflows/:id/approve', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await CorporateTreasuryEngine.approveWorkflow(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.approveWorkflow(req.params.id, { approver: getUserId(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/corporate-treasury/workflows/:id/execute', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await CorporateTreasuryEngine.executeWorkflow(req.params.id) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.executeWorkflow(req.params.id, { executedBy: getUserId(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ── ERP payout → X12 820 remittance over AS2 ────────────────────────────────────
+// Shadow by default: rendering never requires a live flag; transmission needs
+// CANONICAL_FUNDING_LIVE=true and EDI_820_LIVE=true and an executed workflow.
+
+async function erpPayoutRunFor(id) {
+  const wf = await CorporateTreasuryEngine.getWorkflow(id);
+  if (wf) return { workflow: wf, run: ErpPayoutWorkflowEngine.runFromWorkflow(wf) };
+  const doc = await Edi820RemittanceEngine.get(id);
+  if (doc) return { workflow: doc.workflowId ? await CorporateTreasuryEngine.getWorkflow(doc.workflowId) : null, run: doc.run, document: doc };
+  const err = new Error(`No ERP payout workflow or 820 found for ${id}`);
+  err.status = 404;
+  throw err;
+}
+
+router.get('/edi/820/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Edi820RemittanceEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/edi/820', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Edi820RemittanceEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+// Render (preview) the 820 for a workflow id or ERP reference; nothing is stored or sent.
+router.get('/edi/820/:id/preview', operatorAuth, async (req, res) => {
+  try {
+    const { workflow, run } = await erpPayoutRunFor(req.params.id);
+    const rendered = Edi820RemittanceEngine.render(run);
+    const gate = Edi820RemittanceEngine.transmissionGate({ fundingCommitted: workflow ? Boolean(workflow.metadata && workflow.metadata.execution && workflow.metadata.execution.funding && workflow.metadata.execution.funding.committed) : undefined });
+    if (req.query.format === 'raw') {
+      res.attachment(Edi820RemittanceEngine.filename(rendered)).type(rendered.contentType);
+      return res.send(rendered.payload);
+    }
+    res.json({ success: true, data: { ...rendered, workflowId: workflow ? workflow.workflow_id : null, workflowStatus: workflow ? workflow.status : null, mode: gate.allowed ? 'live' : 'shadow', transmissionBlockers: gate.reasons } });
+  } catch (err) { sendError(res, err); }
+});
+
+// Stored 820 (rendered on execute) for a workflow id or ERP reference.
+router.get('/edi/820/:id', operatorAuth, async (req, res) => {
+  try {
+    const doc = (await Edi820RemittanceEngine.get(req.params.id)) || (await Edi820RemittanceEngine.getByWorkflow(req.params.id));
+    if (!doc) return res.status(404).json({ success: false, error: `No 820 has been rendered for ${req.params.id}` });
+    res.json({ success: true, data: doc });
+  } catch (err) { sendError(res, err); }
+});
+
+// Transmit (or re-drive) the 820 for an executed workflow. Idempotent on ERP
+// reference; returns the shadow document when either live gate is off.
+router.post('/edi/820/:id/transmit', operatorAuth, async (req, res) => {
+  try {
+    const { workflow, run } = await erpPayoutRunFor(req.params.id);
+    if (!workflow) return res.status(409).json({ success: false, error: 'No Corporate Treasury workflow backs this 820; cannot verify the ERP draw' });
+    if (workflow.status !== 'executed') {
+      return res.status(409).json({ success: false, error: `Workflow ${workflow.workflow_id} is ${workflow.status}; the 820 can only be transmitted after the payout is executed` });
+    }
+    const execution = (workflow.metadata && workflow.metadata.execution) || {};
+    const fundingCommitted = Boolean(execution.funding && execution.funding.committed);
+    const result = await Edi820RemittanceEngine.emit({ run, fundingCommitted, workflowId: workflow.workflow_id });
+    res.status(result.transmitted && !result.duplicate ? 201 : 200).json({ success: true, data: result });
+  } catch (err) { sendError(res, err); }
 });
 
 // ── PTC Digital Cash Management Account ──────────────────────────────────
