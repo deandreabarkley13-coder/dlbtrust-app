@@ -30,6 +30,7 @@ function store({
   }] as Row[],
   tokens = [{ id: 'BT-1', token_symbol: 'DLB-PRB', total_supply: 10_000, bond_id: 7 }] as Row[],
   aggregator = [] as Row[],
+  custodyPositions = [] as Row[],
 } = {}) {
   const runs: Row[] = [];
 
@@ -69,6 +70,7 @@ function store({
     if (/FROM bonds/.test(text)) return { rows: bonds };
     if (/FROM bond_tokens/.test(text)) return { rows: tokens };
     if (/banking_aggregator_accounts/.test(text)) return { rows: aggregator };
+    if (/FROM custody_positions p/.test(text)) return { rows: custodyPositions };
     return { rows: [] };
   });
 
@@ -89,6 +91,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   delete process.env.ATTESTATION_ENFORCEMENT;
   delete process.env.ATTESTATION_FRESH_MINUTES;
+  delete process.env.ATTESTATION_RUN_INTERVAL_MINUTES;
 });
 
 describe('Attestation OS — what the books claim against what someone holds', () => {
@@ -205,6 +208,68 @@ describe('Attestation OS — what the books claim against what someone holds', (
     const snapshot = await AttestationOsEngine.snapshot();
 
     expect(snapshot.domains.find((d: Row) => d.domain === 'treasury').coverageRatio).toBeNull();
+  });
+
+  it('observes third-party custody receipts as live already-recorded custody', async () => {
+    const db = store({
+      custodyPositions: [{
+        position_id: 'POS-THIRD',
+        custody_account_id: 'SCHWAB-001',
+        custody_type: 'third_party',
+        custodian_name: 'Schwab',
+        asset_class: 'fixed_income',
+        instrument_ref: 'US912810TM09',
+        valuation_cents: 25_000_000,
+      }],
+    });
+    silentCustody();
+
+    const run = await AttestationOsEngine.attest({});
+
+    const observation = db.observations.find((o) => o.source_key === 'custody:POS-THIRD');
+    expect(observation).toMatchObject({
+      domain: 'treasury',
+      category: 'custody',
+      source_type: 'securities_custodian',
+      balance_cents: 25_000_000,
+      verification: 'live',
+    });
+    expect(run.custodyCents).toBe(25_000_000);
+    expect(ReserveEngine.record).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sourceKey: 'custody:POS-THIRD' })
+    );
+  });
+
+  it('observes self-custody receipts as unverified claims', async () => {
+    const db = store({
+      custodyPositions: [{
+        position_id: 'POS-SELF',
+        custody_account_id: 'ISSUER',
+        custody_type: 'self_custody',
+        custodian_name: null,
+        asset_class: 'cash',
+        instrument_ref: 'trust-operating',
+        valuation_cents: 10_000,
+      }],
+    });
+    silentCustody();
+
+    await AttestationOsEngine.attest({});
+
+    const observation = db.observations.find((o) => o.source_key === 'custody:POS-SELF');
+    expect(observation).toMatchObject({
+      domain: 'treasury',
+      category: 'claim',
+      source_type: 'securities_custodian',
+      balance_cents: 10_000,
+      verification: 'unverified',
+      unverified_reason: 'Self-custody receipt: the trust attesting its own holding',
+    });
+  });
+
+  it('allows the attestation scheduler interval to be disabled', () => {
+    process.env.ATTESTATION_RUN_INTERVAL_MINUTES = '0';
+    expect(AttestationOsEngine.config().intervalMinutes).toBe(0);
   });
 });
 

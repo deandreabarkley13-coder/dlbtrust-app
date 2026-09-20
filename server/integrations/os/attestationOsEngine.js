@@ -69,6 +69,11 @@ const CLAIM = 'claim';
 const INTERNAL_CONNECTOR_TYPES = ['internal_rails'];
 
 const ENFORCEMENT_MODES = ['strict', 'warn', 'off'];
+const schedulerState = {
+  lastRunAt: null,
+  nextRunAt: null,
+  intervalMinutes: null,
+};
 
 class AttestationError extends Error {
   constructor(message, code = 'ATTESTATION_ERROR', status = 409) {
@@ -132,8 +137,14 @@ const AttestationOsEngine = {
       // the reserve engine's own window on purpose: this gate exists to catch
       // the case where nothing has been read recently at all.
       freshMinutes: minutes(process.env.ATTESTATION_FRESH_MINUTES, 60),
+      intervalMinutes: (() => {
+        const n = Number(process.env.ATTESTATION_RUN_INTERVAL_MINUTES);
+        return Number.isFinite(n) && n >= 0 ? n : 30;
+      })(),
     };
   },
+
+  schedulerState,
 
   async ensureTables() {
     await pool.query(`
@@ -238,6 +249,66 @@ const AttestationOsEngine = {
         reason: `Reserve verification failed: ${e.message}`,
       })];
     }
+  },
+
+  /** Custody OS receipts are live evidence for third-party holdings. */
+  async _observeCustodyRegister() {
+    let CustodyOsEngine;
+    try {
+      ({ CustodyOsEngine } = require('../custody/custodyOsEngine'));
+    } catch (e) {
+      return [];
+    }
+    if (!CustodyOsEngine) return [];
+
+    let rows;
+    try {
+      rows = await pool.query(
+        `SELECT p.position_id, p.asset_class, p.instrument_ref, p.valuation_cents,
+                a.custody_account_id, a.custody_type, a.custodian_name
+           FROM custody_positions p
+           JOIN custody_accounts a ON a.custody_account_id = p.custody_account_id
+          WHERE p.control_status = 'receipted'`
+      );
+    } catch (e) {
+      if (e && e.code === '42P01') return [];
+      throw e;
+    }
+
+    return (rows.rows || []).map((row) => {
+      const sourceType = ['fixed_income', 'digital_asset', 'physical'].includes(row.asset_class)
+        ? 'securities_custodian'
+        : 'depository_account';
+      const base = {
+        sourceKey: `custody:${row.position_id}`,
+        asset: 'USD',
+        balanceCents: cents(row.valuation_cents),
+      };
+      if (row.custody_type === 'third_party') {
+        return {
+          domain: 'treasury',
+          category: CUSTODY,
+          sourceType,
+          ...base,
+          verification: 'live',
+          alreadyRecorded: true,
+          detail: {
+            custodyAccountId: row.custody_account_id,
+            custodian: row.custodian_name,
+            instrumentRef: row.instrument_ref,
+            assetClass: row.asset_class,
+          },
+        };
+      }
+      return {
+        domain: row.asset_class === 'fixed_income' ? 'fixed_income' : 'treasury',
+        category: CLAIM,
+        sourceType: 'securities_custodian',
+        ...base,
+        verification: 'unverified',
+        unverifiedReason: 'Self-custody receipt: the trust attesting its own holding',
+      };
+    });
   },
 
   /**
@@ -392,16 +463,17 @@ const AttestationOsEngine = {
   async attest({ runBy = null } = {}) {
     await this.ensureTables();
 
-    const [stellar, reserve, aggregator, cash, bonds, tokens] = await Promise.all([
+    const [stellar, reserve, custody, aggregator, cash, bonds, tokens] = await Promise.all([
       this._observeStellarDistributor(),
       this._observeReserveCustody(),
+      this._observeCustodyRegister(),
       this._observeAggregatorAccounts(),
       this._claimCoreBankingCash(),
       this._claimBondLedger(),
       this._claimTokenSupply(),
     ]);
 
-    const observations = [stellar, ...reserve, ...aggregator, ...cash, ...bonds, ...tokens]
+    const observations = [stellar, ...reserve, ...custody, ...aggregator, ...cash, ...bonds, ...tokens]
       .filter(Boolean)
       .map((observation) => ({ category: CUSTODY, ...observation }));
 
@@ -709,9 +781,13 @@ const AttestationOsEngine = {
   /** Readiness, safe for a dashboard: what can be read, and what cannot. */
   async status() {
     const snapshot = await this.snapshot();
+    const cfg = this.config();
     return {
       enforcement: snapshot.enforcement,
       freshMinutes: snapshot.freshMinutes,
+      intervalMinutes: this.schedulerState.intervalMinutes ?? cfg.intervalMinutes,
+      lastRunAt: this.schedulerState.lastRunAt,
+      nextRunAt: this.schedulerState.nextRunAt,
       attestedCents: snapshot.attestedCents,
       claimedCents: snapshot.claimedCents,
       varianceCents: snapshot.varianceCents,

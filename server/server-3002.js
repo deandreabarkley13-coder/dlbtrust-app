@@ -631,6 +631,30 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[custody-os] table init:', e.message); }
 
   try {
+    var AttestationOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'attestationOsEngine')).AttestationOsEngine;
+    await AttestationOsEngine.ensureTables();
+    var attestationIntervalMinutes = AttestationOsEngine.config().intervalMinutes;
+    AttestationOsEngine.schedulerState.intervalMinutes = attestationIntervalMinutes;
+    var runAttestation = async function() {
+      var startedAt = new Date();
+      AttestationOsEngine.schedulerState.lastRunAt = startedAt.toISOString();
+      AttestationOsEngine.schedulerState.nextRunAt = attestationIntervalMinutes > 0
+        ? new Date(startedAt.getTime() + attestationIntervalMinutes * 60 * 1000).toISOString()
+        : null;
+      try {
+        var attested = await AttestationOsEngine.attest({ runBy: 'attestation-scheduler' });
+        console.log('[attestation-os] run:', attested.observations.length, 'observations');
+      } catch(e) { console.warn('[attestation-os] run:', e.message); }
+    };
+    await runAttestation();
+    if (attestationIntervalMinutes > 0) {
+      var attestationTimer = setInterval(runAttestation, attestationIntervalMinutes * 60 * 1000);
+      attestationTimer.unref();
+    }
+    console.log('[attestation-os] scheduler enabled; interval =', attestationIntervalMinutes, 'minutes');
+  } catch(e) { console.warn('[attestation-os] scheduler:', e.message); }
+
+  try {
     var SeriesOsEngine = require(path.join(HD, 'server', 'integrations', 'series', 'seriesOsEngine')).SeriesOsEngine;
     await SeriesOsEngine.ensureTables();
     console.log('[series-os] tables ensured; ring fence =', SeriesOsEngine.config().enforcement);
