@@ -974,6 +974,7 @@
               <option value="4000">4000 — Interest Income</option>
               <option value="4100">4100 — Fee Income</option>
               <option value="5000">5000 — Management Fees</option>
+              <option value="5100">5100 — Trustee Fees</option>
             </select>
           </div>
           <div>
@@ -983,6 +984,7 @@
               <option value="distribution">Distribution</option>
               <option value="accrued_interest">Accrued Interest</option>
               <option value="fee">Fee</option>
+              <option value="trustee_fee">Trustee Compensation (trustee_fee)</option>
               <option value="escrow">Escrow</option>
               <option value="operating">Operating</option>
               <option value="general">General</option>
@@ -4930,6 +4932,20 @@
     }
 
     // ─── SUB-LEDGER ACCOUNTS ────────────────────────────────────────────────────
+    // Grouping labels for PTC member sub-ledgers (parent GL + sub-account type)
+    function subLedgerGroup(sl) {
+      var parent = String(sl.parent_account_code || sl.parentAccountCode || '');
+      var type = String(sl.sub_account_type || sl.subAccountType || sl.type || '');
+      if (parent === '5100' && type === 'trustee_fee') return 'Trustee Compensation';
+      if (parent === '2100' && type === 'fee') return 'Trustee Fees';
+      if (parent === '2000' && type === 'distribution') return 'Beneficiary Trust Sub-Ledger';
+      return '';
+    }
+    function subLedgerTypeLabel(type) {
+      var labels = { trustee_fee: 'Trustee Compensation (trustee_fee)', fee: 'Fee', distribution: 'Distribution', bond_investment: 'Bond Investment', accrued_interest: 'Accrued Interest', escrow: 'Escrow', operating: 'Operating', general: 'General' };
+      return labels[type] || type;
+    }
+
     async function loadSubLedgers() {
       try {
         var [dashboard, rollup] = await Promise.all([
@@ -4949,14 +4965,37 @@
           var html = '<table class="data-table"><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr>';
           for (var i = 0; i < d.byType.length; i++) {
             var t = d.byType[i];
-            html += '<tr><td>' + esc(t.type) + '</td><td>' + t.count + '</td><td>' + fmt(t.totalBalance) + '</td></tr>';
+            html += '<tr><td>' + esc(subLedgerTypeLabel(t.type)) + '</td><td>' + t.count + '</td><td>' + fmt(t.totalBalance) + '</td></tr>';
           }
           html += '</table>';
 
           // Sub-ledger account detail list
           var listRes = await fetchJSON(API + '/api/sub-ledgers?status=active');
           if (listRes && listRes.success && listRes.data.length > 0) {
-            html += '<table class="data-table" style="margin-top:1rem"><tr><th>ID</th><th>Client</th><th>Parent</th><th>Type</th><th>Balance</th><th>Fineract</th><th>Status</th><th></th></tr>';
+            // PTC member groupings: Beneficiary Trust Sub-Ledgers / Trustee Compensation / Trustee Fees
+            var groupOrder = ['Beneficiary Trust Sub-Ledger', 'Trustee Compensation', 'Trustee Fees'];
+            var grouped = {};
+            listRes.data.forEach(function(sl) {
+              var g = subLedgerGroup(sl);
+              if (!g) return;
+              (grouped[g] = grouped[g] || []).push(sl);
+            });
+            groupOrder.forEach(function(g) {
+              var rows = grouped[g];
+              if (!rows || !rows.length) return;
+              var total = rows.reduce(function(s, sl) { return s + (parseFloat(sl.balance) || 0); }, 0);
+              html += '<h4 style="margin:1rem 0 0.25rem">' + esc(g) + ' <span class="badge badge-info">' + rows.length + '</span> <span class="text-muted" style="font-weight:normal;font-size:12px">' + esc(rows[0].parent_account_code) + ' — ' + esc(rows[0].parent_account_name || '') + ' · total ' + fmt(total) + '</span></h4>';
+              html += '<table class="data-table"><tr><th>Member</th><th>Account</th><th>Balance</th><th>Fineract</th></tr>';
+              rows.forEach(function(sl) {
+                var who = ((sl.first_name || '') + ' ' + (sl.last_name || '')).trim() || sl.contact_id;
+                html += '<tr><td>' + esc(who) + '</td><td>' + esc(sl.sub_account_name) + '</td><td>' + fmt(sl.balance) + '</td>' +
+                  '<td>' + (sl.fineract_savings_id ? '<span class="badge badge-green">Linked</span>' : '<span class="badge badge-yellow">Not linked</span>') + '</td></tr>';
+              });
+              html += '</table>';
+            });
+
+            html += '<h4 style="margin:1rem 0 0.25rem">All Sub-Ledger Accounts</h4>';
+            html += '<table class="data-table"><tr><th>ID</th><th>Client</th><th>Parent</th><th>Type</th><th>Group</th><th>Balance</th><th>Fineract</th><th>Status</th><th></th></tr>';
             for (var j = 0; j < listRes.data.length; j++) {
               var sl = listRes.data[j];
               var clientName = (sl.first_name || '') + ' ' + (sl.last_name || '');
@@ -4965,6 +5004,7 @@
                 '<td>' + esc(clientName.trim() || sl.contact_id) + '</td>' +
                 '<td>' + esc(sl.parent_account_code) + ' — ' + esc(sl.parent_account_name || '') + '</td>' +
                 '<td>' + esc(sl.sub_account_type) + '</td>' +
+                '<td>' + (subLedgerGroup(sl) ? '<span class="badge badge-info">' + esc(subLedgerGroup(sl)) + '</span>' : '<span class="text-muted">—</span>') + '</td>' +
                 '<td>' + fmt(sl.balance) + '</td>' +
                 '<td>' + fStatus + '</td>' +
                 '<td><span class="badge ' + (sl.status === 'active' ? 'badge-green' : 'badge-red') + '">' + sl.status + '</span></td>' +

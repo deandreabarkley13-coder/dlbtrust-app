@@ -793,6 +793,9 @@ async function initializeDatabase() {
     var SubLedgerEngine = require(path.join(HD, 'server', 'integrations', 'accounting', 'subLedgerEngine')).SubLedgerEngine;
     await SubLedgerEngine.ensureTables();
     console.log('[sub-ledgers] tables ensured');
+    var PtcSubLedgerSeed = require(path.join(HD, 'server', 'integrations', 'dapp', 'ptcPortalEngine')).PtcPortalEngine;
+    var seeded = await PtcSubLedgerSeed.ensureSubLedgerAccounts();
+    console.log('[sub-ledgers] PTC member sub-ledgers provisioned (created ' + seeded.created.length + ', existing ' + seeded.existing.length + ')');
   } catch(e) { console.warn('[sub-ledgers] init:', e.message); }
 
   try {
