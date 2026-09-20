@@ -2732,6 +2732,14 @@ router.get('/lili/direct-deposits/:id', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/lili/direct-deposits/:id/mft-file', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiliDirectDepositEngine.getDirectDeposit(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Direct deposit not found' });
+    res.json({ success: true, data: data.mft_file || null });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/lili/direct-deposits/:id/transmit', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await LiliDirectDepositEngine.transmit(req.params.id, { approvedBy: req.body.approvedBy || null, actor: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });

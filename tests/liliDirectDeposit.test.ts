@@ -10,6 +10,7 @@ const { PaymentOrchestrator } = require('../server/integrations/ach/paymentOrche
 const { SystemSettings } = require('../server/integrations/ach/systemSettings');
 const { AS2Client } = require('../server/integrations/ach/as2Client');
 const { AS2Partners } = require('../server/integrations/ach/as2Partners');
+const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -151,5 +152,53 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect(status.destination).toEqual({ configured: false, routingNumber: '091000019', accountNumberMasked: null, accountName: 'DB NET MGMT LLC' });
     expect(status.odfi).toEqual({ ready: false, channels: [] });
     expect(status.mcp.configured).toBe(true);
+    expect(status.mft).toBeNull();
+  });
+
+  it('surfaces the MFT register file (via source_ref ach:<batchId>) on each deposit and an mft summary when ACH_MFT_CHANNEL is set', async () => {
+    process.env.ACH_MFT_CHANNEL = 'lili-odfi';
+    process.env.MFT_REQUIRE_APPROVAL = 'true';
+    vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true, transmission_id: 'MFT-1' } as any);
+    const bySource = vi.spyOn(MftOsEngine, 'getBySourceRef').mockImplementation(async (ref: string) => (
+      ref === 'ach:ACH-77'
+        ? { fileId: 'MFT-FILE-1', channelId: 'lili-odfi', status: 'approved', filename: 'DLBTRUST_ACH_001.ach', contentHash: 'abc', sourceRef: ref, approvedBy: 'checker@dlb', transmittedAt: null, acknowledgedAt: null, settledAt: null }
+        : null
+    ));
+
+    const dep = await LiliDirectDepositEngine.createDirectDeposit({ amount: 42, createdBy: 'trustee' });
+    expect(dep.status).toBe('transmitted');
+    expect(bySource).toHaveBeenCalledWith('ach:ACH-77');
+    expect(dep.mft_file).toMatchObject({ fileId: 'MFT-FILE-1', status: 'approved', filename: 'DLBTRUST_ACH_001.ach', approvedBy: 'checker@dlb' });
+
+    (pool.query as any).mockImplementation(async (text: any, params: any[] = []) => {
+      const t = String(text).replace(/\s+/g, ' ').trim();
+      if (t.includes('JOIN LATERAL (SELECT status FROM mft_files WHERE source_ref')) {
+        expect(params).toEqual([200]);
+        return { rows: [{ status: 'approved', n: 1 }, { status: 'transmitted', n: 2 }, { status: 'settled', n: 3 }] };
+      }
+      if (t.startsWith('SELECT status, COUNT(*)::int AS n')) return { rows: [{ status: 'transmitted', n: 6, cents: 600 }] };
+      return { rows: [] };
+    });
+    vi.spyOn(LiliMcpEngine, 'getPublicConfig').mockResolvedValue({ configured: false } as any);
+    const status = await LiliDirectDepositEngine.getWorkflowStatus();
+    expect(status.odfi).toEqual({ ready: true, channels: ['mft'] });
+    expect(status.counts).toEqual({ transmitted: { count: 6, amountUsd: 6 } });
+    expect(status.mft).toEqual({
+      channel: 'lili-odfi',
+      requireApproval: true,
+      counts: { built: 0, approved: 1, transmitted: 2, acknowledged: 0, settled: 3, rejected: 0 },
+    });
+  });
+
+  it('degrades gracefully: no mft_file lookup and mft:null when ACH_MFT_CHANNEL is unset, mft_file:null when the register lookup fails', async () => {
+    const bySource = vi.spyOn(MftOsEngine, 'getBySourceRef').mockRejectedValue(new Error('register down'));
+    const dep = await LiliDirectDepositEngine.createDirectDeposit({ amount: 1, createdBy: 'trustee' });
+    expect(bySource).not.toHaveBeenCalled();
+    expect(dep.mft_file).toBeNull();
+
+    process.env.ACH_MFT_CHANNEL = 'lili-odfi';
+    const again = await LiliDirectDepositEngine.getDirectDeposit(dep.deposit_id);
+    expect(bySource).toHaveBeenCalledWith('ach:ACH-77');
+    expect(again.mft_file).toBeNull();
   });
 });

@@ -35,6 +35,7 @@ let PaymentOrchestrator;
 let AS2Client;
 let AS2Partners;
 let validateRouting;
+let MftOsEngine;
 function loadDeps() {
   try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
   try { ({ LiliMcpEngine } = require('./liliMcpEngine')); } catch (e) { LiliMcpEngine = null; }
@@ -44,6 +45,17 @@ function loadDeps() {
   try { ({ AS2Client } = require('../ach/as2Client')); } catch (e) { AS2Client = null; }
   try { ({ AS2Partners } = require('../ach/as2Partners')); } catch (e) { AS2Partners = null; }
   try { ({ validateRouting } = require('../ach/nachaGenerator')); } catch (e) { validateRouting = null; }
+  try { ({ MftOsEngine } = require('../os/mftOsEngine')); } catch (e) { MftOsEngine = null; }
+}
+
+function mftChannelId() {
+  loadDeps();
+  if (!ACHEngine || typeof ACHEngine.mftChannelId !== 'function') return null;
+  return ACHEngine.mftChannelId() || null;
+}
+
+function mftAvailable() {
+  return Boolean(mftChannelId() && MftOsEngine && typeof MftOsEngine.getBySourceRef === 'function');
 }
 
 async function getSetting(name) {
@@ -388,12 +400,13 @@ class LiliDirectDepositEngine {
     return res.rows[0] || null;
   }
 
-  /** Unified view: deposit + linked lili_payment + ACH batch. */
+  /** Unified view: deposit + linked lili_payment + ACH batch + MFT register file. */
   static async getDirectDeposit(depositId) {
     const row = await this._row(depositId);
     if (!row) return null;
     let payment = null;
     let batch = null;
+    let mftFile = null;
     if (row.lili_payment_id) {
       const p = await pool.query('SELECT payment_id, status, amount_cents, external_tx_id, error_message, updated_at FROM lili_payments WHERE payment_id=$1', [row.lili_payment_id]);
       payment = p.rows[0] || null;
@@ -401,8 +414,35 @@ class LiliDirectDepositEngine {
     if (row.ach_batch_id) {
       const b = await pool.query('SELECT batch_id, status, filename, sec_code, effective_date, entry_count, total_amount_cents, transmitted_at FROM ach_batches WHERE batch_id=$1', [row.ach_batch_id]);
       batch = b.rows[0] || null;
+      if (mftAvailable()) {
+        try { mftFile = await MftOsEngine.getBySourceRef(`ach:${row.ach_batch_id}`); } catch (e) { mftFile = null; }
+      }
     }
-    return { ...row, amount_usd: Number(row.amount_cents) / 100, lili_payment: payment, ach_batch: batch };
+    return { ...row, amount_usd: Number(row.amount_cents) / 100, lili_payment: payment, ach_batch: batch, mft_file: mftFile };
+  }
+
+  /**
+   * MFT register lifecycle summary for Lili deposits (read-only). Only
+   * populated when ACH_MFT_CHANNEL routes batches through MftOsEngine.
+   */
+  static async _mftSummary({ limit = 200 } = {}) {
+    const channel = mftChannelId();
+    if (!channel || !MftOsEngine) return null;
+    const counts = {};
+    for (const s of MftOsEngine.STATUSES || []) counts[s] = 0;
+    let requireApproval = null;
+    try { requireApproval = Boolean(MftOsEngine.config().requireApproval); } catch (e) { requireApproval = null; }
+    if (pool) {
+      const res = await pool.query(
+        `SELECT f.status, COUNT(*)::int AS n
+           FROM (SELECT ach_batch_id FROM lili_direct_deposits WHERE ach_batch_id IS NOT NULL ORDER BY created_at DESC LIMIT $1) d
+           JOIN LATERAL (SELECT status FROM mft_files WHERE source_ref = 'ach:' || d.ach_batch_id ORDER BY built_at DESC LIMIT 1) f ON TRUE
+          GROUP BY f.status`,
+        [Number(limit) || 200]
+      );
+      for (const r of res.rows) counts[r.status] = Number(r.n);
+    }
+    return { channel, requireApproval, counts };
   }
 
   static async listDirectDeposits({ status, limit = 50 } = {}) {
@@ -441,6 +481,8 @@ class LiliDirectDepositEngine {
       const res = await pool.query('SELECT status, COUNT(*)::int AS n, COALESCE(SUM(amount_cents),0)::bigint AS cents FROM lili_direct_deposits GROUP BY status');
       for (const r of res.rows) counts[r.status] = { count: r.n, amountUsd: Number(r.cents) / 100 };
     }
+    let mft = null;
+    try { mft = await this._mftSummary(); } catch (e) { mft = null; }
     return {
       flow: 'DLB Trust ledger → NACHA ACH credit (entry 22) → ODFI → Lili (RDFI) → MCP reconciliation',
       destination: dest,
@@ -449,6 +491,7 @@ class LiliDirectDepositEngine {
       ready: dest.configured && odfi.ready,
       statuses: STATUSES,
       counts,
+      mft,
     };
   }
 }
