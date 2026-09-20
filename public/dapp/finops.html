@@ -5973,11 +5973,11 @@
     const badge = (ok, yes, no) => ok ? `<span class="badge completed">${yes}</span>` : `<span class="badge manual_pending">${no}</span>`;
     const mft = s.mft || null;
     const mftOrder = ['built', 'approved', 'transmitted', 'acknowledged', 'settled', 'rejected', 'returned'];
-    const mftCounts = mft ? Object.keys(mft.counts || {}).sort((a, b) => mftOrder.indexOf(a) - mftOrder.indexOf(b)).map(k => `<span class="badge ${liliMftBadgeClass(k)}" title="MFT files ${k}">${k}: ${mft.counts[k]}</span>`).join(' ') : '';
+    const mftCounts = mft ? Object.keys(mft.counts || {}).sort((a, b) => mftOrder.indexOf(a) - mftOrder.indexOf(b)).map(k => `<span class="badge ${liliMftBadgeClass(k)}" title="MFT files ${escapeHtml(k)}">${escapeHtml(k)}: ${Number(mft.counts[k]) || 0}</span>`).join(' ') : '';
     const mftLine = mft
-      ? `<p class="muted">MFT register (channel <code>${mft.channel}</code>${mft.requireApproval === false ? ', auto-approve' : ', four-eyes approval required'}): ${mftCounts || 'no files yet'}</p>`
+      ? `<p class="muted">MFT register (channel <code>${escapeHtml(mft.channel)}</code>${mft.requireApproval === false ? ', auto-approve' : ', four-eyes approval required'}): ${mftCounts || 'no files yet'}</p>`
       : '';
-    const mftCell = d => mft && d.ach_batch_id ? `<td id="lili-dd-mft-${d.deposit_id}" class="muted">…</td>` : '<td class="muted">—</td>';
+    const mftCell = d => mft && d.ach_batch_id ? `<td id="lili-dd-mft-${escapeHtml(d.deposit_id)}" class="muted">…</td>` : '<td class="muted">—</td>';
     const rows = (deposits || []).map(d => `<tr><td>${d.deposit_id}</td><td>$${Number(d.amount_usd || 0).toFixed(2)}</td><td>${d.sec_code}</td><td>${String(d.effective_date).slice(0,10)}</td><td>${d.ach_batch_id || ''}</td><td>${d.status}</td>${mftCell(d)}<td>${d.lili_transaction_id || d.error_message || ''}</td>` +
       `<td>${d.status === 'awaiting_odfi' ? `<button class="btn" onclick="transmitLiliDirectDeposit('${d.deposit_id}')">Transmit</button> <button class="btn" onclick="cancelLiliDirectDeposit('${d.deposit_id}')">Cancel</button>` : ''}</td></tr>`).join('') ||
       '<tr><td colspan="9" class="muted">No direct deposits yet</td></tr>';
@@ -6009,9 +6009,10 @@
   function renderLiliDirectDepositMftCell(f) {
     if (!f) return '<span class="muted">not in register</span>';
     const when = f.settledAt || f.acknowledgedAt || f.transmittedAt || f.approvedAt || f.builtAt;
-    return `<span class="badge ${liliMftBadgeClass(f.status)}" title="${f.fileId} · ${f.filename || ''} · sha256 ${f.contentHash || ''}">${f.status}</span>` +
-      `<div style="font-size:11px" class="muted">${f.filename || f.fileId}${f.approvedBy ? ' · approved by ' + f.approvedBy : ''}${when ? ' · ' + String(when).replace('T', ' ').slice(0, 16) : ''}${f.failureReason ? ' · ' + f.failureReason : ''}</div>` +
-      (f.status === 'built' ? `<button class="btn" onclick="approveLiliDirectDepositMftFile('${f.fileId}')">Approve (checker)</button>` : '');
+    const e = v => escapeHtml(String(v == null ? '' : v));
+    return `<span class="badge ${liliMftBadgeClass(f.status)}" title="${e(f.fileId)} · ${e(f.filename)} · sha256 ${e(f.contentHash)}">${e(f.status)}</span>` +
+      `<div style="font-size:11px" class="muted">${e(f.filename || f.fileId)}${f.approvedBy ? ' · approved by ' + e(f.approvedBy) : ''}${when ? ' · ' + e(String(when).replace('T', ' ').slice(0, 16)) : ''}${f.failureReason ? ' · ' + e(f.failureReason) : ''}</div>` +
+      (f.status === 'built' ? `<button class="btn" onclick="approveLiliDirectDepositMftFile(${JSON.stringify(String(f.fileId)).replace(/"/g, '&quot;')})">Approve (checker)</button>` : '');
   }
 
   async function fillLiliDirectDepositMftCells(deposits) {
@@ -6022,7 +6023,7 @@
       try {
         const res = await api('/api/finops/lili/direct-deposits/' + encodeURIComponent(d.deposit_id) + '/mft-file');
         cell.innerHTML = renderLiliDirectDepositMftCell(res.data);
-      } catch (e) { cell.innerHTML = '<span class="muted">' + e.message + '</span>'; }
+      } catch (e) { cell.innerHTML = '<span class="muted">' + escapeHtml(e.message) + '</span>'; }
     }
   }
 
@@ -6103,7 +6104,10 @@
       const msg = await fn();
       show(msg, false, 'lili-dd-status');
       openLiliBankPanel();
-    } catch(e) { show(e.message, true, 'lili-dd-status'); }
+    } catch(e) {
+      await openLiliBankPanel();
+      show(e.message, true, 'lili-dd-status');
+    }
   }
 
   function saveLiliDirectDepositDestination() {

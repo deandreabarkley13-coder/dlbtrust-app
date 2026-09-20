@@ -173,7 +173,7 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     (pool.query as any).mockImplementation(async (text: any, params: any[] = []) => {
       const t = String(text).replace(/\s+/g, ' ').trim();
       if (t.includes('JOIN LATERAL (SELECT status FROM mft_files WHERE source_ref')) {
-        expect(params).toEqual([200]);
+        expect(params).toEqual([200, 'lili-odfi']);
         return { rows: [{ status: 'approved', n: 1 }, { status: 'transmitted', n: 2 }, { status: 'settled', n: 3 }] };
       }
       if (t.startsWith('SELECT status, COUNT(*)::int AS n')) return { rows: [{ status: 'transmitted', n: 6, cents: 600 }] };
