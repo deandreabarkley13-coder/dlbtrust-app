@@ -272,14 +272,18 @@ class ApiGatewayClearingEngine {
     }
     const n = Number(amount);
     if (!Number.isFinite(n) || n <= 0) throw Object.assign(new Error('amount must be positive'), { status: 400 });
-    if (!destination || !(destination.routingNumber || destination.routing) || !(destination.accountNumber || destination.account)) {
+    const provider = this.resolveProvider(rail);
+    const Engine = this.engineFor(provider);
+    const providerCfg = Engine._cfg();
+    // Providers with a fixed credit destination (Lili: the trust's own account)
+    // resolve it themselves and refuse anything else.
+    if (typeof Engine._resolveDestination === 'function') {
+      destination = await Engine._resolveDestination(destination);
+    } else if (!destination || !(destination.routingNumber || destination.routing) || !(destination.accountNumber || destination.account)) {
       throw Object.assign(new Error('destination routingNumber and accountNumber are required'), { status: 400 });
     }
 
     await this.ensureTables();
-    const provider = this.resolveProvider(rail);
-    const Engine = this.engineFor(provider);
-    const providerCfg = Engine._cfg();
     const eventId = id('GWC');
     const ref = reference || eventId;
     const isPush = paymentType === 'push' || paymentType === 'direct_deposit';
@@ -485,7 +489,7 @@ class ApiGatewayClearingEngine {
         two_trustee_approval: 'DistributionRequestEngine.approveRequest / CanonicalConsensusEngine (maker/checker)',
         compliance_gate: 'PaymentComplianceGate.screenVendorPayment / ComplianceEngine.screenRecipientForPayout',
         rail_routing: 'PayoutRouteEngine.plan(payoutRail=api_gateway|apigee|apisix|google_wallet)',
-        gateway_settlement: 'ApiGatewayClearingEngine.clearPayment -> ApigeeGatewayEngine | ApacheApisixEngine',
+        gateway_settlement: 'ApiGatewayClearingEngine.clearPayment -> LiliSettlementBankEngine (treasury -> Lili ACH credit) | ApigeeGatewayEngine | ApacheApisixEngine',
         google_wallet_pass: 'GoogleWalletEngine.createPass (pass/link only; no card funding)',
         ledger_reconciliation: 'ApiGatewayClearingEngine.reconcile + CanonicalFundingSource.reconcile',
       },

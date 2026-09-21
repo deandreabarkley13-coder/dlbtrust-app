@@ -10,6 +10,7 @@ const { VendorPaymentEngine } = require('../server/integrations/dapp/vendorPayme
 const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canonicalConsensusEngine');
 const { LiliSettlementBankEngine } = require('../server/integrations/payments/liliSettlementBankEngine');
 const { LiliMcpEngine } = require('../server/integrations/payments/liliMcpEngine');
+const { LiliDirectDepositEngine } = require('../server/integrations/payments/liliDirectDepositEngine');
 
 const ENV_KEYS = [
   'APIGEE_LIVE', 'APIGEE_HOSTNAME', 'APIGEE_BASE_URL', 'APIGEE_API_KEY', 'APIGEE_CLIENT_ID',
@@ -125,47 +126,83 @@ describe('ApiGatewayClearingEngine.clearPayment (fail-closed)', () => {
   });
 });
 
-describe('Lili settlement bank', () => {
-  it('stays shadow by default: no MCP call, simulated reference', async () => {
+describe('Lili settlement bank (treasury -> Lili credit)', () => {
+  const liliDest = { configured: true, routingNumber: '091017138', accountNumberMasked: '****2959', accountName: 'DB NET MGMT LLC', _account: '000002959' };
+
+  beforeEach(() => {
+    vi.spyOn(LiliDirectDepositEngine, 'getDestination').mockResolvedValue(liliDest);
+    vi.spyOn(LiliMcpEngine, 'getPublicConfig').mockResolvedValue({ configured: true, mcpEnabled: true, hasClientId: true, hasAccessToken: true });
+  });
+
+  it('shadow by default: destination fixed to the Lili account, nothing originated', async () => {
     process.env.API_GATEWAY_PROVIDER = 'lili';
+    const create = vi.spyOn(LiliDirectDepositEngine, 'createDirectDeposit');
     const pay = vi.spyOn(LiliMcpEngine, 'payToPayee');
     const result = await ApiGatewayClearingEngine.clearPayment({
-      rail: 'api_gateway', flow: 'vendor_bill', amount: 40, approvalRef: 'REQ-L1', screeningRef: 'SCR-L1', destination,
+      rail: 'api_gateway', flow: 'settlement_funding', amount: 40, approvalRef: 'REQ-L1', screeningRef: 'SCR-L1',
     });
+    expect(create).not.toHaveBeenCalled();
     expect(pay).not.toHaveBeenCalled();
     expect(result.provider).toBe('lili');
     expect(result.shadow).toBe(true);
     expect(result.gatewayReference).toMatch(/^LILI-TX-/);
+    const inserted = (ApiGatewayClearingEngine._insert as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0] as { request: { destination: { routingNumber: string; accountLast4: string } } };
+    expect(inserted.request.destination.routingNumber).toBe('091017138');
+    expect(inserted.request.destination.accountLast4).toBe('****2959');
   });
 
-  it('live: fails closed when Lili MCP is not configured', async () => {
-    process.env.LILI_CLEARING_LIVE = 'true';
-    vi.spyOn(LiliMcpEngine, 'getConfig').mockResolvedValue({ mcpEnabled: false });
-    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee');
+  it('refuses any destination other than the registered Lili account', async () => {
+    process.env.API_GATEWAY_PROVIDER = 'lili';
     await expect(ApiGatewayClearingEngine.clearPayment({
-      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L2', screeningRef: 'SCR-L2', destination,
-    })).rejects.toThrow(/Lili MCP is not configured/);
-    expect(pay).not.toHaveBeenCalled();
+      rail: 'api_gateway', flow: 'vendor_bill', amount: 40, approvalRef: 'REQ-L2', screeningRef: 'SCR-L2', destination,
+    })).rejects.toThrow(/credits only the registered Lili account/);
+    expect(ApiGatewayClearingEngine._insert).not.toHaveBeenCalled();
+  });
+
+  it('live: fails closed when no ODFI channel can originate the credit', async () => {
+    process.env.LILI_CLEARING_LIVE = 'true';
+    vi.spyOn(LiliDirectDepositEngine, 'odfiStatus').mockResolvedValue({ ready: false, channels: [] });
+    const create = vi.spyOn(LiliDirectDepositEngine, 'createDirectDeposit');
+    await expect(ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'settlement_funding', amount: 40, approvalRef: 'REQ-L3', screeningRef: 'SCR-L3',
+    })).rejects.toThrow(/No ODFI channel/);
+    expect(create).not.toHaveBeenCalled();
     expect(ApiGatewayClearingEngine._update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: 'failed' }));
   });
 
-  it('live: originates through LiliMcpEngine.payToPayee and rejects anything but api_pending', async () => {
+  it('live: originates a NACHA credit from the treasury into Lili, never a Lili-originated payment', async () => {
     process.env.LILI_CLEARING_LIVE = 'true';
     process.env.LILI_BUSINESS_USER_ID = 'biz-1';
-    vi.spyOn(LiliMcpEngine, 'getConfig').mockResolvedValue({ mcpEnabled: true, mcpUrl: 'https://mcp.lili.co/mcp', clientId: 'c', accessToken: 't' });
-    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee').mockResolvedValue({ status: 'api_pending', billId: 'BILL-9', supplierId: 'SUP-1' });
-    const result = await ApiGatewayClearingEngine.clearPayment({
-      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L3', screeningRef: 'SCR-L3', destination,
+    vi.spyOn(LiliDirectDepositEngine, 'odfiStatus').mockResolvedValue({ ready: true, channels: ['as2_partner'] });
+    const pay = vi.spyOn(LiliMcpEngine, 'payToPayee');
+    const create = vi.spyOn(LiliDirectDepositEngine, 'createDirectDeposit').mockResolvedValue({
+      deposit_id: 'DD-1', status: 'transmitted', ach_batch_id: 'BATCH-1', lili_payment_id: 'LILIPAY-1', journal_entry_id: 'JE-1',
     });
-    expect(pay).toHaveBeenCalledWith(expect.objectContaining({ amount: 40, recipientRouting: '021000021', recipientAccount: '123456789', businessUserId: 'biz-1' }));
+    const result = await ApiGatewayClearingEngine.clearPayment({
+      rail: 'api_gateway', flow: 'settlement_funding', amount: 40, approvalRef: 'REQ-L4', screeningRef: 'SCR-L4',
+      destination: { routingNumber: '091017138', accountNumber: '000002959' },
+    });
+    expect(pay).not.toHaveBeenCalled();
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 4000, secCode: 'CCD', paymentType: 'settlement_funding', businessUserId: 'biz-1', autoTransmit: true }));
     expect(result.live).toBe(true);
     expect(result.status).toBe('originated');
-    expect(result.gatewayReference).toBe('BILL-9');
+    expect(result.gatewayReference).toBe('DD-1');
 
-    pay.mockResolvedValue({ status: 'manual_pending', reason: 'lili_pay_bill tool not available' });
+    create.mockResolvedValue({ deposit_id: 'DD-2', status: 'cancelled', error_message: 'batch rejected' });
     await expect(ApiGatewayClearingEngine.clearPayment({
-      rail: 'api_gateway', flow: 'distribution', amount: 40, approvalRef: 'REQ-L4', screeningRef: 'SCR-L4', destination,
-    })).rejects.toThrow(/Lili did not accept/);
+      rail: 'api_gateway', flow: 'settlement_funding', amount: 40, approvalRef: 'REQ-L5', screeningRef: 'SCR-L5',
+    })).rejects.toThrow(/Treasury -> Lili credit was not accepted/);
+  });
+
+  it('status reports the direction, masked Lili destination and ODFI channel', async () => {
+    process.env.LILI_CLEARING_LIVE = 'true';
+    vi.spyOn(LiliDirectDepositEngine, 'odfiStatus').mockResolvedValue({ ready: true, channels: ['as2_partner'] });
+    const status = await LiliSettlementBankEngine.status();
+    expect(status.direction).toBe('treasury_to_lili');
+    expect(status.healthy).toBe(true);
+    expect(status.destination).toMatchObject({ bankName: 'Lili', configured: true, accountNumberMasked: '****2959' });
+    expect(status.odfi.channels).toEqual(['as2_partner']);
+    expect(JSON.stringify(status)).not.toContain('000002959');
   });
 
   it('readiness names the Lili live flag', async () => {
