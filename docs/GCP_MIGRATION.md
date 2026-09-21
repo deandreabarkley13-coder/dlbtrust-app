@@ -413,14 +413,23 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
   (`SettlementEngine.executeSettlement`, same rails).
 - **Settlement bank — Lili**: `API_GATEWAY_PROVIDER=lili` (or auto when
   `LILI_CLEARING_LIVE=true`) routes clearing to
-  `server/integrations/payments/liliSettlementBankEngine.js`, which settles
-  through the Lili MCP Bill Pay tools (`LiliMcpEngine.payToPayee`: supplier →
-  bill → `lili_pay_bill`). Live requires `LILI_CLEARING_LIVE=true` plus
-  `LILI_MCP_ENABLED=true`, `LILI_OAUTH_CLIENT_ID`, an access/refresh token and
-  `LILI_BUSINESS_USER_ID`; if Lili does not return `api_pending` the event is
-  marked `failed` (never silently "manual"). Lili Bill Pay is ACH-credit to a
-  US routing/account (vendor bills, distributions, direct-deposit pushes); it
-  does not originate wires.
+  `server/integrations/payments/liliSettlementBankEngine.js`. **Direction:
+  the DLB Trust treasury on `dlb-treasury-management` is the fund source
+  (debtor/ODFI) and the trust's Lili business checking account is the credit
+  destination (RDFI).** The engine originates a NACHA ACH credit (entry 22,
+  `CCD` by default, `LILI_CLEARING_SEC_CODE=PPD` to override) through
+  `LiliDirectDepositEngine.createDirectDeposit` → the configured ODFI channel
+  (AS2 partner / MFT / production partner / `ACH_SFTP_URL`), and reconciles the
+  incoming credit from the Lili MCP transaction feed
+  (`LiliDirectDepositEngine.reconcile`; the MCP is read-only here). The
+  destination is fixed to `LILI_DD_ROUTING_NUMBER` / `LILI_DD_ACCOUNT_NUMBER`
+  (System Settings, `POST /api/finops/lili/direct-deposits/destination`); a
+  `destination` passed to `clearPayment` may be omitted, and anything other
+  than that account is rejected with 400. Live requires `LILI_CLEARING_LIVE=true`,
+  the Lili destination, and a ready ODFI channel; no channel → 503, fail closed.
+  `LiliMcpEngine.payToPayee` (Lili-originated bill pay) is **not** used on this
+  rail. `LiliSettlementBankEngine.status()` reports `direction`, masked
+  `destination`, `odfi.channels`, `source` and `mcp` (reconciliation) state.
 - **Gateway**: otherwise `api_gateway` resolves to Apigee when `APIGEE_*` is
   configured (or `API_GATEWAY_PROVIDER=apigee`), else to the existing APISIX engine.
   `ApigeeGatewayEngine` in `osEngine.js` is a sibling of the APISIX engine and
