@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DLB Trust — OS Engine Operator Panel</title>
+  <title>DLB Trust — Clearing &amp; Settlement Panel</title>
   <style>
     :root {
       --bg: #0f1117;
@@ -240,8 +240,6 @@
             <button onclick="loadEvents('funding')">Funding</button>
             <button onclick="loadEvents('smart-router')">Smart Router</button>
             <button onclick="loadEvents('back-office')">Back Office</button>
-            <button onclick="loadEvents('wallet-onramp')">Wallet On-Ramp</button>
-            <button onclick="loadEvents('alchemy-wallet')">Alchemy Wallet</button>
             <button onclick="loadEvents('issuer-bridge')">Issuer Bridge</button>
             <button onclick="loadEvents('melio')">Melio B2B</button>
             <button onclick="loadEvents('nickel')">Nickel</button>
@@ -266,6 +264,7 @@
 
   <script>
     let engines = [];
+    const HIDDEN_ENGINES = new Set(['wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit']);
     const actionsByEngine = {
       bank: ['status', 'sync', 'accounts', 'balance', 'transactions', 'syncToLedger', 'cachedBanks', 'cachedAccounts', 'cachedTransactions'],
       treasury: ['status', 'position', 'sweep', 'reserve', 'release', 'post'],
@@ -469,7 +468,7 @@
       const out = el('engines');
       const { ok, body } = await api('GET', '/api/os');
       if (!ok) { out.innerHTML = '<div class="muted">Error: ' + (body.error || 'unknown') + '</div>'; return; }
-      engines = body.data || [];
+      engines = (body.data || []).filter((e) => !HIDDEN_ENGINES.has(e.name));
       out.innerHTML = engines.map((e) => {
         const healthy = e.healthy && e.data && e.data.healthy !== false;
         const mode = e.data && e.data.mode ? e.data.mode : 'shadow';
