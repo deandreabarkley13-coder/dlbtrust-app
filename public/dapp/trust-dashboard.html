@@ -390,6 +390,31 @@
       </div>
 
     </div>
+      <div id="tab-agent" class="tabs">
+        <div class="workflow">
+          <div class="card">
+            <h2>AI FinOps Agent</h2>
+            <p class="muted">Ask the agent to show balances, create requests, or run workflows.</p>
+            <div class="chat-log" id="chat-log"></div>
+            <div style="display:flex;gap:10px;margin-top:10px;">
+              <input id="chat-input" style="flex:1;" placeholder="e.g. show net worth or approve request ..." onkeydown="if(event.key==='Enter') sendChat()" />
+              <button class="btn" onclick="sendChat()">Send</button>
+            </div>
+            <div id="chat-status" class="status"></div>
+          </div>
+          <div class="card">
+            <h2>Suggested Commands</h2>
+            <div class="muted">
+              <p>show net worth</p>
+              <p>show pending approvals</p>
+              <p>create distribution to beneficiary@example.com for $100</p>
+              <p>show vendor payments</p>
+              <p>show trust bank accounts</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
   </div>
 
   <script src="/lib/portal-routing.js?v=1789301449"></script>

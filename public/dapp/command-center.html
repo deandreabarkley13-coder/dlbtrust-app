@@ -400,6 +400,9 @@
         var detail = (s.blockers && s.blockers.length) ? s.blockers.join('; ') : ((s.mode || 'unknown') + ' mode');
         return '<div class="stage"><span class="badge pill ' + (s.ready ? 'ok' : 'bad') + '">' + (s.ready ? 'OK' : 'BLOCKED') + '</span><div><strong>' + esc(ENGINE_LABELS[k] || k) + '</strong><span class="muted">' + esc(detail) + '</span></div></div>';
       }).join('') || '<p class="muted">No engines reported.</p>';
+      var g = p.gcp || {};
+      var ledger = g.ledger || {};
+      el('pipe-stages').innerHTML += '<div class="stage"><span class="badge pill ' + (g.projectMatches ? 'ok' : 'bad') + '">' + (g.projectMatches ? 'OK' : 'CHECK') + '</span><div><strong>GCP project ' + esc(p.project || g.project || 'unknown') + '</strong><span class="muted">' + esc((ledger.connected ? 'Cloud SQL ' + (ledger.database || '') + ' connected' : 'ledger not connected') + (g.revision ? ' · ' + g.revision : '')) + '</span></div></div>';
     }).catch(function (e) {
       el('pipe-indicator').textContent = 'Stale';
       el('pipe-indicator').className = 'badge bad';
