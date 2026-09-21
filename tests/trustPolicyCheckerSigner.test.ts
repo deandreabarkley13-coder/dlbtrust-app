@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 const require = createRequire(import.meta.url);
 
@@ -171,44 +169,5 @@ describe('POST /trust-policy/distributions/:id/approve', () => {
     await handler({ params: { distributionId: '9' }, body: {} }, res);
     expect(asMaker).toHaveBeenCalledWith({ distributionId: '9' });
     expect(asChecker).not.toHaveBeenCalled();
-  });
-});
-
-describe('trust dashboard policy buttons', () => {
-  const html = readFileSync(join(__dirname, '..', 'public', 'dapp', 'trust-dashboard.html'), 'utf8');
-
-  function body(fnName: string) {
-    const start = html.indexOf(`function ${fnName}(`);
-    expect(start, `${fnName} not found`).toBeGreaterThan(-1);
-    let depth = 0; let i = html.indexOf('{', start);
-    for (; i < html.length; i += 1) {
-      if (html[i] === '{') depth += 1;
-      else if (html[i] === '}') { depth -= 1; if (depth === 0) break; }
-    }
-    return html.slice(start, i + 1);
-  }
-
-  function handlers(source: string) {
-    return Array.from(source.matchAll(/onclick=\\?"([A-Za-z_$][\w$.]*)\(/g)).map((m) => m[1]);
-  }
-
-  const defined = new Set(Array.from(html.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g)).map((m) => m[1]));
-  defined.add('loadPolicyProposeOptions.sync');
-
-  it('every policyActions and Distributions queue button maps to a defined handler', () => {
-    const sources = [body('policyActions'), body('loadDistributions')];
-    const policyTab = html.slice(html.indexOf('id="tab-policy"'), html.indexOf('id="tab-ramps"'));
-    sources.push(policyTab);
-    const used = sources.flatMap(handlers);
-    expect(used.length).toBeGreaterThan(0);
-    for (const name of used) expect(defined.has(name), `handler ${name} is not defined`).toBe(true);
-  });
-
-  it('labels the seats explicitly and gates them', () => {
-    const actions = body('policyActions');
-    expect(actions).toContain('Checker Approve');
-    expect(actions).toContain("policySeatGate('checker')");
-    expect(html).toContain('>Maker Propose</button>');
-    expect(html).toContain("policySeatGate('maker')");
   });
 });

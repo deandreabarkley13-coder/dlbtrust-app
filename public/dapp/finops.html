@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
-  <title>DLB Trust — AI FinOps Agent</title>
+  <title>DLB Trust — Family Trust Office FinOps</title>
   <style>
     :root { --bg:#0b0f17; --card:#131925; --panel:#1e293b; --border:#2a3548; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --gold:#f59e0b; --danger:#ef4444; }
     * { box-sizing:border-box; }
@@ -70,10 +70,9 @@
       <span id="user-role" class="role" style="display:none;"></span>
     </div>
     <div>
-      <a href="/dapp/index.html?v=2">DeFi Portal</a>
-      <a href="/dapp/master-dashboard.html?v=2">Master Dashboard</a>
-      <a href="/dapp/payout-center.html?v=2">Payout Center</a>
-      <a href="/dapp/mobile.html?v=2">Mobile Portal</a>
+      <a href="/dashboard">Trust Office</a>
+      <a href="/dashboard/classic">Trustee Dashboard</a>
+      <a href="/treasury">Treasury System</a>
     </div>
   </header>
 
@@ -99,18 +98,10 @@
 
       <div class="card">
         <h2>Live Modules</h2>
-        <p class="muted">Click a module card to inspect its data and take action, or ask the FinOps Agent to act.</p>
+        <p class="muted">Banking, trust accounting, payments and compliance modules. Click a card to inspect its data, or ask the FinOps Agent to act.</p>
         <div class="grid" id="modules-grid"></div>
       </div>
 
-      <div class="card">
-        <h2>Fiat → Stablecoin → Distribution Flow</h2>
-        <p class="muted">Interactive view of how fixed income converts to crypto and moves into DLB-TRUST wallets for payout.</p>
-        <div class="conversion-flow" id="conversion-flow"></div>
-        <div style="text-align:center;">
-          <button class="btn btn-gold" onclick="runConversionExample()">Run $0.01 DLB-PRB Interest → DAI Example</button>
-        </div>
-      </div>
 
       <div id="module-panel" class="card panel">
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -124,7 +115,7 @@
     <div class="sidebar">
       <div class="card chat">
         <h2>FinOps Agent</h2>
-        <p class="muted">Type a command like "convert $0.01 DLB-PRB interest to DAI" or "show wallet balances".</p>
+        <p class="muted">Type a command like "show cash balances", "list pending approvals" or "post the Q3 coupon interest".</p>
         <div id="chat-log" class="chat-log"></div>
         <div class="chat-input">
           <input id="chat-input" type="text" placeholder="Ask the FinOps Agent…" onkeydown="if(event.key==='Enter') sendChat()" />
@@ -153,50 +144,18 @@
     { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
     { key:'journal-entries', name:'Journal Entries', desc:'Post principal and coupon interest credits', stat:'', endpoint:null, action:'openJournalEntryPanel' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
-    { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
-    { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
-    { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
-    { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
-    { key:'spritz-buy', name:'Spritz Buy USDC', desc:'ACH-debit a linked bank via Spritz; USDC lands in the thirdweb server wallet (maker/checker)', stat:'', endpoint:null, action:'openSpritzBuyPanel' },
-    { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
-    { key:'stablecoin', name:'Stablecoin Engine', desc:'Auditable mint/redeem/transfer/settle with collateral ratio', stat:'', endpoint:null, action:'openStablecoinPanel' },
-    { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
-    { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
-    { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
-    { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
-    { key:'liquidity-pool', name:'Liquidity Pool Engine', desc:'Full pool lifecycle: create, add/remove liquidity, swap, and positions', stat:'', endpoint:null, action:'openLiquidityPoolPanel' },
-    { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
-    { key:'cross-chain', name:'Cross-Chain Conversion', desc:'Convert trust assets to canonical stablecoins across chains and protocols', stat:'', endpoint:null, action:'openCrossChainPanel' },
-    { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
-    { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
-    { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
-    { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
-    { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
     { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
-    { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
     { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
     { key:'capital-transfer-os', name:'Capital Transfer OS', desc:'Convert reserve assets into spendable funds inside a series: sell or pledge collateral, redeem digital assets, sweep custodian cash, all under dual trustee control', stat:'', endpoint:null, action:'openCapitalTransferPanel' },
     { key:'drawdown-os', name:'Principal & Income Drawdown OS', desc:'Trust accounting for drawdowns: allocate every receipt to principal or income, authorize what a beneficiary may draw against corpus, and fund it only from attested cash', stat:'', endpoint:null, action:'openDrawdownPanel' },
     { key:'inhouse-bank', name:'PTC In-House Family Bank', desc:'One payment API for the family bank: idempotent ingress, policy and dual authorization, least-cost rail selection against the liquidity matrix, virtual accounts, ISO 20022, and a dual ledger that mirrors every posting to the trust GL', stat:'', endpoint:null, action:'openInHouseBankPanel' },
-    { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
-    { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
-    { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
-    { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
-    { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
-    { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
-    { key:'computing', name:'Computing Engine', desc:'Off-chain valuation, yield, accrual and canonical quote jobs', stat:'', endpoint:null, action:'openTrustComputingPanel' },
-    { key:'holdings', name:'Holding Management', desc:'Hold ledger funds and canonize to spendable stablecoins', stat:'', endpoint:null, action:'openHoldingManagementPanel' },
-    { key:'capital-fund', name:'Capital Fund', desc:'Fiat-to-stablecoin capital calls and pool allocation', stat:'', endpoint:null, action:'openCapitalFundPanel' },
-    { key:'virtual-accounts', name:'Virtual Accounts', desc:'Ledger-backed virtual accounts for frictionless fiat+on-chain transactions', stat:'', endpoint:null, action:'openVirtualAccountsPanel' },
     { key:'wire-origination', name:'Wire Origination', desc:'Fiat payout origination API: wire, ACH, check, crypto rails', stat:'', endpoint:null, action:'openWireOriginationPanel' },
-    { key:'electronic-money', name:'Electronic Money', desc:'Stored-value USD ledger for instant P2P transfers', stat:'', endpoint:null, action:'openElectronicMoneyPanel' },
     { key:'open-banking', name:'Open Banking', desc:'ISO 20022 + bank connectors (Column, Increase, Plaid, REST) for direct payouts', stat:'', endpoint:null, action:'openOpenBankingPanel' },
     { key:'trust-deposits', name:'Trust Deposits', desc:'Script deposits to bank, e-money, or wallet destinations', stat:'', endpoint:null, action:'openTrustDepositsPanel' },
     { key:'fineract-payouts', name:'Fineract/Mifos Payouts', desc:'Withdraw from Fineract/Mifos savings and route externally via Open Banking or Wire', stat:'', endpoint:null, action:'openFineractPayoutsPanel' },
     { key:'skrill-links', name:'Skrill Links', desc:'Pay Skrill.me/rq request links from the trust ledger', stat:'', endpoint:null, action:'openSkrillLinksPanel' },
     { key:'barcode-deposits', name:'Barcode Deposits', desc:'Scan barcodes/QRs to record and credit deposits', stat:'', endpoint:null, action:'openBarcodeDepositsPanel' },
-    { key:'web-payment-rails', name:'Web Payment Rails', desc:'Send real payments over HTTPS to any bank/fintech endpoint', stat:'', endpoint:null, action:'openWebPaymentRailsPanel' },
     { key:'lili', name:'Lili Bank Engine', desc:'Lili business banking adapter: ACH/wire payment preparation and application onboarding', stat:'', endpoint:null, action:'openLiliBankPanel' },
     { key:'issuer', name:'Issuer Engine', desc:'Trust as custodian/issuer of bank-backed ledger credits', stat:'', endpoint:null, action:'openIssuerPanel' },
     { key:'bank-transfer', name:'Bank Transfer Engine', desc:'Push/receive bank credits and reconcile external accounts', stat:'', endpoint:null, action:'openBankTransferPanel' },
@@ -210,25 +169,16 @@
     { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
     { key:'host-to-host', name:'Host-to-Host Engine', desc:'SFTP/FTPS/AS2/HTTPS payment file and message exchange with bank/clearing partners', stat:'', endpoint:null, action:'openHostToHostPanel' },
     { key:'live-money', name:'Live Money Movement Engine', desc:'Move real fiat from trust ledger to external beneficiaries across all rails', stat:'', endpoint:null, action:'openLiveMoneyPanel' },
-    { key:'web3', name:'Web3 Engine', desc:'Multi-chain balances, gas, sends, and contract calls', stat:'', endpoint:null, action:'openWeb3Panel' },
-    { key:'wallet-creation', name:'Wallet Creation Engine', desc:'Create and manage internal and external trust wallets', stat:'', endpoint:null, action:'openWalletCreationPanel' },
-    { key:'payment-blockchain', name:'Payment Blockchain API', desc:'Create and execute payments on blockchain rails', stat:'', endpoint:null, action:'openPaymentBlockchainPanel' },
     { key:'networking', name:'Network & Networking Engine', desc:'Transmit and receive transactional financial data across internal and external rails', stat:'', endpoint:null, action:'openNetworkingPanel' },
-    { key:'wallet-virtual-accounts', name:'Wallet Virtual Account Generator', desc:'Create virtual accounts for wallets to transact with merchants, vendors, and other wallets', stat:'', endpoint:null, action:'openWalletVirtualAccountsPanel' },
     { key:'push-to-card', name:'Push-to-Card Engine', desc:'Instant debit-card funding via Visa Direct, Mastercard Send, Formance, Apache HTTP, or manual push', stat:'', endpoint:null, action:'openPushToCardPanel' },
     { key:'finos-cdm', name:'FINOS CDM Engine', desc:'Common Domain Model event adapter for private cloud banking interoperability', stat:'', endpoint:null, action:'openFinosCdmPanel' },
     { key:'banksync', name:'BankSync Integration', desc:'Open-banking bank/ account/ balance/ transaction sync from BankSync', stat:'', endpoint:null, action:'openBankSyncPanel' },
     { key:'private-trust-company', name:'Private Trust Company', desc:'Family support pool: PTC as custodian/issuer of principal and interest from bond/fixed income', stat:'', endpoint:null, action:'openPrivateTrustCompanyPanel' },
+    { key:'clearing', name:'Bank Clearing & Settlement', desc:'ACH / wire clearing, settlement and reconciliation status', stat:'', endpoint:'/api/os/readiness' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
-    { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
-    { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
-    { key:'yield-vault-os', name:'Yield Vault OS', desc:'Distribute bond interest, LP fees and reserve surplus pro-rata in DLB-PTCUSD', stat:'', endpoint:null, action:'openYieldVaultOsPanel' },
-    { key:'amm-os', name:'AMM OS (StableSwap)', desc:'DLB-PTCUSD / canonical StableSwap pool with automatic peg rebalancing', stat:'', endpoint:null, action:'openAmmOsPanel' },
-    { key:'floor-redemption-os', name:'Floor Redemption OS', desc:'Canonical reserve honouring a $1 floor; arbitrage defends the peg', stat:'', endpoint:null, action:'openFloorRedemptionOsPanel' },
-    { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'finance-operating', name:'Finance Operating Server', desc:'Unified command/response layer for cash, treasury, payments, and AI FinOps operations', stat:'', endpoint:null, action:'openFinanceOperatingPanel' },
-    { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
+    { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dashboard/classic?tab=distributions' },
   ];
 
   function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
@@ -314,7 +264,7 @@
     const token = getToken();
     const email = getEmail();
     const admin = localStorage.getItem(ADMIN_KEY);
-    if (!token && !admin) { renderModules(); renderFlow(); return; }
+    if (!token && !admin) { renderModules(); return; }
     if (!token && admin) {
       // Legacy admin-token session: skip JWT me check and load data directly
       el('login-step-email').classList.add('hidden');
@@ -339,7 +289,7 @@
       localStorage.removeItem(TOKEN_KEY);
       localStorage.removeItem(EMAIL_KEY);
       show('Session expired. Please log in again.', true, 'token-status');
-      renderModules(); renderFlow();
+      renderModules();
     }
   }
 
@@ -362,20 +312,6 @@
     `).join('');
   }
 
-  function renderFlow(activeStep=-1) {
-    const steps = [
-      { label: 'DLB-PRB Fixed Income', sub: '$99.26M total' },
-      { label: 'DLBUSD Mint', sub: 'BondDex' },
-      { label: 'WETH Swap', sub: 'Uniswap V2' },
-      { label: 'DAI / USDS', sub: 'Stablecoin' },
-      { label: 'Income Master Wallet', sub: 'Distribution' },
-      { label: 'Payout / Disburse', sub: 'Beneficiary' },
-    ];
-    el('conversion-flow').innerHTML = steps.map((s,i) => `
-      <div class="flow-node ${i===activeStep?'active':''}"><strong>${s.label}</strong><br><span class="muted">${s.sub}</span></div>
-      ${i < steps.length-1 ? '<div class="flow-arrow">→</div>' : ''}
-    `).join('');
-  }
 
   function normalizeBalances(raw) {
     if (!raw) return [];
@@ -391,7 +327,6 @@
   }
   async function loadAll() {
     renderModules();
-    renderFlow();
     try {
       const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney, pushToCard] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
@@ -621,9 +556,11 @@
       } else if (m.key === 'fixed-income') {
         const b = data.data.bond || {};
         body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">' + Object.entries(b).map(([k,v]) => `<div class="module-card"><h3>${k}</h3><div class="stat">${typeof v==='number'?fmt(v,2):v}</div></div>`).join('') + '</div>';
-      } else if (m.key === 'p2p-swap') {
-        const rows = (data.data || []);
-        body.innerHTML = renderP2PTable(rows) + renderP2PForm();
+      } else if (m.key === 'clearing') {
+        const engines = (data.data && data.data.engines) || {};
+        const gcp = (data.data && data.data.gcp) || {};
+        const rows = Object.keys(engines).map(k => ({ engine: k, mode: engines[k].mode || '—', ready: engines[k].ready ? 'ready' : 'blocked', blockers: (engines[k].blockers || []).join('; ') || '—' }));
+        body.innerHTML = `<p class="muted">Project ${gcp.project || '—'} · ledger ${gcp.ledger && gcp.ledger.connected ? 'connected' : 'offline'}</p>` + renderTable(rows, ['engine','mode','ready','blockers'], {});
       }
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -1772,11 +1709,6 @@
     finally { if (btn) { btn.disabled = false; btn.textContent = approved ? 'Approve' : 'Reject'; } }
   }
 
-  async function runConversionExample() {
-    addChat('user', 'Convert $0.01 DLB-PRB interest to DAI');
-    for (let i=0;i<5;i++) { renderFlow(i); await new Promise(r => setTimeout(r, 400)); }
-    sendChatInternal('Convert $0.01 DLB-PRB interest to DAI');
-  }
 
   async function sendChatInternal(cmd) {
     try {

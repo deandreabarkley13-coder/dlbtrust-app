@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
-  <title>DLB Trust — Command Center</title>
+  <title>DLB Trust — Family Trust Office</title>
   <style>
     :root {
       --bg:#0a0e17; --bg-2:#0d1320; --card:#111a2b; --panel:#172337;
@@ -131,7 +131,7 @@
   <aside class="sidebar" id="sidebar">
     <div class="brand">
       <div class="logo">DLB</div>
-      <div><h1>Command Center</h1><p>DeAndrea LaVar Barkley Trust</p></div>
+      <div><h1>Family Trust Office</h1><p>DeAndrea LaVar Barkley Trust</p></div>
     </div>
     <div class="search"><input id="nav-search" type="search" placeholder="Find a module…" autocomplete="off"></div>
     <nav class="nav" id="nav"></nav>
@@ -168,7 +168,7 @@
 
       <div class="row">
         <div class="card">
-          <div class="card-head"><h3>Settlement Pipeline</h3><span class="badge" id="pipe-indicator">Loading</span><div class="spacer"></div><button class="btn sec sm" type="button" onclick="openModule('trust-settlement')">Details</button></div>
+          <div class="card-head"><h3>Bank Clearing &amp; Settlement</h3><span class="badge" id="pipe-indicator">Loading</span><div class="spacer"></div><button class="btn sec sm" type="button" onclick="openModule('os-engine')">Details</button></div>
           <div id="pipe-stages" class="muted">Loading…</div>
         </div>
         <div class="card">
@@ -176,7 +176,7 @@
           <div class="quick">
             <button class="btn gold" type="button" onclick="openModule('trust-distributions')">New Distribution</button>
             <button class="btn" type="button" onclick="openModule('trust-vendors')">Pay a Vendor</button>
-            <button class="btn sec" type="button" onclick="openModule('payout-center')">Send Payout</button>
+            <button class="btn sec" type="button" onclick="openModule('trust-payouts')">Send Payout</button>
             <button class="btn sec" type="button" onclick="openModule('trust-wires')">Approve Wires</button>
             <button class="btn sec" type="button" onclick="openModule('trust-signatures')">Sign Bills</button>
             <button class="btn sec" type="button" onclick="openModule('finops')">Ask FinOps AI</button>
@@ -199,7 +199,7 @@
         </div>
       </div>
 
-      <div class="section-title">All Modules <span class="muted">— everything in one place</span></div>
+      <div class="section-title">Trust Office Modules <span class="muted">— banking, accounting and fiduciary controls</span></div>
       <div class="modules" id="module-grid"></div>
     </div>
 
@@ -246,25 +246,15 @@
     { id: 'trust-vendors', group: 'Trust Operations', ic: '🧾', title: 'Vendor Payments', desc: 'Vendors, bills and payment runs.', url: '/dashboard/classic?embed=1&tab=vendors' },
     { id: 'trust-payouts', group: 'Trust Operations', ic: '↗', title: 'Payouts', desc: 'Beneficiary and counterparty payouts.', url: '/dashboard/classic?embed=1&tab=payouts' },
     { id: 'trust-holds', group: 'Trust Operations', ic: '🔒', title: 'Hold Accounts', desc: 'Open and manage segregated hold accounts.', url: '/dashboard/classic?embed=1&tab=holds' },
-    { id: 'trust-treasury', group: 'Trust Operations', ic: '🏦', title: 'Treasury Funding', desc: 'Deposit instructions and funding history.', url: '/dashboard/classic?embed=1&tab=treasury' },
-    { id: 'trust-policy', group: 'Trust Operations', ic: '⛓', title: 'On-Chain Policy', desc: 'Distribution policy contract readiness.', url: '/dashboard/classic?embed=1&tab=policy' },
-    { id: 'trust-ramps', group: 'Trust Operations', ic: '⇅', title: 'On / Off Ramps', desc: 'Fiat ↔ stablecoin ramps.', url: '/dashboard/classic?embed=1&tab=ramps' },
+    { id: 'trust-treasury', group: 'Trust Operations', ic: '🏦', title: 'Treasury Funding', desc: 'Bank deposit instructions and funding history.', url: '/dashboard/classic?embed=1&tab=treasury' },
     { id: 'trust-agent', group: 'Trust Operations', ic: '✦', title: 'AI Agent', desc: 'Conversational trustee assistant.', url: '/dashboard/classic?embed=1&tab=agent' },
-    { id: 'trust-settlement', group: 'Trust Operations', ic: '⟳', title: 'Settlement Gateway', desc: 'ERP → policy → payout wallet pipeline.', url: '/dashboard/classic?embed=1&tab=settlement' },
-    { id: 'trust-rally', group: 'Trust Operations', ic: '◈', title: 'Rally Wallet', desc: 'Rally Protocol wallets, tap-pay and payouts.', url: '/dashboard/classic?embed=1&tab=rally' },
 
     { id: 'treasury', group: 'Treasury & Banking', ic: '📊', title: 'Treasury Management System', desc: 'Bonds, cash, ACH, wires, accounting, tax, Fineract GL and more.', url: '/treasury', standalone: true },
-    { id: 'master', group: 'Treasury & Banking', ic: '▦', title: 'Master Dashboard', desc: 'Bond masters, requests and portfolio overview.', url: '/dapp/master-dashboard.html' },
-    { id: 'os-engine', group: 'Treasury & Banking', ic: '⚙', title: 'OS Engine Operator Panel', desc: 'Domain engine status and operator controls.', url: '/os-engine-dashboard.html', standalone: true },
+    { id: 'os-engine', group: 'Treasury & Banking', ic: '⚙', title: 'Clearing & Settlement Panel', desc: 'Payment, clearing, settlement and reconciliation engine status.', url: '/os-engine-dashboard.html', standalone: true },
 
-    { id: 'wallets', group: 'Wallets & Payments', ic: '👛', title: 'Wallets & Transactions', desc: 'Custodial wallets, balances and transaction history.', url: '/dapp/wallets.html' },
-    { id: 'payout-center', group: 'Wallets & Payments', ic: '💸', title: 'Payout Center', desc: 'Send payouts, manage recipients, view activity.', url: '/dapp/payout-center.html' },
-    { id: 'mobile', group: 'Wallets & Payments', ic: '📱', title: 'Mobile Wallet', desc: 'Tap-to-pay wallet and QR receive.', url: '/dapp/mobile.html' },
+    { id: 'finops', group: 'Intelligence', ic: '🤖', title: 'AI FinOps Agent', desc: 'Natural-language treasury and accounting operations.', url: '/dapp/finops.html' },
 
-    { id: 'finops', group: 'Intelligence', ic: '🤖', title: 'AI FinOps Agent', desc: 'Natural-language FinOps operations and consensus.', url: '/dapp/finops.html' },
-
-    { id: 'beneficiary-portal', group: 'Portals', ic: '👥', title: 'Beneficiary Portal', desc: 'What beneficiaries see: PTC dashboard and requests.', url: '/trust-portal/dashboard.html', standalone: true },
-    { id: 'legacy-dapp', group: 'Portals', ic: '🕘', title: 'Legacy DeFi dApp', desc: 'Previous dApp interface, kept for reference.', url: '/dapp/legacy.html' }
+    { id: 'beneficiary-portal', group: 'Portals', ic: '👥', title: 'Beneficiary Portal', desc: 'What beneficiaries see: PTC dashboard and requests.', url: '/trust-portal/dashboard.html', standalone: true }
   ];
   var byId = {};
   MODULES.forEach(function (m) { byId[m.id] = m; });
@@ -398,14 +388,18 @@
     }).then(function () { live.loading = false; el('refresh-btn').disabled = false; });
   }
 
+  var ENGINE_LABELS = { payment: 'Payment initiation', gateway: 'Bank gateway (treasury → Lili)', clearing: 'Clearing & settlement', reconciliation: 'Reconciliation & matching', interop: 'Interoperability' };
   function loadPipeline() {
-    return api('/api/finops/spritz/pipeline?limit=10').then(function (r) {
+    return api('/api/os/readiness').then(function (r) {
       var p = r.data || {};
-      el('pipe-indicator').textContent = p.ready ? 'Ready' : 'Blocked';
+      var engines = p.engines || {};
+      el('pipe-indicator').textContent = p.ready ? 'Ready' : 'Attention';
       el('pipe-indicator').className = 'badge ' + (p.ready ? 'ok' : 'warn');
-      el('pipe-stages').innerHTML = (p.stages || []).map(function (s) {
-        return '<div class="stage"><span class="badge pill ' + (s.ok ? 'ok' : 'bad') + '">' + (s.ok ? 'OK' : 'BLOCKED') + '</span><div><strong>' + esc(s.label) + '</strong><span class="muted">' + esc(s.detail || '') + '</span></div></div>';
-      }).join('') || '<p class="muted">No pipeline stages reported.</p>';
+      el('pipe-stages').innerHTML = Object.keys(engines).map(function (k) {
+        var s = engines[k] || {};
+        var detail = (s.blockers && s.blockers.length) ? s.blockers.join('; ') : ((s.mode || 'unknown') + ' mode');
+        return '<div class="stage"><span class="badge pill ' + (s.ready ? 'ok' : 'bad') + '">' + (s.ready ? 'OK' : 'BLOCKED') + '</span><div><strong>' + esc(ENGINE_LABELS[k] || k) + '</strong><span class="muted">' + esc(detail) + '</span></div></div>';
+      }).join('') || '<p class="muted">No engines reported.</p>';
     }).catch(function (e) {
       el('pipe-indicator').textContent = 'Stale';
       el('pipe-indicator').className = 'badge bad';

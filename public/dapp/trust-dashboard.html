@@ -100,11 +100,7 @@
       <button data-tab="payouts">Payouts</button>
       <button data-tab="holds">Hold Accounts</button>
       <button data-tab="treasury">Treasury Funding</button>
-      <button data-tab="policy">On-Chain Policy</button>
-      <button data-tab="ramps">On/Off Ramps</button>
       <button data-tab="agent">AI Agent</button>
-      <button data-tab="settlement">Settlement Gateway</button>
-      <button data-tab="rally">Rally Wallet</button>
     </nav>
     <div class="user">
       <span id="user-info"></span>
@@ -145,9 +141,9 @@
 
         <div class="card" id="pipeline-card">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <h2 style="margin:0;">Settlement Pipeline</h2>
+            <h2 style="margin:0;">Bank Clearing &amp; Settlement</h2>
             <span class="badge" id="pipeline-indicator">Loading</span>
-            <span class="muted" id="pipeline-status">ERP canonical GL → policy contract → Spritz payout wallet → bank / bill</span>
+            <span class="muted" id="pipeline-status">Trust ledger → payment initiation → ACH / wire clearing → bank settlement → reconciliation</span>
           </div>
           <div id="pipeline-stages" class="muted" style="margin-top:10px;">Loading…</div>
           <div id="pipeline-detail" style="margin-top:10px;"></div>
@@ -202,16 +198,10 @@
               <div class="form-group"><label>Source Account ID</label><input id="dist-source-account" placeholder="CA-OPERATING or TBA-..." /></div>
             </div>
             <div class="form-row">
-              <div class="form-group"><label>Pay To</label><select id="dist-dest-type" onchange="syncDestinationFields()"><option value="wallet">Wallet (on-chain)</option><option value="bank">Bank Account (ACH)</option><option value="biller">Biller (Bill Pay)</option></select></div>
+              <div class="form-group"><label>Pay To</label><select id="dist-dest-type" onchange="syncDestinationFields()"><option value="bank">Bank Account (ACH)</option><option value="biller">Biller (Bill Pay)</option></select></div>
               <div class="form-group"><label>Rail</label><input id="dist-rail-note" readonly /></div>
             </div>
-            <div id="dist-dest-wallet">
-              <div class="form-row">
-                <div class="form-group"><label>Destination Address</label><input id="dist-dest" placeholder="0x..." /></div>
-                <div class="form-group"><label>On-chain Rail</label><select id="dist-wallet-rail" onchange="syncDestinationFields()"><option value="sit">Trust mint (SIT)</option><option value="thirdweb_server_wallet">Treasury server wallet (thirdweb)</option></select></div>
-              </div>
-            </div>
-            <div id="dist-dest-bank" class="hidden">
+            <div id="dist-dest-bank">
               <div class="form-row">
                 <div class="form-group"><label>Account Holder</label><input id="dist-bank-holder" placeholder="Name on the account" /></div>
                 <div class="form-group"><label>Bank Name</label><input id="dist-bank-name" placeholder="Optional" /></div>
@@ -320,18 +310,18 @@
         <div class="workflow">
           <div class="card">
             <h2>One-Click Payout</h2>
-            <p class="muted">Send a payout directly from a source account to a recipient by wallet, email, or account.</p>
+            <p class="muted">Send a payout directly from a source account to a recipient by email or bank account.</p>
             <div class="form-row">
               <div class="form-group"><label>Source Type</label><select id="pay-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust_bank">Trust Bank</option><option value="issuer">Issuer</option></select></div>
               <div class="form-group"><label>Source Account ID</label><input id="pay-source-account" placeholder="CA-OPERATING" /></div>
             </div>
             <div class="form-row">
-              <div class="form-group"><label>Recipient Identifier</label><input id="pay-recipient" placeholder="0x... or email" /></div>
+              <div class="form-group"><label>Recipient Identifier</label><input id="pay-recipient" placeholder="email or account" /></div>
               <div class="form-group"><label>Amount (USD)</label><input id="pay-amount" type="number" min="0.01" step="0.01" placeholder="0.00" /></div>
             </div>
             <div class="form-row">
-              <div class="form-group"><label>Asset</label><select id="pay-asset"><option value="USD">USD</option><option value="SIT">SIT</option><option value="USDC">USDC</option></select></div>
-              <div class="form-group"><label>Rail</label><select id="pay-rail"><option value="wire">Wire</option><option value="ach">ACH</option><option value="open_banking">Open Banking</option><option value="sit">SIT</option><option value="dex">DEX Swap</option></select></div>
+              <div class="form-group"><label>Asset</label><select id="pay-asset"><option value="USD">USD</option></select></div>
+              <div class="form-group"><label>Rail</label><select id="pay-rail"><option value="ach">ACH</option><option value="wire">Wire</option><option value="open_banking">Open Banking</option></select></div>
             </div>
             <div class="form-group"><label>Description</label><input id="pay-desc" placeholder="Payout purpose" /></div>
             <button class="btn btn-gold" onclick="createPayout()">Submit Payout</button>
@@ -380,345 +370,25 @@
       <div id="tab-treasury" class="tabs">
         <div class="workflow">
           <div class="card">
-            <h2>Fund the Treasury Wallet</h2>
-            <p class="muted">Declare a deposit you are sending in from the trust's own wallet or exchange, then send the exact amount to the address below. The deposit is credited only when it lands on chain.</p>
-            <div id="treasury-instructions" class="panel">Loading…</div>
+            <h2>Treasury &rarr; Lili Bank Funding</h2>
+            <p class="muted">Credit the trust's Lili business checking account from the DLB Trust treasury (NACHA ACH credit, originated by the trust as ODFI). Every credit is journaled and reconciled against the Lili statement feed.</p>
+            <div id="treasury-instructions" class="panel">Loading&hellip;</div>
             <div class="form-row">
-              <div class="form-group"><label>Asset</label><select id="dep-asset"><option value="settlement">Settlement token (USDC)</option><option value="native">Gas (native ETH)</option></select></div>
-              <div class="form-group"><label>Amount</label><input id="dep-amount" placeholder="250" /></div>
+              <div class="form-group"><label>Amount (USD)</label><input id="dep-amount" type="number" min="0.01" step="0.01" placeholder="0.00" /></div>
+              <div class="form-group"><label>SEC Code</label><select id="dep-sec"><option value="CCD">CCD (business)</option><option value="PPD">PPD (personal)</option></select></div>
             </div>
-            <div class="form-row">
-              <div class="form-group"><label>Sending Wallet (optional)</label><input id="dep-from" placeholder="0x…" /></div>
-              <div class="form-group"><label>Memo</label><input id="dep-memo" placeholder="Q3 treasury funding" /></div>
-            </div>
-            <button class="btn btn-gold" onclick="declareDeposit()">Declare Deposit</button>
-            <button class="btn btn-sec" onclick="syncDeposits()">Check for Arrivals</button>
+            <div class="form-group"><label>Memo</label><input id="dep-memo" maxlength="80" placeholder="Q3 treasury funding" /></div>
+            <button class="btn btn-gold" onclick="createTreasuryCredit()">Send Credit to Lili</button>
+            <button class="btn btn-sec" onclick="loadTreasury()">Refresh</button>
             <div id="treasury-status" class="status"></div>
           </div>
           <div class="card">
-            <h2>Deposits</h2>
-            <div id="treasury-deposits" class="muted">Loading…</div>
+            <h2>Recent Credits</h2>
+            <div id="treasury-deposits" class="muted">Loading&hellip;</div>
           </div>
         </div>
       </div>
 
-      <div id="tab-policy" class="tabs">
-        <div class="workflow">
-          <div class="card">
-            <h2>Distribution Policy Contract</h2>
-            <p class="muted">The rules the trust's settlement asset is governed by on chain: beneficiary allow-list, purpose codes, ceilings, maker/checker approval, timelock, escrow and clawback. While enforcement is on, no distribution can leave the treasury except through this contract.</p>
-            <div id="policy-readiness" class="panel">Loading…</div>
-            <div style="margin-top:12px;">
-              <button class="btn btn-sec" onclick="loadPolicy()">Refresh</button>
-              <button class="btn btn-sec" onclick="policyPause(true)">Pause</button>
-              <button class="btn btn-sec" onclick="policyPause(false)">Unpause</button>
-            </div>
-            <h3 style="margin-top:18px;">Beneficiary Check</h3>
-            <div class="form-row">
-              <div class="form-group"><label>Beneficiary Wallet</label><input id="policy-check-address" placeholder="0x…" /></div>
-              <div class="form-group"><label>&nbsp;</label><button class="btn btn-sec" onclick="checkPolicyBeneficiary()">Check Eligibility</button></div>
-            </div>
-            <div id="policy-status" class="status"></div>
-          </div>
-          <div class="card">
-            <h2>On-Chain Distribution Queue</h2>
-            <p class="muted">Proposals raised on the contract. The maker seat proposes from the server wallet; a human checker approves from the checker's own key — there is no auto-approval. Once the timelock has run, execution moves the value into escrow for the beneficiary to claim.</p>
-            <h3>Maker Propose</h3>
-            <div class="form-row">
-              <div class="form-group"><label>Approved distribution request</label><select id="policy-propose-request" onchange="loadPolicyProposeOptions.sync()"><option value="">Loading…</option></select></div>
-              <div class="form-group"><label>&nbsp;</label><button id="policy-propose-btn" class="btn btn-gold" onclick="policyPropose()">Maker Propose</button></div>
-            </div>
-            <h3 style="margin-top:18px;">Queue</h3>
-            <div id="policy-distributions" class="muted">Loading…</div>
-            <h3 style="margin-top:18px;">Escrow</h3>
-            <div class="form-row">
-              <div class="form-group"><label>Escrow ID</label><input id="policy-escrow-id" placeholder="1" /></div>
-              <div class="form-group"><label>&nbsp;</label><button class="btn btn-sec" onclick="loadPolicyEscrow()">Load Escrow</button></div>
-            </div>
-            <div id="policy-escrow" class="panel hidden"></div>
-          </div>
-        </div>
-      </div>
-
-      <div id="tab-ramps" class="tabs">
-        <div class="card">
-          <h2>On / Off Ramps & Smart Accounts</h2>
-          <p class="muted">Manage stablecoin, fiat off-ramp, DEX swap, and smart-account rails from one place. Click a card to load its status.</p>
-          <div class="ramps">
-            <div class="ramp-card">
-              <h3>Spritz Off-Ramp</h3>
-              <p>Crypto-to-fiat bank payouts via Spritz.</p>
-              <button class="btn btn-sm" onclick="loadRamp('spritz')">Load Status</button>
-            </div>
-            <div class="ramp-card">
-              <h3>PTC Stablecoin</h3>
-              <p>DLB-PTCUSD reserve-backed stablecoin.</p>
-              <button class="btn btn-sm" onclick="loadRamp('ptc-stablecoin')">Load Status</button>
-            </div>
-            <div class="ramp-card">
-              <h3>DEX Swap</h3>
-              <p>Swap trust assets for canonical stablecoins.</p>
-              <button class="btn btn-sm" onclick="loadRamp('dex')">Load Status</button>
-            </div>
-            <div class="ramp-card">
-              <h3>Smart Account</h3>
-              <p>Module smart accounts for tokenized custody.</p>
-              <button class="btn btn-sm" onclick="loadRamp('smart-account')">Load Status</button>
-            </div>
-          </div>
-          <div id="ramp-output" class="panel hidden" style="margin-top:18px;"></div>
-        </div>
-      </div>
-
-      <div id="tab-agent" class="tabs">
-        <div class="workflow">
-          <div class="card">
-            <h2>AI FinOps Agent</h2>
-            <p class="muted">Ask the agent to show balances, create requests, or run workflows.</p>
-            <div class="chat-log" id="chat-log"></div>
-            <div style="display:flex;gap:10px;margin-top:10px;">
-              <input id="chat-input" style="flex:1;" placeholder="e.g. show net worth or approve request ..." onkeydown="if(event.key==='Enter') sendChat()" />
-              <button class="btn" onclick="sendChat()">Send</button>
-            </div>
-            <div id="chat-status" class="status"></div>
-          </div>
-          <div class="card">
-            <h2>Suggested Commands</h2>
-            <div class="muted">
-              <p>show net worth</p>
-              <p>show pending approvals</p>
-              <p>create distribution to beneficiary@example.com for $100</p>
-              <p>show vendor payments</p>
-              <p>show trust bank accounts</p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div id="tab-settlement" class="tabs">
-        <div class="workflow">
-          <div class="card" style="flex:1.2;">
-            <h2>Transactional & Settlement Gateway</h2>
-            <p class="muted">Create a unified payment/settlement order and route it through fiat or digital rails.</p>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Direction</label>
-                <select id="txs-direction"><option value="outbound">Outbound (pay / settle)</option><option value="inbound">Inbound (deposit / collect)</option></select>
-              </div>
-              <div class="form-group">
-                <label>Rail</label>
-                <select id="txs-rail">
-                  <option value="wire">Wire</option>
-                  <option value="ach">ACH</option>
-                  <option value="open_banking">Open Banking</option>
-                  <option value="iso20022">ISO 20022</option>
-                  <option value="mft_sftp">MFT / SFTP</option>
-                  <option value="as2">AS2</option>
-                  <option value="host_to_host">Host-to-Host</option>
-                  <option value="external_endpoint">External Endpoint</option>
-                  <option value="live_fintech">Live FinTech Endpoint</option>
-                  <option value="lili">Lili Bank</option>
-                  <option value="bill">Bill.com</option>
-                  <option value="stablecoin">Stablecoin</option>
-                  <option value="sovereign">Sovereign SIT</option>
-                  <option value="dex">DEX Swap</option>
-                  <option value="stablecoin_dex">Stablecoin DEX</option>
-                  <option value="cross_chain">Cross-Chain</option>
-                  <option value="btcpay">BTCPay</option>
-                  <option value="cashapp">Cash App</option>
-                  <option value="module">Module / Fund Rail</option>
-                  <option value="manual">Manual</option>
-                  <option value="deposit">Deposit</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label>Amount (USD)</label>
-                <input type="number" id="txs-amount" placeholder="0.00" step="0.01" />
-              </div>
-              <div class="form-group">
-                <label>Currency</label>
-                <input type="text" id="txs-currency" value="USD" />
-              </div>
-              <div class="form-group">
-                <label>Asset (digital rails)</label>
-                <input type="text" id="txs-asset" placeholder="USD / USDC / SIT" value="USD" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Source Type</label>
-                <select id="txs-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust_bank">Trust Bank</option><option value="issuer">Issuer</option></select>
-              </div>
-              <div class="form-group">
-                <label>Source Account ID</label>
-                <input type="text" id="txs-source-account" placeholder="CA-OPERATING or TBA-..." />
-              </div>
-              <div class="form-group">
-                <label>Destination Account ID (inbound)</label>
-                <input type="text" id="txs-destination-account" placeholder="CA-OPERATING" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Beneficiary Name</label>
-                <input type="text" id="txs-ben-name" placeholder="Full name" />
-              </div>
-              <div class="form-group">
-                <label>Beneficiary Email</label>
-                <input type="email" id="txs-ben-email" placeholder="email@example.com" />
-              </div>
-              <div class="form-group">
-                <label>Beneficiary Address / Wallet</label>
-                <input type="text" id="txs-ben-address" placeholder="0x... or bitcoin:..." />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Account #</label>
-                <input type="text" id="txs-ben-account" placeholder="Account number" />
-              </div>
-              <div class="form-group">
-                <label>Routing #</label>
-                <input type="text" id="txs-ben-routing" placeholder="Routing number" />
-              </div>
-              <div class="form-group">
-                <label>Bank Name</label>
-                <input type="text" id="txs-ben-bank" placeholder="Bank name" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Debtor Name</label>
-                <input type="text" id="txs-debtor-name" placeholder="DLB Trust" />
-              </div>
-              <div class="form-group">
-                <label>Debtor Account #</label>
-                <input type="text" id="txs-debtor-account" placeholder="Account number" />
-              </div>
-              <div class="form-group">
-                <label>Debtor Routing #</label>
-                <input type="text" id="txs-debtor-routing" placeholder="Routing number" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group" style="flex:2;">
-                <label>Memo</label>
-                <input type="text" id="txs-memo" placeholder="Purpose of payment" />
-              </div>
-              <div class="form-group">
-                <label>Priority</label>
-                <select id="txs-priority"><option value="standard">Standard</option><option value="express">Express</option><option value="urgent">Urgent</option><option value="immediate">Immediate</option></select>
-              </div>
-            </div>
-            <button class="btn" onclick="createTxsOrder()">Create Settlement Order</button>
-            <div id="txs-status" class="status"></div>
-          </div>
-          <div class="card" style="flex:0.8;">
-            <h2>Settlement Summary</h2>
-            <div id="txs-summary" class="muted">Loading…</div>
-            <h3 style="margin-top:18px;">Recent Orders</h3>
-            <div id="txs-list" class="muted">Loading…</div>
-          </div>
-        </div>
-      </div>
-
-      <div id="tab-rally" class="tabs">
-        <div class="workflow">
-          <div class="card" style="flex:1.2;">
-            <h2>Rally Wallet</h2>
-            <p class="muted">Embedded smart-account wallet for tap, QR, and gasless payouts using the trust's paymaster.</p>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Label</label>
-                <input type="text" id="rally-label" placeholder="DeAndrea Rally Wallet" />
-              </div>
-              <div class="form-group">
-                <label>Email / User ID</label>
-                <input type="text" id="rally-email" placeholder="email or user id" />
-              </div>
-              <div class="form-group">
-                <label>Type</label>
-                <select id="rally-type"><option value="beneficiary">Beneficiary</option><option value="trustee">Trustee</option><option value="merchant">Merchant</option><option value="operator">Operator</option></select>
-              </div>
-            </div>
-            <button class="btn" onclick="createRallyWallet()">Create Wallet</button>
-            <div id="rally-create-status" class="status"></div>
-
-            <h3 style="margin-top:18px;">Wallet List</h3>
-            <div id="rally-wallets" class="muted">Loading…</div>
-
-            <h3 style="margin-top:18px;">Fund Wallet</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Wallet</label>
-                <select id="rally-fund-wallet"></select>
-              </div>
-              <div class="form-group">
-                <label>Amount</label>
-                <input type="number" id="rally-fund-amount" placeholder="0.00" step="0.01" />
-              </div>
-            </div>
-            <button class="btn btn-sec" onclick="fundRallyWallet()">Fund from Trust Hot Wallet</button>
-            <div id="rally-fund-status" class="status"></div>
-          </div>
-
-          <div class="card" style="flex:0.8;">
-            <h3>Request Payment (QR)</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>Wallet</label>
-                <select id="rally-req-wallet"></select>
-              </div>
-              <div class="form-group">
-                <label>Amount</label>
-                <input type="number" id="rally-req-amount" placeholder="0.00" step="0.01" />
-              </div>
-              <div class="form-group" style="flex:2;">
-                <label>Memo</label>
-                <input type="text" id="rally-req-memo" placeholder="Purpose" />
-              </div>
-            </div>
-            <button class="btn" onclick="createRallyRequest()">Generate QR</button>
-            <div id="rally-req-output" style="margin-top:12px;"></div>
-            <div id="rally-req-status" class="status"></div>
-
-            <h3 style="margin-top:18px;">Payout / Tap Pay</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>From Wallet</label>
-                <select id="rally-pay-wallet"></select>
-              </div>
-              <div class="form-group">
-                <label>To Address</label>
-                <input type="text" id="rally-pay-to" placeholder="0x..." />
-              </div>
-              <div class="form-group">
-                <label>Amount</label>
-                <input type="number" id="rally-pay-amount" placeholder="0.00" step="0.01" />
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group" style="flex:2;">
-                <label>Memo</label>
-                <input type="text" id="rally-pay-memo" placeholder="Purpose" />
-              </div>
-            </div>
-            <button class="btn btn-gold" onclick="createRallyPayout()">Send Gasless Payout</button>
-            <div id="rally-pay-status" class="status"></div>
-
-            <h3 style="margin-top:18px;">Scan QR / Deep Link</h3>
-            <div class="form-group">
-              <textarea id="rally-qr-data" rows="2" placeholder="Paste QR payload or deep link"></textarea>
-            </div>
-            <button class="btn btn-sec" onclick="scanRallyQr()">Scan / Parse</button>
-            <div id="rally-scan-output" style="margin-top:8px;"></div>
-            <button class="btn btn-gold hidden" id="rally-scan-pay-btn" onclick="rallyTapPay()">Tap Pay</button>
-
-            <h3 style="margin-top:18px;">Recent Payouts</h3>
-            <div id="rally-payouts" class="muted">Loading…</div>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -841,9 +511,6 @@
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
     if (key === 'treasury') loadTreasury();
-    if (key === 'policy') loadPolicy();
-    if (key === 'settlement') loadSettlement();
-    if (key === 'rally') loadRally();
   }
 
   document.querySelectorAll('.nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
@@ -1012,15 +679,14 @@
     loadPipeline();
   }
 
-  const escHtml = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const shortAddr = (a) => (a && a.length > 12 ? a.slice(0, 6) + '…' + a.slice(-4) : (a || '—'));
-  const pipeline = { loading: false, data: null, prepared: null, grant: null };
+  const ENGINE_LABELS = { payment: 'Payment initiation', gateway: 'Bank gateway (treasury → Lili)', clearing: 'Clearing & settlement', reconciliation: 'Reconciliation & matching', interop: 'Interoperability' };
+  const pipeline = { loading: false, data: null };
 
   async function loadPipeline() {
     if (pipeline.loading) return;
     pipeline.loading = true;
     try {
-      const res = await api('/api/finops/spritz/pipeline?limit=10');
+      const res = await api('/api/os/readiness');
       pipeline.data = res.data || null;
       renderPipeline(pipeline.data, null);
     } catch (e) {
@@ -1033,230 +699,24 @@
 
   function renderPipeline(p, error) {
     const indicator = el('pipeline-indicator');
-    if (!indicator) return;
+    const stages = el('pipeline-stages');
+    if (!indicator || !stages) return;
     if (error || !p) {
-      indicator.textContent = 'Stale';
+      indicator.textContent = 'Unavailable';
       indicator.className = 'badge rejected';
-      el('pipeline-status').textContent = 'Could not load pipeline: ' + (error || 'no data');
+      stages.innerHTML = '<p class="muted">' + escapeHtml(error || 'No status reported') + '</p>';
       return;
     }
-    indicator.textContent = p.ready ? 'Ready' : 'Blocked';
+    indicator.textContent = p.ready ? 'Ready' : 'Attention';
     indicator.className = 'badge ' + (p.ready ? 'approved' : 'pending');
-    el('pipeline-status').textContent = 'As of ' + new Date(p.asOf).toLocaleTimeString() + (p.errors.length ? ' · ' + p.errors.length + ' component error(s)' : '');
-    el('pipeline-stages').innerHTML = '<div style="display:grid;gap:6px;">' + p.stages.map((s) =>
-      `<div style="display:flex;gap:10px;align-items:flex-start;"><span class="badge ${s.ok ? 'approved' : 'rejected'}" style="min-width:64px;text-align:center;">${s.ok ? 'OK' : 'BLOCKED'}</span><div><strong style="font-size:.8rem;">${escHtml(s.label)}</strong><div class="muted">${escHtml(s.detail || '')}</div></div></div>`
-    ).join('') + (p.errors.length ? `<div class="muted" style="color:var(--danger);">${p.errors.map(escHtml).join('<br>')}</div>` : '') + '</div>';
-
-    const pol = p.policy || {};
-    const pw = p.payoutWallet || {};
-    const rd = p.readiness || {};
-    const cos = p.collateralOs || {};
-    const rails = (p.rails && p.rails.rails) || [];
-    const railBadges = rails.map((r) => `<span class="badge ${r.status === 'active' ? 'approved' : (r.status === 'unknown' ? '' : 'rejected')}">${escHtml(r.rail)}${r.destination === 'bill' ? ' → ' + escHtml(r.label) : ''}${r.default ? ' (default)' : ''}</span>`).join(' ');
-    const usdcUnits = (u) => Number(u || 0) / 1e6;
-    const buckets = (p.buckets || []).map((b) => `<div class="badge">${escHtml(b.label || b.bucket)}: recognised ${fmtUsd(b.recognisedUsd)} · staged ${fmtUsd(b.stagedUsd)} · headroom ${fmtUsd(b.headroomUsd)}</div>`).join(' ');
-    const ff = p.fiatFunding || null;
-    const ffDi = ff && ff.autoRampAccount && ff.autoRampAccount.depositInstructions;
-    const ffValue = ff ? (ff.autoRampAccount ? escHtml(ff.autoRampAccount.status || 'account') : (ff.ready ? 'ready' : 'blocked')) : '—';
-    const ffSub = ff
-      ? (ffDi ? `${escHtml(ffDi.bankName || '')} ••••${escHtml(String(ffDi.bankAccountNumber || '').slice(-4))} · ${escHtml((ffDi.paymentRails || []).join('/'))}` : (ff.issues && ff.issues.length ? escHtml(ff.issues[0]) : 'no auto-ramp account'))
-      : 'unavailable';
-    const legs = (p.fiatFundings || []).slice(0, 5).map((f) => `<tr><td>ERP credit push</td><td>${escHtml(f.rail)} → Spritz auto-ramp ${escHtml(String(f.autoRampAccountId || '').slice(-6))}</td><td>${fmtUsd(f.amountUsd)}</td><td><span class="badge ${f.status === 'completed' ? 'approved' : (f.status === 'failed' ? 'rejected' : '')}">${escHtml(f.status)}</span></td><td>${new Date(f.createdAt).toLocaleString()}</td></tr>`)
-      .concat((p.fundingLegs || []).slice(0, 5).map((l) => `<tr><td>fund</td><td>${escHtml(l.sourceType || l.sourceModule || '')} ${escHtml(l.sourceAccount || l.sourceToken || '')}</td><td>${fmtUsd(l.amount)}</td><td><span class="badge">${escHtml(l.status)}</span></td><td>${new Date(l.createdAt).toLocaleString()}</td></tr>`)
-      .concat((p.payouts || []).slice(0, 5).map((o) => `<tr><td>payout</td><td>${escHtml(o.bucket)} → ${shortAddr(o.payoutWallet)}</td><td>${fmtUsd(o.amountUsd)}</td><td><span class="badge">${escHtml(o.status)}</span></td><td>${new Date(o.createdAt).toLocaleString()}</td></tr>`))
-      .concat((p.billPayments || []).slice(0, 5).map((b) => `<tr><td>bill pay</td><td>${escHtml(b.spritzBillId || b.spritz_bill_id || '')}</td><td>${fmtUsd(b.amountUsd || b.amount_usd)}</td><td><span class="badge">${escHtml(b.status)}</span></td><td>${new Date(b.createdAt || b.created_at).toLocaleString()}</td></tr>`)));
-    el('pipeline-detail').innerHTML = `
-      <div class="grid">
-        <div class="stat-card"><div class="label">ERP credit push → Spritz auto-ramp</div><div class="value">${ffValue}</div><div class="sub">${ffSub}</div></div>
-        <div class="stat-card"><div class="label">Policy contract USDC</div><div class="value">${pol.treasury ? fmtUsd(usdcUnits(pol.treasury.available)) : '—'}</div><div class="sub">${shortAddr(pol.contract)} · owner ${shortAddr(pol.owner)}${pol.paused ? ' · PAUSED' : ''}</div></div>
-        <div class="stat-card"><div class="label">Payout wallet USDC</div><div class="value">${pw.usdcBalance != null ? fmtUsd(pw.usdcBalance) : '—'}</div><div class="sub">${shortAddr(pw.address)} · ${pw.policy && pw.policy.allowed ? 'allow-listed' : 'NOT allow-listed'}</div></div>
-        <div class="stat-card"><div class="label">Spritz credit push</div><div class="value">${rd.settlementBank ? escHtml(rd.settlementBank.institution || rd.settlementBank.label || 'bank') : (rd.settlementDestinations && rd.settlementDestinations.bills ? rd.settlementDestinations.bills + ' bill(s)' : '—')}</div><div class="sub">${rd.settlementBank ? '••••' + escHtml(rd.settlementBank.accountNumberLast4 || '') + ' · ' + escHtml(rd.settlementBank.status || '') : 'no bank linked'} · ${rails.length} rail(s)</div></div>
-        <div class="stat-card"><div class="label">Collateral OS</div><div class="value">${cos.facility ? fmtUsd(cos.facility.availableUsd) : '—'}</div><div class="sub">${cos.facility ? (cos.facility.openDraws || 0) + ' open draws · ' + fmtUsd(cos.facility.drawnUsd) + ' drawn of ' + fmtUsd(cos.facility.spendableUsd) : 'unavailable'}</div></div>
-      </div>
-      <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">${buckets}</div>
-      <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;"><span class="muted" style="font-size:.75rem;">ERP ${escHtml((p.rails && p.rails.source && p.rails.source.account) || '')} → USDC → credit push:</span>${railBadges || '<span class="muted">no settlement rails linked</span>'}</div>
-      ${legs.length ? `<table class="table" style="margin-top:10px;"><thead><tr><th>Leg</th><th>Route</th><th>Amount</th><th>Status</th><th>When</th></tr></thead><tbody>${legs.join('')}</tbody></table>` : '<p class="muted" style="margin-top:8px;">No funding or payout legs recorded yet.</p>'}`;
-
-    renderRelayer(p.relayer);
-
-    const allow = el('pipeline-allowlist');
-    if (pw.policy && pw.policy.allowed) {
-      allow.innerHTML = '';
-    } else if (!el('allow-status')) {
-      allow.innerHTML = `<div class="panel">
-        <strong style="font-size:.85rem;">Payout wallet not allow-listed on the policy contract</strong>
-        <p class="muted" style="margin:6px 0;">Only the contract owner (${escHtml(pol.owner || 'trustee governance wallet')}) can call setBeneficiary / setBeneficiaryLimits. Prepare the transactions here and sign them from the owner wallet.</p>
-        <div class="form-row">
-          <div class="form-group"><label>Max per distribution (USD)</label><input id="allow-max" type="number" min="0" step="0.01" placeholder="0 = no cap" /></div>
-          <div class="form-group"><label>Period cap (USD)</label><input id="allow-cap" type="number" min="0" step="0.01" placeholder="0 = no cap" /></div>
-          <div class="form-group"><label>Period (seconds)</label><input id="allow-period" type="number" min="0" step="1" placeholder="0" /></div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn btn-gold btn-sm" onclick="prepareAllowlist()">Prepare owner transactions</button>
-          <button class="btn btn-sec btn-sm" id="allow-sign-btn" onclick="signAllowlist()" disabled>Sign with owner wallet</button>
-          <button class="btn btn-sec btn-sm" onclick="loadPipeline()">Re-check</button>
-        </div>
-        <div id="allow-status" class="muted" style="margin-top:8px;"></div>
-        <pre id="allow-txs" class="muted" style="white-space:pre-wrap;word-break:break-all;display:none;"></pre>
-      </div>`;
-    }
-  }
-
-  async function prepareAllowlist() {
-    const status = el('allow-status');
-    try {
-      status.textContent = 'Encoding…';
-      const body = {
-        maxPerDistributionUsd: el('allow-max').value || undefined,
-        periodCapUsd: el('allow-cap').value || undefined,
-        periodSeconds: el('allow-period').value || 0,
-      };
-      const res = await api('/api/finops/spritz/wallet/allowlist/prepare', { method: 'POST', body: JSON.stringify(body) });
-      pipeline.prepared = res.data;
-      const pre = el('allow-txs');
-      pre.style.display = 'block';
-      pre.textContent = JSON.stringify(res.data.txs.map((t) => ({ action: t.action, from: t.from, to: t.to, chainId: t.chainId, data: t.data })), null, 2);
-      status.textContent = res.data.alreadyAllowed ? 'Wallet is already allow-listed.' : res.data.instructions;
-      el('allow-sign-btn').disabled = !window.ethereum;
-      if (!window.ethereum) status.textContent += ' No browser wallet detected — paste the calldata into the owner wallet.';
-    } catch (e) {
-      status.textContent = 'Prepare failed: ' + e.message;
-    }
-  }
-
-  function renderRelayer(relay) {
-    const box = el('pipeline-relayer');
-    if (!box) return;
-    if (!relay) { box.innerHTML = ''; return; }
-    const summary = el('relayer-summary');
-    const text = relay.enabled
-      ? (relay.ready ? `Session-key relayer ${relay.relayer} active on ${relay.smartAccount}` : 'Relayer enabled but not ready: ' + relay.issues.join('; '))
-      : 'Repeated signing off: each payout is signed by hand in the external wallet. Set SPRITZ_PAYOUT_WALLET to a thirdweb smart account (trustee = admin) and SPRITZ_PAYOUT_RELAYER=session_key.';
-    if (summary) { summary.textContent = text; return; }
-    box.innerHTML = `<div class="panel">
-      <strong style="font-size:.85rem;">Payout relayer (account abstraction)</strong>
-      <p class="muted" id="relayer-summary" style="margin:6px 0;">${escHtml(text)}</p>
-      <div class="form-row">
-        <div class="form-group"><label>Session length (days)</label><input id="grant-days" type="number" min="1" step="1" placeholder="30" /></div>
-        <div class="form-group"><label>Account admin (trustee wallet, optional)</label><input id="account-admin" type="text" placeholder="defaults to policy owner" /></div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-        <button class="btn btn-sec btn-sm" onclick="prepareAccount()">Predict smart account</button>
-        <button class="btn btn-sec btn-sm" id="account-deploy-btn" onclick="deployAccount()" disabled>Deploy with connected wallet</button>
-      </div>
-      <div id="account-status" class="muted" style="margin-bottom:8px;"></div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-gold btn-sm" onclick="prepareGrant()">Prepare session-key grant</button>
-        <button class="btn btn-sec btn-sm" id="grant-sign-btn" onclick="signGrant()" disabled>Sign as admin &amp; submit</button>
-        <button class="btn btn-sec btn-sm" onclick="prepareGrant(true)">Prepare revoke</button>
-      </div>
-      <div id="grant-status" class="muted" style="margin-top:8px;"></div>
-      <pre id="grant-typed" class="muted" style="white-space:pre-wrap;word-break:break-all;display:none;"></pre>
-    </div>`;
-  }
-
-  async function prepareAccount() {
-    const status = el('account-status');
-    try {
-      status.textContent = 'Predicting…';
-      const admin = (el('account-admin').value || '').trim();
-      const res = await api('/api/finops/spritz/relayer/account/prepare', { method: 'POST', body: JSON.stringify(admin ? { admin } : {}) });
-      pipeline.account = res.data;
-      const d = res.data;
-      status.textContent = `${d.deployed ? 'Deployed' : 'Not deployed'} thirdweb account ${d.address} (admin ${d.admin}, factory ${d.factory}). ` + (d.issues.length ? d.issues.join('; ') + '. ' : '') + d.next.join(' → ');
-      el('account-deploy-btn').disabled = d.deployed || !window.ethereum;
-      if (!d.deployed && !window.ethereum) status.textContent += ' No browser wallet detected; use `spritz-pipeline.cjs account --deploy --confirm` to pay gas from the server wallet.';
-    } catch (e) {
-      status.textContent = 'Predict failed: ' + e.message;
-    }
-  }
-
-  async function deployAccount() {
-    const status = el('account-status');
-    const a = pipeline.account;
-    if (!a || a.deployed || !a.unsignedTx || !window.ethereum) return;
-    try {
-      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      const chainHex = '0x' + Number(a.chainId).toString(16);
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] });
-      const onChain = await window.ethereum.request({ method: 'eth_chainId' });
-      if (Number(onChain) !== Number(a.chainId)) throw new Error(`wallet is on chain ${Number(onChain)}, expected ${a.chainId}`);
-      status.textContent = `Confirm createAccount in your wallet (gas only; admin stays ${a.admin})…`;
-      const txHash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from, to: a.unsignedTx.to, data: a.unsignedTx.data, value: '0x0' }] });
-      status.textContent = `Deployment sent: ${txHash}. Then set SPRITZ_PAYOUT_WALLET=${a.address}, allow-list it, and grant the session key.`;
-      setTimeout(prepareAccount, 15000);
-    } catch (e) {
-      status.textContent = 'Deploy failed: ' + (e.message || e);
-    }
-  }
-
-  async function prepareGrant(revoke) {
-    const status = el('grant-status');
-    try {
-      status.textContent = 'Preparing…';
-      const days = Number(el('grant-days').value);
-      const res = await api('/api/finops/spritz/relayer/session-key/prepare', { method: 'POST', body: JSON.stringify({ durationSeconds: days > 0 ? days * 86400 : undefined, revoke: Boolean(revoke) }) });
-      pipeline.grant = res.data;
-      const pre = el('grant-typed');
-      pre.style.display = 'block';
-      pre.textContent = JSON.stringify({ action: res.data.action, signer: res.data.signer, scope: res.data.scope, admins: res.data.admins }, null, 2);
-      status.textContent = res.data.instructions;
-      el('grant-sign-btn').disabled = !window.ethereum;
-      if (!window.ethereum) status.textContent += ' No browser wallet detected.';
-    } catch (e) {
-      status.textContent = 'Prepare failed: ' + e.message;
-    }
-  }
-
-  async function signGrant() {
-    const status = el('grant-status');
-    const g = pipeline.grant;
-    if (!g || !window.ethereum) return;
-    try {
-      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      if (g.admins.length && !g.admins.some((a) => String(a).toLowerCase() === String(from).toLowerCase())) {
-        status.textContent = `Connected wallet ${from} is not an admin of ${g.smartAccount} (${g.admins.join(', ')}); switch accounts.`;
-        return;
-      }
-      const chainHex = '0x' + Number(g.chainId).toString(16);
-      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* may already be on chain */ }
-      status.textContent = 'Sign the session-key grant in your wallet…';
-      const typed = JSON.parse(JSON.stringify(g.typedData));
-      typed.types.EIP712Domain = [
-        { name: 'name', type: 'string' }, { name: 'version', type: 'string' }, { name: 'chainId', type: 'uint256' }, { name: 'verifyingContract', type: 'address' },
-      ];
-      const signature = await window.ethereum.request({ method: 'eth_signTypedData_v4', params: [from, JSON.stringify(typed)] });
-      status.textContent = 'Submitting grant via relayer…';
-      const res = await api('/api/finops/spritz/relayer/session-key/submit', { method: 'POST', body: JSON.stringify({ request: g.request, signature }) });
-      status.textContent = `${g.action} submitted: ${res.data.txHash} (${res.data.status}) — re-checking…`;
-      setTimeout(loadPipeline, 5000);
-    } catch (e) {
-      status.textContent = 'Grant failed: ' + (e.message || e);
-    }
-  }
-
-  async function signAllowlist() {
-    const status = el('allow-status');
-    const prep = pipeline.prepared;
-    if (!prep || !window.ethereum) return;
-    try {
-      const [from] = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      if (String(from).toLowerCase() !== String(prep.owner).toLowerCase()) {
-        status.textContent = `Connected wallet ${from} is not the contract owner ${prep.owner}; switch accounts.`;
-        return;
-      }
-      const chainHex = '0x' + Number(prep.chainId).toString(16);
-      try { await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: chainHex }] }); } catch (e) { /* user may already be on chain */ }
-      for (const tx of prep.txs) {
-        status.textContent = `Signing ${tx.action}…`;
-        const hash = await window.ethereum.request({ method: 'eth_sendTransaction', params: [{ from, to: tx.to, data: tx.data, value: tx.value }] });
-        status.textContent = `${tx.action} submitted: ${hash}`;
-      }
-      status.textContent += ' — waiting for confirmation, re-checking…';
-      setTimeout(loadPipeline, 15000);
-    } catch (e) {
-      status.textContent = 'Signing failed: ' + (e.message || e);
-    }
+    const engines = p.engines || {};
+    const gcp = p.gcp || {};
+    stages.innerHTML = Object.keys(engines).map(k => {
+      const s = engines[k] || {};
+      const detail = (s.blockers && s.blockers.length) ? s.blockers.join('; ') : ((s.mode || 'unknown') + ' mode');
+      return `<div style="display:flex;gap:10px;align-items:flex-start;margin:6px 0;"><span class="badge ${s.ready ? 'approved' : 'rejected'}">${s.ready ? 'OK' : 'BLOCKED'}</span><div><strong>${escapeHtml(ENGINE_LABELS[k] || k)}</strong><div class="muted">${escapeHtml(detail)}</div></div></div>`;
+    }).join('') || '<p class="muted">No engines reported.</p>';
+    el('pipeline-detail').innerHTML = `<span class="muted">Project ${escapeHtml(gcp.project || '—')} · ledger ${gcp.ledger && gcp.ledger.connected ? 'connected' : 'offline'} · ${p.readyCount || 0}/${p.total || 0} engines ready</span>`;
   }
 
   const state = { vendors: [], holds: [] };
@@ -1279,7 +739,6 @@
           ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
           <button class="btn btn-sec btn-sm" onclick="executeRequest('${r.id}')">Execute</button>
-          ${r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet' ? `<button class="btn btn-sec btn-sm"${policySeatGate('maker')} onclick="proposeOnChain('${r.id}')">Maker Propose On-Chain</button>` : ''}
         </div>
       </div>`).join('') || '<p class="muted">No pending approvals.</p>';
       el('approval-queue').innerHTML = queue;
@@ -1288,21 +747,18 @@
   }
 
   const DEST_RAILS = {
-    wallet: 'sit — trust mint to the wallet',
-    sit: 'sit — trust mint to the wallet',
-    thirdweb_server_wallet: 'thirdweb_server_wallet — treasury wallet, released on execute',
     bank: 'ach — NACHA batch, held until transmission',
     biller: 'bill_pay — Melio',
   };
 
   function syncDestinationFields() {
     const type = el('dist-dest-type').value;
-    ['wallet', 'bank', 'biller'].forEach(k => el('dist-dest-' + k).classList.toggle('hidden', k !== type));
-    el('dist-rail-note').value = type === 'wallet' ? DEST_RAILS[el('dist-wallet-rail').value] : DEST_RAILS[type];
+    ['bank', 'biller'].forEach(k => el('dist-dest-' + k).classList.toggle('hidden', k !== type));
+    el('dist-rail-note').value = DEST_RAILS[type] || '';
   }
 
   function clearDestinationFields() {
-    ['dist-dest', 'dist-bank-routing', 'dist-bank-account', 'dist-bank-holder', 'dist-bank-name',
+    ['dist-bank-routing', 'dist-bank-account', 'dist-bank-holder', 'dist-bank-name',
       'dist-biller-name', 'dist-biller-account', 'dist-biller-invoice', 'dist-biller-due']
       .forEach(id => { el(id).value = ''; });
   }
@@ -1333,7 +789,7 @@
         },
       };
     }
-    return { destinationType, destinationAddress: el('dist-dest').value.trim(), payoutRail: el('dist-wallet-rail').value };
+    return { destinationType };
   }
 
   async function createDistribution() {
@@ -1387,15 +843,6 @@
     try {
       await api(`/api/dapp/distribution-requests/${id}/execute`, { method: 'POST', body: JSON.stringify({}) });
       loadDistributions(); loadOverview();
-    } catch (e) { showStatus('dist-status', e.message, true); }
-  }
-
-  async function proposeOnChain(id) {
-    try {
-      const res = await api(`/api/dapp/trust-policy/requests/${id}/propose`, { method: 'POST', body: JSON.stringify({ requesterRole: 'trustee' }) });
-      const p = res.data.proposal || res.data;
-      showStatus('dist-status', `Proposed on the policy contract${p.shadow ? ' (shadow — nothing submitted)' : ''}: ${p.quantity || ''} to ${p.beneficiary || ''}`, false);
-      loadDistributions();
     } catch (e) { showStatus('dist-status', e.message, true); }
   }
 
@@ -1676,201 +1123,42 @@
     } catch (e) { showStatus('hold-status', e.message, true); }
   }
 
-  // Which on-chain policy seats the signed-in trustee may act as. Mirrors
-  // allowedConsensusRoles(): the admin seat is the maker seat server-side.
-  function policySeatAllows(seat) {
-    return allowedConsensusRoles().includes(seat);
-  }
-
-  function policySeatGate(seat) {
-    if (policySeatAllows(seat)) return '';
-    const need = seat === 'checker'
-      ? 'Checker seat required — the maker seat cannot approve its own proposal.'
-      : 'Maker seat required — the checker seat does not propose.';
-    return ` disabled title="${escapeHtml(need)}"`;
-  }
-
-  async function loadPolicyProposeOptions() {
-    const select = el('policy-propose-request');
-    const button = el('policy-propose-btn');
-    if (!select || !button) return;
-    try {
-      const res = await api('/api/dapp/distribution-requests?limit=100');
-      const eligible = (res.data || []).filter(r => r.status === 'approved' && (r.destination_type || 'wallet') === 'wallet');
-      select.innerHTML = eligible.length
-        ? eligible.map(r => `<option value="${escapeHtml(r.id)}">#${escapeHtml(r.id)} · ${escapeHtml(r.beneficiary_name || r.beneficiary_email || '')} · ${fmtUsd(r.amount_cents / 100)}</option>`).join('')
-        : '<option value="">No approved wallet requests to propose</option>';
-    } catch (e) {
-      select.innerHTML = `<option value="">${escapeHtml(e.message)}</option>`;
-    }
-    loadPolicyProposeOptions.sync();
-  }
-  loadPolicyProposeOptions.sync = function syncProposeButton() {
-    const select = el('policy-propose-request');
-    const button = el('policy-propose-btn');
-    if (!select || !button) return;
-    const gated = !policySeatAllows('maker');
-    button.disabled = gated || !select.value;
-    button.title = gated ? 'Maker seat required — the checker seat does not propose.' : '';
-  };
-
-  async function policyPropose() {
-    const id = el('policy-propose-request').value;
-    if (!id) { showStatus('policy-status', 'Select an approved distribution request first.', true); return; }
-    try {
-      const res = await api(`/api/dapp/trust-policy/requests/${id}/propose`, { method: 'POST', body: JSON.stringify({ requesterRole: 'trustee' }) });
-      const p = res.data.proposal || res.data;
-      showStatus('policy-status', `Maker proposed on the policy contract${p.shadow ? ' (shadow — nothing submitted)' : ''}: ${p.quantity || ''} to ${p.beneficiary || ''}`, false);
-      loadPolicy();
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
-  async function loadPolicy() {
-    try {
-      loadPolicyProposeOptions();
-      const [readiness, distributions] = await Promise.all([
-        api('/api/dapp/trust-policy/readiness'),
-        api('/api/dapp/trust-policy/distributions?limit=25').catch(e => ({ error: e.message })),
-      ]);
-      const r = readiness.data;
-      let onChain = null;
-      if (r.ready) { try { onChain = (await api('/api/dapp/trust-policy/status')).data; } catch { onChain = null; } }
-      const rows = [
-        ['Contract', r.contract || 'not deployed'],
-        ['Chain', r.chainId],
-        ['Mode', r.live ? 'live' : 'shadow (calls encoded, nothing submitted)'],
-        ['Enforced', r.enforced ? 'yes — direct wallet transfers refused' : 'no — direct wallet transfers still allowed'],
-        ['Settlement token', r.settlementToken || 'not configured'],
-        ['Server wallet (maker)', r.serverWallet || 'not configured'],
-        ['Checker signer', r.checkerSignerConfigured ? (r.checkerLive ? 'configured · live' : 'configured · shadow') : 'not configured — approvals fall back to the server wallet and will be refused on chain'],
-      ];
-      if (onChain) rows.push(
-        ['Owner', onChain.owner],
-        ['Paused', onChain.paused ? 'yes' : 'no'],
-        ['Approvals required', onChain.approvalThreshold],
-        ['Timelock', onChain.releaseDelaySeconds + 's'],
-        ['Treasury balance', onChain.treasury.balance],
-        ['Reserved in escrow', onChain.treasury.reserved],
-        ['Available', onChain.treasury.available],
-      );
-      el('policy-readiness').innerHTML = `<table class="table"><tbody>${rows.map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>`
-        + (r.issues && r.issues.length ? `<p class="muted">${r.issues.map(escapeHtml).join('<br>')}</p>` : '');
-      if (distributions.error) {
-        el('policy-distributions').innerHTML = '<p class="muted">Queue unavailable: ' + escapeHtml(distributions.error) + '</p>';
-        return;
-      }
-      const list = distributions.data || [];
-      el('policy-distributions').innerHTML = list.length ? `<table class="table"><thead><tr><th>#</th><th>Beneficiary</th><th>Amount</th><th>Purpose</th><th>Approvals</th><th>Status</th><th></th></tr></thead><tbody>${list.map(d => `<tr><td>${escapeHtml(d.distributionId)}</td><td>${escapeHtml(String(d.beneficiary || ''))}</td><td>${escapeHtml(String(d.quantity || ''))}</td><td>${escapeHtml(String(d.purpose || ''))}</td><td>${escapeHtml(String(d.approvals))}</td><td><span class="badge">${escapeHtml(d.status)}</span></td><td>${policyActions(d)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No proposals on the contract yet.</p>';
-    } catch (e) {
-      el('policy-readiness').innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>';
-      el('policy-distributions').innerHTML = '';
-    }
-  }
-
-  function policyActions(d) {
-    const id = escapeHtml(d.distributionId);
-    if (d.status === 'proposed') return `<button class="btn btn-gold btn-sm"${policySeatGate('checker')} onclick="policyAction('${id}','approve')">Checker Approve</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
-    if (d.status === 'approved') return `<button class="btn btn-sm" onclick="policyAction('${id}','execute')">Execute</button> <button class="btn btn-sm" onclick="policyAction('${id}','cancel')">Cancel</button>`;
-    if (d.escrowId) return `<button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','claim')">Claim</button> <button class="btn btn-sm" onclick="policyEscrowAction('${escapeHtml(d.escrowId)}','revoke')">Revoke</button>`;
-    return '';
-  }
-
-  async function policyAction(distributionId, action) {
-    try {
-      const res = await api(`/api/dapp/trust-policy/distributions/${distributionId}/${action}`, { method: 'POST', body: JSON.stringify({}) });
-      const label = action === 'approve' ? 'Checker approve' : action;
-      showStatus('policy-status', `${label} #${distributionId}: ${res.data.status}${res.data.from ? ' from ' + res.data.from : ''}${res.data.transactionId ? ' tx ' + res.data.transactionId : ''}`, false);
-      loadPolicy();
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
-  async function policyEscrowAction(escrowId, action) {
-    try {
-      const res = await api(`/api/dapp/trust-policy/escrows/${escrowId}/${action}`, { method: 'POST', body: JSON.stringify({}) });
-      showStatus('policy-status', `${action} escrow ${escrowId}: ${res.data.status}`, false);
-      loadPolicy();
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
-  async function policyPause(paused) {
-    try {
-      const res = await api('/api/dapp/trust-policy/' + (paused ? 'pause' : 'unpause'), { method: 'POST', body: JSON.stringify({}) });
-      showStatus('policy-status', (paused ? 'Pause' : 'Unpause') + ': ' + res.data.status, false);
-      loadPolicy();
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
-  async function checkPolicyBeneficiary() {
-    const address = el('policy-check-address').value.trim();
-    try {
-      const res = await api('/api/dapp/trust-policy/beneficiaries/' + encodeURIComponent(address));
-      const d = res.data;
-      showStatus('policy-status', `${d.beneficiary}: ${d.allowed ? 'allow-listed' : 'NOT allow-listed'}${d.frozen ? ', frozen' : ''} — remaining this period ${d.remainingPeriodAllowance.beneficiary}`, !d.allowed || d.frozen);
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
-  async function loadPolicyEscrow() {
-    const id = el('policy-escrow-id').value.trim();
-    try {
-      const res = await api('/api/dapp/trust-policy/escrows/' + encodeURIComponent(id));
-      const e2 = res.data;
-      el('policy-escrow').classList.remove('hidden');
-      el('policy-escrow').innerHTML = e2 ? `<table class="table"><tbody>${Object.entries(e2).map(([k, v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No such escrow.</p>';
-    } catch (e) { showStatus('policy-status', e.message, true); }
-  }
-
   async function loadTreasury() {
     try {
-      const res = await api('/api/dapp/treasury-deposits/instructions');
-      const d = res.data;
-      el('treasury-instructions').innerHTML = `<p><strong>${d.chain}</strong> · chain ${d.chainId} · wallet <code>${d.depositAddress}</code></p>`
-        + `<p class="muted">Holds ${d.settlementAsset.held} ${d.settlementAsset.symbol || ''} (settlement) and ${d.gasAsset.held} ${d.gasAsset.symbol || ''} (gas). ${d.warning}.</p>`;
-    } catch (e) { el('treasury-instructions').innerHTML = '<p class="muted">' + e.message + '</p>'; }
-    try {
-      const res = await api('/api/dapp/treasury-deposits?limit=50');
-      const rows = res.data || [];
+      const [statusRes, listRes] = await Promise.all([
+        api('/api/finops/lili/direct-deposits/status'),
+        api('/api/finops/lili/direct-deposits?limit=20'),
+      ]);
+      const d = statusRes.data || {};
+      const dest = d.destination || {};
+      const channels = (d.odfi && d.odfi.channels) || [];
+      el('treasury-instructions').innerHTML = `<div class="muted">Destination: ${escapeHtml(dest.accountName || 'Lili business checking')} ${escapeHtml(dest.accountNumberMasked || '')} · ${dest.configured ? 'configured' : 'not configured'}</div>
+        <div class="muted">Origination channel: ${escapeHtml(channels.join(', ') || 'none')} · ${d.ready ? '<span class="badge approved">Ready</span>' : '<span class="badge pending">Not ready</span>'}</div>`;
+      const rows = Array.isArray(listRes.data) ? listRes.data : [];
       el('treasury-deposits').innerHTML = rows.length
-        ? `<table class="table"><thead><tr><th>ID</th><th>Asset</th><th>Expected</th><th>Credited</th><th>Status</th></tr></thead><tbody>${rows.map(d => `<tr><td>${d.id}</td><td>${d.symbol || ''}</td><td>${d.expectedAmount || d.expectedQuantity}</td><td>${d.creditedAmount || '0'}</td><td><span class="badge ${d.status === 'credited' ? 'approved' : 'pending'}">${d.status}</span></td></tr>`).join('')}</tbody></table>`
-        : '<p class="muted">No deposits declared yet.</p>';
-    } catch (e) { el('treasury-deposits').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+        ? `<table class="table"><thead><tr><th>ID</th><th>Amount</th><th>Status</th><th>ACH Batch</th><th>Created</th></tr></thead><tbody>${rows.map(r => `<tr><td>${escapeHtml(r.deposit_id)}</td><td>${fmtUsd(Number(r.amount_cents || 0) / 100)}</td><td><span class="badge ${r.status === 'transmitted' || r.status === 'reconciled' ? 'approved' : r.status === 'returned' || r.status === 'cancelled' ? 'rejected' : 'pending'}">${escapeHtml(r.status)}</span></td><td>${escapeHtml(r.ach_batch_id || '—')}</td><td>${r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">No credits yet.</p>';
+    } catch (e) {
+      el('treasury-instructions').innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>';
+      el('treasury-deposits').innerHTML = '';
+    }
   }
 
-  async function declareDeposit() {
-    const body = {
-      amount: el('dep-amount').value.trim(),
-      fromAddress: el('dep-from').value.trim() || undefined,
-      memo: el('dep-memo').value.trim() || undefined,
-    };
-    // The settlement token is the server-side default; native needs an explicit null.
-    if (el('dep-asset').value === 'native') body.tokenAddress = null;
+  async function createTreasuryCredit() {
+    const amount = Number(el('dep-amount').value);
+    if (!(amount > 0)) return showStatus('treasury-status', 'Enter an amount', true);
+    if (!confirm(`Originate a ${fmtUsd(amount)} ACH credit from the treasury to the Lili account?`)) return;
     try {
-      const res = await api('/api/dapp/treasury-deposits', { method: 'POST', body: JSON.stringify(body) });
-      const i = res.data.instructions;
-      showStatus('treasury-status', `Deposit ${res.data.id} declared — send ${i.amount} ${i.symbol} to ${i.depositAddress} on chain ${i.chainId}`, false);
+      const res = await api('/api/finops/lili/direct-deposits', { method: 'POST', body: JSON.stringify({
+        amountCents: Math.round(amount * 100), secCode: el('dep-sec').value, paymentType: 'settlement_funding',
+        memo: el('dep-memo').value.trim() || undefined, autoTransmit: true,
+      }) });
+      const d = res.data || {};
+      const dep = d.deposit || {};
+      showStatus('treasury-status', `Credit ${dep.deposit_id || dep.id || ''} ${dep.status || 'created'}`, false);
+      el('dep-amount').value = ''; el('dep-memo').value = '';
       loadTreasury();
     } catch (e) { showStatus('treasury-status', e.message, true); }
-  }
-
-  async function syncDeposits() {
-    try {
-      const res = await api('/api/dapp/treasury-deposits/sync', { method: 'POST', body: JSON.stringify({}) });
-      showStatus('treasury-status', `Checked ${res.data.checked} open deposit(s), ${res.data.credited} credited`, false);
-      loadTreasury();
-    } catch (e) { showStatus('treasury-status', e.message, true); }
-  }
-
-  async function loadRamp(type) {
-    const out = el('ramp-output');
-    out.classList.remove('hidden');
-    out.textContent = 'Loading…';
-    try {
-      let data;
-      if (type === 'spritz') data = await api('/api/finops/spritz/user');
-      else if (type === 'ptc-stablecoin') data = await api('/api/finops/ptc-stablecoin');
-      else if (type === 'dex') data = await api('/api/finops/module-accounts');
-      else if (type === 'smart-account') data = await api('/api/finops/module-accounts');
-      out.innerHTML = '<pre style="white-space:pre-wrap;font-size:.8rem;color:var(--muted);">' + JSON.stringify(data.data, null, 2) + '</pre>';
-    } catch (e) { out.innerHTML = '<p class="muted">' + e.message + '</p>'; }
   }
 
   async function sendChat() {
@@ -1885,211 +1173,6 @@
       log.innerHTML += `<div class="chat-bubble agent">${JSON.stringify(res.data).substring(0, 500)}</div>`;
     } catch (e) { log.innerHTML += `<div class="chat-bubble agent" style="color:var(--danger)">${e.message}</div>`; }
     log.scrollTop = log.scrollHeight;
-  }
-
-  async function loadSettlement() {
-    try {
-      const [summary, orders] = await Promise.all([
-        api('/api/transactional-settlement/summary'),
-        api('/api/transactional-settlement/orders?limit=20')
-      ]);
-      const s = summary.data || {};
-      let sumHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">';
-      for (const [k, v] of Object.entries(s.byStatus || {})) {
-        sumHtml += `<div class="badge">${k}: ${v.count} / ${fmtUsd(v.usd)}</div>`;
-      }
-      sumHtml += '</div><div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">';
-      for (const [k, v] of Object.entries(s.byRail || {})) {
-        sumHtml += `<div class="badge">${k}: ${v.count}</div>`;
-      }
-      sumHtml += '</div>';
-      const hasSummary = Object.keys(s.byStatus || {}).length || Object.keys(s.byRail || {}).length;
-      el('txs-summary').innerHTML = hasSummary ? sumHtml : '<p class="muted">No settlement orders yet. Create one below to start the ERP → policy → payout pipeline.</p>';
-
-      let listHtml = '<div style="display:grid;gap:8px;max-height:320px;overflow:auto;">';
-      for (const o of orders.data || []) {
-        const badge = o.status === 'completed' || o.status === 'settled' ? 'ok' : (o.status === 'failed' ? 'err' : '');
-        listHtml += `<div class="badge" style="justify-content:space-between;align-items:center;display:flex;">
-          <span>${o.order_id} · ${o.rail} · ${o.direction}</span>
-          <span>${fmtUsd(o.amount)} · <span class="${badge}">${o.status}</span></span>
-          ${o.status === 'reserved' || o.status === 'pending' ? `<button class="btn btn-sm" onclick="executeTxsOrder('${o.order_id}')">Execute</button>` : ''}
-        </div>`;
-      }
-      listHtml += '</div>';
-      el('txs-list').innerHTML = (orders.data || []).length ? listHtml : '<p class="muted">No orders recorded.</p>';
-    } catch (e) {
-      el('txs-summary').textContent = 'Could not load settlement data: ' + e.message;
-      el('txs-list').textContent = '';
-    }
-  }
-
-  async function createTxsOrder() {
-    const body = {
-      direction: el('txs-direction').value,
-      rail: el('txs-rail').value,
-      amount: el('txs-amount').value,
-      currency: el('txs-currency').value,
-      asset: el('txs-asset').value,
-      sourceType: el('txs-source-type').value,
-      sourceAccountId: el('txs-source-account').value,
-      destinationAccountId: el('txs-destination-account').value,
-      beneficiaryName: el('txs-ben-name').value,
-      beneficiaryEmail: el('txs-ben-email').value,
-      beneficiaryAddress: el('txs-ben-address').value,
-      beneficiaryAccount: el('txs-ben-account').value,
-      beneficiaryRouting: el('txs-ben-routing').value,
-      beneficiaryBank: el('txs-ben-bank').value,
-      debtorName: el('txs-debtor-name').value,
-      debtorAccount: el('txs-debtor-account').value,
-      debtorRouting: el('txs-debtor-routing').value,
-      memo: el('txs-memo').value,
-      priority: el('txs-priority').value,
-    };
-    try {
-      const res = await api('/api/transactional-settlement/orders', { method: 'POST', body: JSON.stringify(body) });
-      showStatus('txs-status', `Order created: ${res.data.order_id} (${res.data.status})`, false);
-      loadSettlement();
-    } catch (e) { showStatus('txs-status', e.message, true); }
-  }
-
-  async function executeTxsOrder(orderId) {
-    try {
-      const res = await api(`/api/transactional-settlement/orders/${orderId}/execute`, { method: 'POST' });
-      showStatus('txs-status', `Executed: ${res.data.order_id} → ${res.data.status}`, false);
-      loadSettlement();
-    } catch (e) { showStatus('txs-status', e.message, true); }
-  }
-
-  let rallyWallets = [];
-  let rallyScan = null;
-
-  async function loadRally() {
-    try {
-      const res = await api('/api/rally/readiness');
-      const readiness = res.data || {};
-      const readyText = readiness.ready ? `Ready (${readiness.mode})` : 'Not ready: ' + (readiness.issues || []).join('; ');
-      try {
-        const walletsRes = await api('/api/rally/wallets');
-        rallyWallets = walletsRes.data || [];
-        renderRallyWallets(rallyWallets, readyText);
-      } catch (we) {
-        el('rally-wallets').innerHTML = '<p class="muted">' + escapeHtml(we.message) + '</p>';
-      }
-      try {
-        const payoutsRes = await api('/api/rally/payouts');
-        renderRallyPayouts(payoutsRes.data || []);
-      } catch (pe) { el('rally-payouts').innerHTML = '<p class="muted">' + escapeHtml(pe.message) + '</p>'; }
-
-      const params = new URLSearchParams(window.location.search);
-      const payTo = params.get('payTo');
-      if (payTo) {
-        el('rally-pay-to').value = payTo;
-        el('rally-pay-amount').value = params.get('amount') || '';
-        el('rally-pay-memo').value = params.get('memo') || '';
-      }
-    } catch (e) { showStatus('rally-create-status', e.message, true); }
-  }
-
-  function renderRallyWalletOptions() {
-    const opts = rallyWallets.map(w => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.label)} · ${escapeHtml(w.wallet_address ? w.wallet_address.slice(0,8) : '')}… · index ${escapeHtml(w.wallet_index)}</option>`).join('');
-    ['rally-fund-wallet','rally-req-wallet','rally-pay-wallet'].forEach(id => { if (el(id)) el(id).innerHTML = opts; });
-  }
-
-  function renderRallyWallets(wallets, readyText) {
-    renderRallyWalletOptions();
-    if (!wallets.length) { el('rally-wallets').innerHTML = `<p class="muted">${escapeHtml(readyText)} · No wallets yet.</p>`; return; }
-    el('rally-wallets').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Label</th><th>Address</th><th>Index</th><th>Balance</th></tr></thead><tbody>${wallets.map(w => `<tr><td>${escapeHtml(w.id)}</td><td>${escapeHtml(w.label)}</td><td>${escapeHtml(w.wallet_address)}</td><td>${escapeHtml(w.wallet_index)}</td><td><button class="btn btn-sm" onclick="loadRallyBalance('${escapeHtml(w.id)}')">Balance</button></td></tr>`).join('')}</tbody></table>`;
-  }
-
-  async function loadRallyBalance(walletId) {
-    try {
-      const res = await api(`/api/rally/wallets/${walletId}/balance`);
-      const b = (res.data.balances || []).map(x => `${x.symbol}: ${x.balance}`).join(' | ');
-      showStatus('rally-create-status', `Balance ${res.data.walletId || res.data.address}: ${b}`, false);
-    } catch (e) { showStatus('rally-create-status', e.message, true); }
-  }
-
-  function renderRallyPayouts(payouts) {
-    if (!payouts.length) { el('rally-payouts').innerHTML = '<p class="muted">No payouts yet.</p>'; return; }
-    el('rally-payouts').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody>${payouts.map(p => `<tr><td>${escapeHtml(p.id)}</td><td>${escapeHtml(p.from_address ? p.from_address.slice(0,10) : '')}…</td><td>${escapeHtml(p.to_address ? p.to_address.slice(0,10) : '')}…</td><td>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</td><td><span class="badge ${p.status === 'completed' ? 'approved' : 'pending'}">${escapeHtml(p.status)}</span></td><td>${p.tx_hash ? `<a href="https://etherscan.io/tx/${escapeHtml(p.tx_hash)}" target="_blank" style="color:var(--primary)">view</a>` : '—'}</td></tr>`).join('')}</tbody></table>`;
-  }
-
-  async function createRallyWallet() {
-    try {
-      const body = {
-        label: el('rally-label').value.trim() || 'Rally Wallet',
-        email: el('rally-email').value.trim(),
-        type: el('rally-type').value,
-      };
-      const res = await api('/api/rally/wallets', { method: 'POST', body: JSON.stringify(body) });
-      showStatus('rally-create-status', `Wallet ${res.data.id} created at ${res.data.walletAddress}`, false);
-      loadRally();
-    } catch (e) { showStatus('rally-create-status', e.message, true); }
-  }
-
-  async function fundRallyWallet() {
-    try {
-      const walletId = el('rally-fund-wallet').value;
-      const amount = el('rally-fund-amount').value;
-      const res = await api(`/api/rally/wallets/${walletId}/fund`, { method: 'POST', body: JSON.stringify({ amount, currency: 'DLB-PTCUSD' }) });
-      showStatus('rally-fund-status', `Funded ${res.data.amount} → ${res.data.tx}`, false);
-      loadRally();
-    } catch (e) { showStatus('rally-fund-status', e.message, true); }
-  }
-
-  async function createRallyRequest() {
-    try {
-      const walletId = el('rally-req-wallet').value;
-      const amount = el('rally-req-amount').value;
-      const memo = el('rally-req-memo').value.trim();
-      const res = await api(`/api/rally/wallets/${walletId}/pay-requests`, { method: 'POST', body: JSON.stringify({ amount, currency: 'DLB-PTCUSD', memo }) });
-      const out = el('rally-req-output');
-      const safeShareable = escapeHtml(res.data.shareableUrl);
-      out.innerHTML = `<p class="muted">Scan to pay:</p><img src="${escapeHtml(res.data.qrDataUrl)}" style="max-width:240px;border-radius:10px;" /><p class="muted" style="word-break:break-all;"><a href="${safeShareable}" target="_blank">${safeShareable}</a></p>`;
-      showStatus('rally-req-status', `Request ${res.data.requestId} for ${res.data.amount}`, false);
-    } catch (e) { showStatus('rally-req-status', e.message, true); }
-  }
-
-  async function createRallyPayout() {
-    try {
-      const body = {
-        fromWalletId: el('rally-pay-wallet').value,
-        toAddress: el('rally-pay-to').value.trim(),
-        amount: el('rally-pay-amount').value,
-        currency: 'DLB-PTCUSD',
-        memo: el('rally-pay-memo').value.trim(),
-      };
-      const res = await api('/api/rally/payouts', { method: 'POST', body: JSON.stringify(body) });
-      showStatus('rally-pay-status', `Payout ${res.data.payoutId} → ${res.data.tx}`, false);
-      loadRally();
-    } catch (e) { showStatus('rally-pay-status', e.message, true); }
-  }
-
-  async function scanRallyQr() {
-    try {
-      const qrData = el('rally-qr-data').value.trim();
-      const res = await api('/api/rally/scan-qr', { method: 'POST', body: JSON.stringify({ qrData }) });
-      rallyScan = res.data;
-      const out = el('rally-scan-output');
-      out.innerHTML = `<pre style="white-space:pre-wrap;font-size:.8rem;color:var(--muted);">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`;
-      const btn = el('rally-scan-pay-btn');
-      if (rallyScan && rallyScan.to && rallyScan.amount) {
-        el('rally-pay-to').value = rallyScan.to;
-        el('rally-pay-amount').value = rallyScan.amount;
-        el('rally-pay-memo').value = rallyScan.memo || '';
-        btn.classList.remove('hidden');
-      } else { btn.classList.add('hidden'); }
-    } catch (e) { showStatus('rally-pay-status', e.message, true); }
-  }
-
-  async function rallyTapPay() {
-    if (!rallyScan || !rallyScan.requestId) return;
-    try {
-      const fromWalletId = el('rally-pay-wallet').value;
-      const res = await api('/api/rally/tap-pay', { method: 'POST', body: JSON.stringify({ requestId: rallyScan.requestId, fromWalletId }) });
-      showStatus('rally-pay-status', `Tap-pay ${res.data.payoutId} → ${res.data.tx}`, false);
-      loadRally();
-    } catch (e) { showStatus('rally-pay-status', e.message, true); }
   }
 
   // Load token on start
