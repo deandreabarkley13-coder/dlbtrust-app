@@ -121,7 +121,7 @@ class LiliSettlementBankEngine {
     const odfi = await LiliDirectDepositEngine.odfiStatus();
     if (!odfi.ready) {
       throw Object.assign(
-        new Error('No ODFI channel can originate the treasury -> Lili credit (configure AS2 partner / MFT / production partner / ACH_SFTP_URL)'),
+        new Error(`${odfi.blocker || 'No ODFI channel configured'} — cannot originate the treasury -> Lili credit (configure an external AS2 partner / MFT / production partner / ACH_SFTP_URL)`),
         { status: 503 },
       );
     }
@@ -163,6 +163,7 @@ class LiliSettlementBankEngine {
         liliPaymentId: deposit.lili_payment_id || deposit.liliPaymentId || null,
         journalEntryId: deposit.journal_entry_id || deposit.journalEntryId || null,
         odfiChannels: odfi.channels,
+        odfiLoopback: odfi.loopback,
         reconciliation: 'LiliDirectDepositEngine.reconcile (Lili MCP transaction feed)',
       },
     };
@@ -183,7 +184,7 @@ class LiliSettlementBankEngine {
 
     const issues = [];
     if (!destinationConfigured) issues.push(dest.ok ? 'Lili credit destination not configured (LILI_DD_ROUTING_NUMBER / LILI_DD_ACCOUNT_NUMBER)' : `destination: ${dest.error}`);
-    if (!odfiReady) issues.push(odfi.ok ? 'no ODFI channel to originate the treasury -> Lili credit (AS2 partner / MFT / production partner / SFTP)' : `odfi: ${odfi.error}`);
+    if (!odfiReady) issues.push(odfi.ok ? `${odfi.value.blocker || 'No ODFI channel configured'} — no external ODFI to originate the treasury -> Lili credit` : `odfi: ${odfi.error}`);
     if (!mcpConfigured) issues.push(mcp.ok ? 'Lili MCP not configured (reconciliation of the incoming credit unavailable)' : `mcp: ${mcp.error}`);
 
     const originationReady = destinationConfigured && odfiReady;

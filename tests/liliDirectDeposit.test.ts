@@ -93,7 +93,7 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect(payInsert!.params[3]).toBe('****9012');
     expect(payInsert!.params[4]).toBe('091000019');
     const payUpdate = sql.find(s => s.text.startsWith('UPDATE lili_payments SET status=\'manual_pending\''));
-    expect(payUpdate!.params[0]).toMatch(/no ODFI channel configured/);
+    expect(payUpdate!.params[0]).toMatch(/No ODFI channel configured/);
   });
 
   it('transmits through the ODFI when a channel is configured and refuses when none is', async () => {
@@ -110,13 +110,29 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect(payUpdate!.params.slice(0, 2)).toEqual(['api_pending', 'AS2-1']);
   });
 
+  it('does not treat the self-loopback DLBTRUST-DIRECT partner as an ODFI channel: deposit stays awaiting_odfi and transmit is refused', async () => {
+    (AS2Partners.getDefaultPartnerConfig as any).mockResolvedValue({ partnerId: 'DLBTRUST-DIRECT', protocol: 'rest_api', partnerUrl: 'direct', apiBaseUrl: null });
+    const transmit = vi.spyOn(ACHEngine, 'transmitBatch');
+    const dep = await LiliDirectDepositEngine.createDirectDeposit({ amountCents: 100, createdBy: 'trustee' });
+    expect(transmit).not.toHaveBeenCalled();
+    expect(dep.status).toBe('awaiting_odfi');
+    const odfi = await LiliDirectDepositEngine.odfiStatus();
+    expect(odfi.ready).toBe(false);
+    expect(odfi.loopback).toEqual(['as2_partner:DLBTRUST-DIRECT']);
+    expect(odfi.blocker).toMatch(/self-loopback/);
+    await expect(LiliDirectDepositEngine.transmit(dep.deposit_id)).rejects.toThrow(/self-loopback/);
+
+    (AS2Partners.getDefaultPartnerConfig as any).mockResolvedValue({ partnerId: 'BANK-ODFI', protocol: 'rest_api', apiBaseUrl: 'https://odfi.bank.example/nacha', apiKey: 'k' });
+    expect((await LiliDirectDepositEngine.odfiStatus()).channels).toEqual(['as2_partner:BANK-ODFI']);
+  });
+
   it('auto-transmits on create when an ODFI channel is ready', async () => {
     process.env.ACH_SFTP_URL = 'sftp://odfi.test/inbound';
     const transmit = vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true, transmission_id: 'TX-5' } as any);
     const dep = await LiliDirectDepositEngine.createDirectDeposit({ amount: 10, createdBy: 'trustee' });
     expect(transmit).toHaveBeenCalledTimes(1);
     expect(dep.status).toBe('transmitted');
-    expect((await LiliDirectDepositEngine.odfiStatus())).toEqual({ ready: true, channels: ['sftp'] });
+    expect((await LiliDirectDepositEngine.odfiStatus())).toEqual({ ready: true, channels: ['sftp'], loopback: [], blocker: null });
   });
 
   it('reconciles a transmitted deposit against a matching FUND_TRANSFER credit on the Lili MCP transaction feed', async () => {
@@ -150,7 +166,7 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     const status = await LiliDirectDepositEngine.getWorkflowStatus();
     expect(status.ready).toBe(false);
     expect(status.destination).toEqual({ configured: false, routingNumber: '091000019', accountNumberMasked: null, accountName: 'DB NET MGMT LLC' });
-    expect(status.odfi).toEqual({ ready: false, channels: [] });
+    expect(status.odfi).toEqual({ ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (AS2/MFT/REST/SFTP)' });
     expect(status.mcp.configured).toBe(true);
     expect(status.mft).toBeNull();
   });
@@ -181,7 +197,7 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     });
     vi.spyOn(LiliMcpEngine, 'getPublicConfig').mockResolvedValue({ configured: false } as any);
     const status = await LiliDirectDepositEngine.getWorkflowStatus();
-    expect(status.odfi).toEqual({ ready: true, channels: ['mft'] });
+    expect(status.odfi).toEqual({ ready: true, channels: ['mft'], loopback: [], blocker: null });
     expect(status.counts).toEqual({ transmitted: { count: 6, amountUsd: 6 } });
     expect(status.mft).toEqual({
       channel: 'lili-odfi',

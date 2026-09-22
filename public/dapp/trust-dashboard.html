@@ -1133,7 +1133,8 @@
       const dest = d.destination || {};
       const channels = (d.odfi && d.odfi.channels) || [];
       el('treasury-instructions').innerHTML = `<div class="muted">Destination: ${escapeHtml(dest.accountName || 'Lili business checking')} ${escapeHtml(dest.accountNumberMasked || '')} · ${dest.configured ? 'configured' : 'not configured'}</div>
-        <div class="muted">Origination channel: ${escapeHtml(channels.join(', ') || 'none')} · ${d.ready ? '<span class="badge approved">Ready</span>' : '<span class="badge pending">Not ready</span>'}</div>`;
+        <div class="muted">Origination channel: ${escapeHtml(channels.join(', ') || 'none')} · ${d.ready ? '<span class="badge approved">Ready</span>' : '<span class="badge pending">Not ready</span>'}</div>
+        ${d.odfi && d.odfi.blocker ? `<div class="muted" style="color:#b45309">${escapeHtml(d.odfi.blocker)}</div>` : ''}`;
       const rows = Array.isArray(listRes.data) ? listRes.data : [];
       el('treasury-deposits').innerHTML = rows.length
         ? `<table class="table"><thead><tr><th>ID</th><th>Amount</th><th>Status</th><th>ACH Batch</th><th>Created</th></tr></thead><tbody>${rows.map(r => `<tr><td>${escapeHtml(r.deposit_id)}</td><td>${fmtUsd(Number(r.amount_cents || 0) / 100)}</td><td><span class="badge ${r.status === 'transmitted' || r.status === 'reconciled' ? 'approved' : r.status === 'returned' || r.status === 'cancelled' ? 'rejected' : 'pending'}">${escapeHtml(r.status)}</span></td><td>${escapeHtml(r.ach_batch_id || '—')}</td><td>${r.created_at ? new Date(r.created_at).toLocaleString() : '—'}</td></tr>`).join('')}</tbody></table>`

@@ -182,14 +182,46 @@ class LiliDirectDepositEngine {
     if (AS2Client && typeof AS2Client.getConfigStatus === 'function') {
       try { if (AS2Client.getConfigStatus().configured) channels.push('as2'); } catch (e) { /* ignore */ }
     }
+    const loopback = [];
     if (AS2Partners && typeof AS2Partners.getDefaultPartnerConfig === 'function') {
-      try { if (await AS2Partners.getDefaultPartnerConfig()) channels.push('as2_partner'); } catch (e) { /* ignore */ }
+      try {
+        const cfg = await AS2Partners.getDefaultPartnerConfig();
+        if (cfg) (this.isExternalOdfi(cfg) ? channels : loopback).push('as2_partner:' + cfg.partnerId);
+      } catch (e) { /* ignore */ }
     }
     if (SystemSettings && typeof SystemSettings.getProductionPartnerConfig === 'function') {
-      try { if (await SystemSettings.getProductionPartnerConfig()) channels.push('production_partner'); } catch (e) { /* ignore */ }
+      try {
+        const cfg = await SystemSettings.getProductionPartnerConfig();
+        if (cfg) (this.isExternalOdfi(cfg) ? channels : loopback).push('production_partner:' + (cfg.partnerId || cfg.partnerName));
+      } catch (e) { /* ignore */ }
     }
     if (process.env.ACH_SFTP_URL) channels.push('sftp');
-    return { ready: channels.length > 0, channels };
+    const ready = channels.length > 0;
+    return {
+      ready,
+      channels,
+      loopback,
+      blocker: ready ? null : (loopback.length
+        ? `Only self-loopback ODFI partner(s) configured (${loopback.join(', ')}): NACHA files are posted back to this platform and never reach a bank`
+        : 'No ODFI channel configured (AS2/MFT/REST/SFTP)'),
+    };
+  }
+
+  /**
+   * A partner config only counts as an ODFI channel if it leaves this platform.
+   * `direct`/`local`/empty REST URLs (and URLs pointing at our own APP_URL/DOMAIN)
+   * are self-transmit loopbacks used for sandbox testing.
+   */
+  static isExternalOdfi(cfg) {
+    if (!cfg) return false;
+    const proto = cfg.protocol || 'as2';
+    if (proto === 'as2') return Boolean(cfg.partnerUrl && cfg.partnerAs2Id);
+    if (proto === 'mft') return true;
+    const url = String(cfg.apiBaseUrl || cfg.partnerUrl || '').trim().toLowerCase();
+    if (!url || url === 'direct' || url === 'local') return false;
+    const self = [process.env.APP_URL, process.env.DEPLOY_URL, process.env.DOMAIN && `https://${process.env.DOMAIN}`]
+      .filter(Boolean).map(u => String(u).trim().toLowerCase().replace(/\/+$/, ''));
+    return !self.some(u => url.replace(/\/+$/, '') === u || url.startsWith(u + '/'));
   }
 
   // ── Create ──────────────────────────────────────────────────────────────
@@ -271,7 +303,7 @@ class LiliDirectDepositEngine {
     } else if (liliPaymentId) {
       await pool.query(
         `UPDATE lili_payments SET status='manual_pending', error_message=$1, updated_at=NOW() WHERE payment_id=$2`,
-        [odfi.ready ? 'NACHA credit generated; awaiting operator transmit' : 'NACHA credit generated; no ODFI channel configured (AS2/MFT/REST/SFTP) — transmits automatically once one is', liliPaymentId]
+        [odfi.ready ? 'NACHA credit generated; awaiting operator transmit' : `NACHA credit generated; ${odfi.blocker} — transmits automatically once an external ODFI channel is configured`, liliPaymentId]
       );
     }
 
@@ -288,7 +320,7 @@ class LiliDirectDepositEngine {
     if (!row.ach_batch_id) throw new Error('Direct deposit has no ACH batch');
 
     const odfi = await this.odfiStatus();
-    if (!odfi.ready) throw new Error('No ODFI channel configured (AS2/MFT/REST/SFTP); NACHA file remains queued');
+    if (!odfi.ready) throw new Error(`${odfi.blocker || 'No ODFI channel configured'}; NACHA file remains queued`);
 
     try {
       const result = await ACHEngine.transmitBatch(row.ach_batch_id, { approvedBy, actor });
