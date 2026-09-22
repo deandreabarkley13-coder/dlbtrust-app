@@ -364,6 +364,7 @@ async function debtReadiness(ctx) {
       obligations: obligations.ok ? obligations.value.totals : { error: obligations.error },
       compliance: compliance.ok ? compliance.value : { error: compliance.error },
       schedule90d: schedule.ok ? schedule.value.totals : { error: schedule.error },
+      holderRegister: Debt && compliance.ok && compliance.value.holders !== undefined ? { holders: compliance.value.holders, byType: compliance.value.holdersByType } : null,
     },
     routes: ['/api/os/debt/{status,readiness,process}', '/api/os/readiness/debt', '/api/bonds/*'],
     secrets: ['none (DATABASE_URL only); FINERACT_* for GL posting of accruals/coupons'],

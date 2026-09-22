@@ -66,6 +66,33 @@ describe('DebtOsEngine', () => {
   });
 });
 
+describe('DebtOsEngine.registerHolders', () => {
+  it('rejects holders outside trust/family and shares that do not total 100', async () => {
+    stubBond();
+    vi.spyOn(DebtOsEngine, 'holderRegister').mockResolvedValue({ bondName: 'DLB-PRB', placementType: 'private', totals: { principalBalance: 98524627.51 }, holders: [] });
+    await expect(DebtOsEngine.registerHolders({ bondId: 1, holders: [{ contactType: 'investor', firstName: 'Out', lastName: 'Sider', sharePct: 100 }] })).rejects.toThrow(/contactType must be one of trustee\/beneficiary/);
+    await expect(DebtOsEngine.registerHolders({ bondId: 1, holders: [{ contactType: 'trustee', firstName: 'A', lastName: 'B', sharePct: 60 }, { contactType: 'beneficiary', firstName: 'C', lastName: 'D', sharePct: 30 }] })).rejects.toThrow(/sharePct must total 100/);
+  });
+
+  it('dry run matches existing contacts by name (case/punctuation-insensitive) and allocates the live principal', async () => {
+    stubBond();
+    (pool.query as any).mockImplementation(async (text: string) => {
+      if (/FROM crm_contacts$/i.test(text.trim())) return { rows: [{ contact_id: 'CRM-TRU-1', contact_type: 'trustee', first_name: 'DEANDREA L', last_name: 'BARKLEY', kyc_status: 'verified' }] } as any;
+      return { rows: [] } as any;
+    });
+    vi.spyOn(DebtOsEngine, 'holderRegister').mockResolvedValue({ bondName: 'DLB-PRB', placementType: 'private', totals: { principalBalance: 1000 }, holders: [{ subscriptionId: 'SUB-OLD' }] });
+    const r = await DebtOsEngine.registerHolders({ bondId: 1, dryRun: true, holders: [
+      { contactType: 'trustee', firstName: 'DeAndrea-L', lastName: 'Barkley', sharePct: 60 },
+      { contactType: 'beneficiary', firstName: 'Jeremy N', lastName: 'Robinson', sharePct: 40 },
+    ] });
+    expect(r.superseded).toEqual(['SUB-OLD']);
+    expect(r.plan).toEqual([
+      expect.objectContaining({ contactId: 'CRM-TRU-1', create: false, amount: 600 }),
+      expect.objectContaining({ contactId: null, create: true, amount: 400 }),
+    ]);
+  });
+});
+
 describe('LiquidityOsEngine', () => {
   it('measures liquid ledger cash against the debt schedule and reserve tier without calling it bank funds', async () => {
     stubBond({ next_coupon_date: daysFromNow(10) });

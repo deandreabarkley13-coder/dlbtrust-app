@@ -8985,6 +8985,8 @@ class DebtEngine extends BaseOSEngine {
       case 'obligations': return await Debt.obligations();
       case 'compliance': return await Debt.placementCompliance();
       case 'schedule': return await Debt.schedule(payload.days);
+      case 'holder-register': return await Debt.holderRegister(payload.bondId);
+      case 'register-holders': return await Debt.registerHolders(payload);
       case 'readiness': return await this.readiness();
       case 'status':
       default: return await this.status();
