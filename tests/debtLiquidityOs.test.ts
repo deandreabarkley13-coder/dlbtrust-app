@@ -172,3 +172,38 @@ describe('Debt OS bank leg (distribute-to-bank)', () => {
     q.mockRestore();
   });
 });
+
+describe('Funding OS (real value → ledger)', () => {
+  const { FundingOsEngine } = require('../server/integrations/os/fundingOsEngine');
+
+  it('inventories sources with ledger/bank capabilities; no real-value source unless Credit OS reports one', async () => {
+    const spy = vi.spyOn(CreditOsEngine, 'fundingSources').mockResolvedValue({
+      sources: [
+        { id: 'stripe_treasury', configured: true, mode: 'test', realValueCapable: false, reason: 'test-mode key' },
+        { id: 'skrill', configured: true, mode: 'live', realValueCapable: false, reason: 'wallet only' },
+        { id: 'bank_odfi', configured: true, mode: 'loopback', realValueCapable: false, reason: 'loopback' },
+      ], realValueCapable: [], anyRealValueCapable: false,
+    });
+    const inv = await FundingOsEngine.sources();
+    spy.mockRestore();
+    expect(inv.sources.map((s: any) => s.id)).toEqual(expect.arrayContaining(['stripe_treasury', 'skrill', 'bank_odfi', 'manual_bank_deposit']));
+    expect(inv.anyRealValueCapable).toBe(false);
+    expect(inv.sources.find((s: any) => s.id === 'manual_bank_deposit')).toMatchObject({ canFundLedger: true, canOriginateBankCredit: false, realValueCapable: false });
+  });
+
+  it('rejects unknown sources / non-positive amounts and never confirms without an external reference', async () => {
+    await expect(FundingOsEngine.requestFunding({ sourceId: 'paypal', toAccountId: 'CA-OPERATING', amount: 10 })).rejects.toThrow(/unknown funding source/);
+    await expect(FundingOsEngine.requestFunding({ sourceId: 'manual_bank_deposit', toAccountId: 'CA-OPERATING', amount: 0 })).rejects.toThrow(/positive/);
+    const q = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ request_id: 'FUND-1', status: 'approved', amount_cents: '100000', to_account_id: 'CA-OPERATING', source_id: 'manual_bank_deposit' }] } as any);
+    await expect(FundingOsEngine.confirmFunding({ requestId: 'FUND-1', confirmedBy: 'checker' })).rejects.toThrow(/externalRef/);
+    const dry = await FundingOsEngine.confirmFunding({ requestId: 'FUND-1', externalRef: 'LILI-TXN-1', confirmedBy: 'checker', dryRun: true });
+    expect(dry).toMatchObject({ dryRun: true, wouldDeposit: { toAccountId: 'CA-OPERATING', amount: 1000 } });
+    q.mockRestore();
+  });
+
+  it('enforces maker/checker: the approver must differ from the requester', async () => {
+    const q = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ request_id: 'FUND-2', status: 'requested', requested_by: 'alice', amount_cents: '100' }] } as any);
+    await expect(FundingOsEngine.approveFunding({ requestId: 'FUND-2', approvedBy: 'alice' })).rejects.toThrow(/maker\/checker/);
+    q.mockRestore();
+  });
+});

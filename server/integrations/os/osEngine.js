@@ -9029,6 +9029,46 @@ class LiquidityEngine extends BaseOSEngine {
   }
 }
 
+// ─── Funding OS Engine ────────────────────────────────────────────────────────
+// Real-value source inventory and maker/checker funding requests; the ledger is
+// credited only on confirmation against a bank/provider reference.
+
+class FundingOsPlatformEngine extends BaseOSEngine {
+  static get engineName() { return 'funding-os'; }
+  static get platformEngine() { return 'funding-os'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const F = tryRequire('./fundingOsEngine')?.FundingOsEngine;
+    if (F && pool) await F.ensureTables();
+  }
+
+  static async status() {
+    const F = tryRequire('./fundingOsEngine')?.FundingOsEngine;
+    if (!F) return { engine: 'funding-os', healthy: false, mode: 'shadow', integrations: { fundingOs: false }, timestamp: new Date().toISOString() };
+    const s = await F.status();
+    return { ...s, integrations: { fundingOs: true } };
+  }
+
+  static async _process(action, payload = {}) {
+    const F = tryRequire('./fundingOsEngine')?.FundingOsEngine;
+    if (!F) return { mode: 'shadow', note: 'FundingOsEngine not available' };
+    switch (action) {
+      case 'sources': return await F.sources();
+      case 'pipeline': return await F.pipeline();
+      case 'unified-path': return await F.unifiedPath();
+      case 'list-requests': return await F.listRequests(payload);
+      case 'request-funding': return await F.requestFunding(payload);
+      case 'approve-funding': return await F.approveFunding(payload);
+      case 'confirm-funding': return await F.confirmFunding(payload);
+      case 'cancel-funding': return await F.cancelFunding(payload);
+      case 'readiness': return await this.readiness();
+      case 'status':
+      default: return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -9070,6 +9110,7 @@ const ENGINES = {
   credit: CreditEngine,
   debt: DebtEngine,
   liquidity: LiquidityEngine,
+  'funding-os': FundingOsPlatformEngine,
 };
 
 async function ensureAll() {
@@ -9092,6 +9133,7 @@ module.exports = {
   CreditEngine,
   DebtEngine,
   LiquidityEngine,
+  FundingOsPlatformEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

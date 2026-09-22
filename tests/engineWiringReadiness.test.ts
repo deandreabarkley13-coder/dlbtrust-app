@@ -87,8 +87,8 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the eight capabilities in the OS route map', () => {
-    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity']) {
+  it('registers every engine behind the nine capabilities in the OS route map', () => {
+    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
     }
@@ -102,6 +102,7 @@ describe('platform engine registry', () => {
     expect(OS.CreditEngine.platformEngine).toBe('credit');
     expect(OS.DebtEngine.platformEngine).toBe('debt');
     expect(OS.LiquidityEngine.platformEngine).toBe('liquidity');
+    expect(OS.FundingOsPlatformEngine.platformEngine).toBe('funding-os');
   });
 
   it('exposes readiness through the OS router and the finops cross-chain router', () => {
@@ -117,7 +118,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all eight engines ready and healthy with the GCP config in place', async () => {
+  it('reports all nine engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -127,7 +128,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'gateway', 'interop', 'liquidity', 'payment', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -136,7 +137,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(8);
+    expect(report.readyCount).toBe(9);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
