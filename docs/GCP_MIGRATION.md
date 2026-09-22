@@ -470,13 +470,13 @@ Secrets to add to `secret_names` when going live: `APIGEE_API_KEY` or
 
 ## Platform engines — wiring state on `dlb-treasury-management`
 
-The five platform engines are audited by one module,
+The eight platform engines are audited by one module,
 `server/integrations/os/engineWiringReadiness.js`, exposed as
-`GET /api/os/readiness` (all five; HTTP 503 until every engine is `ready`) and
-`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop}`.
+`GET /api/os/readiness` (all eight; HTTP 503 until every engine is `ready`) and
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity}`.
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
-`interop` map onto the five reports; other engines get the generic Cloud SQL +
+`interop`, `credit`, `debt`, `liquidity` map onto the eight reports; other engines get the generic Cloud SQL +
 project check). Each report carries `gcp` (project vs. the expected
 `dlb-treasury-management`, Cloud Run revision, Cloud SQL connectivity, evidence
 bucket), `tables` (which Cloud SQL tables exist), `liveFlags`, `secrets` and
@@ -494,6 +494,9 @@ reported as a blocker.
 | Bank Clearing & Settlement | OS `ClearingEngine`, `SettlementEngine` → `clearingApiEngine`, `dapp/settlementEngine`, `stablecoin/clearingAndSettlementEngine`, `clearingAutoFormatEngine` | `/api/os/{clearing,settlement}/*`, `/api/dapp/settlements` | `LILI_CLEARING_LIVE` (rail), `PAYMENT_HUB_LIVE` (ACH), `CLEARING_API_ENDPOINT` (external clearing API, unset) | `clearing_settlements`, `settlements`, `stablecoin_clearing_orders`, `os_events` | evidence bucket via the gateway pipeline | none beyond the gateway/payment-hub sets; `CLEARING_API_KEY` only if `CLEARING_API_ENDPOINT` is set |
 | Reconciliation & Matching | OS `ReconciliationEngine` → `ACHReconciliation.runReconciliation`, `DataBridge.getReconciliationReport` / `reconcile*`, `BookkeepingAgent.reconcileACH/Wires`, `ApiGatewayClearingEngine.reconcile` | `/api/os/reconciliation/*`, `/api/ach-pipeline/reconciliation/*`, `/api/accounting/bridge/{report,reconcile/*}`, `/api/agents/bookkeeping/reconcile-*`, `/api/dapp/clearing-pipeline/events/:id/reconcile` | internal ledger; live whenever Cloud SQL is reachable | `ach_reconciliations`, `ach_batches`, `gateway_clearing_events`, `bookkeeping_reconciliations`, `data_bridge_discrepancies` (ensured at boot by `OSEngine.ensureAll` → `ReconciliationEngine.ensureTables`, except `ach_batches`, which comes from `server/scripts/migrate-ach.sql` / the Northflank restore and is flagged by readiness if absent) | — | none (`DATABASE_URL` only) |
 | Interoperability OS | OS `InteropEngine` → `crossChainConversionEngine`, `m2mOsEngine` | `/api/os/interop/*`, `/api/finops/cross-chain/*` (`/readiness` included), `/api/m2m-os/*` | `CROSS_CHAIN_ENABLED=true`, `CROSS_CHAIN_SHADOW=false` (live, parity with Northflank `DAPP_SHADOW=false`), `CROSS_CHAIN_SOURCE_CHAIN=ethereum`, `CROSS_CHAIN_BRIDGE=circle-cctp` | `cross_chain_requests`, `m2m_identities`, `m2m_partners`, `m2m_events` | — | `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY` (cloudrun.tf precondition refuses `CROSS_CHAIN_SHADOW=false` without them); M2M uses `PAYMENT_DATA_ENCRYPTION_KEY` |
+| Credit OS | OS `CreditEngine` → `creditOsEngine` (funding-source inventory, trust GL trial balance + Fineract GL tie-out, treasury → Lili credit pipeline, `gate(amountCents)`) | `/api/os/credit/*`, `/api/os/readiness/credit`, `/api/finops/lili/direct-deposits/status` | `live` only when a **real-value** origination source exists: live `STRIPE_SECRET_KEY` + `STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`, or an external bank ODFI partner. Skrill (`SKRILL_*`) is reported but never real-value-capable (Skrill-to-Skrill API only). Self-loopback partners (`DLBTRUST-DIRECT`, `partner_url=direct`) are reported as `loopback`, not as a channel | `lili_direct_deposits`, `lili_payments`, `ach_batches`, `trust_accounts`, `trust_journal_entries`, `data_bridge_discrepancies`, `os_events` | — | `FINERACT_URL`/`FINERACT_USERNAME`/`FINERACT_PASSWORD`/`FINERACT_TENANT_ID` (GL tie-out, `dlbtrust-fineract` Cloud Run, internal ingress); one real-value source as above |
+| Debt OS | OS `DebtEngine` → `debtOsEngine` (`obligations()` via `LiveBondEngine.getBondLiveMetrics`, `placementCompliance()`, `schedule(days)`) | `/api/os/debt/*`, `/api/os/readiness/debt`, `/api/bonds/*` | Private placement only: every bond must have `placement_type='private'`; holders (`crm_bond_subscriptions` → `crm_contacts`) must be `trustee`/`beneficiary` with verified KYC and clear AML. `PUBLIC_OFFER=false`, `TRANSFERABLE=false` are fixed. `live` iff compliant | `bonds`, `bond_balances`, `bond_transactions`, `coupon_payments` (ensured at boot by `DebtEngine.ensureTables` → `CouponService.ensureTable`), `crm_bond_subscriptions`, `crm_contacts` | — | none beyond `DATABASE_URL`; `FINERACT_*` for GL posting of accruals/coupons |
+| Liquidity OS | OS `LiquidityEngine` → `liquidityOsEngine` (`cashPosition()` via `CashEngine.getPositionSummary`, `coverage()` at 30/90/365d against the Debt OS schedule, reserve tier vs annual coupon, real-value payout via Credit OS funding sources) | `/api/os/liquidity/*`, `/api/os/readiness/liquidity`, `/api/cash/*` | `live` iff every horizon is covered by liquid ledger cash (`operating`+`reserve`+`bond_proceeds`; `distribution`/`escrow`/`fee` are earmarked), reserve ≥ 1x annual coupon, and a real-value payout source exists. Balances are `cash_accounts` book balances, not bank-confirmed funds | `cash_accounts`, `cash_movements`, `bonds`, `bond_balances`, `coupon_payments` | — | none beyond `DATABASE_URL`; payout needs a credit-engine funding source |
 
 Status on `dlb-treasury-management` at the time of writing:
 
@@ -512,6 +515,30 @@ Status on `dlb-treasury-management` at the time of writing:
   group and are copied by `migrate-northflank-secrets.mjs`, so they are in
   `secret_names` and `CROSS_CHAIN_SHADOW=false` passes the cloudrun.tf
   precondition.
+- **Credit OS** — wired; `validation-only`/`shadow` on the deployed project:
+  Stripe key is `sk_test_` (sandbox Treasury account, test dollars), Skrill has
+  no bank-push API, and the default ACH partner is the self-loopback
+  `DLBTRUST-DIRECT`. It flags every credit marked `transmitted` without a
+  `lili_transaction_id` as unconfirmed. Goes `live` when a live Stripe Treasury
+  key/financial account or an external ODFI partner is configured.
+- **Debt OS** — wired and live: the seeded `DLB-PRB` bond is `placement_type=
+  'private'`; the engine reports principal outstanding, accrued interest,
+  annual coupon and the 90-day coupon/principal schedule, and goes `shadow`
+  the moment a bond is marked public or a holder outside trust/family (or
+  without verified KYC) appears in `crm_bond_subscriptions`.
+  Trust structure (`POST /api/os/debt/process`, actions `holder-register`,
+  `register-holders`, `trust-structure`, `settle-coupon`, `recurring-coupon`, `configure-recurring-coupon` (sets `system_settings.debt_os_coupon_ledger_account`; when set, the 6-hourly `CouponService` scheduler settles each due coupon into that ledger account internally instead of ACH — due date = last scheduled coupon date within a 30-day grace window, deduped per date), `apply-trust-structure` (with `settleCoupon:true` the accrued coupon is first booked internally into the funding account via `BondEngine.payInterest` + `CashEngine.deposit`, since the trust company is its own bondholder), all with
+  `dryRun`): the family trust company (contact tagged `trust-company`) is the
+  sole bondholder; trustees administer it for a fee inside 1–3%
+  (`system_settings.debt_os_trustee_fee_pct`, booked to the `fee` cash
+  account); each beneficiary has a hold account `CA-<contact_id>`
+  (`distribution` cash account) topped up to a retained balance (default
+  $250,000) from a named ledger funding account. All values are ledger
+  book entries, not bank funds.
+- **Liquidity OS** — wired; `shadow` until the `reserve` cash tier covers at
+  least 1x the annual coupon and a real-value payout source exists (today
+  bond proceeds sit in `bond_proceeds`, `reserve` is 0, and the only payout
+  source is the loopback partner).
 
 Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
 the admin token): Cloud SQL connected, evidence bucket present, all five

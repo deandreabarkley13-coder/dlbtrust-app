@@ -13,6 +13,9 @@ const { EngineWiringReadiness } = require('../server/integrations/os/engineWirin
 const { ApiGatewayClearingEngine } = require('../server/integrations/dapp/apiGatewayClearingEngine');
 const paymentHubConfig = require('../server/integrations/paymentHub/paymentHubConfig');
 const OS = require('../server/integrations/os/osEngine');
+const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
+const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
+const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngine');
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -55,6 +58,20 @@ function stubProviders() {
     ready: true, canTransmit: true, issues: [], warnings: [],
     config: { mode: 'phee', live: true, accountingOwner: 'dlbtrust', approvalThreshold: 2, baseUrlConfigured: true },
   });
+  vi.spyOn(CreditOsEngine, 'fundingSources').mockResolvedValue({
+    sources: [{ id: 'bank_odfi', configured: true, mode: 'live', realValueCapable: true, reason: 'external channel(s): sftp', channels: ['sftp'], loopback: [] }],
+    realValueCapable: ['bank_odfi'], anyRealValueCapable: true,
+  });
+  vi.spyOn(CreditOsEngine, 'ledgerValidation').mockResolvedValue({ valid: true, issues: [], trustGl: { balanced: true }, fineractGl: { connected: true }, openDiscrepancies: 0 });
+  vi.spyOn(CreditOsEngine, 'creditPipeline').mockResolvedValue({ deposits: {}, achBatches: {}, unverifiedTransmitted: 0, unverified: [] });
+  vi.spyOn(DebtOsEngine, 'obligations').mockResolvedValue({ bonds: [], totals: { activeBonds: 1, principalOutstanding: 100000000, accruedInterest: 0, annualCoupon: 1000000 } });
+  vi.spyOn(DebtOsEngine, 'placementCompliance').mockResolvedValue({ compliant: true, placement: 'private', publicOffer: false, holders: 2, externalHolders: 0, unverifiedHolders: 0, issues: [] });
+  vi.spyOn(DebtOsEngine, 'schedule').mockResolvedValue({ horizonDays: 90, events: [], totals: { coupon: 250000, principal: 0, total: 250000 } });
+  vi.spyOn(LiquidityOsEngine, 'coverage').mockResolvedValue({
+    adequate: true, issues: [], cash: { liquid: 2000000, reserve: 1000000 },
+    horizons: { '30d': { covered: true }, '90d': { covered: true }, '365d': { covered: true } },
+    reserve: { balance: 1000000, annualCoupon: 1000000, coverage: 1, target: 1 }, payout: { realValueCapable: true, sources: ['bank_odfi'] },
+  });
 }
 
 beforeEach(() => {
@@ -70,8 +87,8 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the five capabilities in the OS route map', () => {
-    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop']) {
+  it('registers every engine behind the eight capabilities in the OS route map', () => {
+    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
     }
@@ -82,6 +99,9 @@ describe('platform engine registry', () => {
     expect(OS.ApacheApisixEngine.platformEngine).toBe('gateway');
     expect(OS.ReconciliationEngine.platformEngine).toBe('reconciliation');
     expect(OS.InteropEngine.platformEngine).toBe('interop');
+    expect(OS.CreditEngine.platformEngine).toBe('credit');
+    expect(OS.DebtEngine.platformEngine).toBe('debt');
+    expect(OS.LiquidityEngine.platformEngine).toBe('liquidity');
   });
 
   it('exposes readiness through the OS router and the finops cross-chain router', () => {
@@ -97,7 +117,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all five engines ready and healthy with the GCP config in place', async () => {
+  it('reports all eight engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -107,7 +127,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'gateway', 'interop', 'payment', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'gateway', 'interop', 'liquidity', 'payment', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -116,7 +136,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(5);
+    expect(report.readyCount).toBe(8);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -126,6 +146,75 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.reconciliation.mode).toBe('live');
     expect(report.engines.interop.mode).toBe('shadow');
     expect(report.engines.interop.liveFlags.CROSS_CHAIN_SHADOW).toBe(true);
+    expect(report.engines.credit.mode).toBe('live');
+    expect(report.engines.credit.provider).toBe('bank_odfi');
+    expect(report.engines.debt.mode).toBe('live');
+    expect(report.engines.debt.liveFlags.PUBLIC_OFFER).toBe(false);
+    expect(report.engines.liquidity.mode).toBe('live');
+    expect(report.engines.liquidity.liveFlags.RESERVE_COVERAGE).toBe(1);
+  });
+
+  it('debt engine blocks a public placement or a holder outside the trust/family', async () => {
+    stubCloudSql();
+    stubProviders();
+    (DebtOsEngine.placementCompliance as any).mockResolvedValue({
+      compliant: false, placement: 'private', publicOffer: false, holders: 3, externalHolders: 1, unverifiedHolders: 1,
+      issues: [
+        "bond DLB-PRB (#1) placement_type=public; must be 'private' (no public offer)",
+        '1 holder(s) outside trust/family (contact_type not in trustee/beneficiary): CT-EXT-1',
+        '1 holder(s) without verified KYC: CT-FAM-2',
+      ],
+    });
+    const debt = await EngineWiringReadiness.engineReadiness('debt');
+    expect(debt.ready).toBe(false);
+    expect(debt.mode).toBe('shadow');
+    expect(debt.blockers).toEqual(expect.arrayContaining([
+      expect.stringMatching(/placement: bond DLB-PRB .* must be 'private'/),
+      expect.stringMatching(/placement: 1 holder\(s\) outside trust\/family/),
+      expect.stringMatching(/placement: 1 holder\(s\) without verified KYC/),
+    ]));
+  });
+
+  it('liquidity engine blocks when debt service is not covered by liquid cash or the reserve tier is thin', async () => {
+    stubCloudSql();
+    stubProviders();
+    (LiquidityOsEngine.coverage as any).mockResolvedValue({
+      adequate: false, cash: { liquid: 100000, reserve: 0 },
+      horizons: { '30d': { covered: true }, '90d': { covered: false, due: 250000, liquidCash: 100000, shortfall: 150000 }, '365d': { covered: false } },
+      reserve: { balance: 0, annualCoupon: 1000000, coverage: 0, target: 1 }, payout: { realValueCapable: false, sources: [] },
+      issues: ['90d debt service 250000 exceeds liquid cash 100000 (shortfall 150000)', 'reserve 0 covers 0x of annual coupon 1000000 (target >= 1x)', 'no funded real-value source to pay coupons out (see credit engine)'],
+    });
+    const liq = await EngineWiringReadiness.engineReadiness('liquidity');
+    expect(liq.ready).toBe(false);
+    expect(liq.mode).toBe('shadow');
+    expect(liq.liveFlags.COVERED_30D).toBe(true);
+    expect(liq.liveFlags.COVERED_90D).toBe(false);
+    expect(liq.liveFlags.PAYOUT_REAL_VALUE_CAPABLE).toBe(false);
+    expect(liq.blockers.some((b: string) => /shortfall 150000/.test(b))).toBe(true);
+    expect(liq.blockers.some((b: string) => /reserve 0 covers 0x/.test(b))).toBe(true);
+  });
+
+  it('credit engine stays validation-only and blocked when every funding source is test-mode, Skrill or a loopback ODFI', async () => {
+    stubCloudSql();
+    stubProviders();
+    (CreditOsEngine.fundingSources as any).mockResolvedValue({
+      sources: [
+        { id: 'stripe_treasury', configured: true, mode: 'test', realValueCapable: false, reason: 'test-mode key (sandbox)' },
+        { id: 'skrill', configured: true, mode: 'live', realValueCapable: false, reason: 'Skrill-to-Skrill only' },
+        { id: 'bank_odfi', configured: true, mode: 'loopback', realValueCapable: false, reason: 'Only self-loopback ODFI partner(s) configured (as2_partner:DLBTRUST-DIRECT)', channels: [], loopback: ['as2_partner:DLBTRUST-DIRECT'] },
+      ],
+      realValueCapable: [], anyRealValueCapable: false,
+    });
+    (CreditOsEngine.creditPipeline as any).mockResolvedValue({ deposits: { transmitted: 2 }, achBatches: { accepted: 2 }, unverifiedTransmitted: 2, unverified: [] });
+    const credit = await EngineWiringReadiness.engineReadiness('credit');
+    expect(credit.ready).toBe(false);
+    expect(credit.healthy).toBe(true);
+    expect(credit.mode).toBe('shadow');
+    expect(credit.provider).toBe('validation-only');
+    expect(credit.liveFlags.STRIPE_KEY_MODE).toBe('test');
+    expect(credit.liveFlags.BANK_ODFI_EXTERNAL).toBe(false);
+    expect(credit.blockers.some((b: string) => /no funded real-value origination source/.test(b) && /DLBTRUST-DIRECT/.test(b))).toBe(true);
+    expect(credit.blockers.some((b: string) => /2 credit\(s\) marked transmitted with no bank confirmation/.test(b))).toBe(true);
   });
 
   it('routes every OS engine readiness() onto its platform report', async () => {

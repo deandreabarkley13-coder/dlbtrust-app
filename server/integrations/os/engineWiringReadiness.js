@@ -9,6 +9,9 @@
  *   clearing         Bank Clearing & Settlement  OS ClearingEngine + SettlementEngine
  *   reconciliation   Reconciliation & Matching   ACH recon, DataBridge, BookkeepingAgent, gateway reconcile
  *   interop          Interoperability OS     CrossChainConversionEngine + M2M OS
+ *   credit           Credit OS               CreditOsEngine: funding sources, GL validation, credit pipeline
+ *   debt             Debt OS                 DebtOsEngine: private-placement bond obligations, holder compliance, schedule
+ *   liquidity        Liquidity OS            LiquidityOsEngine: cash coverage of debt service, reserve tier
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -21,7 +24,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -29,6 +32,9 @@ const ENGINE_TITLES = {
   clearing: 'Bank Clearing & Settlement Engine',
   reconciliation: 'Reconciliation & Matching Engine',
   interop: 'Interoperability OS Engine',
+  credit: 'Credit OS Engine',
+  debt: 'Debt OS Engine',
+  liquidity: 'Liquidity OS Engine',
 };
 
 const TABLES = {
@@ -37,6 +43,9 @@ const TABLES = {
   clearing: ['clearing_settlements', 'settlements', 'stablecoin_clearing_orders', 'os_events'],
   reconciliation: ['ach_reconciliations', 'ach_batches', 'gateway_clearing_events', 'bookkeeping_reconciliations', 'data_bridge_discrepancies'],
   interop: ['cross_chain_requests', 'm2m_identities', 'm2m_partners', 'm2m_events'],
+  credit: ['lili_direct_deposits', 'lili_payments', 'ach_batches', 'trust_accounts', 'trust_journal_entries', 'data_bridge_discrepancies', 'os_events'],
+  debt: ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'crm_contacts'],
+  liquidity: ['cash_accounts', 'cash_movements', 'bonds', 'bond_balances', 'coupon_payments'],
 };
 
 function tryRequire(mod) {
@@ -281,7 +290,120 @@ const REPORTERS = {
   clearing: clearingReadiness,
   reconciliation: reconciliationReadiness,
   interop: interopReadiness,
+  credit: creditReadiness,
+  debt: debtReadiness,
+  liquidity: liquidityReadiness,
 };
+
+async function creditReadiness(ctx) {
+  const mod = tryRequire('./creditOsEngine');
+  const Credit = mod ? mod.CreditOsEngine : null;
+  const funding = Credit ? await settle(() => Credit.fundingSources()) : { ok: false, error: 'CreditOsEngine unavailable' };
+  const ledger = Credit ? await settle(() => Credit.ledgerValidation()) : { ok: false, error: 'CreditOsEngine unavailable' };
+  const pipeline = Credit ? await settle(() => Credit.creditPipeline()) : { ok: false, error: 'CreditOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES.credit);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!funding.ok) blockers.push(`credit funding sources: ${funding.error}`);
+  else if (!funding.value.anyRealValueCapable) {
+    blockers.push(`no funded real-value origination source: ${funding.value.sources.map(s => `${s.id} (${s.reason})`).join('; ')}`);
+  }
+  if (!ledger.ok) blockers.push(`credit ledger validation: ${ledger.error}`);
+  else blockers.push(...ledger.value.issues.map(i => `ledger: ${i}`));
+  if (pipeline.ok && pipeline.value.unverifiedTransmitted > 0) {
+    blockers.push(`${pipeline.value.unverifiedTransmitted} credit(s) marked transmitted with no bank confirmation (lili_transaction_id null)`);
+  }
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const realValue = funding.ok && funding.value.anyRealValueCapable;
+  return {
+    provider: realValue ? funding.value.realValueCapable.join('+') : 'validation-only',
+    mode: realValue ? 'live' : 'shadow',
+    liveFlags: {
+      STRIPE_KEY_MODE: funding.ok ? (funding.value.sources.find(s => s.id === 'stripe_treasury') || {}).mode : null,
+      SKRILL_CONFIGURED: funding.ok ? Boolean((funding.value.sources.find(s => s.id === 'skrill') || {}).configured) : false,
+      BANK_ODFI_EXTERNAL: funding.ok ? Boolean((funding.value.sources.find(s => s.id === 'bank_odfi') || {}).realValueCapable) : false,
+      FINERACT_URL: Boolean(process.env.FINERACT_URL),
+      PAYMENT_APPROVAL_THRESHOLD: Number(process.env.PAYMENT_APPROVAL_THRESHOLD || 2),
+    },
+    modules: {
+      fundingSources: funding.ok ? funding.value : { error: funding.error },
+      ledger: ledger.ok ? ledger.value : { error: ledger.error },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+    },
+    routes: ['/api/os/credit/{status,readiness,process}', '/api/os/readiness/credit', '/api/finops/lili/direct-deposits/status'],
+    secrets: ['STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, or an external bank ODFI partner (AS2/MFT/SFTP/REST)', 'FINERACT_URL', 'FINERACT_USERNAME', 'FINERACT_PASSWORD', 'FINERACT_TENANT_ID'],
+    tables,
+    blockers,
+  };
+}
+
+async function debtReadiness(ctx) {
+  const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+  const obligations = Debt ? await settle(() => Debt.obligations()) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const compliance = Debt ? await settle(() => Debt.placementCompliance()) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const schedule = Debt ? await settle(() => Debt.schedule(90)) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES.debt);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!obligations.ok) blockers.push(`debt obligations: ${obligations.error}`);
+  if (!compliance.ok) blockers.push(`placement compliance: ${compliance.error}`);
+  else blockers.push(...compliance.value.issues.map(i => `placement: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  return {
+    provider: 'private-placement (trust + family)',
+    mode: compliance.ok && compliance.value.compliant ? 'live' : 'shadow',
+    liveFlags: {
+      PUBLIC_OFFER: false,
+      TRANSFERABLE: false,
+      ALLOWED_HOLDER_TYPES: Debt ? Debt.ALLOWED_HOLDER_TYPES : [],
+      FINERACT_URL: Boolean(process.env.FINERACT_URL),
+    },
+    modules: {
+      obligations: obligations.ok ? obligations.value.totals : { error: obligations.error },
+      compliance: compliance.ok ? compliance.value : { error: compliance.error },
+      schedule90d: schedule.ok ? schedule.value.totals : { error: schedule.error },
+      holderRegister: Debt && compliance.ok && compliance.value.holders !== undefined ? { holders: compliance.value.holders, byType: compliance.value.holdersByType } : null,
+    },
+    routes: ['/api/os/debt/{status,readiness,process}', '/api/os/readiness/debt', '/api/bonds/*'],
+    secrets: ['none (DATABASE_URL only); FINERACT_* for GL posting of accruals/coupons'],
+    tables,
+    blockers,
+  };
+}
+
+async function liquidityReadiness(ctx) {
+  const Liq = tryRequire('./liquidityOsEngine')?.LiquidityOsEngine;
+  const coverage = Liq ? await settle(() => Liq.coverage()) : { ok: false, error: 'LiquidityOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES.liquidity);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!coverage.ok) blockers.push(`liquidity coverage: ${coverage.error}`);
+  else blockers.push(...coverage.value.issues.map(i => `liquidity: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const c = coverage.ok ? coverage.value : null;
+  return {
+    provider: 'ledger cash (cash_accounts) vs debt service',
+    mode: c && c.adequate ? 'live' : 'shadow',
+    liveFlags: {
+      COVERED_30D: c ? Boolean(c.horizons['30d'] && c.horizons['30d'].covered) : false,
+      COVERED_90D: c ? Boolean(c.horizons['90d'] && c.horizons['90d'].covered) : false,
+      RESERVE_COVERAGE: c ? c.reserve.coverage : null,
+      PAYOUT_REAL_VALUE_CAPABLE: c ? c.payout.realValueCapable : false,
+    },
+    modules: {
+      cash: c ? c.cash : { error: coverage.error },
+      horizons: c ? c.horizons : {},
+      reserve: c ? c.reserve : null,
+    },
+    routes: ['/api/os/liquidity/{status,readiness,process}', '/api/os/readiness/liquidity', '/api/cash/*'],
+    secrets: ['none (DATABASE_URL only); real-value payout needs a credit-engine funding source'],
+    tables,
+    blockers,
+  };
+}
 
 async function context() {
   const gcp = gcpContext();

@@ -388,7 +388,7 @@
     }).then(function () { live.loading = false; el('refresh-btn').disabled = false; });
   }
 
-  var ENGINE_LABELS = { payment: 'Payment initiation', gateway: 'Bank gateway (treasury → Lili)', clearing: 'Clearing & settlement', reconciliation: 'Reconciliation & matching', interop: 'Interoperability' };
+  var ENGINE_LABELS = { payment: 'Payment initiation', gateway: 'Bank gateway (treasury → Lili)', clearing: 'Clearing & settlement', reconciliation: 'Reconciliation & matching', interop: 'Interoperability', credit: 'Credit OS (funding sources & GL validation)', debt: 'Debt OS (private-placement bond)', liquidity: 'Liquidity OS (debt-service coverage)' };
   function loadPipeline() {
     return api('/api/os/readiness').then(function (r) {
       var p = r.data || {};

@@ -332,24 +332,35 @@ class CouponService {
 
     const results = [];
     const today = new Date().toISOString().split('T')[0];
+    const ledger = await CouponService.ledgerSettlementAccount();
 
     for (const bond of bonds.rows) {
       try {
         const metrics = await LiveBondEngine.getBondLiveMetrics(bond.id);
         const nextCoupon = metrics.next_coupon_date;
+        const dueCoupon = CouponService.dueCouponDate(metrics, today);
 
-        if (nextCoupon === today) {
+        if (dueCoupon) {
           // Check if already paid
           const existing = await pool.query(
             `SELECT coupon_payment_id FROM coupon_payments
              WHERE bond_id = $1 AND coupon_date = $2 AND status IN ('paid','processing')`,
-            [bond.id, today]
+            [bond.id, dueCoupon]
           );
 
           if (existing.rows.length === 0 && metrics.accrued_interest_total >= metrics.coupon_per_period) {
+            if (ledger) {
+              console.log(`[CouponService] Coupon due for ${bond.bond_name} — settling $${metrics.coupon_per_period} to ledger ${ledger}`);
+              const { BondEngine } = require('./bondEngine');
+              const { DebtOsEngine } = require('../os/debtOsEngine');
+              await BondEngine.accrueInterest(bond.id, today);
+              const result = await DebtOsEngine.settleCouponToLedger({ bondId: bond.id, toAccountId: ledger, amount: metrics.coupon_per_period, couponDate: dueCoupon, approvedBy: 'coupon-scheduler' });
+              results.push({ bond: bond.bond_name, status: 'paid', settlement: 'ledger', result });
+              continue;
+            }
             console.log(`[CouponService] Coupon due today for ${bond.bond_name} — depositing $${metrics.coupon_per_period}`);
             const result = await CouponService.depositCoupon(bond.id, {
-              couponDate: today,
+              couponDate: dueCoupon,
             });
             results.push({ bond: bond.bond_name, status: 'paid', result });
           } else if (existing.rows.length > 0) {
@@ -370,7 +381,34 @@ class CouponService {
       }
     }
 
-    return { checked_at: new Date().toISOString(), bonds_checked: bonds.rows.length, results };
+    return { checked_at: new Date().toISOString(), bonds_checked: bonds.rows.length, settlement: ledger ? `ledger:${ledger}` : 'ach', results };
+  }
+
+  /**
+   * Coupon date that is due: the most recent scheduled coupon date on or before `today`
+   * (next_coupon_date minus one period), if it falls within the grace window and is after issue.
+   * Returns 'YYYY-MM-DD' or null.
+   */
+  static dueCouponDate(metrics, today, graceDays = 30) {
+    const freq = { monthly: 12, quarterly: 4, 'semi-annual': 2, annual: 1 }[metrics.payment_freq] || 12;
+    const last = new Date(metrics.next_coupon_date + 'T00:00:00Z');
+    last.setUTCMonth(last.getUTCMonth() - 12 / freq);
+    const issue = new Date(new Date(metrics.issue_date).toISOString().slice(0, 10) + 'T00:00:00Z');
+    const t = new Date(today + 'T00:00:00Z');
+    if (last <= issue || last > t) return null;
+    if ((t - last) / 86400000 > graceDays) return null;
+    return last.toISOString().slice(0, 10);
+  }
+
+  /** Cash account that receives due coupons internally (Debt OS recurring coupon setting), or null for ACH. */
+  static async ledgerSettlementAccount() {
+    try {
+      const { SystemSettings } = require('../ach/systemSettings');
+      const v = await SystemSettings.get('debt_os_coupon_ledger_account');
+      return v ? String(v) : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /**

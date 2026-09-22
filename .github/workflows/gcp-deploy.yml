@@ -73,3 +73,27 @@ jobs:
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
             --format 'value(status.url)')
           curl -fsS "$url/api/health/ready"
+
+      # Platform engine readiness (payment, gateway, clearing, reconciliation,
+      # interop, credit, debt, liquidity) on dlb-treasury-management. Informational: the credit
+      # engine stays BLOCKED until a real-value funding source exists, so a
+      # non-ready engine here does not fail the deploy.
+      - name: Engine readiness report
+        continue-on-error: true
+        run: |
+          url=$(gcloud run services describe "$SERVICE" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --format 'value(status.url)')
+          token=$(gcloud secrets versions access latest --secret ADMIN_SECRET_TOKEN --project "$GCP_PROJECT_ID" 2>/dev/null || true)
+          if [ -z "$token" ]; then echo "ADMIN_SECRET_TOKEN not readable; skipping engine readiness"; exit 0; fi
+          echo "::add-mask::$token"
+          curl -sS -H "x-admin-token: $token" "$url/api/os/readiness" \
+            | node -e '
+              let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
+                const r=JSON.parse(s);
+                console.log(`project=${r.gcp.project} ready=${r.readyCount}/${r.total}`);
+                for (const [k,e] of Object.entries(r.engines)) {
+                  console.log(`${e.ready?"READY  ":"BLOCKED"} ${k.padEnd(15)} mode=${e.mode} provider=${e.provider}`);
+                  for (const b of e.blockers||[]) console.log(`         - ${b}`);
+                }
+              });'
