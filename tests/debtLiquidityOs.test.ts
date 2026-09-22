@@ -154,3 +154,21 @@ describe('CouponService recurring coupon due-date', () => {
     expect(CouponService.dueCouponDate({ ...m, next_coupon_date: '2024-08-28' }, '2024-03-01')).toBeNull();
   });
 });
+
+describe('Debt OS bank leg (distribute-to-bank)', () => {
+  it('reports the unified path with the funded-source / ODFI stages as blockers and fails closed', async () => {
+    const path = await DebtOsEngine.bankSettlementPath();
+    expect(path.action).toBe('distribute-to-bank');
+    expect(path.stages.map((s: any) => s.stage)).toEqual(['coupon_to_ledger', 'hold_accounts', 'bank_destination', 'odfi_origination', 'funded_source']);
+    expect(path.realValueCapable).toBe(false);
+    expect(path.blockers).toContain('funded_source');
+
+    const acct = { rows: [{ account_id: 'CA-BOND-PROCEEDS', account_type: 'bond_proceeds', balance_cents: '100000000' }] };
+    const q = vi.spyOn(pool, 'query').mockResolvedValue(acct as any);
+    const dry = await DebtOsEngine.distributeToBank({ fromAccountId: 'CA-BOND-PROCEEDS', amount: 1000, dryRun: true });
+    expect(dry).toMatchObject({ dryRun: true, amount: 1000, inTransitAccountId: 'CA-BANK-IN-TRANSIT', gate: { allowed: false } });
+    await expect(DebtOsEngine.distributeToBank({ fromAccountId: 'CA-BOND-PROCEEDS', amount: 1000 })).rejects.toThrow(/distribute-to-bank blocked/);
+    await expect(DebtOsEngine.distributeToBank({ fromAccountId: 'CA-BOND-PROCEEDS', amount: 5000000 })).rejects.toThrow(/insufficient ledger balance/);
+    q.mockRestore();
+  });
+});

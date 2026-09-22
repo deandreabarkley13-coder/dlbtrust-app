@@ -41,6 +41,8 @@ const SETTING_TRUSTEE_FEE = 'debt_os_trustee_fee_pct';
 // When set to a cash account id, due coupons are settled internally into that ledger account
 // by the coupon scheduler instead of being disbursed by ACH.
 const SETTING_COUPON_LEDGER_ACCOUNT = 'debt_os_coupon_ledger_account';
+// Escrow ledger account holding cash that has been debited for a bank credit but not yet confirmed at the bank.
+const IN_TRANSIT_ACCOUNT = 'CA-BANK-IN-TRANSIT';
 
 // Retired bonds (test issues that were called, redeemed instruments) carry no placement obligation.
 const TERMINAL_STATUSES = ['called', 'matured', 'redeemed', 'cancelled'];
@@ -485,12 +487,97 @@ class DebtOsEngine {
     };
   }
 
+  // ── Bank leg: ledger → Lili ─────────────────────────────────────────────
+
+  /**
+   * One view of the whole fixed-income → bank path and what blocks each stage:
+   *   coupon accrual → coupon settled to ledger → hold accounts → ACH credit to Lili → RDFI post (Lili feed).
+   */
+  static async bankSettlementPath() {
+    const Lili = tryRequire('../payments/liliDirectDepositEngine')?.LiliDirectDepositEngine;
+    const Credit = tryRequire('./creditOsEngine')?.CreditOsEngine;
+    const [recurring, odfi, gate, dest] = await Promise.all([
+      settle(() => this.recurringCouponConfig()),
+      settle(() => Lili ? Lili.odfiStatus() : Promise.reject(new Error('LiliDirectDepositEngine unavailable'))),
+      settle(() => Credit ? Credit.gate(0) : Promise.reject(new Error('CreditOsEngine unavailable'))),
+      settle(() => Lili ? Lili.getDestination() : Promise.reject(new Error('LiliDirectDepositEngine unavailable'))),
+    ]);
+    const stages = [
+      { stage: 'coupon_to_ledger', ready: !!(recurring.ok && recurring.value.enabled), detail: recurring.ok ? recurring.value : { error: recurring.error } },
+      { stage: 'hold_accounts', ready: true, detail: 'apply-trust-structure tops beneficiary distribution accounts from the coupon ledger account' },
+      { stage: 'bank_destination', ready: !!(dest.ok && dest.value.configured), detail: dest.ok ? { bank: 'Lili', accountLast4: dest.value.accountNumberMasked } : { error: dest.error } },
+      { stage: 'odfi_origination', ready: !!(odfi.ok && odfi.value.ready), detail: odfi.ok ? odfi.value : { error: odfi.error } },
+      { stage: 'funded_source', ready: !!(gate.ok && gate.value.allowed), detail: gate.ok ? gate.value : { error: gate.error } },
+    ];
+    const blockers = stages.filter(s => !s.ready).map(s => s.stage);
+    return {
+      unified: true,
+      action: 'distribute-to-bank',
+      realValueCapable: blockers.length === 0,
+      stages,
+      blockers,
+      note: 'ledger statuses (paid/transmitted) are not bank settlement; only a Lili-feed reconciliation confirms arrival',
+    };
+  }
+
+  /**
+   * Move fixed income from a ledger account to the bank (Lili) in one step:
+   *   1. gate: Credit OS funded-source + ODFI origination must be ready (fail closed)
+   *   2. ledger: fromAccountId → CA-BANK-IN-TRANSIT (escrow) via CashEngine.transfer
+   *   3. rail: LiliDirectDepositEngine.createDirectDeposit (NACHA credit, auto-transmit)
+   * With `force:true` the ledger + NACHA record are still produced when the gate is closed, and the
+   * deposit stays `awaiting_odfi` (nothing leaves the platform).
+   */
+  static async distributeToBank({ fromAccountId, amount, memo, approvedBy, force = false, dryRun = false }) {
+    if (!pool) throw new Error('ledger unavailable');
+    if (!fromAccountId) throw new Error('fromAccountId (ledger cash account) required');
+    const cents = Math.round(num(amount) * 100);
+    if (cents <= 0) throw new Error('amount must be positive');
+    const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+    const Lili = tryRequire('../payments/liliDirectDepositEngine')?.LiliDirectDepositEngine;
+    if (!Cash || !Lili) throw new Error('CashEngine / LiliDirectDepositEngine unavailable');
+
+    const acct = await pool.query(`SELECT account_id, account_type, balance_cents FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [fromAccountId]);
+    if (!acct.rows[0]) throw new Error(`cash account ${fromAccountId} not found or not active`);
+    if (num(acct.rows[0].balance_cents) < cents) throw new Error(`insufficient ledger balance in ${fromAccountId}: ${num(acct.rows[0].balance_cents) / 100} < ${cents / 100}`);
+
+    const path = await this.bankSettlementPath();
+    const plan = {
+      fromAccountId, fromAccountType: acct.rows[0].account_type, amount: cents / 100,
+      inTransitAccountId: IN_TRANSIT_ACCOUNT, destination: 'Lili', gate: { allowed: path.realValueCapable, blockers: path.blockers },
+      basis: 'ledger debit to in-transit + NACHA credit; bank settlement only when reconciled against the Lili feed',
+    };
+    if (dryRun) return { dryRun: true, ...plan };
+    if (!path.realValueCapable && !force) throw new Error(`distribute-to-bank blocked: ${path.blockers.join(', ')} (pass force:true to stage the NACHA credit as awaiting_odfi)`);
+
+    await pool.query(
+      `INSERT INTO cash_accounts (account_id, account_name, account_type, notes) VALUES ($1, 'Bank Settlement In Transit', 'escrow', 'ledger cash awaiting bank (Lili) settlement')
+       ON CONFLICT (account_id) DO NOTHING`, [IN_TRANSIT_ACCOUNT]);
+    const mov = await Cash.transfer({
+      fromAccountId, toAccountId: IN_TRANSIT_ACCOUNT, amountCents: cents, movementType: 'withdrawal',
+      referenceType: 'distribute_to_bank', memo: memo || `Distribution to bank (${approvedBy || 'system'})`, initiatedBy: approvedBy || 'system',
+    });
+    const dep = await Lili.createDirectDeposit({
+      amountCents: cents, memo: memo || 'TRUST DIST', secCode: 'PPD', paymentType: 'trust_distribution',
+      sourceAccountId: fromAccountId, autoTransmit: path.realValueCapable, createdBy: approvedBy || 'system',
+    });
+    return {
+      ...plan,
+      movementId: mov.movement_id,
+      depositId: dep.deposit_id,
+      achBatchId: dep.ach_batch_id,
+      status: dep.status,
+      leftPlatform: dep.status === 'transmitted',
+      bankSettled: dep.status === 'reconciled',
+    };
+  }
+
   // ── Status ──────────────────────────────────────────────────────────────
 
   static async status() {
-    const [obligations, compliance, schedule, recurring] = await Promise.all([
+    const [obligations, compliance, schedule, recurring, bankPath] = await Promise.all([
       settle(() => this.obligations()), settle(() => this.placementCompliance()), settle(() => this.schedule(90)),
-      settle(() => this.recurringCouponConfig()),
+      settle(() => this.recurringCouponConfig()), settle(() => this.bankSettlementPath()),
     ]);
     return {
       engine: 'debt',
@@ -500,6 +587,7 @@ class DebtOsEngine {
       compliance: compliance.ok ? compliance.value : { error: compliance.error },
       schedule90d: schedule.ok ? schedule.value : { error: schedule.error },
       recurringCoupon: recurring.ok ? recurring.value : { error: recurring.error },
+      bankPath: bankPath.ok ? bankPath.value : { error: bankPath.error },
       timestamp: new Date().toISOString(),
     };
   }

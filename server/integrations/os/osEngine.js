@@ -8992,6 +8992,8 @@ class DebtEngine extends BaseOSEngine {
       case 'settle-coupon': return await Debt.settleCouponToLedger(payload);
       case 'recurring-coupon': return await Debt.recurringCouponConfig();
       case 'configure-recurring-coupon': return await Debt.configureRecurringCoupon(payload);
+      case 'bank-settlement-path': return await Debt.bankSettlementPath();
+      case 'distribute-to-bank': return await Debt.distributeToBank(payload);
       case 'readiness': return await this.readiness();
       case 'status':
       default: return await this.status();
