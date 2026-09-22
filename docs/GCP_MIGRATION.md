@@ -526,6 +526,15 @@ Status on `dlb-treasury-management` at the time of writing:
   annual coupon and the 90-day coupon/principal schedule, and goes `shadow`
   the moment a bond is marked public or a holder outside trust/family (or
   without verified KYC) appears in `crm_bond_subscriptions`.
+  Trust structure (`POST /api/os/debt/process`, actions `holder-register`,
+  `register-holders`, `trust-structure`, `apply-trust-structure`, all with
+  `dryRun`): the family trust company (contact tagged `trust-company`) is the
+  sole bondholder; trustees administer it for a fee inside 1–3%
+  (`system_settings.debt_os_trustee_fee_pct`, booked to the `fee` cash
+  account); each beneficiary has a hold account `CA-<contact_id>`
+  (`distribution` cash account) topped up to a retained balance (default
+  $250,000) from a named ledger funding account. All values are ledger
+  book entries, not bank funds.
 - **Liquidity OS** — wired; `shadow` until the `reserve` cash tier covers at
   least 1x the annual coupon and a real-value payout source exists (today
   bond proceeds sit in `bond_proceeds`, `reserve` is 0, and the only payout

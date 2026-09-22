@@ -27,8 +27,17 @@ async function settle(fn) {
 
 const TABLES = ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'crm_contacts'];
 
-// Only these CRM contact types may hold the private-placement bond.
+// Only these CRM contact types may hold the private-placement bond — plus the family trust
+// company itself (a contact tagged TRUST_COMPANY_TAG), which is the issuer-holder.
 const ALLOWED_HOLDER_TYPES = ['trustee', 'beneficiary'];
+const TRUST_COMPANY_TAG = 'trust-company';
+const isAllowedHolder = c => ALLOWED_HOLDER_TYPES.includes(c.contact_type) || (Array.isArray(c.tags) && c.tags.includes(TRUST_COMPANY_TAG));
+
+// Trust structure defaults: each beneficiary hold account retains this balance; trustees
+// earn an administration/distribution fee inside this band.
+const DEFAULT_HOLD_BALANCE = 250000;
+const TRUSTEE_FEE_BAND_PCT = { min: 1, max: 3 };
+const SETTING_TRUSTEE_FEE = 'debt_os_trustee_fee_pct';
 
 // Retired bonds (test issues that were called, redeemed instruments) carry no placement obligation.
 const TERMINAL_STATUSES = ['called', 'matured', 'redeemed', 'cancelled'];
@@ -60,7 +69,7 @@ class DebtOsEngine {
     const bond = b.rows[0];
     const s = await pool.query(
       `SELECT s.subscription_id, s.contact_id, s.subscription_amount, s.settlement_date, s.status, s.cash_account_id,
-              c.contact_type, c.first_name, c.last_name, c.kyc_status, c.aml_status, c.fineract_client_id
+              c.contact_type, c.tags, c.first_name, c.last_name, c.company, c.kyc_status, c.aml_status, c.fineract_client_id
          FROM crm_bond_subscriptions s JOIN crm_contacts c ON c.contact_id = s.contact_id
         WHERE s.bond_id = $1 AND s.status = 'active' ORDER BY s.subscription_amount DESC, s.created_at`, [bondId]);
     const subscribed = s.rows.reduce((t, r) => t + num(r.subscription_amount), 0);
@@ -73,8 +82,9 @@ class DebtOsEngine {
         subscriptionId: r.subscription_id,
         contactId: r.contact_id,
         name: `${r.first_name} ${r.last_name}`.trim(),
-        role: r.contact_type,
-        allowed: ALLOWED_HOLDER_TYPES.includes(r.contact_type),
+        company: r.company,
+        role: Array.isArray(r.tags) && r.tags.includes(TRUST_COMPANY_TAG) ? 'trust-company' : r.contact_type,
+        allowed: isAllowedHolder(r),
         kyc: r.kyc_status,
         aml: r.aml_status,
         fineractClientId: r.fineract_client_id,
@@ -113,7 +123,7 @@ class DebtOsEngine {
     const Crm = tryRequire('../crm/crmEngine')?.CrmEngine;
     if (!Crm) throw new Error('CrmEngine unavailable');
     for (const h of holders) {
-      if (!ALLOWED_HOLDER_TYPES.includes(h.contactType)) throw new Error(`holder ${h.firstName} ${h.lastName}: contactType must be one of ${ALLOWED_HOLDER_TYPES.join('/')}`);
+      if (!ALLOWED_HOLDER_TYPES.includes(h.contactType) && !h.trustCompany) throw new Error(`holder ${h.firstName} ${h.lastName}: contactType must be one of ${ALLOWED_HOLDER_TYPES.join('/')}`);
     }
     const reg = await this.holderRegister(bondId);
     if (reg.placementType !== 'private') throw new Error(`bond ${reg.bondName} is not a private placement`);
@@ -128,7 +138,7 @@ class DebtOsEngine {
     const plan = [];
     for (const h of holders) {
       let c = h.contactId ? existing.rows.find(r => r.contact_id === h.contactId) : null;
-      if (!c) c = existing.rows.find(r => r.contact_type === h.contactType && norm(r.first_name) === norm(h.firstName) && norm(r.last_name) === norm(h.lastName));
+      if (!c) c = existing.rows.find(r => (h.trustCompany || r.contact_type === h.contactType) && norm(r.first_name) === norm(h.firstName) && norm(r.last_name) === norm(h.lastName));
       const amount = Math.round((h.amount != null ? num(h.amount) : total * num(h.sharePct) / 100) * 100) / 100;
       plan.push({ holder: h, contact: c || null, create: !c, amount });
     }
@@ -138,8 +148,12 @@ class DebtOsEngine {
     const created = [];
     for (const p of plan) {
       if (p.create) {
-        const c = await Crm.createContact({ contactType: p.holder.contactType, firstName: p.holder.firstName, lastName: p.holder.lastName, email: p.holder.email, notes: `private-placement holder (registered by ${approvedBy || 'system'})` });
+        const c = await Crm.createContact({ contactType: p.holder.contactType, firstName: p.holder.firstName, lastName: p.holder.lastName, company: p.holder.company, email: p.holder.email, tags: p.holder.trustCompany ? [TRUST_COMPANY_TAG] : null, notes: `private-placement holder (registered by ${approvedBy || 'system'})` });
         p.contact = c; created.push(c.contact_id);
+      } else if (p.holder.trustCompany && !(Array.isArray(p.contact.tags) && p.contact.tags.includes(TRUST_COMPANY_TAG))) {
+        await pool.query(`UPDATE crm_contacts SET tags = array_append(COALESCE(tags, '{}'), $2), updated_at = NOW() WHERE contact_id = $1`, [p.contact.contact_id, TRUST_COMPANY_TAG]);
+      } else if (!p.holder.trustCompany && p.contact.contact_type !== p.holder.contactType) {
+        await pool.query(`UPDATE crm_contacts SET contact_type = $2, updated_at = NOW() WHERE contact_id = $1`, [p.contact.contact_id, p.holder.contactType]);
       }
       if (p.contact.kyc_status !== 'verified') await Crm.updateKycStatus(p.contact.contact_id, 'verified');
       if ('approval_status' in p.contact && p.contact.approval_status !== 'approved') await Crm.approveContact(p.contact.contact_id, approvedBy || 'system');
@@ -218,14 +232,14 @@ class DebtOsEngine {
     if (pool) {
       const r = await pool.query(
         `SELECT s.bond_id, s.subscription_id, s.subscription_amount, s.status AS subscription_status,
-                c.contact_id, c.contact_type, c.kyc_status, c.aml_status, c.status AS contact_status
+                c.contact_id, c.contact_type, c.tags, c.kyc_status, c.aml_status, c.status AS contact_status
            FROM crm_bond_subscriptions s
            JOIN crm_contacts c ON c.contact_id = s.contact_id
           WHERE s.status IN ('pending', 'active')`
       );
       holders = r.rows;
     }
-    const external = holders.filter(h => !ALLOWED_HOLDER_TYPES.includes(h.contact_type));
+    const external = holders.filter(h => !isAllowedHolder(h));
     const unverified = holders.filter(h => h.kyc_status !== 'verified');
     const amlFlagged = holders.filter(h => h.aml_status && h.aml_status !== 'clear');
     if (external.length) issues.push(`${external.length} holder(s) outside trust/family (contact_type not in ${ALLOWED_HOLDER_TYPES.join('/')}): ${external.map(h => h.contact_id).join(', ')}`);
@@ -245,6 +259,126 @@ class DebtOsEngine {
       externalHolders: external.length,
       unverifiedHolders: unverified.length,
       issues,
+    };
+  }
+
+  // ── Trust structure ─────────────────────────────────────────────────────
+  // Issuer-holder (the family trust company) holds the bond; trustees administer it
+  // and earn a fee inside TRUSTEE_FEE_BAND_PCT; each beneficiary has a hold account
+  // (distribution cash account) retained at a fixed balance. Ledger cash only.
+
+  static async trusteeFeePct() {
+    const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
+    const v = Settings ? num(await Settings.get(SETTING_TRUSTEE_FEE)) : 0;
+    return v || TRUSTEE_FEE_BAND_PCT.min;
+  }
+
+  static async trustStructure(bondId) {
+    if (!pool) throw new Error('ledger unavailable');
+    const reg = await this.holderRegister(bondId);
+    const people = await pool.query(
+      `SELECT c.contact_id, c.contact_type, c.first_name, c.last_name, c.company, c.kyc_status, c.aml_status, c.tags,
+              a.account_id, a.account_name, a.balance_cents, a.status AS account_status
+         FROM crm_contacts c LEFT JOIN cash_accounts a ON a.account_id = 'CA-' || c.contact_id
+        WHERE c.contact_type IN ('trustee', 'beneficiary') AND c.status = 'active' ORDER BY c.contact_type, c.id`);
+    const feePct = await this.trusteeFeePct();
+    const fee = await pool.query(`SELECT account_id, balance_cents FROM cash_accounts WHERE account_type = 'fee' AND status = 'active' ORDER BY id LIMIT 1`);
+    const row = r => ({
+      contactId: r.contact_id, name: `${r.first_name} ${r.last_name}`.trim(), kyc: r.kyc_status, aml: r.aml_status,
+      holdAccount: r.account_id ? { accountId: r.account_id, balance: num(r.balance_cents) / 100, status: r.account_status } : null,
+    });
+    return {
+      bondId: reg.bondId,
+      bondName: reg.bondName,
+      issuerHolder: reg.holders.filter(h => h.role === 'trust-company'),
+      otherHolders: reg.holders.filter(h => h.role !== 'trust-company'),
+      bondValue: reg.totals,
+      trustees: people.rows.filter(r => r.contact_type === 'trustee').map(row),
+      beneficiaries: people.rows.filter(r => r.contact_type === 'beneficiary').map(r => ({ ...row(r), retainedBalanceTarget: DEFAULT_HOLD_BALANCE })),
+      trusteeFee: { pct: feePct, band: TRUSTEE_FEE_BAND_PCT, appliesTo: 'administration, distribution & disbursement', feeAccount: fee.rows[0] ? { accountId: fee.rows[0].account_id, balance: num(fee.rows[0].balance_cents) / 100 } : null },
+      basis: 'ledger cash_accounts book balances, not bank funds',
+    };
+  }
+
+  /**
+   * Apply the trust structure:
+   *   trustCompany  { contactId?, firstName, lastName, company }  -> sole holder of the bond (tagged trust-company)
+   *   trustees      [{ contactId?, firstName, lastName }]
+   *   beneficiaries [{ contactId?, firstName, lastName }]         -> hold account 'CA-<contactId>' funded to holdBalance
+   *   holdBalance   retained balance per beneficiary (default 250000)
+   *   feePct        trustee fee within TRUSTEE_FEE_BAND_PCT, stored as a system setting
+   *   fromAccountId ledger cash account funding the hold accounts (and the fee)
+   */
+  static async applyTrustStructure({ bondId, trustCompany, trustees = [], beneficiaries = [], holdBalance = DEFAULT_HOLD_BALANCE, feePct, fromAccountId, approvedBy, dryRun = false }) {
+    if (!pool) throw new Error('ledger unavailable');
+    if (!trustCompany) throw new Error('trustCompany required');
+    if (!beneficiaries.length) throw new Error('beneficiaries[] required');
+    if (!fromAccountId) throw new Error('fromAccountId (funding cash account) required');
+    const rate = feePct == null ? await this.trusteeFeePct() : num(feePct);
+    if (rate < TRUSTEE_FEE_BAND_PCT.min || rate > TRUSTEE_FEE_BAND_PCT.max) throw new Error(`feePct must be within ${TRUSTEE_FEE_BAND_PCT.min}-${TRUSTEE_FEE_BAND_PCT.max}`);
+    const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+    const Crm = tryRequire('../crm/crmEngine')?.CrmEngine;
+    const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
+    if (!Cash || !Crm) throw new Error('CashEngine / CrmEngine unavailable');
+
+    // 1. Bond register: the trust company is the sole holder.
+    const register = await this.registerHolders({
+      bondId, approvedBy, dryRun,
+      holders: [{ ...trustCompany, contactType: trustCompany.contactType || 'investor', trustCompany: true, sharePct: 100 }],
+    });
+
+    // 2. Trustees + beneficiaries exist with the right role, verified KYC, approval.
+    const ensure = async (h, contactType) => {
+      const existing = await pool.query(`SELECT * FROM crm_contacts`);
+      const norm = v => String(v || '').replace(/[^a-z]/gi, '').toLowerCase();
+      let c = h.contactId ? existing.rows.find(r => r.contact_id === h.contactId) : null;
+      if (!c) c = existing.rows.find(r => norm(r.first_name) === norm(h.firstName) && norm(r.last_name) === norm(h.lastName) && (r.contact_type === contactType || !existing.rows.some(o => o.contact_type === contactType && norm(o.first_name) === norm(h.firstName) && norm(o.last_name) === norm(h.lastName))));
+      if (dryRun) return { contactId: c?.contact_id || null, create: !c, retype: c ? c.contact_type !== contactType : false, name: `${h.firstName} ${h.lastName}` };
+      if (!c) c = await Crm.createContact({ contactType, firstName: h.firstName, lastName: h.lastName, email: h.email, notes: `trust structure (${approvedBy || 'system'})` });
+      else if (c.contact_type !== contactType) await pool.query(`UPDATE crm_contacts SET contact_type = $2, updated_at = NOW() WHERE contact_id = $1`, [c.contact_id, contactType]);
+      if (c.kyc_status !== 'verified') await Crm.updateKycStatus(c.contact_id, 'verified');
+      if ('approval_status' in c && c.approval_status !== 'approved') await Crm.approveContact(c.contact_id, approvedBy || 'system');
+      return { contactId: c.contact_id, name: `${h.firstName} ${h.lastName}` };
+    };
+    const trusteeRows = [];
+    for (const t of trustees) trusteeRows.push(await ensure(t, 'trustee'));
+    const beneficiaryRows = [];
+    for (const b of beneficiaries) beneficiaryRows.push(await ensure(b, 'beneficiary'));
+
+    // 3. Hold accounts funded to the retained balance from the ledger funding account.
+    const targetCents = Math.round(num(holdBalance) * 100);
+    const funding = [];
+    for (const b of beneficiaryRows) {
+      const accountId = b.contactId ? `CA-${b.contactId}` : null;
+      const acct = accountId ? await pool.query(`SELECT account_id, balance_cents, status FROM cash_accounts WHERE account_id = $1`, [accountId]) : { rows: [] };
+      const current = acct.rows[0] ? num(acct.rows[0].balance_cents) : 0;
+      const topUp = Math.max(0, targetCents - current);
+      funding.push({ beneficiary: b.name, contactId: b.contactId, accountId, createAccount: !acct.rows[0], currentBalance: current / 100, topUp: topUp / 100 });
+      if (dryRun || !topUp) continue;
+      if (!acct.rows[0]) await Cash.createAccount({ accountId, accountName: `${b.name} Hold Account`, accountType: 'distribution', notes: `Beneficiary hold account for ${b.contactId}` });
+      const mov = await Cash.transfer({ fromAccountId, toAccountId: accountId, amountCents: topUp, movementType: 'distribution', referenceId: `BOND-${bondId}`, referenceType: 'trust_structure', memo: `Beneficiary hold account retained balance ${holdBalance} (${approvedBy || 'system'})`, initiatedBy: approvedBy || 'system' });
+      funding[funding.length - 1].movementId = mov.movement_id;
+    }
+
+    // 4. Trustee fee on the distributions just made, to the fee account.
+    const distributed = funding.reduce((t, f) => t + Math.round(f.topUp * 100), 0);
+    const feeCents = Math.round(distributed * rate / 100);
+    const feeAcct = await pool.query(`SELECT account_id FROM cash_accounts WHERE account_type = 'fee' AND status = 'active' ORDER BY id LIMIT 1`);
+    let feeMovement = null;
+    if (!dryRun) {
+      if (Settings) await Settings.set(SETTING_TRUSTEE_FEE, rate, approvedBy || 'system');
+      if (feeCents > 0 && feeAcct.rows[0]) {
+        const mov = await Cash.transfer({ fromAccountId, toAccountId: feeAcct.rows[0].account_id, amountCents: feeCents, movementType: 'fee', referenceId: `BOND-${bondId}`, referenceType: 'trustee_fee', memo: `Trustee administration/distribution fee ${rate}% on ${distributed / 100} (${approvedBy || 'system'})`, initiatedBy: approvedBy || 'system' });
+        feeMovement = mov.movement_id;
+      }
+    }
+
+    return {
+      dryRun, bondId, register,
+      trustees: trusteeRows, beneficiaries: beneficiaryRows,
+      holdBalance: num(holdBalance), funding, fundedFrom: fromAccountId,
+      trusteeFee: { pct: rate, band: TRUSTEE_FEE_BAND_PCT, onDistributed: distributed / 100, amount: feeCents / 100, feeAccount: feeAcct.rows[0]?.account_id || null, movementId: feeMovement },
+      structure: dryRun ? null : await this.trustStructure(bondId),
     };
   }
 

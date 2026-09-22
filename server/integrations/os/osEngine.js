@@ -8987,6 +8987,8 @@ class DebtEngine extends BaseOSEngine {
       case 'schedule': return await Debt.schedule(payload.days);
       case 'holder-register': return await Debt.holderRegister(payload.bondId);
       case 'register-holders': return await Debt.registerHolders(payload);
+      case 'trust-structure': return await Debt.trustStructure(payload.bondId);
+      case 'apply-trust-structure': return await Debt.applyTrustStructure(payload);
       case 'readiness': return await this.readiness();
       case 'status':
       default: return await this.status();

@@ -93,6 +93,27 @@ describe('DebtOsEngine.registerHolders', () => {
   });
 });
 
+describe('DebtOsEngine.applyTrustStructure', () => {
+  it('rejects a trustee fee outside the 1-3% band and plans hold-account top-ups to the retained balance (dry run)', async () => {
+    stubBond();
+    const base = { bondId: 1, fromAccountId: 'CA-OPERATING', trustCompany: { firstName: 'DLB', lastName: 'Family Trust Company' }, beneficiaries: [{ firstName: 'Jeremy N', lastName: 'Robinson' }] };
+    await expect(DebtOsEngine.applyTrustStructure({ ...base, feePct: 5 })).rejects.toThrow(/feePct must be within 1-3/);
+    (pool.query as any).mockImplementation(async (text: string) => {
+      if (/FROM crm_contacts$/i.test(text.trim())) return { rows: [{ contact_id: 'CRM-BEN-7', contact_type: 'trustee', first_name: 'Jeremy N', last_name: 'Robinson', kyc_status: 'verified' }] } as any;
+      if (/FROM cash_accounts WHERE account_id/.test(text)) return { rows: [{ account_id: 'CA-CRM-BEN-7', balance_cents: 10000000, status: 'active' }] } as any;
+      if (/account_type = 'fee'/.test(text)) return { rows: [{ account_id: 'CA-FEE' }] } as any;
+      return { rows: [] } as any;
+    });
+    vi.spyOn(DebtOsEngine, 'holderRegister').mockResolvedValue({ bondName: 'DLB-PRB', placementType: 'private', totals: { principalBalance: 98524627.51 }, holders: [{ subscriptionId: 'CRM-INV-001' }] });
+    const r = await DebtOsEngine.applyTrustStructure({ ...base, feePct: 1, dryRun: true });
+    expect(r.register.plan[0]).toEqual(expect.objectContaining({ create: true, amount: 98524627.51 }));
+    expect(r.register.superseded).toEqual(['CRM-INV-001']);
+    expect(r.beneficiaries[0]).toEqual(expect.objectContaining({ contactId: 'CRM-BEN-7', retype: true }));
+    expect(r.funding[0]).toEqual(expect.objectContaining({ accountId: 'CA-CRM-BEN-7', currentBalance: 100000, topUp: 150000 }));
+    expect(r.trusteeFee).toEqual(expect.objectContaining({ pct: 1, onDistributed: 150000, amount: 1500, feeAccount: 'CA-FEE', movementId: null }));
+  });
+});
+
 describe('LiquidityOsEngine', () => {
   it('measures liquid ledger cash against the debt schedule and reserve tier without calling it bank funds', async () => {
     stubBond({ next_coupon_date: daysFromNow(10) });
