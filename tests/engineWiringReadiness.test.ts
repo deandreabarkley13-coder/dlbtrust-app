@@ -13,6 +13,7 @@ const { EngineWiringReadiness } = require('../server/integrations/os/engineWirin
 const { ApiGatewayClearingEngine } = require('../server/integrations/dapp/apiGatewayClearingEngine');
 const paymentHubConfig = require('../server/integrations/paymentHub/paymentHubConfig');
 const OS = require('../server/integrations/os/osEngine');
+const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -55,6 +56,12 @@ function stubProviders() {
     ready: true, canTransmit: true, issues: [], warnings: [],
     config: { mode: 'phee', live: true, accountingOwner: 'dlbtrust', approvalThreshold: 2, baseUrlConfigured: true },
   });
+  vi.spyOn(CreditOsEngine, 'fundingSources').mockResolvedValue({
+    sources: [{ id: 'bank_odfi', configured: true, mode: 'live', realValueCapable: true, reason: 'external channel(s): sftp', channels: ['sftp'], loopback: [] }],
+    realValueCapable: ['bank_odfi'], anyRealValueCapable: true,
+  });
+  vi.spyOn(CreditOsEngine, 'ledgerValidation').mockResolvedValue({ valid: true, issues: [], trustGl: { balanced: true }, fineractGl: { connected: true }, openDiscrepancies: 0 });
+  vi.spyOn(CreditOsEngine, 'creditPipeline').mockResolvedValue({ deposits: {}, achBatches: {}, unverifiedTransmitted: 0, unverified: [] });
 }
 
 beforeEach(() => {
@@ -70,8 +77,8 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the five capabilities in the OS route map', () => {
-    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop']) {
+  it('registers every engine behind the six capabilities in the OS route map', () => {
+    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
     }
@@ -82,6 +89,7 @@ describe('platform engine registry', () => {
     expect(OS.ApacheApisixEngine.platformEngine).toBe('gateway');
     expect(OS.ReconciliationEngine.platformEngine).toBe('reconciliation');
     expect(OS.InteropEngine.platformEngine).toBe('interop');
+    expect(OS.CreditEngine.platformEngine).toBe('credit');
   });
 
   it('exposes readiness through the OS router and the finops cross-chain router', () => {
@@ -97,7 +105,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all five engines ready and healthy with the GCP config in place', async () => {
+  it('reports all six engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -107,7 +115,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'gateway', 'interop', 'payment', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'gateway', 'interop', 'payment', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -116,7 +124,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(5);
+    expect(report.readyCount).toBe(6);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -126,6 +134,31 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.reconciliation.mode).toBe('live');
     expect(report.engines.interop.mode).toBe('shadow');
     expect(report.engines.interop.liveFlags.CROSS_CHAIN_SHADOW).toBe(true);
+    expect(report.engines.credit.mode).toBe('live');
+    expect(report.engines.credit.provider).toBe('bank_odfi');
+  });
+
+  it('credit engine stays validation-only and blocked when every funding source is test-mode, Skrill or a loopback ODFI', async () => {
+    stubCloudSql();
+    stubProviders();
+    (CreditOsEngine.fundingSources as any).mockResolvedValue({
+      sources: [
+        { id: 'stripe_treasury', configured: true, mode: 'test', realValueCapable: false, reason: 'test-mode key (sandbox)' },
+        { id: 'skrill', configured: true, mode: 'live', realValueCapable: false, reason: 'Skrill-to-Skrill only' },
+        { id: 'bank_odfi', configured: true, mode: 'loopback', realValueCapable: false, reason: 'Only self-loopback ODFI partner(s) configured (as2_partner:DLBTRUST-DIRECT)', channels: [], loopback: ['as2_partner:DLBTRUST-DIRECT'] },
+      ],
+      realValueCapable: [], anyRealValueCapable: false,
+    });
+    (CreditOsEngine.creditPipeline as any).mockResolvedValue({ deposits: { transmitted: 2 }, achBatches: { accepted: 2 }, unverifiedTransmitted: 2, unverified: [] });
+    const credit = await EngineWiringReadiness.engineReadiness('credit');
+    expect(credit.ready).toBe(false);
+    expect(credit.healthy).toBe(true);
+    expect(credit.mode).toBe('shadow');
+    expect(credit.provider).toBe('validation-only');
+    expect(credit.liveFlags.STRIPE_KEY_MODE).toBe('test');
+    expect(credit.liveFlags.BANK_ODFI_EXTERNAL).toBe(false);
+    expect(credit.blockers.some((b: string) => /no funded real-value origination source/.test(b) && /DLBTRUST-DIRECT/.test(b))).toBe(true);
+    expect(credit.blockers.some((b: string) => /2 credit\(s\) marked transmitted with no bank confirmation/.test(b))).toBe(true);
   });
 
   it('routes every OS engine readiness() onto its platform report', async () => {

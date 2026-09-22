@@ -8927,6 +8927,36 @@ class InteropEngine extends BaseOSEngine {
   }
 }
 
+// ─── Credit OS Engine ─────────────────────────────────────────────────────────
+// Outbound-credit control tower (CreditOsEngine): funding-source inventory,
+// trust GL / Fineract GL validation and the treasury → Lili credit pipeline.
+
+class CreditEngine extends BaseOSEngine {
+  static get engineName() { return 'credit'; }
+  static get platformEngine() { return 'credit'; }
+
+  static async status() {
+    const Credit = tryRequire('./creditOsEngine')?.CreditOsEngine;
+    if (!Credit) return { engine: 'credit', healthy: false, mode: 'shadow', integrations: { creditOs: false }, timestamp: new Date().toISOString() };
+    const s = await Credit.status();
+    return { ...s, integrations: { creditOs: true } };
+  }
+
+  static async _process(action, payload) {
+    const Credit = tryRequire('./creditOsEngine')?.CreditOsEngine;
+    if (!Credit) return { mode: 'shadow', note: 'CreditOsEngine not available' };
+    switch (action) {
+      case 'fundingSources': return await Credit.fundingSources();
+      case 'ledger': return await Credit.ledgerValidation();
+      case 'pipeline': return await Credit.creditPipeline();
+      case 'gate': return await Credit.gate(payload.amountCents);
+      case 'readiness': return await this.readiness();
+      case 'status':
+      default: return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -8965,6 +8995,7 @@ const ENGINES = {
   'live-money': LiveMoneyEngine,
   reconciliation: ReconciliationEngine,
   interop: InteropEngine,
+  credit: CreditEngine,
 };
 
 async function ensureAll() {
@@ -8984,6 +9015,7 @@ module.exports = {
   PaymentEngine,
   ReconciliationEngine,
   InteropEngine,
+  CreditEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

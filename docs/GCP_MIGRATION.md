@@ -470,13 +470,13 @@ Secrets to add to `secret_names` when going live: `APIGEE_API_KEY` or
 
 ## Platform engines — wiring state on `dlb-treasury-management`
 
-The five platform engines are audited by one module,
+The six platform engines are audited by one module,
 `server/integrations/os/engineWiringReadiness.js`, exposed as
-`GET /api/os/readiness` (all five; HTTP 503 until every engine is `ready`) and
-`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop}`.
+`GET /api/os/readiness` (all six; HTTP 503 until every engine is `ready`) and
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit}`.
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
-`interop` map onto the five reports; other engines get the generic Cloud SQL +
+`interop`, `credit` map onto the six reports; other engines get the generic Cloud SQL +
 project check). Each report carries `gcp` (project vs. the expected
 `dlb-treasury-management`, Cloud Run revision, Cloud SQL connectivity, evidence
 bucket), `tables` (which Cloud SQL tables exist), `liveFlags`, `secrets` and
@@ -494,6 +494,7 @@ reported as a blocker.
 | Bank Clearing & Settlement | OS `ClearingEngine`, `SettlementEngine` → `clearingApiEngine`, `dapp/settlementEngine`, `stablecoin/clearingAndSettlementEngine`, `clearingAutoFormatEngine` | `/api/os/{clearing,settlement}/*`, `/api/dapp/settlements` | `LILI_CLEARING_LIVE` (rail), `PAYMENT_HUB_LIVE` (ACH), `CLEARING_API_ENDPOINT` (external clearing API, unset) | `clearing_settlements`, `settlements`, `stablecoin_clearing_orders`, `os_events` | evidence bucket via the gateway pipeline | none beyond the gateway/payment-hub sets; `CLEARING_API_KEY` only if `CLEARING_API_ENDPOINT` is set |
 | Reconciliation & Matching | OS `ReconciliationEngine` → `ACHReconciliation.runReconciliation`, `DataBridge.getReconciliationReport` / `reconcile*`, `BookkeepingAgent.reconcileACH/Wires`, `ApiGatewayClearingEngine.reconcile` | `/api/os/reconciliation/*`, `/api/ach-pipeline/reconciliation/*`, `/api/accounting/bridge/{report,reconcile/*}`, `/api/agents/bookkeeping/reconcile-*`, `/api/dapp/clearing-pipeline/events/:id/reconcile` | internal ledger; live whenever Cloud SQL is reachable | `ach_reconciliations`, `ach_batches`, `gateway_clearing_events`, `bookkeeping_reconciliations`, `data_bridge_discrepancies` (ensured at boot by `OSEngine.ensureAll` → `ReconciliationEngine.ensureTables`, except `ach_batches`, which comes from `server/scripts/migrate-ach.sql` / the Northflank restore and is flagged by readiness if absent) | — | none (`DATABASE_URL` only) |
 | Interoperability OS | OS `InteropEngine` → `crossChainConversionEngine`, `m2mOsEngine` | `/api/os/interop/*`, `/api/finops/cross-chain/*` (`/readiness` included), `/api/m2m-os/*` | `CROSS_CHAIN_ENABLED=true`, `CROSS_CHAIN_SHADOW=false` (live, parity with Northflank `DAPP_SHADOW=false`), `CROSS_CHAIN_SOURCE_CHAIN=ethereum`, `CROSS_CHAIN_BRIDGE=circle-cctp` | `cross_chain_requests`, `m2m_identities`, `m2m_partners`, `m2m_events` | — | `DAPP_RPC_URL`, `DAPP_PRIVATE_KEY` (cloudrun.tf precondition refuses `CROSS_CHAIN_SHADOW=false` without them); M2M uses `PAYMENT_DATA_ENCRYPTION_KEY` |
+| Credit OS | OS `CreditEngine` → `creditOsEngine` (funding-source inventory, trust GL trial balance + Fineract GL tie-out, treasury → Lili credit pipeline, `gate(amountCents)`) | `/api/os/credit/*`, `/api/os/readiness/credit`, `/api/finops/lili/direct-deposits/status` | `live` only when a **real-value** origination source exists: live `STRIPE_SECRET_KEY` + `STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`, or an external bank ODFI partner. Skrill (`SKRILL_*`) is reported but never real-value-capable (Skrill-to-Skrill API only). Self-loopback partners (`DLBTRUST-DIRECT`, `partner_url=direct`) are reported as `loopback`, not as a channel | `lili_direct_deposits`, `lili_payments`, `ach_batches`, `trust_accounts`, `trust_journal_entries`, `data_bridge_discrepancies`, `os_events` | — | `FINERACT_URL`/`FINERACT_USERNAME`/`FINERACT_PASSWORD`/`FINERACT_TENANT_ID` (GL tie-out, `dlbtrust-fineract` Cloud Run, internal ingress); one real-value source as above |
 
 Status on `dlb-treasury-management` at the time of writing:
 
@@ -512,6 +513,12 @@ Status on `dlb-treasury-management` at the time of writing:
   group and are copied by `migrate-northflank-secrets.mjs`, so they are in
   `secret_names` and `CROSS_CHAIN_SHADOW=false` passes the cloudrun.tf
   precondition.
+- **Credit OS** — wired; `validation-only`/`shadow` on the deployed project:
+  Stripe key is `sk_test_` (sandbox Treasury account, test dollars), Skrill has
+  no bank-push API, and the default ACH partner is the self-loopback
+  `DLBTRUST-DIRECT`. It flags every credit marked `transmitted` without a
+  `lili_transaction_id` as unconfirmed. Goes `live` when a live Stripe Treasury
+  key/financial account or an external ODFI partner is configured.
 
 Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
 the admin token): Cloud SQL connected, evidence bucket present, all five

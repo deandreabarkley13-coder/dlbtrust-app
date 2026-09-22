@@ -52,6 +52,7 @@ const {
   LiveMoneyEngine,
   ReconciliationEngine,
   InteropEngine,
+  CreditEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -110,6 +111,7 @@ const ENGINES = {
   'live-money': LiveMoneyEngine,
   reconciliation: ReconciliationEngine,
   interop: InteropEngine,
+  credit: CreditEngine,
 };
 
 function sendError(res, err) {
