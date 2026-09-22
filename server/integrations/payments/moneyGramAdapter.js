@@ -3,13 +3,18 @@
 /**
  * MoneyGram disbursement adapter.
  *
- * OAuth2 client-credentials against `{tokenUrl}` (default
- * `{baseUrl}/oauth/accesstoken`), then MoneyGram's multi-step send flow:
+ * Follows the MoneyGram Transfer API (developer.moneygram.com):
  *
- *   quote  → POST {quotePath}
- *   send   → PUT  {sendPath}/{transactionId}
- *   commit → PUT  {sendPath}/{transactionId}/commit
- *   status → GET  {statusPath}/{transactionId}
+ *   token  → GET  {tokenUrl}?grant_type=client_credentials   (Basic client_id:client_secret)
+ *   quote  → POST /transfer/v1/transactions/quote
+ *   send   → PUT  /transfer/v1/transactions/{transactionId}  ("Update a Transaction"; must return readyForCommit: true)
+ *   commit → PUT  /transfer/v1/transactions/{transactionId}/commit → referenceNumber
+ *   status → GET  /status/v1/transactions/{transactionId} | ?referenceNumber=
+ *
+ * Every call carries `X-MG-ClientRequestId` and every body carries
+ * `targetAudience` + `userLanguage`. Hosts: sandboxapi.moneygram.com /
+ * api.moneygram.com. `tokenMethod: 'POST'` + `credentialsInBody` are kept for
+ * gateways that front the same flow with a form-encoded token endpoint.
  *
  * Every value (URLs, credentials, partner id, X-MG-* headers, paths) comes from
  * the caller — the Live FinTech engine reads them from the endpoint row. This
@@ -24,9 +29,11 @@ const crypto = require('crypto');
 const { httpRequest, maskSecret } = require('../dapp/externalEndpointEngine');
 
 const DEFAULT_TOKEN_PATH = '/oauth/accesstoken';
-const DEFAULT_QUOTE_PATH = '/disbursement/v1/transactions/quote';
-const DEFAULT_SEND_PATH = '/disbursement/v1/transactions';
+const DEFAULT_QUOTE_PATH = '/transfer/v1/transactions/quote';
+const DEFAULT_SEND_PATH = '/transfer/v1/transactions';
 const DEFAULT_STATUS_PATH = '/status/v1/transactions';
+const DEFAULT_TARGET_AUDIENCE = 'AGENT_FACING';
+const DEFAULT_USER_LANGUAGE = 'en-US';
 const TOKEN_REFRESH_SKEW_MS = 60000;
 
 // Status values reported by MoneyGram's transaction status resource, mapped to
@@ -80,7 +87,10 @@ class MoneyGramAdapter {
    * @param {string} [cfg.tokenUrl]           defaults to `${baseUrl}/oauth/accesstoken`
    * @param {string} cfg.clientId
    * @param {string} cfg.clientSecret
-   * @param {boolean} [cfg.credentialsInBody] client_id/secret in the form body instead of Basic auth
+   * @param {string}  [cfg.tokenMethod]       'GET' (MoneyGram default, grant_type as query) or 'POST' (form body)
+   * @param {boolean} [cfg.credentialsInBody] with POST: client_id/secret in the form body instead of Basic auth
+   * @param {string}  [cfg.targetAudience]    default AGENT_FACING
+   * @param {string}  [cfg.userLanguage]      default en-US
    * @param {string} [cfg.scope]
    * @param {string} [cfg.agentPartnerId]     sent as `agentPartnerId` on quote/send and as X-MG-AgentPartnerId
    * @param {string} [cfg.partnerName]
@@ -95,7 +105,10 @@ class MoneyGramAdapter {
     this.tokenUrl = cfg.tokenUrl || joinUrl(this.baseUrl, DEFAULT_TOKEN_PATH);
     this.clientId = cfg.clientId;
     this.clientSecret = cfg.clientSecret;
+    this.tokenMethod = String(cfg.tokenMethod || 'GET').toUpperCase() === 'POST' ? 'POST' : 'GET';
     this.credentialsInBody = cfg.credentialsInBody === true;
+    this.targetAudience = cfg.targetAudience || DEFAULT_TARGET_AUDIENCE;
+    this.userLanguage = cfg.userLanguage || DEFAULT_USER_LANGUAGE;
     this.scope = cfg.scope || '';
     this.agentPartnerId = cfg.agentPartnerId || '';
     this.partnerName = cfg.partnerName || '';
@@ -130,17 +143,27 @@ class MoneyGramAdapter {
     const form = new URLSearchParams();
     form.append('grant_type', 'client_credentials');
     if (this.scope) form.append('scope', this.scope);
-    const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' };
-    if (this.credentialsInBody) {
-      form.append('client_id', this.clientId);
-      form.append('client_secret', this.clientSecret);
+    const headers = { Accept: 'application/json' };
+    const basic = `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`;
+    let url = this.tokenUrl;
+    let body;
+    if (this.tokenMethod === 'GET') {
+      headers.Authorization = basic;
+      url = `${this.tokenUrl}${this.tokenUrl.includes('?') ? '&' : '?'}${form.toString()}`;
     } else {
-      headers.Authorization = `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`;
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      if (this.credentialsInBody) {
+        form.append('client_id', this.clientId);
+        form.append('client_secret', this.clientSecret);
+      } else {
+        headers.Authorization = basic;
+      }
+      body = form.toString();
     }
 
     let res;
     try {
-      res = await httpRequest({ url: this.tokenUrl, method: 'POST', headers, body: form.toString(), timeoutMs: this.timeoutMs });
+      res = await httpRequest({ url, method: this.tokenMethod, headers, body, timeoutMs: this.timeoutMs });
     } catch (err) {
       throw new MoneyGramError('token', err.message);
     }
@@ -188,41 +211,60 @@ class MoneyGramAdapter {
     return { statusCode: res.statusCode, body: json != null ? json : res.body, request: { method, url, body: body || null } };
   }
 
-  /** Fee/FX quote for a send. */
-  async quote({ amount, sourceCurrency = 'USD', destinationCurrency, receiveCountry = 'USA', deliveryOption = 'BANK_DEPOSIT', serviceOptionCode, clientRequestId } = {}) {
-    if (!(Number(amount) > 0)) throw new MoneyGramError('quote', 'amount must be positive');
-    const body = {
+  _audience() {
+    return { targetAudience: this.targetAudience, userLanguage: this.userLanguage };
+  }
+
+  _quoteFields({ amount, sourceCurrency = 'USD', destinationCurrency, receiveCountry = 'USA', receiveCountrySubdivision, deliveryOption, serviceOptionCode } = {}) {
+    return {
+      ...this._audience(),
       agentPartnerId: this.agentPartnerId || undefined,
       destinationCountryCode: receiveCountry,
-      serviceOptionCode: serviceOptionCode || deliveryOption,
+      destinationCountrySubdivisionCode: receiveCountrySubdivision || undefined,
+      serviceOptionCode: serviceOptionCode || deliveryOption || undefined,
       sendAmount: { currencyCode: sourceCurrency, value: Number(Number(amount).toFixed(2)) },
       receiveCurrencyCode: destinationCurrency || sourceCurrency,
     };
-    return this._call('quote', { method: 'POST', path: this.quotePath, body, clientRequestId });
   }
 
-  /** Create the transaction from an accepted quote (sender = the trust). */
-  async send({ transactionId, sender, receiver, reference, clientRequestId } = {}) {
+  /** Fee/FX quote; returns an array of quoted `transactions`, one per service option. */
+  async quote(opts = {}) {
+    if (!(Number(opts.amount) > 0)) throw new MoneyGramError('quote', 'amount must be positive');
+    return this._call('quote', { method: 'POST', path: this.quotePath, body: this._quoteFields(opts), clientRequestId: opts.clientRequestId });
+  }
+
+  /**
+   * "Update a Transaction": attach sender (the trust's registered sender
+   * profile), receiver, targetAccount and transactionInformation to the
+   * quoted transactionId. Fails unless MoneyGram answers readyForCommit: true.
+   */
+  async send({ transactionId, quote, sender, receiver, targetAccount, transactionInformation, reference, clientRequestId } = {}) {
     if (!transactionId) throw new MoneyGramError('send', 'transactionId from quote is required');
-    if (!receiver || !(receiver.firstName || receiver.lastName || receiver.fullName || receiver.businessName)) {
-      throw new MoneyGramError('send', 'receiver name is required');
-    }
+    const rn = (receiver && receiver.name) || {};
+    if (!(rn.firstName && rn.lastName)) throw new MoneyGramError('send', 'receiver.name.firstName and receiver.name.lastName are required');
     const body = {
+      ...(quote ? this._quoteFields(quote) : this._audience()),
       agentPartnerId: this.agentPartnerId || undefined,
-      partnerTransactionId: reference || undefined,
       sender,
       receiver,
+      targetAccount: targetAccount || undefined,
+      transactionInformation: { ...(transactionInformation || {}), ...(reference ? { partnerTransactionId: reference } : {}) },
     };
-    return this._call('send', { method: 'PUT', path: `${this.sendPath}/${encodeURIComponent(transactionId)}`, body, clientRequestId });
+    const res = await this._call('send', { method: 'PUT', path: `${this.sendPath}/${encodeURIComponent(transactionId)}`, body, clientRequestId });
+    const b = res.body && typeof res.body === 'object' ? res.body : {};
+    if (b.readyForCommit !== true && b.readyToCommit !== true) {
+      throw new MoneyGramError('send', 'transaction is not readyForCommit (MoneyGram requires more sender/receiver data)', { statusCode: res.statusCode, body: b });
+    }
+    return res;
   }
 
-  /** Commit/confirm the created transaction so funds are released. */
+  /** Commit/confirm the created transaction so funds are released; returns referenceNumber + expectedPayoutDate. */
   async commit({ transactionId, clientRequestId } = {}) {
     if (!transactionId) throw new MoneyGramError('commit', 'transactionId is required');
     return this._call('commit', {
       method: 'PUT',
       path: `${this.sendPath}/${encodeURIComponent(transactionId)}/commit`,
-      body: { agentPartnerId: this.agentPartnerId || undefined },
+      body: this._audience(),
       clientRequestId,
     });
   }
@@ -231,8 +273,11 @@ class MoneyGramAdapter {
   async status({ transactionId, referenceNumber, clientRequestId } = {}) {
     const id = transactionId || referenceNumber;
     if (!id) throw new MoneyGramError('status', 'transactionId or referenceNumber is required');
-    const qs = transactionId ? '' : `?referenceNumber=${encodeURIComponent(referenceNumber)}`;
-    const path = transactionId ? `${this.statusPath}/${encodeURIComponent(transactionId)}` : `${this.statusPath}${qs}`;
+    const qs = new URLSearchParams(this._audience());
+    if (!transactionId) qs.append('referenceNumber', referenceNumber);
+    const path = transactionId
+      ? `${this.statusPath}/${encodeURIComponent(transactionId)}?${qs}`
+      : `${this.statusPath}/?${qs}`;
     const res = await this._call('status', { method: 'GET', path, clientRequestId });
     const b = res.body && typeof res.body === 'object' ? res.body : {};
     return {
@@ -248,7 +293,7 @@ class MoneyGramAdapter {
    * quote → send → commit. Never throws for MoneyGram-side failures; returns
    * the engine-shaped result so the caller can persist and reconcile.
    */
-  async disburse({ amount, sourceCurrency = 'USD', destinationCurrency, receiveCountry, deliveryOption, serviceOptionCode, sender, receiver, reference } = {}) {
+  async disburse({ amount, sourceCurrency = 'USD', destinationCurrency, receiveCountry, receiveCountrySubdivision, deliveryOption, serviceOptionCode, sender, receiver, targetAccount, transactionInformation, reference } = {}) {
     const steps = [];
     const record = (step, res) => steps.push({ step, request: res.request, statusCode: res.statusCode, response: res.body });
     const fail = (err) => ({
@@ -264,14 +309,18 @@ class MoneyGramAdapter {
 
     let transactionId;
     try {
-      const q = await this.quote({ amount, sourceCurrency, destinationCurrency, receiveCountry, deliveryOption, serviceOptionCode, clientRequestId: reference ? `${reference}-quote` : undefined });
+      const quoteArgs = { amount, sourceCurrency, destinationCurrency, receiveCountry, receiveCountrySubdivision, deliveryOption, serviceOptionCode };
+      const q = await this.quote({ ...quoteArgs, clientRequestId: reference ? `${reference}-quote` : undefined });
       record('quote', q);
       const qb = q.body || {};
-      const first = Array.isArray(qb.transactions) ? qb.transactions[0] : qb;
-      transactionId = first && (first.transactionId || first.id);
+      const quotes = Array.isArray(qb.transactions) ? qb.transactions : [qb];
+      const wanted = serviceOptionCode || deliveryOption;
+      const chosen = (wanted && quotes.find((t) => t && t.serviceOptionCode === wanted)) || quotes[0];
+      transactionId = chosen && (chosen.transactionId || chosen.id);
       if (!transactionId) throw new MoneyGramError('quote', 'quote did not return a transactionId', { statusCode: q.statusCode, body: qb });
+      if (chosen.serviceOptionCode) quoteArgs.serviceOptionCode = chosen.serviceOptionCode;
 
-      const s = await this.send({ transactionId, sender, receiver, reference, clientRequestId: reference ? `${reference}-send` : undefined });
+      const s = await this.send({ transactionId, quote: quoteArgs, sender, receiver, targetAccount, transactionInformation, reference, clientRequestId: reference ? `${reference}-send` : undefined });
       record('send', s);
 
       const c = await this.commit({ transactionId, clientRequestId: reference ? `${reference}-commit` : undefined });
@@ -279,12 +328,14 @@ class MoneyGramAdapter {
       const cb = c.body || {};
       const referenceNumber = cb.referenceNumber || cb.mgiReferenceNumber || null;
       const mgStatus = cb.transactionStatus || cb.status || null;
+      const expectedPayoutDate = cb.expectedPayoutDate || null;
       const status = referenceNumber ? (mgStatus ? mapMoneyGramStatus(mgStatus) : 'completed') : 'manual_pending';
       return {
         status: status === 'failed' ? 'failed' : status,
         externalId: referenceNumber,
         transactionId,
         mgStatus,
+        expectedPayoutDate,
         errorMessage: status === 'failed' ? `MoneyGram commit returned ${mgStatus}` : (referenceNumber ? null : 'MoneyGram commit did not return a referenceNumber'),
         steps,
         rawRequest: JSON.stringify(steps.map((x) => ({ step: x.step, ...x.request }))),
@@ -306,7 +357,10 @@ function adapterFromEndpoint(endpoint = {}) {
     tokenUrl: config.tokenUrl || config.token_url,
     clientId: config.clientId || config.client_id || endpoint.api_key,
     clientSecret: config.clientSecret || config.client_secret || endpoint.api_secret,
+    tokenMethod: config.tokenMethod || config.token_method,
     credentialsInBody: config.credentialsInBody === true || config.credentials_in_body === true,
+    targetAudience: config.targetAudience || config.target_audience,
+    userLanguage: config.userLanguage || config.user_language,
     scope: config.scope,
     agentPartnerId: config.agentPartnerId || config.agent_partner_id,
     partnerName: config.partnerName || config.partner_name,
@@ -327,4 +381,6 @@ module.exports = {
   DEFAULT_QUOTE_PATH,
   DEFAULT_SEND_PATH,
   DEFAULT_STATUS_PATH,
+  DEFAULT_TARGET_AUDIENCE,
+  DEFAULT_USER_LANGUAGE,
 };
