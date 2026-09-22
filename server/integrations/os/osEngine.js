@@ -8957,6 +8957,69 @@ class CreditEngine extends BaseOSEngine {
   }
 }
 
+// ─── Debt OS Engine ───────────────────────────────────────────────────────────
+// The trust's private-placement bond liabilities: obligations, holder/placement
+// compliance (trust + family only, no public offer), coupon/principal schedule.
+
+class DebtEngine extends BaseOSEngine {
+  static get engineName() { return 'debt'; }
+  static get platformEngine() { return 'debt'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const Coupon = tryRequire('../bonds/couponService')?.CouponService;
+    if (Coupon && pool) await Coupon.ensureTable();
+  }
+
+  static async status() {
+    const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+    if (!Debt) return { engine: 'debt', healthy: false, mode: 'shadow', integrations: { debtOs: false }, timestamp: new Date().toISOString() };
+    const s = await Debt.status();
+    return { ...s, integrations: { debtOs: true } };
+  }
+
+  static async _process(action, payload) {
+    const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+    if (!Debt) return { mode: 'shadow', note: 'DebtOsEngine not available' };
+    switch (action) {
+      case 'obligations': return await Debt.obligations();
+      case 'compliance': return await Debt.placementCompliance();
+      case 'schedule': return await Debt.schedule(payload.days);
+      case 'readiness': return await this.readiness();
+      case 'status':
+      default: return await this.status();
+    }
+  }
+}
+
+// ─── Liquidity OS Engine ──────────────────────────────────────────────────────
+// Cash coverage of the debt-service schedule (30/90/365d), reserve tier vs annual
+// coupon, and whether a funded real-value source exists to pay coupons out.
+
+class LiquidityEngine extends BaseOSEngine {
+  static get engineName() { return 'liquidity'; }
+  static get platformEngine() { return 'liquidity'; }
+
+  static async status() {
+    const Liq = tryRequire('./liquidityOsEngine')?.LiquidityOsEngine;
+    if (!Liq) return { engine: 'liquidity', healthy: false, mode: 'shadow', integrations: { liquidityOs: false }, timestamp: new Date().toISOString() };
+    const s = await Liq.status();
+    return { ...s, integrations: { liquidityOs: true } };
+  }
+
+  static async _process(action) {
+    const Liq = tryRequire('./liquidityOsEngine')?.LiquidityOsEngine;
+    if (!Liq) return { mode: 'shadow', note: 'LiquidityOsEngine not available' };
+    switch (action) {
+      case 'cash': return await Liq.cashPosition();
+      case 'coverage': return await Liq.coverage();
+      case 'readiness': return await this.readiness();
+      case 'status':
+      default: return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -8996,6 +9059,8 @@ const ENGINES = {
   reconciliation: ReconciliationEngine,
   interop: InteropEngine,
   credit: CreditEngine,
+  debt: DebtEngine,
+  liquidity: LiquidityEngine,
 };
 
 async function ensureAll() {
@@ -9016,6 +9081,8 @@ module.exports = {
   ReconciliationEngine,
   InteropEngine,
   CreditEngine,
+  DebtEngine,
+  LiquidityEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

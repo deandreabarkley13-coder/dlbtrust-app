@@ -53,6 +53,8 @@ const {
   ReconciliationEngine,
   InteropEngine,
   CreditEngine,
+  DebtEngine,
+  LiquidityEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -112,6 +114,8 @@ const ENGINES = {
   reconciliation: ReconciliationEngine,
   interop: InteropEngine,
   credit: CreditEngine,
+  debt: DebtEngine,
+  liquidity: LiquidityEngine,
 };
 
 function sendError(res, err) {

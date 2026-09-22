@@ -10,6 +10,8 @@
  *   reconciliation   Reconciliation & Matching   ACH recon, DataBridge, BookkeepingAgent, gateway reconcile
  *   interop          Interoperability OS     CrossChainConversionEngine + M2M OS
  *   credit           Credit OS               CreditOsEngine: funding sources, GL validation, credit pipeline
+ *   debt             Debt OS                 DebtOsEngine: private-placement bond obligations, holder compliance, schedule
+ *   liquidity        Liquidity OS            LiquidityOsEngine: cash coverage of debt service, reserve tier
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -22,7 +24,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -31,6 +33,8 @@ const ENGINE_TITLES = {
   reconciliation: 'Reconciliation & Matching Engine',
   interop: 'Interoperability OS Engine',
   credit: 'Credit OS Engine',
+  debt: 'Debt OS Engine',
+  liquidity: 'Liquidity OS Engine',
 };
 
 const TABLES = {
@@ -40,6 +44,8 @@ const TABLES = {
   reconciliation: ['ach_reconciliations', 'ach_batches', 'gateway_clearing_events', 'bookkeeping_reconciliations', 'data_bridge_discrepancies'],
   interop: ['cross_chain_requests', 'm2m_identities', 'm2m_partners', 'm2m_events'],
   credit: ['lili_direct_deposits', 'lili_payments', 'ach_batches', 'trust_accounts', 'trust_journal_entries', 'data_bridge_discrepancies', 'os_events'],
+  debt: ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'crm_contacts'],
+  liquidity: ['cash_accounts', 'cash_movements', 'bonds', 'bond_balances', 'coupon_payments'],
 };
 
 function tryRequire(mod) {
@@ -285,6 +291,8 @@ const REPORTERS = {
   reconciliation: reconciliationReadiness,
   interop: interopReadiness,
   credit: creditReadiness,
+  debt: debtReadiness,
+  liquidity: liquidityReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -325,6 +333,72 @@ async function creditReadiness(ctx) {
     },
     routes: ['/api/os/credit/{status,readiness,process}', '/api/os/readiness/credit', '/api/finops/lili/direct-deposits/status'],
     secrets: ['STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, or an external bank ODFI partner (AS2/MFT/SFTP/REST)', 'FINERACT_URL', 'FINERACT_USERNAME', 'FINERACT_PASSWORD', 'FINERACT_TENANT_ID'],
+    tables,
+    blockers,
+  };
+}
+
+async function debtReadiness(ctx) {
+  const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+  const obligations = Debt ? await settle(() => Debt.obligations()) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const compliance = Debt ? await settle(() => Debt.placementCompliance()) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const schedule = Debt ? await settle(() => Debt.schedule(90)) : { ok: false, error: 'DebtOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES.debt);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!obligations.ok) blockers.push(`debt obligations: ${obligations.error}`);
+  if (!compliance.ok) blockers.push(`placement compliance: ${compliance.error}`);
+  else blockers.push(...compliance.value.issues.map(i => `placement: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  return {
+    provider: 'private-placement (trust + family)',
+    mode: compliance.ok && compliance.value.compliant ? 'live' : 'shadow',
+    liveFlags: {
+      PUBLIC_OFFER: false,
+      TRANSFERABLE: false,
+      ALLOWED_HOLDER_TYPES: Debt ? Debt.ALLOWED_HOLDER_TYPES : [],
+      FINERACT_URL: Boolean(process.env.FINERACT_URL),
+    },
+    modules: {
+      obligations: obligations.ok ? obligations.value.totals : { error: obligations.error },
+      compliance: compliance.ok ? compliance.value : { error: compliance.error },
+      schedule90d: schedule.ok ? schedule.value.totals : { error: schedule.error },
+    },
+    routes: ['/api/os/debt/{status,readiness,process}', '/api/os/readiness/debt', '/api/bonds/*'],
+    secrets: ['none (DATABASE_URL only); FINERACT_* for GL posting of accruals/coupons'],
+    tables,
+    blockers,
+  };
+}
+
+async function liquidityReadiness(ctx) {
+  const Liq = tryRequire('./liquidityOsEngine')?.LiquidityOsEngine;
+  const coverage = Liq ? await settle(() => Liq.coverage()) : { ok: false, error: 'LiquidityOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES.liquidity);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!coverage.ok) blockers.push(`liquidity coverage: ${coverage.error}`);
+  else blockers.push(...coverage.value.issues.map(i => `liquidity: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const c = coverage.ok ? coverage.value : null;
+  return {
+    provider: 'ledger cash (cash_accounts) vs debt service',
+    mode: c && c.adequate ? 'live' : 'shadow',
+    liveFlags: {
+      COVERED_30D: c ? Boolean(c.horizons['30d'] && c.horizons['30d'].covered) : false,
+      COVERED_90D: c ? Boolean(c.horizons['90d'] && c.horizons['90d'].covered) : false,
+      RESERVE_COVERAGE: c ? c.reserve.coverage : null,
+      PAYOUT_REAL_VALUE_CAPABLE: c ? c.payout.realValueCapable : false,
+    },
+    modules: {
+      cash: c ? c.cash : { error: coverage.error },
+      horizons: c ? c.horizons : {},
+      reserve: c ? c.reserve : null,
+    },
+    routes: ['/api/os/liquidity/{status,readiness,process}', '/api/os/readiness/liquidity', '/api/cash/*'],
+    secrets: ['none (DATABASE_URL only); real-value payout needs a credit-engine funding source'],
     tables,
     blockers,
   };
