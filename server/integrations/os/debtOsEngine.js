@@ -301,6 +301,47 @@ class DebtOsEngine {
   }
 
   /**
+   * Settle accrued coupon interest to a ledger cash account (the trust company is its own
+   * bondholder, so the coupon is booked internally instead of an ACH disbursement):
+   * BondEngine.payInterest reduces bond_balances.accrued_interest, CashEngine.deposit credits
+   * `toAccountId` (movement_type='deposit', reference BOND-<id>), and a coupon_payments row is
+   * written with status 'paid' and no ach_batch_id. Amount defaults to all accrued interest.
+   */
+  static async settleCouponToLedger({ bondId, toAccountId, amount, approvedBy, dryRun = false }) {
+    if (!pool) throw new Error('ledger unavailable');
+    if (!toAccountId) throw new Error('toAccountId (ledger cash account) required');
+    const Bond = tryRequire('../bonds/bondEngine')?.BondEngine;
+    const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+    const Coupon = tryRequire('../bonds/couponService')?.CouponService;
+    if (!Bond || !Cash) throw new Error('BondEngine / CashEngine unavailable');
+    const reg = await this.holderRegister(bondId);
+    const accrued = reg.totals.accruedInterest;
+    const pay = Math.round((amount == null ? accrued : num(amount)) * 100) / 100;
+    if (pay <= 0) throw new Error('no accrued interest to settle');
+    if (pay > accrued + 1e-9) throw new Error(`amount ${pay} exceeds accrued interest ${accrued}`);
+    const acct = await pool.query(`SELECT account_id, account_type, balance_cents FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [toAccountId]);
+    if (!acct.rows[0]) throw new Error(`cash account ${toAccountId} not found or not active`);
+    const couponDate = new Date().toISOString().slice(0, 10);
+    const couponPaymentId = `CPN-${bondId}-${couponDate.replace(/-/g, '')}-LEDGER`;
+    const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, basis: 'internal ledger settlement of accrued coupon; no ACH, no bank funds' };
+    if (dryRun) return { dryRun: true, ...plan };
+    if (Coupon) await Coupon.ensureTable();
+    const dup = await pool.query(`SELECT coupon_payment_id FROM coupon_payments WHERE coupon_payment_id = $1 AND status IN ('paid', 'processing')`, [couponPaymentId]);
+    if (dup.rows.length) throw new Error(`coupon already settled today: ${couponPaymentId}`);
+    await pool.query(`INSERT INTO coupon_payments (coupon_payment_id, bond_id, coupon_date, amount, status, bondholders_paid) VALUES ($1, $2, $3, $4, 'processing', $5)
+                      ON CONFLICT (coupon_payment_id) DO UPDATE SET status = 'processing', amount = $4, updated_at = NOW()`, [couponPaymentId, bondId, couponDate, pay, reg.holders.length]);
+    try {
+      const payResult = await Bond.payInterest(bondId, pay);
+      const mov = await Cash.deposit({ toAccountId, amountCents: Math.round(pay * 100), referenceId: `BOND-${bondId}`, memo: `Coupon ${couponDate} ${reg.bondName} settled to ledger (${approvedBy || 'system'})`, initiatedBy: approvedBy || 'system' });
+      await pool.query(`UPDATE coupon_payments SET status = 'paid', journal_entry_id = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, mov.movement_id]);
+      return { ...plan, accruedAfter: num(payResult.remaining_accrued), movementId: mov.movement_id, status: 'paid' };
+    } catch (err) {
+      await pool.query(`UPDATE coupon_payments SET status = 'failed', error_message = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, err.message]);
+      throw err;
+    }
+  }
+
+  /**
    * Apply the trust structure:
    *   trustCompany  { contactId?, firstName, lastName, company }  -> sole holder of the bond (tagged trust-company)
    *   trustees      [{ contactId?, firstName, lastName }]
@@ -308,8 +349,9 @@ class DebtOsEngine {
    *   holdBalance   retained balance per beneficiary (default 250000)
    *   feePct        trustee fee within TRUSTEE_FEE_BAND_PCT, stored as a system setting
    *   fromAccountId ledger cash account funding the hold accounts (and the fee)
+   *   settleCoupon  true -> first settle the accrued coupon into fromAccountId (settleCouponToLedger)
    */
-  static async applyTrustStructure({ bondId, trustCompany, trustees = [], beneficiaries = [], holdBalance = DEFAULT_HOLD_BALANCE, feePct, fromAccountId, approvedBy, dryRun = false }) {
+  static async applyTrustStructure({ bondId, trustCompany, trustees = [], beneficiaries = [], holdBalance = DEFAULT_HOLD_BALANCE, feePct, fromAccountId, settleCoupon = false, approvedBy, dryRun = false }) {
     if (!pool) throw new Error('ledger unavailable');
     if (!trustCompany) throw new Error('trustCompany required');
     if (!beneficiaries.length) throw new Error('beneficiaries[] required');
@@ -320,6 +362,9 @@ class DebtOsEngine {
     const Crm = tryRequire('../crm/crmEngine')?.CrmEngine;
     const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
     if (!Cash || !Crm) throw new Error('CashEngine / CrmEngine unavailable');
+
+    // 0. Accrued coupon -> funding account (the trust company is the holder, so this is internal).
+    const coupon = settleCoupon ? await this.settleCouponToLedger({ bondId, toAccountId: fromAccountId, approvedBy, dryRun }) : null;
 
     // 1. Bond register: the trust company is the sole holder.
     const register = await this.registerHolders({
@@ -374,7 +419,7 @@ class DebtOsEngine {
     }
 
     return {
-      dryRun, bondId, register,
+      dryRun, bondId, coupon, register,
       trustees: trusteeRows, beneficiaries: beneficiaryRows,
       holdBalance: num(holdBalance), funding, fundedFrom: fromAccountId,
       trusteeFee: { pct: rate, band: TRUSTEE_FEE_BAND_PCT, onDistributed: distributed / 100, amount: feeCents / 100, feeAccount: feeAcct.rows[0]?.account_id || null, movementId: feeMovement },

@@ -527,7 +527,7 @@ Status on `dlb-treasury-management` at the time of writing:
   the moment a bond is marked public or a holder outside trust/family (or
   without verified KYC) appears in `crm_bond_subscriptions`.
   Trust structure (`POST /api/os/debt/process`, actions `holder-register`,
-  `register-holders`, `trust-structure`, `apply-trust-structure`, all with
+  `register-holders`, `trust-structure`, `settle-coupon`, `apply-trust-structure` (with `settleCoupon:true` the accrued coupon is first booked internally into the funding account via `BondEngine.payInterest` + `CashEngine.deposit`, since the trust company is its own bondholder), all with
   `dryRun`): the family trust company (contact tagged `trust-company`) is the
   sole bondholder; trustees administer it for a fee inside 1–3%
   (`system_settings.debt_os_trustee_fee_pct`, booked to the `fee` cash
