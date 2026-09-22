@@ -139,3 +139,18 @@ describe('LiquidityOsEngine', () => {
     ]));
   });
 });
+
+describe('CouponService recurring coupon due-date', () => {
+  const { CouponService } = require('../server/integrations/bonds/couponService');
+  const m = { payment_freq: 'semi-annual', issue_date: '2024-02-28', next_coupon_date: '2027-02-28' };
+
+  it('is due for the scheduled date on/after it within the grace window (not only on the exact day)', () => {
+    expect(CouponService.dueCouponDate(m, '2026-08-28')).toBe('2026-08-28');
+    expect(CouponService.dueCouponDate(m, '2026-09-22')).toBe('2026-08-28');
+  });
+  it('is not due outside the grace window, before the date, or on the issue date', () => {
+    expect(CouponService.dueCouponDate(m, '2026-10-15')).toBeNull();
+    expect(CouponService.dueCouponDate({ ...m, next_coupon_date: '2026-08-28' }, '2026-08-27')).toBeNull();
+    expect(CouponService.dueCouponDate({ ...m, next_coupon_date: '2024-08-28' }, '2024-03-01')).toBeNull();
+  });
+});

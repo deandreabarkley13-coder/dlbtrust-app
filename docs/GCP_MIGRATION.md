@@ -527,7 +527,7 @@ Status on `dlb-treasury-management` at the time of writing:
   the moment a bond is marked public or a holder outside trust/family (or
   without verified KYC) appears in `crm_bond_subscriptions`.
   Trust structure (`POST /api/os/debt/process`, actions `holder-register`,
-  `register-holders`, `trust-structure`, `settle-coupon`, `apply-trust-structure` (with `settleCoupon:true` the accrued coupon is first booked internally into the funding account via `BondEngine.payInterest` + `CashEngine.deposit`, since the trust company is its own bondholder), all with
+  `register-holders`, `trust-structure`, `settle-coupon`, `recurring-coupon`, `configure-recurring-coupon` (sets `system_settings.debt_os_coupon_ledger_account`; when set, the 6-hourly `CouponService` scheduler settles each due coupon into that ledger account internally instead of ACH — due date = last scheduled coupon date within a 30-day grace window, deduped per date), `apply-trust-structure` (with `settleCoupon:true` the accrued coupon is first booked internally into the funding account via `BondEngine.payInterest` + `CashEngine.deposit`, since the trust company is its own bondholder), all with
   `dryRun`): the family trust company (contact tagged `trust-company`) is the
   sole bondholder; trustees administer it for a fee inside 1–3%
   (`system_settings.debt_os_trustee_fee_pct`, booked to the `fee` cash

@@ -8990,6 +8990,8 @@ class DebtEngine extends BaseOSEngine {
       case 'trust-structure': return await Debt.trustStructure(payload.bondId);
       case 'apply-trust-structure': return await Debt.applyTrustStructure(payload);
       case 'settle-coupon': return await Debt.settleCouponToLedger(payload);
+      case 'recurring-coupon': return await Debt.recurringCouponConfig();
+      case 'configure-recurring-coupon': return await Debt.configureRecurringCoupon(payload);
       case 'readiness': return await this.readiness();
       case 'status':
       default: return await this.status();

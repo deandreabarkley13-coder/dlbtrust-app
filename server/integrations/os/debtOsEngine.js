@@ -38,6 +38,9 @@ const isAllowedHolder = c => ALLOWED_HOLDER_TYPES.includes(c.contact_type) || (A
 const DEFAULT_HOLD_BALANCE = 250000;
 const TRUSTEE_FEE_BAND_PCT = { min: 1, max: 3 };
 const SETTING_TRUSTEE_FEE = 'debt_os_trustee_fee_pct';
+// When set to a cash account id, due coupons are settled internally into that ledger account
+// by the coupon scheduler instead of being disbursed by ACH.
+const SETTING_COUPON_LEDGER_ACCOUNT = 'debt_os_coupon_ledger_account';
 
 // Retired bonds (test issues that were called, redeemed instruments) carry no placement obligation.
 const TERMINAL_STATUSES = ['called', 'matured', 'redeemed', 'cancelled'];
@@ -307,7 +310,27 @@ class DebtOsEngine {
    * `toAccountId` (movement_type='deposit', reference BOND-<id>), and a coupon_payments row is
    * written with status 'paid' and no ach_batch_id. Amount defaults to all accrued interest.
    */
-  static async settleCouponToLedger({ bondId, toAccountId, amount, approvedBy, dryRun = false }) {
+  static async recurringCouponConfig() {
+    const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
+    const account = Settings ? await Settings.get(SETTING_COUPON_LEDGER_ACCOUNT) : null;
+    return { enabled: !!account, ledgerAccountId: account || null, settingKey: SETTING_COUPON_LEDGER_ACCOUNT, scheduler: 'CouponService.scheduleCouponJob (startup + 6h), settles each due coupon_per_period internally' };
+  }
+
+  /** Enable (accountId) or disable (null) recurring internal coupon settlement. */
+  static async configureRecurringCoupon({ ledgerAccountId, approvedBy }) {
+    if (!pool) throw new Error('ledger unavailable');
+    const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
+    if (!Settings) throw new Error('SystemSettings unavailable');
+    if (ledgerAccountId) {
+      const acct = await pool.query(`SELECT account_id FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [ledgerAccountId]);
+      if (!acct.rows[0]) throw new Error(`cash account ${ledgerAccountId} not found or not active`);
+    }
+    await Settings.ensureTable();
+    await Settings.set(SETTING_COUPON_LEDGER_ACCOUNT, ledgerAccountId || '', approvedBy || 'system');
+    return this.recurringCouponConfig();
+  }
+
+  static async settleCouponToLedger({ bondId, toAccountId, amount, couponDate, approvedBy, dryRun = false }) {
     if (!pool) throw new Error('ledger unavailable');
     if (!toAccountId) throw new Error('toAccountId (ledger cash account) required');
     const Bond = tryRequire('../bonds/bondEngine')?.BondEngine;
@@ -321,13 +344,13 @@ class DebtOsEngine {
     if (pay > accrued + 1e-9) throw new Error(`amount ${pay} exceeds accrued interest ${accrued}`);
     const acct = await pool.query(`SELECT account_id, account_type, balance_cents FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [toAccountId]);
     if (!acct.rows[0]) throw new Error(`cash account ${toAccountId} not found or not active`);
-    const couponDate = new Date().toISOString().slice(0, 10);
+    couponDate = couponDate || new Date().toISOString().slice(0, 10);
     const couponPaymentId = `CPN-${bondId}-${couponDate.replace(/-/g, '')}-LEDGER`;
     const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, basis: 'internal ledger settlement of accrued coupon; no ACH, no bank funds' };
     if (dryRun) return { dryRun: true, ...plan };
     if (Coupon) await Coupon.ensureTable();
-    const dup = await pool.query(`SELECT coupon_payment_id FROM coupon_payments WHERE coupon_payment_id = $1 AND status IN ('paid', 'processing')`, [couponPaymentId]);
-    if (dup.rows.length) throw new Error(`coupon already settled today: ${couponPaymentId}`);
+    const dup = await pool.query(`SELECT coupon_payment_id FROM coupon_payments WHERE bond_id = $1 AND coupon_date = $2 AND status IN ('paid', 'processing')`, [bondId, couponDate]);
+    if (dup.rows.length) throw new Error(`coupon already paid/processing for ${couponDate}: ${dup.rows[0].coupon_payment_id}`);
     await pool.query(`INSERT INTO coupon_payments (coupon_payment_id, bond_id, coupon_date, amount, status, bondholders_paid) VALUES ($1, $2, $3, $4, 'processing', $5)
                       ON CONFLICT (coupon_payment_id) DO UPDATE SET status = 'processing', amount = $4, updated_at = NOW()`, [couponPaymentId, bondId, couponDate, pay, reg.holders.length]);
     try {
@@ -465,8 +488,9 @@ class DebtOsEngine {
   // ── Status ──────────────────────────────────────────────────────────────
 
   static async status() {
-    const [obligations, compliance, schedule] = await Promise.all([
+    const [obligations, compliance, schedule, recurring] = await Promise.all([
       settle(() => this.obligations()), settle(() => this.placementCompliance()), settle(() => this.schedule(90)),
+      settle(() => this.recurringCouponConfig()),
     ]);
     return {
       engine: 'debt',
@@ -475,6 +499,7 @@ class DebtOsEngine {
       obligations: obligations.ok ? obligations.value : { error: obligations.error },
       compliance: compliance.ok ? compliance.value : { error: compliance.error },
       schedule90d: schedule.ok ? schedule.value : { error: schedule.error },
+      recurringCoupon: recurring.ok ? recurring.value : { error: recurring.error },
       timestamp: new Date().toISOString(),
     };
   }
