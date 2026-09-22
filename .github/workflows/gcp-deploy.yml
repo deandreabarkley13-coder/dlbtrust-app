@@ -75,7 +75,7 @@ jobs:
           curl -fsS "$url/api/health/ready"
 
       # Platform engine readiness (payment, gateway, clearing, reconciliation,
-      # interop, credit, debt, liquidity) on dlb-treasury-management. Informational: the credit
+      # interop, credit, debt, liquidity, funding-os) on dlb-treasury-management. Informational: the credit
       # engine stays BLOCKED until a real-value funding source exists, so a
       # non-ready engine here does not fail the deploy.
       - name: Engine readiness report

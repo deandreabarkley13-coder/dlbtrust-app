@@ -12,6 +12,7 @@
  *   credit           Credit OS               CreditOsEngine: funding sources, GL validation, credit pipeline
  *   debt             Debt OS                 DebtOsEngine: private-placement bond obligations, holder compliance, schedule
  *   liquidity        Liquidity OS            LiquidityOsEngine: cash coverage of debt service, reserve tier
+ *   funding-os       Funding OS              FundingOsEngine: real-value sources, funding requests → ledger
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -24,7 +25,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -35,6 +36,7 @@ const ENGINE_TITLES = {
   credit: 'Credit OS Engine',
   debt: 'Debt OS Engine',
   liquidity: 'Liquidity OS Engine',
+  'funding-os': 'Funding OS Engine',
 };
 
 const TABLES = {
@@ -46,6 +48,7 @@ const TABLES = {
   credit: ['lili_direct_deposits', 'lili_payments', 'ach_batches', 'trust_accounts', 'trust_journal_entries', 'data_bridge_discrepancies', 'os_events'],
   debt: ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'crm_contacts'],
   liquidity: ['cash_accounts', 'cash_movements', 'bonds', 'bond_balances', 'coupon_payments'],
+  'funding-os': ['funding_requests', 'cash_accounts', 'cash_movements'],
 };
 
 function tryRequire(mod) {
@@ -293,6 +296,7 @@ const REPORTERS = {
   credit: creditReadiness,
   debt: debtReadiness,
   liquidity: liquidityReadiness,
+  'funding-os': fundingOsReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -400,6 +404,43 @@ async function liquidityReadiness(ctx) {
     },
     routes: ['/api/os/liquidity/{status,readiness,process}', '/api/os/readiness/liquidity', '/api/cash/*'],
     secrets: ['none (DATABASE_URL only); real-value payout needs a credit-engine funding source'],
+    tables,
+    blockers,
+  };
+}
+
+async function fundingOsReadiness(ctx) {
+  const F = tryRequire('./fundingOsEngine')?.FundingOsEngine;
+  const sources = F ? await settle(() => F.sources()) : { ok: false, error: 'FundingOsEngine unavailable' };
+  const pipeline = F ? await settle(() => F.pipeline()) : { ok: false, error: 'FundingOsEngine unavailable' };
+  const path = F ? await settle(() => F.unifiedPath()) : { ok: false, error: 'FundingOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES['funding-os']);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!sources.ok) blockers.push(`funding sources: ${sources.error}`);
+  else if (!sources.value.anyRealValueCapable) {
+    blockers.push(`no funded real-value source: ${sources.value.sources.filter(s => !s.realValueCapable).map(s => `${s.id} (${s.reason})`).join('; ')}`);
+  }
+  if (!pipeline.ok) blockers.push(`funding pipeline: ${pipeline.error}`);
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const realValue = sources.ok && sources.value.anyRealValueCapable;
+  return {
+    provider: realValue ? sources.value.realValueCapable.join('+') : 'funding-requests (manual confirm)',
+    mode: realValue ? 'live' : 'shadow',
+    liveFlags: {
+      REAL_VALUE_SOURCE: realValue,
+      LILI_DESTINATION_CONFIGURED: sources.ok ? Boolean(sources.value.destination.configured) : false,
+      UNIFIED_PATH_REAL_VALUE: path.ok ? path.value.realValueCapable : false,
+      PAYMENT_APPROVAL_THRESHOLD: Number(process.env.PAYMENT_APPROVAL_THRESHOLD || 2),
+    },
+    modules: {
+      sources: sources.ok ? sources.value : { error: sources.error },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+      unifiedPath: path.ok ? path.value : { error: path.error },
+    },
+    routes: ['/api/os/funding-os/{status,readiness,process}', '/api/os/readiness/funding-os'],
+    secrets: ['STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, or an external bank ODFI partner; manual_bank_deposit needs none'],
     tables,
     blockers,
   };

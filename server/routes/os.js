@@ -55,6 +55,7 @@ const {
   CreditEngine,
   DebtEngine,
   LiquidityEngine,
+  FundingOsPlatformEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -116,6 +117,7 @@ const ENGINES = {
   credit: CreditEngine,
   debt: DebtEngine,
   liquidity: LiquidityEngine,
+  'funding-os': FundingOsPlatformEngine,
 };
 
 function sendError(res, err) {
