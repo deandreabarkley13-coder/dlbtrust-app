@@ -246,6 +246,8 @@ class SpritzFiatFundingEngine {
     if (!BankTransferEngine) issues.push('BankTransferEngine (ERP credit-push origination) not available');
     const erp = CanonicalFundingSource ? CanonicalFundingSource.getConfig() : null;
     if (erp && !erp.live) issues.push('CANONICAL_FUNDING_LIVE=false: ERP commit runs in shadow mode');
+    const erpPosition = await this.erpPosition();
+    if (erpPosition && !erpPosition.ok) issues.push(`ERP canonical cash: ${erpPosition.detail}`);
 
     let capabilities = [];
     let account = null;
@@ -285,10 +287,48 @@ class SpritzFiatFundingEngine {
       capabilities,
       autoRampAccount: account,
       erp: erp ? { system: erp.system, cashAccountCode: erp.cashAccountCode, assetAccountCode: erp.assetAccountCode, live: Boolean(erp.live) } : null,
+      erpPosition,
       fundingSource: cfg.fundingSource,
       collateral,
       gl: cfg.gl,
     };
+  }
+
+  /**
+   * Live Treasury-Core position of the canonical cash account: reads the
+   * Fineract GL (not config) so an unreachable core, an overdrawn cash account
+   * or a sub-ledger drift shows up as "no spendable ERP cash" before a credit
+   * push is prepared.
+   */
+  static async erpPosition() {
+    if (!CanonicalFundingSource) return null;
+    const erp = CanonicalFundingSource.getConfig();
+    try {
+      const p = await CanonicalFundingSource.position({ purpose: 'spritz fiat funding' });
+      const canonicalUsd = p.canonicalBalanceCents === null || p.canonicalBalanceCents === undefined ? null : p.canonicalBalanceCents / 100;
+      const availableUsd = Number(p.availableBalanceCents || 0) / 100;
+      const ok = Boolean(p.fundingEligible);
+      let detail;
+      if (ok) detail = `${erp.system} ${p.accountCode} available $${availableUsd.toFixed(2)} (canonical $${canonicalUsd.toFixed(2)})`;
+      else if (p.degraded) detail = p.degraded;
+      else if (canonicalUsd !== null && canonicalUsd <= 0) detail = `${erp.system} ${p.accountCode} canonical balance $${canonicalUsd.toFixed(2)} — no spendable cash booked in the core (${p.segregationReason || 'restricted'})`;
+      else detail = p.segregationReason || `${erp.system} ${p.accountCode} restricted`;
+      return {
+        ok,
+        system: erp.system,
+        accountCode: p.accountCode,
+        glAccountId: p.glAccountId ?? null,
+        canonicalUsd,
+        ledgerUsd: p.ledgerBalanceCents === null || p.ledgerBalanceCents === undefined ? null : p.ledgerBalanceCents / 100,
+        availableUsd,
+        driftUsd: p.driftCents === null || p.driftCents === undefined ? null : p.driftCents / 100,
+        live: Boolean(p.live),
+        degraded: p.degraded || null,
+        detail,
+      };
+    } catch (e) {
+      return { ok: false, system: erp.system, accountCode: erp.cashAccountCode, canonicalUsd: null, ledgerUsd: null, availableUsd: 0, driftUsd: null, live: Boolean(erp.live), degraded: e.message, detail: `${erp.system} unreachable: ${e.message}` };
+    }
   }
 
   /**
