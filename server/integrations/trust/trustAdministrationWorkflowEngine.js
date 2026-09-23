@@ -23,7 +23,10 @@ try { ({ SettlementBankRegistry } = require('../payments/settlementBankRegistry'
 try { ({ FixedIncomeDistributionEngine } = require('../os/fixedIncomeDistributionEngine')); } catch (e) { FixedIncomeDistributionEngine = null; }
 try { ({ DataBridge } = require('../accounting/dataBridge')); } catch (e) { DataBridge = null; }
 
-const STAGES = ['intake', 'ledger', 'fineract', 'distribution', 'settlement'];
+let BondIssuanceEngine = null;
+try { ({ BondIssuanceEngine } = require('../bonds/bondIssuanceEngine')); } catch (e) { BondIssuanceEngine = null; }
+
+const STAGES = ['issuance', 'intake', 'ledger', 'fineract', 'distribution', 'settlement'];
 
 async function attempt(fn, unavailable) {
   if (!fn) return { available: false, error: unavailable };
@@ -58,6 +61,13 @@ class TrustAdministrationWorkflowEngine {
     }), 'DataBridge unavailable');
   }
 
+  static async issuance() {
+    return attempt(BondIssuanceEngine && (async () => {
+      const status = await BondIssuanceEngine.status();
+      return { ready: Boolean(status.ready), status };
+    }), 'BondIssuanceEngine unavailable');
+  }
+
   static async distribution() {
     return attempt(FixedIncomeDistributionEngine && (async () => {
       const [readiness, summary] = await Promise.all([
@@ -82,14 +92,15 @@ class TrustAdministrationWorkflowEngine {
   }
 
   static async status({ includeFineract = false, limit = 10 } = {}) {
-    const [intake, ledger, fineract, distribution, settlement] = await Promise.all([
+    const [issuance, intake, ledger, fineract, distribution, settlement] = await Promise.all([
+      this.issuance(),
       this.intake({ limit }),
       this.ledger({ limit }),
       this.fineract({ includeFineract }),
       this.distribution(),
       this.settlement({ limit }),
     ]);
-    const stages = { intake, ledger, fineract, distribution, settlement };
+    const stages = { issuance, intake, ledger, fineract, distribution, settlement };
     const gaps = [];
     for (const name of STAGES) {
       const s = stages[name];
@@ -97,7 +108,7 @@ class TrustAdministrationWorkflowEngine {
       if (!s.available) gaps.push(`${name}: ${s.error}`);
       else if (s.error) gaps.push(`${name}: ${s.error}`);
       else if (s.ready === false) {
-        const detail = name === 'intake' ? (s.status.issues || []).join('; ')
+        const detail = (name === 'intake' || name === 'issuance') ? (s.status.issues || []).join('; ')
           : name === 'distribution' ? (s.readiness.issues || []).join('; ')
             : name === 'settlement' ? s.banks.flatMap((b) => b.blockers.map((x) => `${b.bankId}: ${x}`)).join('; ')
               : '';
@@ -105,7 +116,7 @@ class TrustAdministrationWorkflowEngine {
       }
     }
     return {
-      pipeline: 'payer -> Stripe payment processing -> deposit ledger -> Fineract GL -> fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit',
+      pipeline: 'issuer Fineract account -> holder Fineract account -> Stripe payment processing -> deposit ledger -> Fineract GL -> fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit',
       ready: gaps.length === 0 && intake.ready === true && distribution.ready === true && settlement.ready === true,
       gaps,
       stages,

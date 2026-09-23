@@ -19,6 +19,7 @@ const { TrustPolicyEngine } = require('../server/integrations/dapp/trustPolicyEn
 const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fixedIncomeDistributionEngine');
 const { TrustAdministrationWorkflowEngine } = require('../server/integrations/trust/trustAdministrationWorkflowEngine');
 const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
+const { BondIssuanceEngine } = require('../server/integrations/bonds/bondIssuanceEngine');
 const { DepositAndSettlementEngine } = require('../server/integrations/payments/depositAndSettlementEngine');
 
 type Row = Record<string, any>;
@@ -168,7 +169,8 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
 describe('TrustAdministrationWorkflowEngine', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('aggregates intake, ledger, distribution and settlement and lists gaps per stage', async () => {
+  it('aggregates issuance, intake, ledger, distribution and settlement and lists gaps per stage', async () => {
+    vi.spyOn(BondIssuanceEngine, 'status').mockResolvedValue({ ready: true, issues: [], issuances: 1 });
     vi.spyOn(StripePaymentIntakeEngine, 'status').mockResolvedValue({ ready: true, mode: 'live', issues: [] });
     vi.spyOn(StripePaymentIntakeEngine, 'list').mockResolvedValue([{ intakeId: 'SPI-1', status: 'received' }]);
     vi.spyOn(DepositAndSettlementEngine, 'list').mockResolvedValue([{ order_id: 'DEP-1' }]);
@@ -181,6 +183,7 @@ describe('TrustAdministrationWorkflowEngine', () => {
     const w = await TrustAdministrationWorkflowEngine.status();
     expect(w.ready).toBe(false);
     expect(w.gaps).toEqual(['distribution: lili: Stripe balance is test-mode']);
+    expect(w.stages.issuance.status.issuances).toBe(1);
     expect(w.stages.intake.recent).toHaveLength(1);
     expect(w.stages.ledger.deposits).toEqual([{ order_id: 'DEP-1' }]);
     expect(w.stages.fineract.skipped).toBe(true);
@@ -192,6 +195,7 @@ describe('TrustAdministrationWorkflowEngine', () => {
   });
 
   it('never lets one failing engine hide the others', async () => {
+    vi.spyOn(BondIssuanceEngine, 'status').mockResolvedValue({ ready: false, issues: ['issuer Fineract account not provisioned'] });
     vi.spyOn(StripePaymentIntakeEngine, 'status').mockRejectedValue(new Error('stripe down'));
     vi.spyOn(DepositAndSettlementEngine, 'list').mockResolvedValue([]);
     vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ ready: true, rail: 'bank', issues: [] });
@@ -200,7 +204,7 @@ describe('TrustAdministrationWorkflowEngine', () => {
     vi.spyOn(BankSettlementEngine, 'list').mockResolvedValue([]);
     const w = await TrustAdministrationWorkflowEngine.status();
     expect(w.ready).toBe(false);
-    expect(w.gaps).toEqual(['intake: stripe down', 'settlement: not ready']);
+    expect(w.gaps).toEqual(['issuance: issuer Fineract account not provisioned', 'intake: stripe down', 'settlement: not ready']);
     expect(w.stages.distribution.ready).toBe(true);
   });
 });

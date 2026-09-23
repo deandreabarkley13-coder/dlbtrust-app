@@ -15,6 +15,8 @@ function mockStripe({ acct = ACCT, event = null } = {}) {
   const csCreate = vi.fn().mockResolvedValue({ id: 'cs_1', url: 'https://checkout.stripe.com/c/pay/cs_1', payment_intent: null, expires_at: 1_800_000_000 });
   const search = vi.fn().mockResolvedValue({ data: [] });
   const custCreate = vi.fn().mockResolvedValue({ id: 'cus_1' });
+  const listTaxIds = vi.fn().mockResolvedValue({ data: [] });
+  const createTaxId = vi.fn().mockResolvedValue({ id: 'txi_1', type: 'us_ein' });
   const constructEvent = vi.fn().mockImplementation((_body: unknown, sig: string) => {
     if (sig !== 'good') throw new Error('No signatures found matching the expected signature for payload');
     return event;
@@ -23,11 +25,11 @@ function mockStripe({ acct = ACCT, event = null } = {}) {
     accounts: { retrieve: vi.fn().mockResolvedValue(acct) },
     paymentIntents: { create: piCreate },
     checkout: { sessions: { create: csCreate } },
-    customers: { search, create: custCreate },
+    customers: { search, create: custCreate, listTaxIds, createTaxId },
     webhooks: { constructEvent },
   };
   vi.spyOn(StripePaymentIntakeEngine, '_client').mockReturnValue(client);
-  return { piCreate, csCreate, search, custCreate, constructEvent, postDeposit };
+  return { piCreate, csCreate, search, custCreate, listTaxIds, createTaxId, constructEvent, postDeposit };
 }
 
 describe('StripePaymentIntakeEngine', () => {
@@ -87,6 +89,25 @@ describe('StripePaymentIntakeEngine', () => {
     expect(params).toMatchObject({ mode: 'payment', client_reference_id: r.intakeId, success_url: expect.stringContaining('https://app.example/') });
     expect(params.line_items[0].price_data.unit_amount).toBe(5000);
     expect(params.payment_intent_data.metadata.destination).toBe('lili_direct_deposit');
+  });
+
+  it('createIncomePaymentLink bills the configured obligor (Stripe customer + EIN tax id) for the bond coupon via ACH debit', async () => {
+    process.env.INCOME_OBLIGOR_NAME = 'DEANDREA LAVAR BARKLEY TRUST COMPANY';
+    process.env.INCOME_OBLIGOR_EIN = '99-6411566';
+    process.env.INCOME_OBLIGOR_EMAIL = 'tc@example.org';
+    const m = mockStripe();
+    const { CouponService } = require('../server/integrations/bonds/couponService');
+    vi.spyOn(CouponService, 'getCouponSchedule').mockResolvedValue({ bond_name: 'Series A', coupon_per_period: 1234.56, next_coupon_date: '2026-10-01T00:00:00Z' });
+    expect(StripePaymentIntakeEngine.incomeObligor()).toMatchObject({ configured: true, einMasked: '**-***1566', issues: [] });
+    const r = await StripePaymentIntakeEngine.createIncomePaymentLink({ bondId: 7 });
+    expect(r).toMatchObject({ amountCents: 123456, purpose: 'coupon_income', reference: 'BOND-7-COUPON_INCOME-2026-10-01', payerName: 'DEANDREA LAVAR BARKLEY TRUST COMPANY', paymentMethodTypes: ['us_bank_account'] });
+    expect(m.search.mock.calls[0][0].query).toContain("metadata['payer_id']:'income-obligor'");
+    expect(m.custCreate.mock.calls[0][0]).toMatchObject({ name: 'DEANDREA LAVAR BARKLEY TRUST COMPANY', email: 'tc@example.org' });
+    expect(m.createTaxId).toHaveBeenCalledWith('cus_1', { type: 'us_ein', value: '99-6411566' });
+    expect(m.csCreate.mock.calls[0][0].customer).toBe('cus_1');
+    await expect(StripePaymentIntakeEngine.createIncomePaymentLink({ amountCents: 100, purpose: 'gift' })).rejects.toMatchObject({ status: 400 });
+    delete process.env.INCOME_OBLIGOR_NAME;
+    await expect(StripePaymentIntakeEngine.createIncomePaymentLink({ amountCents: 100 })).rejects.toMatchObject({ code: 'INCOME_OBLIGOR_NOT_CONFIGURED' });
   });
 
   it('webhook rejects bad signatures and test-mode events, records deposit on payment_intent.succeeded', async () => {

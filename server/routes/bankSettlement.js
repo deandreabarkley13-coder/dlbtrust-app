@@ -74,6 +74,16 @@ router.post('/stripe-intakes/checkout-links', writeRateLimiter(), async (req, re
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/stripe-intakes/income-obligor', async (req, res) => {
+  try { res.json({ success: true, data: StripePaymentIntakeEngine.incomeObligor() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stripe-intakes/income-payments', writeRateLimiter(), async (req, res) => {
+  try {
+    res.status(201).json({ success: true, data: await StripePaymentIntakeEngine.createIncomePaymentLink({ ...req.body, createdBy: 'payment_server' }) });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/stripe-intakes/:id', async (req, res) => {
   try {
     const data = await StripePaymentIntakeEngine.get(req.params.id);
