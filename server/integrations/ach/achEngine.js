@@ -253,6 +253,10 @@ class ACHEngine {
       // It keeps the bytes, the hash and the release decision, so it wins
       // over any bare endpoint.
       partnerConfig = ACHEngine.mftPartnerConfig();
+    } else if (ACHEngine.mftGatewayPartnerConfig()) {
+      // Hosted AS2 station on MFT Gateway delivering to the bank's registered
+      // partner profile — the ODFI channel for treasury -> RDFI credits.
+      partnerConfig = ACHEngine.mftGatewayPartnerConfig();
     } else if (productionConfig) {
       // Production mode: use the configured external bank endpoint
       partnerConfig = productionConfig;
@@ -329,6 +333,26 @@ class ACHEngine {
           replay: delivered.replay,
         };
         console.log(`[ACH] transmitBatch(${batchId}): MFT → ${file.fileId} on ${file.transport} (${delivered.replay ? 'replay' : 'transmitted'})`);
+      } else if (protocol === 'mftgateway') {
+        const { MftGatewayClient } = require('../edi/mftGatewayClient');
+        const sent = await MftGatewayClient.submit(nachaContent, batch.filename, {
+          stationAs2Id: partnerConfig.localAs2Id,
+          partnerAs2Id: partnerConfig.partnerAs2Id,
+          contentType: 'text/plain',
+          subject: `NACHA ${batch.filename}`,
+        });
+        if (!sent.success) {
+          throw new Error(`MFT Gateway submit failed (${sent.status_code}): ${sent.response_body || 'no response'}`);
+        }
+        result = {
+          success: true,
+          mode: 'mftgateway',
+          message_id: sent.message_id || ('MFTG-' + Date.now()),
+          status_code: sent.status_code,
+          mdn_received: false,
+          response_body: JSON.stringify({ as2_from: sent.as2_from, as2_to: sent.as2_to, message_id: sent.message_id, link: sent.link, response: sent.response_body }),
+        };
+        console.log(`[ACH] transmitBatch(${batchId}): MFT Gateway → ${sent.as2_to} message=${sent.message_id}`);
       } else if (protocol === 'bill_api') {
         // BILL Cash Account: submit via BILL's RecordARPayment API
         const billClient = require('../bill/billClient');
@@ -443,6 +467,30 @@ class ACHEngine {
       partnerName: `MFT register (${channelId})`,
       protocol: 'mft',
       mftChannelId: channelId,
+    };
+  }
+
+  /**
+   * MFT Gateway (api.mftgateway.com) as the ODFI channel: our hosted AS2
+   * station sends to the bank's partner profile named by
+   * MFTGATEWAY_PARTNER_AS2_ID. Null until the token pair + a partner distinct
+   * from our own station are configured.
+   */
+  static mftGatewayPartnerConfig() {
+    let MftGatewayClient;
+    try { ({ MftGatewayClient } = require('../edi/mftGatewayClient')); } catch (e) { return null; }
+    if (!MftGatewayClient.configured()) return null;
+    const cfg = MftGatewayClient.getConfig();
+    // Explicit only: the EDI 820 receiver fallback is a remittance counterparty, not the ODFI.
+    const partner = String(process.env.MFTGATEWAY_PARTNER_AS2_ID || '').trim();
+    if (!partner || partner.toUpperCase() === String(cfg.stationAs2Id).toUpperCase()) return null;
+    return {
+      partnerId: `MFTGATEWAY:${partner}`,
+      partnerName: process.env.MFTGATEWAY_PARTNER_NAME || `MFT Gateway partner ${partner}`,
+      protocol: 'mftgateway',
+      localAs2Id: cfg.stationAs2Id,
+      partnerAs2Id: partner,
+      partnerUrl: cfg.apiUrl,
     };
   }
 

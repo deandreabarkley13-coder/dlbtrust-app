@@ -135,6 +135,20 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect((await LiliDirectDepositEngine.odfiStatus())).toEqual({ ready: true, channels: ['sftp'], loopback: [], blocker: null });
   });
 
+  it('counts an MFT Gateway bank partner as an external ODFI channel (never our own station or the EDI 820 receiver fallback)', async () => {
+    Object.assign(process.env, {
+      MFTGATEWAY_API_TOKEN_ID: 'tok-id', MFTGATEWAY_API_TOKEN_SECRET: 'tok-secret',
+      MFTGATEWAY_STATION_AS2_ID: 'DLBTRUST-AS2', MFTGATEWAY_PARTNER_AS2_ID: 'BANK-ODFI-AS2', EDI_820_RECEIVER_ID: 'REMIT-RECEIVER',
+    });
+    expect(await LiliDirectDepositEngine.odfiStatus()).toEqual({ ready: true, channels: ['mftgateway:BANK-ODFI-AS2'], loopback: [], blocker: null });
+
+    process.env.MFTGATEWAY_PARTNER_AS2_ID = 'dlbtrust-as2';
+    expect((await LiliDirectDepositEngine.odfiStatus()).ready).toBe(false);
+    delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
+    expect((await LiliDirectDepositEngine.odfiStatus()).ready).toBe(false);
+    expect(LiliDirectDepositEngine.isExternalOdfi({ protocol: 'mftgateway', localAs2Id: 'X', partnerAs2Id: 'x' })).toBe(false);
+  });
+
   it('reconciles a transmitted deposit against a matching FUND_TRANSFER credit on the Lili MCP transaction feed', async () => {
     process.env.ACH_SFTP_URL = 'sftp://odfi.test/inbound';
     vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true } as any);
