@@ -69,8 +69,13 @@ resource "google_cloud_run_v2_service" "app" {
         mount_path = "/data"
       }
 
+      # Cloud Run rejects a name that is both plain and secret-backed; a
+      # Secret Manager entry of the same name wins over runtime_environment.
       dynamic "env" {
-        for_each = var.runtime_environment
+        for_each = {
+          for k, v in var.runtime_environment : k => v
+          if !contains(local.runtime_secret_names, k)
+        }
         content {
           name  = env.key
           value = env.value
@@ -116,7 +121,10 @@ resource "google_cloud_run_v2_service" "app" {
       }
 
       dynamic "env" {
-        for_each = google_secret_manager_secret.runtime
+        for_each = {
+          for k, s in google_secret_manager_secret.runtime : k => s
+          if !contains(var.unseeded_secret_names, k)
+        }
         content {
           name = env.key
           value_source {

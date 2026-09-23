@@ -293,6 +293,21 @@ variable "secret_names" {
   default     = []
 }
 
+variable "unseeded_secret_names" {
+  description = <<-EOT
+    Subset of secret_names whose Secret Manager container exists (declared, IAM
+    granted) but has no version yet, so it is not mounted into the Cloud Run
+    template: Cloud Run refuses to create a revision that references a secret
+    without a version. Remove a name from this list once `gcloud secrets
+    versions add` has been run for it. Typical: LILI_OAUTH_CLIENT_SECRET /
+    LILI_OAUTH_REFRESH_TOKEN / LILI_BUSINESS_USER_ID before the one-time
+    liliMcpOAuthSetup.js capture (those tokens live in system_settings anyway;
+    the env value is only a fallback).
+  EOT
+  type        = list(string)
+  default     = []
+}
+
 variable "clearing_evidence_retention_days" {
   description = "Bucket-lock retention for API-gateway clearing evidence objects (immutable for this long)."
   type        = number

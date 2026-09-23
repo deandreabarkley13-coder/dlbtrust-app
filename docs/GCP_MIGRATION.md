@@ -503,7 +503,13 @@ and deposits stay `awaiting_odfi` (self-loopback AS2 partners do not count).
 2. **Seed credentials** — one `gcloud secrets versions add <NAME> --data-file=-`
    per secret above (values never enter Terraform state). At minimum
    `LILI_DD_ACCOUNT_NUMBER`, `CLEARING_FUNDING_OPERATING_ACCOUNT` and
-   `PAYMENT_SERVER_SERVICE_TOKEN` (`openssl rand -hex 32`).
+   `PAYMENT_SERVER_SERVICE_TOKEN` (`openssl rand -hex 32`). Cloud Run refuses
+   a revision that mounts a version-less secret, so list anything not yet
+   seeded (typically the three `LILI_OAUTH_*`/`LILI_BUSINESS_USER_ID` tokens
+   before step 3) in `unseeded_secret_names`; drop them and re-apply once
+   seeded. Plain `runtime_environment` keys that also exist in `secret_names`
+   (e.g. `LILI_MCP_URL`, `LILI_OAUTH_BASE_URL` from the Northflank migration)
+   are skipped in favour of the secret.
 3. **Lili OAuth capture (once, interactive)** —
    `ADMIN_TOKEN=... API_BASE=https://<cloud run url> node server/scripts/liliMcpOAuthSetup.js`
    logs in to Lili in a local browser and stores the client + tokens encrypted
