@@ -18,6 +18,9 @@ locals {
     # signing secret of the Stripe webhook endpoint that hits
     # /api/payment-server/v1/stripe/webhook (stripePaymentIntakeEngine.js).
     "STRIPE_WEBHOOK_SECRET",
+    # Restricted key scoped to Customers/PaymentIntents/Checkout write (payment
+    # processing); the payout key (STRIPE_SECRET_KEY) stays Payouts/Balance only.
+    "STRIPE_PAYMENTS_SECRET_KEY",
   ]
   runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names))
 
