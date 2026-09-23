@@ -30,7 +30,7 @@ function principal(req) {
 
 function sendError(res, err) {
   const status = err.status || err.statusCode || 400;
-  res.status(status).json({ success: false, error: err.message, code: err.code || null, details: err.details || undefined });
+  res.status(status).json({ success: false, error: err.message, code: err.code || null, details: err.details || err.detail || undefined });
 }
 
 router.get('/status', operatorAuth, async (req, res) => {
