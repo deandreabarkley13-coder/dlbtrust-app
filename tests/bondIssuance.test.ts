@@ -75,9 +75,13 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
   beforeEach(() => {
     s = store();
     vi.spyOn(pool, 'query').mockImplementation(s.query as any);
-    fin.clients = {}; fin.savings = {}; fin.txns = []; let nextId = 100;
+    fin.clients = {}; fin.savings = {}; fin.txns = []; fin.products = [{ id: 7, name: 'Existing' }]; fin.paymentTypes = []; let nextId = 100;
     vi.spyOn(FineractClient, 'findClientByExternalId').mockImplementation(async (ext: string) => fin.clients[ext] || null);
     vi.spyOn(FineractClient, 'createClient').mockImplementation(async ({ externalId }: any) => { const c = { id: ++nextId, externalId }; fin.clients[externalId] = c; return { clientId: c.id }; });
+    vi.spyOn(FineractClient, 'listSavingsProducts').mockImplementation(async () => fin.products);
+    vi.spyOn(FineractClient, 'createSavingsProduct').mockImplementation(async ({ name }: any) => { const p = { id: 7, name }; fin.products.push(p); return { resourceId: 7 }; });
+    vi.spyOn(FineractClient, 'listPaymentTypes').mockImplementation(async () => fin.paymentTypes);
+    vi.spyOn(FineractClient, 'createPaymentType').mockImplementation(async ({ name }: any) => { fin.paymentTypes.push({ id: 3, name }); return { resourceId: 3 }; });
     vi.spyOn(FineractClient, 'findSavingsAccountByExternalId').mockImplementation(async (ext: string) => fin.savings[ext] || null);
     vi.spyOn(FineractClient, 'createSavingsAccount').mockImplementation(async ({ externalId, productId }: any) => { const a = { id: ++nextId, externalId, accountNo: 'SA' + nextId, productId, status: { submittedAndPendingApproval: true }, summary: { accountBalance: 0 } }; fin.savings[externalId] = a; return { savingsId: a.id }; });
     vi.spyOn(FineractClient, 'commandSavingsAccount').mockImplementation(async (id: number, cmd: string) => { const a = Object.values(fin.savings).find((x: any) => x.id === id) as any; a.status = cmd === 'activate' ? { active: true } : { approved: true }; return {}; });
@@ -208,5 +212,18 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
     expect(after.ready).toBe(true);
     expect(after.parties.issuer.fineract.accountNo).toMatch(/^SA/);
     expect(after.pipeline).toMatch(/held, account of record.*Lili direct deposit$/);
+  });
+
+  it('creates the savings product and payment type once when Fineract has none', async () => {
+    delete process.env.FINERACT_SAVINGS_PRODUCT_ID;
+    fin.products = [];
+    await BondIssuanceEngine.ensureParty('issuer');
+    await BondIssuanceEngine.ensureParty('holder');
+    expect(fin.products).toHaveLength(1);
+    expect(fin.products[0].name).toBe('Trust Account of Record (USD)');
+    expect(Object.values(fin.savings).every((a: any) => a.productId === 7)).toBe(true);
+    expect(await BondIssuanceEngine.ensurePaymentType()).toBe(3);
+    expect(await BondIssuanceEngine.ensurePaymentType()).toBe(3);
+    expect(fin.paymentTypes).toHaveLength(1);
   });
 });

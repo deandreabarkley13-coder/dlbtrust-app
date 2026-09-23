@@ -255,6 +255,38 @@ class FineractClient {
    * Create a savings account for a client.
    * Maps to POST /savingsaccounts
    */
+  static async listSavingsProducts() {
+    const r = await fineractRequest('GET', 'savingsproducts');
+    return Array.isArray(r) ? r : [];
+  }
+
+  /** Plain USD savings product (no interest, no accounting) used for trust accounts of record. */
+  static async createSavingsProduct({ name, shortName, currencyCode = 'USD' }) {
+    return fineractRequest('POST', 'savingsproducts', {
+      name,
+      shortName,
+      currencyCode,
+      digitsAfterDecimal: 2,
+      inMultiplesOf: 0,
+      nominalAnnualInterestRate: 0,
+      interestCompoundingPeriodType: 1,
+      interestPostingPeriodType: 4,
+      interestCalculationType: 1,
+      interestCalculationDaysInYearType: 365,
+      accountingRule: 1,
+      locale: 'en',
+    });
+  }
+
+  static async listPaymentTypes() {
+    const r = await fineractRequest('GET', 'paymenttypes');
+    return Array.isArray(r) ? r : [];
+  }
+
+  static async createPaymentType({ name, description, isCashPayment = false }) {
+    return fineractRequest('POST', 'paymenttypes', { name, description, isCashPayment, position: 1 });
+  }
+
   static async createSavingsAccount({ clientId, productId, externalId }) {
     const payload = {
       clientId,
