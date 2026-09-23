@@ -390,6 +390,20 @@ class FineractClient {
     return fineractRequest('POST', `savingsaccounts/${accountId}?command=${command}`, {});
   }
 
+  /** Client by externalId (GET /clients?externalId=), or null. */
+  static async findClientByExternalId(externalId) {
+    const r = await fineractRequest('GET', `clients?externalId=${encodeURIComponent(externalId)}&limit=1`);
+    const items = (r && r.pageItems) || (Array.isArray(r) ? r : []);
+    return items.find((c) => c.externalId === externalId) || null;
+  }
+
+  /** Savings account by externalId (GET /savingsaccounts?externalId=), or null. */
+  static async findSavingsAccountByExternalId(externalId) {
+    const r = await fineractRequest('GET', `savingsaccounts?externalId=${encodeURIComponent(externalId)}&limit=1`);
+    const items = (r && r.pageItems) || (Array.isArray(r) ? r : []);
+    return items.find((a) => a.externalId === externalId) || null;
+  }
+
   /**
    * List Fineract clients with pagination.
    */

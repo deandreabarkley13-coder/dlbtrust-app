@@ -381,7 +381,18 @@ class StripePaymentIntakeEngine {
         });
       }
     }
-    return { received: true, eventType: event.type, paymentIntentId: pi, amountCents: cents, depositOrderId, intake: rowToIntake(await this._byPaymentIntent(pi)) };
+    const received = rowToIntake(await this._byPaymentIntent(pi));
+    await this._notifyIssuance(received && received.intakeId);
+    return { received: true, eventType: event.type, paymentIntentId: pi, amountCents: cents, depositOrderId, intake: received };
+  }
+
+  /** Bond issuance payments waiting on this intake move to `funded`. Best-effort. */
+  static async _notifyIssuance(intakeId) {
+    if (!intakeId) return null;
+    try {
+      const { BondIssuanceEngine } = require('../bonds/bondIssuanceEngine');
+      return await BondIssuanceEngine.markFunded(intakeId);
+    } catch (e) { return null; }
   }
 
   static async _postDeposit(params) {
