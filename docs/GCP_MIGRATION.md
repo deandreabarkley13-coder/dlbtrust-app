@@ -528,7 +528,21 @@ and deposits stay `awaiting_odfi` (self-loopback AS2 partners do not count).
 **Originator (`LILI_ORIGINATOR`).** Lili is RDFI-only and the trust holds no
 ODFI-capable bank account, so a NACHA file built by OpenACH has nowhere to go
 (the MFT Gateway relay stays fail-closed with no bank partner). Production
-therefore sets `LILI_ORIGINATOR=stripe_treasury`: the direct deposit is
+therefore sets `LILI_ORIGINATOR=stripe_payout`: the trust's live Stripe
+account (`DEANDREA LAVAR BARKLEY TRUST`) already holds the Lili account
+(Sunrise Banks N.A., ****2959) as its registered external payout bank account,
+so the direct deposit is a Stripe `Payout` (standard ACH) from the Stripe
+balance into that account, idempotent on the settlement `reference`.
+`readiness.odfi` reports `stripe_payout:<ba_id>`, the matched external account
+(bank name / routing / last4) and the available USD balance; the payout is
+refused when the amount exceeds the available balance (409). Fail-closed
+prerequisites: a **live-mode** `STRIPE_SECRET_KEY` (restricted key with
+Balance read, Account read and Payouts write is enough), `payouts_enabled` on
+the account, and a bank_account external account whose last4 equals the
+`LILI_DD_ACCOUNT_NUMBER` last4. Fund the Stripe balance (card / ACH payments
+into the account) before settling.
+
+`LILI_ORIGINATOR=stripe_treasury` is the Stripe Treasury variant: the direct deposit is
 originated by the dlb-treasury Stripe Treasury financial account
 (`STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`) as a Treasury `OutboundPayment` to a
 `us_bank_account` — always the `LILI_DD_*` account (routing 121145307, DB NET

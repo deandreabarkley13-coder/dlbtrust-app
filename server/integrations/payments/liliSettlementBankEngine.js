@@ -15,7 +15,10 @@
  *
  * or, with LILI_ORIGINATOR=stripe_treasury, the credit is originated as a
  * Stripe Treasury OutboundPayment (ACH direct deposit) from the trust's
- * Stripe Treasury financial account (LiliStripeTreasuryOriginator).
+ * Stripe Treasury financial account (LiliStripeTreasuryOriginator), or, with
+ * LILI_ORIGINATOR=stripe_payout, as a Stripe balance Payout (ACH) to the Lili
+ * account registered as the Stripe external bank account
+ * (LiliStripePayoutOriginator).
  *
  * Exposes the same `_cfg()` / `_sendPayment()` / `status()` surface as the
  * APISIX/Apigee gateway engines so ApiGatewayClearingEngine can treat Lili as
@@ -31,6 +34,9 @@ const crypto = require('crypto');
 const { LiliMcpEngine } = require('./liliMcpEngine');
 const { LiliDirectDepositEngine } = require('./liliDirectDepositEngine');
 const { LiliStripeTreasuryOriginator } = require('./liliStripeTreasuryOriginator');
+const { LiliStripePayoutOriginator } = require('./liliStripePayoutOriginator');
+
+const ORIGINATORS = { nacha: 'nacha', stripe_treasury: 'stripe_treasury', stripe_payout: 'stripe_payout' };
 
 const DIRECTION = 'treasury_to_lili';
 
@@ -53,13 +59,24 @@ class LiliSettlementBankEngine {
       sourceAccount: env.CLEARING_FUNDING_OPERATING_ACCOUNT || env.CLEARING_FUNDING_SETTLEMENT_ACCOUNT || null,
       sourceName: env.ACH_ORIGINATOR_NAME || env.ACH_COMPANY_NAME || env.TRUST_NAME || 'DLB Trust',
       gcpProject: env.GCP_PROJECT || env.GOOGLE_CLOUD_PROJECT || null,
-      originator: String(env.LILI_ORIGINATOR || 'nacha').toLowerCase() === 'stripe_treasury' ? 'stripe_treasury' : 'nacha',
+      originator: ORIGINATORS[String(env.LILI_ORIGINATOR || 'nacha').toLowerCase()] || 'nacha',
     };
   }
 
   /** Originator readiness in the odfiStatus() shape, for whichever originator is selected. */
   static async originatorStatus() {
     const cfg = this._cfg();
+    if (cfg.originator === 'stripe_payout') {
+      const p = await LiliStripePayoutOriginator.status();
+      return {
+        originator: 'stripe_payout',
+        ready: p.ready,
+        channels: p.ready ? [`stripe_payout:${p.externalAccount.id}`] : [],
+        loopback: [],
+        blocker: p.blocker,
+        stripePayout: p,
+      };
+    }
     if (cfg.originator !== 'stripe_treasury') return { originator: 'nacha', ...(await LiliDirectDepositEngine.odfiStatus()) };
     const s = await LiliStripeTreasuryOriginator.status();
     return {
@@ -136,6 +153,34 @@ class LiliSettlementBankEngine {
         reference,
         destination: destinationSummary,
         message: 'LILI_CLEARING_LIVE=false: simulated, no ACH credit generated or transmitted',
+      };
+    }
+
+    if (cfg.originator === 'stripe_payout') {
+      const sent = await LiliStripePayoutOriginator.send({ amount: n, reference, description });
+      return {
+        transferId: sent.payoutId,
+        status: sent.status,
+        live: true,
+        shadow: false,
+        provider: 'lili',
+        direction: DIRECTION,
+        type,
+        amount: n,
+        currency,
+        reference,
+        destination: destinationSummary,
+        originator: 'stripe_payout',
+        lili: {
+          odfiChannels: [`stripe_payout:${sent.externalAccountId}`],
+          network: sent.network,
+          method: sent.method,
+          payoutId: sent.payoutId,
+          depositId: sent.depositId,
+          stripeStatus: sent.stripeStatus,
+          expectedArrival: sent.expectedArrival,
+          reconciliation: 'LiliDirectDepositEngine.reconcile (Lili MCP transaction feed)',
+        },
       };
     }
 
@@ -250,7 +295,9 @@ class LiliSettlementBankEngine {
         : 'shadow/simulated',
       originator: cfg.originator,
       source: {
-        role: cfg.originator === 'stripe_treasury' ? 'debtor (Stripe Treasury financial account, ACH direct deposit)' : 'debtor (ODFI)',
+        role: cfg.originator === 'stripe_treasury'
+          ? 'debtor (Stripe Treasury financial account, ACH direct deposit)'
+          : cfg.originator === 'stripe_payout' ? 'debtor (Stripe balance payout, ACH direct deposit)' : 'debtor (ODFI)',
         name: cfg.sourceName,
         routingConfigured: Boolean(cfg.sourceRouting),
         accountConfigured: Boolean(cfg.sourceAccount),
