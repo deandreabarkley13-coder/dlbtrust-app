@@ -78,6 +78,14 @@ describe('ACHEngine transmitting through the MFT register', () => {
     expect(deliver).not.toHaveBeenCalled();
     expect(sql.some(s => s.startsWith('INSERT INTO ach_transmissions'))).toBe(true);
 
+    submit.mockClear();
+    (SystemSettings.getMode as any).mockResolvedValue('sandbox');
+    (SystemSettings.getProductionPartnerConfig as any).mockResolvedValue(null);
+    const sandbox = await ACHEngine.transmitBatch('ACH-1').catch((e: Error) => ({ mode: 'error', error: e.message }));
+    expect(submit).not.toHaveBeenCalled();
+    expect(sandbox.mode).not.toBe('mftgateway');
+    (SystemSettings.getMode as any).mockResolvedValue('production');
+
     process.env.MFTGATEWAY_PARTNER_AS2_ID = 'dlbtrust-as2';
     expect(ACHEngine.mftGatewayPartnerConfig()).toBeNull();
     delete process.env.MFTGATEWAY_PARTNER_AS2_ID;

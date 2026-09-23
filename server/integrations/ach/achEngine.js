@@ -253,9 +253,10 @@ class ACHEngine {
       // It keeps the bytes, the hash and the release decision, so it wins
       // over any bare endpoint.
       partnerConfig = ACHEngine.mftPartnerConfig();
-    } else if (ACHEngine.mftGatewayPartnerConfig()) {
+    } else if (systemMode === 'production' && ACHEngine.mftGatewayPartnerConfig()) {
       // Hosted AS2 station on MFT Gateway delivering to the bank's registered
       // partner profile — the ODFI channel for treasury -> RDFI credits.
+      // Production only: sandbox never leaves the platform through the gateway.
       partnerConfig = ACHEngine.mftGatewayPartnerConfig();
     } else if (productionConfig) {
       // Production mode: use the configured external bank endpoint
