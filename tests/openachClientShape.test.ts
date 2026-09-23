@@ -36,8 +36,20 @@ describe('OpenACH client — response shape', () => {
     });
     expect(out).toMatchObject({ success: true, payment_profile_id: 'pp-1', external_account_id: 'ea-1', payment_schedule_id: 'ps-1' });
     expect(calls.map(c => c[0])).toEqual(['getPaymentProfileByExtId', 'savePaymentProfile', 'saveExternalAccount', 'savePaymentSchedule']);
-    expect(calls[2][1]).toMatchObject({ external_account_payment_profile_id: 'pp-1', external_account_dfi_id: '121145307' });
+    expect(calls[2][1]).toMatchObject({ external_account_payment_profile_id: 'pp-1', external_account_dfi_id: '121145307', external_account_type: 'checking' });
     expect(calls[3][1]).toMatchObject({ payment_schedule_external_account_id: 'ea-1', payment_schedule_payment_type_id: 'pt-credit', payment_schedule_amount: '1.00' });
+  });
+
+  it('renders OpenACH field-validation errors (objects) in the thrown message', async () => {
+    vi.spyOn(OpenACHSession.prototype, 'connect').mockResolvedValue(undefined as any);
+    vi.spyOn(OpenACHSession.prototype, 'disconnect').mockResolvedValue(undefined as any);
+    vi.spyOn(OpenACHSession.prototype, 'request').mockImplementation(async (endpoint: string) => {
+      if (endpoint === 'getPaymentProfileByExtId') return { success: true, data: { payment_profile_id: 'pp-1' } };
+      if (endpoint === 'saveExternalAccount') return { success: false, error: { external_account_type: ['External account type must be one of ("checking","savings")'] } };
+      throw new Error(`should not reach ${endpoint}`);
+    });
+    await expect(OpenACHClient.disburseToBeneficiary({ first_name: 'A', last_name: 'B', email: 'a@b.test', external_id: 'x', bank_name: 'L', routing_number: '1', account_number: '2', account_type: 'Checking', amount: '1', send_date: '2026-09-23', payment_type_id: 'pt' }))
+      .rejects.toThrow(/external_account_type.*must be one of/);
   });
 
   it('fails loudly instead of passing an undefined profile id downstream', async () => {

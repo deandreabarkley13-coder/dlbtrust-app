@@ -145,6 +145,11 @@ class OpenACHSession {
  * OpenACH API — High-level business operations
  */
 /** OpenACH returns record fields under `data`; older builds put them top-level. */
+function errorText(res) {
+  const err = res && res.error;
+  return typeof err === 'string' ? err : JSON.stringify(err || res);
+}
+
 function idField(res, key) {
   return (res && res.data && res.data[key]) || (res && res[key]) || null;
 }
@@ -160,7 +165,7 @@ class OpenACHClient {
     await session.connect();
     try {
       const res = await session.request('getPaymentTypes');
-      if (!res.success) throw new Error(`getPaymentTypes failed: ${res.error}`);
+      if (!res.success) throw new Error(`getPaymentTypes failed: ${errorText(res)}`);
       return res.payment_types || res.data || res;
     } finally {
       await session.disconnect();
@@ -180,7 +185,7 @@ class OpenACHClient {
         payment_profile_email_address: email,
         payment_profile_external_id: external_id || '',
       });
-      if (!res.success) throw new Error(`createPaymentProfile failed: ${res.error}`);
+      if (!res.success) throw new Error(`createPaymentProfile failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -197,7 +202,7 @@ class OpenACHClient {
       const res = await session.request('getPaymentProfileByExtId', {
         payment_profile_external_id: externalId,
       });
-      if (!res.success) throw new Error(`getPaymentProfileByExtId failed: ${res.error}`);
+      if (!res.success) throw new Error(`getPaymentProfileByExtId failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -227,7 +232,7 @@ class OpenACHClient {
         external_account_name: `${account_holder} - ${bank_name}`,
         external_account_bank: bank_name,
         external_account_holder: account_holder,
-        external_account_type: account_type,
+        external_account_type: String(account_type || 'checking').toLowerCase(),
         external_account_country_code: 'US',
         external_account_dfi_id: routing_number,
         external_account_number: account_number,
@@ -238,7 +243,7 @@ class OpenACHClient {
         external_account_billing_country: 'US',
         external_account_business: '0',
       });
-      if (!res.success) throw new Error(`addExternalAccount failed: ${res.error}`);
+      if (!res.success) throw new Error(`addExternalAccount failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -271,7 +276,7 @@ class OpenACHClient {
       };
 
       const res = await session.request('savePaymentSchedule', params);
-      if (!res.success) throw new Error(`schedulePayment failed: ${res.error}`);
+      if (!res.success) throw new Error(`schedulePayment failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -286,7 +291,7 @@ class OpenACHClient {
     await session.connect();
     try {
       const res = await session.request('getPaymentSchedules', { payment_profile_id });
-      if (!res.success) throw new Error(`getPaymentSchedules failed: ${res.error}`);
+      if (!res.success) throw new Error(`getPaymentSchedules failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -301,7 +306,7 @@ class OpenACHClient {
     await session.connect();
     try {
       const res = await session.request('getExternalAccounts', { payment_profile_id });
-      if (!res.success) throw new Error(`getExternalAccounts failed: ${res.error}`);
+      if (!res.success) throw new Error(`getExternalAccounts failed: ${errorText(res)}`);
       return res;
     } finally {
       await session.disconnect();
@@ -357,7 +362,7 @@ class OpenACHClient {
           payment_profile_email_address: email,
           payment_profile_external_id: external_id || '',
         });
-        if (!profileRes.success) throw new Error(`Profile creation failed: ${profileRes.error}`);
+        if (!profileRes.success) throw new Error(`Profile creation failed: ${errorText(profileRes)}`);
         profileId = idField(profileRes, 'payment_profile_id');
         if (!profileId) throw new Error(`Profile creation returned no payment_profile_id: ${JSON.stringify(profileRes).slice(0, 200)}`);
       }
@@ -368,7 +373,7 @@ class OpenACHClient {
         external_account_name: `${first_name} ${last_name} - ${bank_name}`,
         external_account_bank: bank_name,
         external_account_holder: `${first_name} ${last_name}`,
-        external_account_type: account_type,
+        external_account_type: String(account_type || 'checking').toLowerCase(),
         external_account_country_code: 'US',
         external_account_dfi_id: routing_number,
         external_account_number: account_number,
@@ -379,7 +384,7 @@ class OpenACHClient {
         external_account_billing_country: 'US',
         external_account_business: '0',
       });
-      if (!accountRes.success) throw new Error(`Bank account creation failed: ${accountRes.error}`);
+      if (!accountRes.success) throw new Error(`Bank account creation failed: ${errorText(accountRes)}`);
       const externalAccountId = idField(accountRes, 'external_account_id');
       if (!externalAccountId) throw new Error(`Bank account creation returned no external_account_id (keys: ${Object.keys(accountRes.data || accountRes).join(',')})`);
 
@@ -393,7 +398,7 @@ class OpenACHClient {
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       });
-      if (!scheduleRes.success) throw new Error(`Payment scheduling failed: ${scheduleRes.error}`);
+      if (!scheduleRes.success) throw new Error(`Payment scheduling failed: ${errorText(scheduleRes)}`);
 
       return {
         success: true,
