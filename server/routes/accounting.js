@@ -168,7 +168,10 @@ router.get('/reports/balances/download', async (req, res) => {
     });
     const headers = ['AccountCode', 'AccountName', 'AccountType', 'SubType', 'TotalDebits', 'TotalCredits', 'CurrentBalance'];
     const escape = (value) => {
-      const s = value === null || value === undefined ? '' : String(value);
+      let s = value === null || value === undefined ? '' : String(value);
+      // Neutralize spreadsheet formula injection (=, +, -, @, tab, CR prefixes),
+      // leaving plain numbers (e.g. negative balances) untouched
+      if (/^[=+\-@\t\r]/.test(s) && !Number.isFinite(Number(s))) s = `'${s}`;
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const rows = (tb.accounts || []).map((a) => [
