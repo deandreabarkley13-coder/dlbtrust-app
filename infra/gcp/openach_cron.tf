@@ -78,10 +78,12 @@ resource "google_cloud_run_v2_job" "openach_nightly" {
           <<-EOT
             set -e
             cd /var/www/openach
-            mkdir -p runtime/export runtime/import
+            mkdir -p runtime/export runtime/import /tmp/achfiles
             php protected/yiic cronnightly run
             php protected/yiic confirmationprocessor run || true
             php protected/yiic returnchangeprocessor run || true
+            echo "built .ach files:"; find / -xdev -name '*.ach' -mmin -60 2>/dev/null || true
+            echo "runtime/export:"; ls -la runtime/export || true
           EOT
         ]
 
