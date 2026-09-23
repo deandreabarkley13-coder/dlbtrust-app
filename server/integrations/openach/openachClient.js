@@ -144,6 +144,11 @@ class OpenACHSession {
 /**
  * OpenACH API — High-level business operations
  */
+/** OpenACH returns record fields under `data`; older builds put them top-level. */
+function idField(res, key) {
+  return (res && res.data && res.data[key]) || (res && res[key]) || null;
+}
+
 class OpenACHClient {
 
   /**
@@ -339,8 +344,8 @@ class OpenACHClient {
           const existing = await session.request('getPaymentProfileByExtId', {
             payment_profile_external_id: external_id,
           });
-          if (existing.success && existing.payment_profile_id) {
-            profileId = existing.payment_profile_id;
+          if (existing.success && idField(existing, 'payment_profile_id')) {
+            profileId = idField(existing, 'payment_profile_id');
           }
         } catch (_) { /* not found, will create */ }
       }
@@ -353,7 +358,8 @@ class OpenACHClient {
           payment_profile_external_id: external_id || '',
         });
         if (!profileRes.success) throw new Error(`Profile creation failed: ${profileRes.error}`);
-        profileId = profileRes.payment_profile_id;
+        profileId = idField(profileRes, 'payment_profile_id');
+        if (!profileId) throw new Error(`Profile creation returned no payment_profile_id: ${JSON.stringify(profileRes).slice(0, 200)}`);
       }
 
       // Step 2: Add bank account
@@ -374,7 +380,8 @@ class OpenACHClient {
         external_account_business: '0',
       });
       if (!accountRes.success) throw new Error(`Bank account creation failed: ${accountRes.error}`);
-      const externalAccountId = accountRes.external_account_id;
+      const externalAccountId = idField(accountRes, 'external_account_id');
+      if (!externalAccountId) throw new Error(`Bank account creation returned no external_account_id (keys: ${Object.keys(accountRes.data || accountRes).join(',')})`);
 
       // Step 3: Schedule payment
       const scheduleRes = await session.request('savePaymentSchedule', {
@@ -392,7 +399,7 @@ class OpenACHClient {
         success: true,
         payment_profile_id: profileId,
         external_account_id: externalAccountId,
-        payment_schedule_id: scheduleRes.payment_schedule_id,
+        payment_schedule_id: idField(scheduleRes, 'payment_schedule_id'),
         amount,
         send_date,
         message: `ACH credit of $${amount} scheduled for ${send_date} to ${first_name} ${last_name} at ${bank_name}`,
@@ -404,4 +411,4 @@ class OpenACHClient {
   }
 }
 
-module.exports = { OpenACHClient, OpenACHSession, openachRequest };
+module.exports = { OpenACHClient, OpenACHSession, openachRequest, idField };
