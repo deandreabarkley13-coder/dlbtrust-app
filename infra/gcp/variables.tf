@@ -194,7 +194,7 @@ variable "runtime_environment" {
     TRUST_HOLDER_NAME            = "DeAndrea Lavar Barkley Irrevocable Trust"
     TRUST_HOLDER_ID              = "dlb-irrevocable-trust"
     BOND_ISSUANCE_ENABLED        = "true"
-    BOND_ISSUANCE_AUTO_INTAKE    = "true"
+    BOND_ISSUANCE_AUTO_INTAKE    = "false"
     BOND_ISSUANCE_RUN_DUE_MS     = "3600000"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED             = "true"
