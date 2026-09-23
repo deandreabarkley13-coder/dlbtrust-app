@@ -144,7 +144,7 @@ describe('S2S payment server — /api/payment-server/v1', () => {
   });
 
   it('no ODFI channel → 503 awaiting_odfi, nothing transmitted', async () => {
-    odfi = { ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (AS2/MFT/REST/SFTP)' };
+    odfi = { ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (OpenACH/AS2/MFT/REST/SFTP)' };
     const create = vi.spyOn(LiliDirectDepositEngine, 'createDirectDeposit');
 
     const ready = await call('GET', '/settlement-banks/lili/readiness');

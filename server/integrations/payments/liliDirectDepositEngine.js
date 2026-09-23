@@ -183,6 +183,10 @@ class LiliDirectDepositEngine {
       const cfg = ACHEngine.mftGatewayPartnerConfig();
       if (cfg && this.isExternalOdfi(cfg)) channels.push('mftgateway:' + cfg.partnerAs2Id);
     }
+    if (ACHEngine && typeof ACHEngine.openAchPartnerConfig === 'function') {
+      const cfg = ACHEngine.openAchPartnerConfig();
+      if (cfg && this.isExternalOdfi(cfg)) channels.push('openach');
+    }
     if (AS2Client && typeof AS2Client.getConfigStatus === 'function') {
       try { if (AS2Client.getConfigStatus().configured) channels.push('as2'); } catch (e) { /* ignore */ }
     }
@@ -207,7 +211,7 @@ class LiliDirectDepositEngine {
       loopback,
       blocker: ready ? null : (loopback.length
         ? `Only self-loopback ODFI partner(s) configured (${loopback.join(', ')}): NACHA files are posted back to this platform and never reach a bank`
-        : 'No ODFI channel configured (AS2/MFT/REST/SFTP)'),
+        : 'No ODFI channel configured (OpenACH/AS2/MFT/REST/SFTP)'),
     };
   }
 
@@ -221,6 +225,7 @@ class LiliDirectDepositEngine {
     const proto = cfg.protocol || 'as2';
     if (proto === 'as2') return Boolean(cfg.partnerUrl && cfg.partnerAs2Id);
     if (proto === 'mft') return true;
+    if (proto === 'openach') return Boolean(cfg.apiBaseUrl && cfg.paymentTypeId);
     if (proto === 'mftgateway') {
       const partner = String(cfg.partnerAs2Id || '').trim();
       return Boolean(partner) && partner.toUpperCase() !== String(cfg.localAs2Id || '').trim().toUpperCase();

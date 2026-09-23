@@ -149,6 +149,19 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect(LiliDirectDepositEngine.isExternalOdfi({ protocol: 'mftgateway', localAs2Id: 'X', partnerAs2Id: 'x' })).toBe(false);
   });
 
+  it('counts the configured OpenACH origination platform as the ODFI channel, unless OPENACH_ODFI_ENABLED=false', async () => {
+    Object.assign(process.env, {
+      OPENACH_BASE_URL: 'https://openach.internal/api', OPENACH_API_TOKEN: 't', OPENACH_API_KEY: 'k', OPENACH_PAYMENT_TYPE_ID: 'pt-1',
+    });
+    expect(await LiliDirectDepositEngine.odfiStatus()).toEqual({ ready: true, channels: ['openach'], loopback: [], blocker: null });
+
+    process.env.OPENACH_ODFI_ENABLED = 'false';
+    expect((await LiliDirectDepositEngine.odfiStatus()).ready).toBe(false);
+    delete process.env.OPENACH_ODFI_ENABLED;
+    delete process.env.OPENACH_PAYMENT_TYPE_ID;
+    expect((await LiliDirectDepositEngine.odfiStatus()).ready).toBe(false);
+  });
+
   it('reconciles a transmitted deposit against a matching FUND_TRANSFER credit on the Lili MCP transaction feed', async () => {
     process.env.ACH_SFTP_URL = 'sftp://odfi.test/inbound';
     vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true } as any);
@@ -180,7 +193,7 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     const status = await LiliDirectDepositEngine.getWorkflowStatus();
     expect(status.ready).toBe(false);
     expect(status.destination).toEqual({ configured: false, routingNumber: '091000019', accountNumberMasked: null, accountName: 'DB NET MGMT LLC' });
-    expect(status.odfi).toEqual({ ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (AS2/MFT/REST/SFTP)' });
+    expect(status.odfi).toEqual({ ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (OpenACH/AS2/MFT/REST/SFTP)' });
     expect(status.mcp.configured).toBe(true);
     expect(status.mft).toBeNull();
   });

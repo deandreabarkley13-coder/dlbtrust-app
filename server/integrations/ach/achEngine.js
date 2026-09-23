@@ -258,6 +258,11 @@ class ACHEngine {
       // partner profile — the ODFI channel for treasury -> RDFI credits.
       // Production only: sandbox never leaves the platform through the gateway.
       partnerConfig = ACHEngine.mftGatewayPartnerConfig();
+    } else if (systemMode === 'production' && ACHEngine.openAchPartnerConfig()) {
+      // The trust's own ODFI origination platform (OpenACH, in-project on GCP):
+      // holds the treasury origination account, so entries are originated
+      // there rather than dropped as a file.
+      partnerConfig = ACHEngine.openAchPartnerConfig();
     } else if (productionConfig) {
       // Production mode: use the configured external bank endpoint
       partnerConfig = productionConfig;
@@ -354,6 +359,9 @@ class ACHEngine {
           response_body: JSON.stringify({ as2_from: sent.as2_from, as2_to: sent.as2_to, message_id: sent.message_id, link: sent.link, response: sent.response_body }),
         };
         console.log(`[ACH] transmitBatch(${batchId}): MFT Gateway → ${sent.as2_to} message=${sent.message_id}`);
+      } else if (protocol === 'openach') {
+        result = await ACHEngine._originateOnOpenAch(batch, partnerConfig);
+        console.log(`[ACH] transmitBatch(${batchId}): OpenACH → ${result.message_id} (${result.openach.entries.length} entries)`);
       } else if (protocol === 'bill_api') {
         // BILL Cash Account: submit via BILL's RecordARPayment API
         const billClient = require('../bill/billClient');
@@ -492,6 +500,82 @@ class ACHEngine {
       localAs2Id: cfg.stationAs2Id,
       partnerAs2Id: partner,
       partnerUrl: cfg.apiUrl,
+    };
+  }
+
+  /**
+   * OpenACH (the trust's ODFI origination platform) as the ODFI channel.
+   * Null until the rail is configured (OPENACH_BASE_URL, API token/key and a
+   * payment type id) or when OPENACH_ODFI_ENABLED=false.
+   */
+  static openAchPartnerConfig() {
+    if (['0', 'false', 'no', 'off'].includes(String(process.env.OPENACH_ODFI_ENABLED || '').toLowerCase())) return null;
+    let readiness;
+    let config;
+    try {
+      const { getOpenAchRailConfig, openAchRailReadiness } = require('../openach/openachRailConfig');
+      readiness = openAchRailReadiness();
+      config = getOpenAchRailConfig();
+    } catch (e) {
+      return null;
+    }
+    if (!readiness.ready) return null;
+    return {
+      partnerId: 'OPENACH',
+      partnerName: process.env.OPENACH_ODFI_NAME || 'OpenACH ODFI origination',
+      protocol: 'openach',
+      apiBaseUrl: config.baseUrl,
+      paymentTypeId: config.paymentTypeIds.ach_standard,
+      sameDayPaymentTypeId: config.paymentTypeIds.ach_same_day,
+    };
+  }
+
+  /**
+   * Originate every credit entry of a batch on OpenACH. Debit entries are
+   * refused: the origination account is the trust's and this channel only
+   * pushes funds out of it.
+   */
+  static async _originateOnOpenAch(batch, partnerConfig) {
+    const { OpenACHClient } = require('../openach/openachClient');
+    const entries = Array.isArray(batch.entries) && batch.entries.length
+      ? batch.entries
+      : (await pool.query('SELECT * FROM ach_entries WHERE batch_id = $1 ORDER BY entry_sequence', [batch.batch_id])).rows;
+    if (!entries.length) throw new Error(`Batch ${batch.batch_id} has no entries to originate`);
+    const debit = entries.find(e => !['22', '32', '23', '33'].includes(String(e.transaction_code || '22')));
+    if (debit) throw new Error(`OpenACH ODFI channel originates credits only; entry ${debit.entry_sequence} has transaction code ${debit.transaction_code}`);
+
+    const sendDate = batch.effective_date
+      ? new Date(batch.effective_date).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const originated = [];
+    for (const entry of entries) {
+      const name = String(entry.individual_name || 'BENEFICIARY').trim();
+      const [first, ...rest] = name.split(/\s+/);
+      const res = await OpenACHClient.disburseToBeneficiary({
+        first_name: first || name,
+        last_name: rest.join(' ') || first || name,
+        email: process.env.OPENACH_BENEFICIARY_EMAIL || `${String(entry.individual_id || entry.entry_sequence).replace(/[^a-z0-9]/gi, '')}@${process.env.OPENACH_BENEFICIARY_EMAIL_DOMAIN || 'ach.dlbtrust.local'}`,
+        external_id: `${batch.batch_id}:${entry.entry_sequence}`,
+        bank_name: entry.receiving_bank || 'RDFI',
+        routing_number: entry.receiving_routing,
+        account_number: entry.account_number,
+        account_type: ['32', '33'].includes(String(entry.transaction_code)) ? 'Savings' : 'Checking',
+        amount: (Number(entry.amount_cents) / 100).toFixed(2),
+        send_date: sendDate,
+        payment_type_id: partnerConfig.paymentTypeId,
+      });
+      if (!res || !res.success) throw new Error(`OpenACH origination failed for entry ${entry.entry_sequence}: ${(res && res.error) || 'unknown'}`);
+      originated.push({ entry_sequence: entry.entry_sequence, payment_schedule_id: res.payment_schedule_id, external_account_id: res.external_account_id, amount: res.amount, send_date: res.send_date });
+    }
+    const messageId = `OPENACH-${batch.batch_id}`;
+    return {
+      success: true,
+      mode: 'openach',
+      message_id: messageId,
+      status_code: 200,
+      mdn_received: false,
+      response_body: JSON.stringify({ base_url: partnerConfig.apiBaseUrl, payment_type_id: partnerConfig.paymentTypeId, entries: originated }),
+      openach: { entries: originated },
     };
   }
 
