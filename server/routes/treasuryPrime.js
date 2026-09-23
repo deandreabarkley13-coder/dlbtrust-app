@@ -21,6 +21,11 @@ const operatorAuth = requireAuth({ role: 'operator' });
 
 function sendError(res, err) {
   const message = err && err.message ? err.message : String(err);
+  // A deliberate policy refusal is neither the caller's syntax error nor an
+  // upstream outage — 409 so a retry loop stops instead of hammering the bank.
+  if (/^Refusing to originate/.test(message)) {
+    return res.status(409).json({ success: false, error: message });
+  }
   // Validation problems are the caller's fault; upstream failures are not.
   const isValidation = /required|must be|differ|Insufficient|not configured/i.test(message);
   res.status(isValidation ? 400 : 500).json({ success: false, error: message });

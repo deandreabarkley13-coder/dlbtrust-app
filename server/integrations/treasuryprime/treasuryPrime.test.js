@@ -121,10 +121,49 @@ async function testClientPayloads() {
   await assert.rejects(client.ping(), /Missing required parameter/);
   global.fetch = original;
 
+  await testProductionGuard();
+
   delete process.env.TREASURY_PRIME_API_KEY_ID;
   delete process.env.TREASURY_PRIME_API_SECRET;
   assert.strictEqual(client.isConfigured(), false);
   await assert.rejects(client.ping(), /not configured/);
+}
+
+/**
+ * Pointing at production must not be sufficient to originate: reads go
+ * through, book/ACH/wire are refused until TREASURY_PRIME_ALLOW_PRODUCTION
+ * is exactly "true".
+ */
+async function testProductionGuard() {
+  process.env.TREASURY_PRIME_BASE_URL = client.PRODUCTION_BASE_URL;
+  delete process.env.TREASURY_PRIME_ALLOW_PRODUCTION;
+  assert.strictEqual(client.isProduction(), true);
+
+  const movement = [
+    () => client.createBookTransfer({ amount: '1.00', fromAccountId: 'acct_a', toAccountId: 'acct_b' }),
+    () => client.createAch({ amount: '1.00', direction: 'credit', accountId: 'acct_a', counterpartyId: 'cp_1' }),
+    () => client.createWire({ amount: '1.00', accountId: 'acct_a', counterpartyId: 'cp_2' }),
+  ];
+  for (const send of movement) {
+    await assert.rejects(send(), /Refusing to originate/);
+  }
+  process.env.TREASURY_PRIME_ALLOW_PRODUCTION = 'yes';
+  await assert.rejects(movement[0](), /Refusing to originate/);
+
+  // Reads are never blocked, even with movement disabled.
+  await withStubbedFetch({ data: [] }, async (calls) => {
+    await client.listAccounts();
+    assert.match(calls[0].url, /^https:\/\/api\.treasuryprime\.com\/account/);
+  });
+
+  process.env.TREASURY_PRIME_ALLOW_PRODUCTION = 'true';
+  await withStubbedFetch({ id: 'book_1', status: 'sent' }, async (calls) => {
+    await client.createBookTransfer({ amount: '1.00', fromAccountId: 'acct_a', toAccountId: 'acct_b' });
+    assert.strictEqual(calls[0].body.amount, '1.00');
+  });
+
+  delete process.env.TREASURY_PRIME_ALLOW_PRODUCTION;
+  delete process.env.TREASURY_PRIME_BASE_URL;
 }
 
 async function testEngineGuards() {
