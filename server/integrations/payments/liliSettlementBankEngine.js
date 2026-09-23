@@ -13,6 +13,10 @@
  *     -> Lili (RDFI) account ****last4
  *     -> Lili MCP transaction feed for reconciliation (read-only)
  *
+ * or, with LILI_ORIGINATOR=stripe_treasury, the credit is originated as a
+ * Stripe Treasury OutboundPayment (ACH direct deposit) from the trust's
+ * Stripe Treasury financial account (LiliStripeTreasuryOriginator).
+ *
  * Exposes the same `_cfg()` / `_sendPayment()` / `status()` surface as the
  * APISIX/Apigee gateway engines so ApiGatewayClearingEngine can treat Lili as
  * a provider (`API_GATEWAY_PROVIDER=lili`). The destination is fixed to the
@@ -26,6 +30,7 @@
 const crypto = require('crypto');
 const { LiliMcpEngine } = require('./liliMcpEngine');
 const { LiliDirectDepositEngine } = require('./liliDirectDepositEngine');
+const { LiliStripeTreasuryOriginator } = require('./liliStripeTreasuryOriginator');
 
 const DIRECTION = 'treasury_to_lili';
 
@@ -48,6 +53,22 @@ class LiliSettlementBankEngine {
       sourceAccount: env.CLEARING_FUNDING_OPERATING_ACCOUNT || env.CLEARING_FUNDING_SETTLEMENT_ACCOUNT || null,
       sourceName: env.ACH_ORIGINATOR_NAME || env.ACH_COMPANY_NAME || env.TRUST_NAME || 'DLB Trust',
       gcpProject: env.GCP_PROJECT || env.GOOGLE_CLOUD_PROJECT || null,
+      originator: String(env.LILI_ORIGINATOR || 'nacha').toLowerCase() === 'stripe_treasury' ? 'stripe_treasury' : 'nacha',
+    };
+  }
+
+  /** Originator readiness in the odfiStatus() shape, for whichever originator is selected. */
+  static async originatorStatus() {
+    const cfg = this._cfg();
+    if (cfg.originator !== 'stripe_treasury') return { originator: 'nacha', ...(await LiliDirectDepositEngine.odfiStatus()) };
+    const s = await LiliStripeTreasuryOriginator.status();
+    return {
+      originator: 'stripe_treasury',
+      ready: s.ready,
+      channels: s.ready ? [`stripe_treasury:${s.financialAccountId}`] : [],
+      loopback: [],
+      blocker: s.blocker,
+      stripeTreasury: s,
     };
   }
 
@@ -118,6 +139,33 @@ class LiliSettlementBankEngine {
       };
     }
 
+    if (cfg.originator === 'stripe_treasury') {
+      const sent = await LiliStripeTreasuryOriginator.send({ amount: n, reference, description });
+      return {
+        transferId: reference,
+        status: sent.status,
+        live: true,
+        shadow: false,
+        provider: 'lili',
+        direction: DIRECTION,
+        type,
+        amount: n,
+        currency,
+        reference,
+        destination: destinationSummary,
+        originator: 'stripe_treasury',
+        lili: {
+          odfiChannels: [`stripe_treasury:${sent.financialAccountId}`],
+          network: sent.network,
+          payoutId: sent.payoutId,
+          outboundPaymentId: sent.outboundPaymentId,
+          stripeStatus: sent.stripeStatus,
+          expectedArrival: sent.expectedArrival,
+          reconciliation: 'LiliDirectDepositEngine.reconcile (Lili MCP transaction feed)',
+        },
+      };
+    }
+
     const odfi = await LiliDirectDepositEngine.odfiStatus();
     if (!odfi.ready) {
       throw Object.assign(
@@ -175,7 +223,7 @@ class LiliSettlementBankEngine {
     const [mcp, dest, odfi] = await Promise.all([
       settle(LiliMcpEngine.getPublicConfig()),
       settle(LiliDirectDepositEngine.getDestination()),
-      settle(LiliDirectDepositEngine.odfiStatus()),
+      settle(this.originatorStatus()),
     ]);
 
     const destinationConfigured = dest.ok && Boolean(dest.value.configured);
@@ -200,8 +248,9 @@ class LiliSettlementBankEngine {
       message: cfg.live
         ? (originationReady ? 'Treasury -> Lili ACH credit can originate' : issues.join('; '))
         : 'shadow/simulated',
+      originator: cfg.originator,
       source: {
-        role: 'debtor (ODFI)',
+        role: cfg.originator === 'stripe_treasury' ? 'debtor (Stripe Treasury financial account, ACH direct deposit)' : 'debtor (ODFI)',
         name: cfg.sourceName,
         routingConfigured: Boolean(cfg.sourceRouting),
         accountConfigured: Boolean(cfg.sourceAccount),

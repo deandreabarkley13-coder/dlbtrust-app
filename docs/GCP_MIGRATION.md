@@ -525,6 +525,27 @@ them with the operator before applying. Without an ODFI channel
 `LiliDirectDepositEngine.odfiStatus().ready=false`, live clearings return 503
 and deposits stay `awaiting_odfi` (self-loopback AS2 partners do not count).
 
+**Originator (`LILI_ORIGINATOR`).** Lili is RDFI-only and the trust holds no
+ODFI-capable bank account, so a NACHA file built by OpenACH has nowhere to go
+(the MFT Gateway relay stays fail-closed with no bank partner). Production
+therefore sets `LILI_ORIGINATOR=stripe_treasury`: the direct deposit is
+originated by the dlb-treasury Stripe Treasury financial account
+(`STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`) as a Treasury `OutboundPayment` to a
+`us_bank_account` — always the `LILI_DD_*` account (routing 121145307, DB NET
+MGMT LLC); any other destination is refused. `LILI_STRIPE_TREASURY_NETWORK`
+selects `ach` (default, direct deposit) or `us_domestic_wire`. `readiness.odfi`
+then reports `stripe_treasury:<fa_id>` plus the financial account's ABA
+details and `active_features`; `POST /settlements` returns 201 `originated`
+with the `outboundPaymentId` and `expectedArrival`, and the credit is
+reconciled against the Lili MCP feed. Fail-closed prerequisites: a
+**live-mode** `STRIPE_SECRET_KEY` (test keys never move money and are reported
+as the blocker), the financial account `open` with `outbound_payments.ach`
+active, and a funded balance on it (fund it by ACH/wire to the account's ABA
+financial address). Seed the live values with
+`gcloud secrets versions add STRIPE_SECRET_KEY` /
+`STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID` and redeploy. `LILI_ORIGINATOR=nacha`
+restores the OpenACH/AS2/MFT/SFTP file path.
+
 1. **Terraform** — add the secret names to `infra/gcp/terraform.tfvars`, set
    the ODFI channel var in `runtime_environment`, then
    `terraform plan && terraform apply` (creates the empty secret containers).

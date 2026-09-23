@@ -67,7 +67,7 @@ router.get('/settlements', async (req, res) => {
 router.post('/settlements', writeRateLimiter(), async (req, res) => {
   try {
     const data = await BankSettlementEngine.clearAndSettle({ ...req.body, initiatedBy: 'payment_server' });
-    res.status(data.status === 'awaiting_odfi' ? 202 : 201).json({ success: true, data });
+    res.status(['awaiting_odfi', 'pending_approval'].includes(data.status) ? 202 : 201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

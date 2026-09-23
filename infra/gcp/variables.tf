@@ -169,6 +169,11 @@ variable "runtime_environment" {
     API_GATEWAY_PROVIDER   = "lili"
     LILI_CLEARING_LIVE     = "true"
     LILI_CLEARING_SEC_CODE = "CCD"
+    # Direct deposit into Lili (Sunrise Banks N.A., RDFI) is originated by the
+    # dlb-treasury Stripe Treasury financial account (OutboundPayment, ACH);
+    # STRIPE_SECRET_KEY / STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID must be live-mode.
+    LILI_ORIGINATOR              = "stripe_treasury"
+    LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED       = "true"
     LILI_MCP_URL           = "https://mcp.lili.co/mcp"
     LILI_OAUTH_BASE_URL    = "https://mcp.lili.co"
