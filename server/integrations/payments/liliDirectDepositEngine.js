@@ -179,6 +179,10 @@ class LiliDirectDepositEngine {
     loadDeps();
     const channels = [];
     if (ACHEngine && typeof ACHEngine.mftChannelId === 'function' && ACHEngine.mftChannelId()) channels.push('mft');
+    if (ACHEngine && typeof ACHEngine.mftGatewayPartnerConfig === 'function') {
+      const cfg = ACHEngine.mftGatewayPartnerConfig();
+      if (cfg && this.isExternalOdfi(cfg)) channels.push('mftgateway:' + cfg.partnerAs2Id);
+    }
     if (AS2Client && typeof AS2Client.getConfigStatus === 'function') {
       try { if (AS2Client.getConfigStatus().configured) channels.push('as2'); } catch (e) { /* ignore */ }
     }
@@ -217,6 +221,10 @@ class LiliDirectDepositEngine {
     const proto = cfg.protocol || 'as2';
     if (proto === 'as2') return Boolean(cfg.partnerUrl && cfg.partnerAs2Id);
     if (proto === 'mft') return true;
+    if (proto === 'mftgateway') {
+      const partner = String(cfg.partnerAs2Id || '').trim();
+      return Boolean(partner) && partner.toUpperCase() !== String(cfg.localAs2Id || '').trim().toUpperCase();
+    }
     const url = String(cfg.apiBaseUrl || cfg.partnerUrl || '').trim().toLowerCase();
     if (!url || url === 'direct' || url === 'local') return false;
     const self = [process.env.APP_URL, process.env.DEPLOY_URL, process.env.DOMAIN && `https://${process.env.DOMAIN}`]

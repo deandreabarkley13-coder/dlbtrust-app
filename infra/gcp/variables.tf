@@ -167,6 +167,8 @@ variable "runtime_environment" {
     LILI_DD_ROUTING_NUMBER = "121145307"
     LILI_DD_ACCOUNT_NAME   = "DB NET MGMT LLC"
     # ODFI channel for the treasury -> Lili credit: exactly one of
+    # MFTGATEWAY_PARTNER_AS2_ID (bank partner on the DLBTRUST-AS2 MFT Gateway
+    # station, token pair in secret_names — see the EDI 820 block below),
     # ACH_SFTP_URL (sftp://user@host:port/incoming; key/password in secret_names
     # as ACH_SFTP_KEY / ACH_SFTP_PASSWORD) or ACH_MFT_CHANNEL (MFT OS channel id),
     # or a registered external AS2/production partner. Empty = fail closed:
@@ -256,7 +258,8 @@ variable "runtime_environment" {
     # Deliberately unset until the bank is registered as a Partner in the MFT
     # Gateway console: MFTGATEWAY_PARTNER_AS2_ID and EDI_820_RECEIVER_ID. Both
     # take the SAME value — the bank's registered AS2 identifier — and are added
-    # to this block once that partner profile exists. Go-live order (see
+    # to this block once that partner profile exists. MFTGATEWAY_PARTNER_AS2_ID
+    # is also the ODFI channel for NACHA batches (ACHEngine.mftGatewayPartnerConfig). Go-live order (see
     # docs/GCP_MIGRATION.md "EDI 820 go-live"): token secrets → partner IDs →
     # GET /api/finops/edi/820/readiness reports ready:true with the station
     # found → only then flip EDI_820_LIVE to "true".

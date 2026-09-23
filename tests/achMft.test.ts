@@ -6,6 +6,7 @@ const { ACHEngine } = require('../server/integrations/ach/achEngine');
 const { SystemSettings } = require('../server/integrations/ach/systemSettings');
 const { AS2Partners } = require('../server/integrations/ach/as2Partners');
 const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
+const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -60,8 +61,48 @@ describe('ACHEngine transmitting through the MFT register', () => {
     expect(sql.some(s => /UPDATE ach_batches SET status = 'failed'/.test(s))).toBe(true);
   });
 
+  it('routes the NACHA file to the bank partner on MFT Gateway when a partner AS2 ID (other than our station) is set', async () => {
+    delete process.env.ACH_MFT_CHANNEL;
+    Object.assign(process.env, {
+      MFTGATEWAY_API_TOKEN_ID: 'tok-id', MFTGATEWAY_API_TOKEN_SECRET: 'tok-secret',
+      MFTGATEWAY_STATION_AS2_ID: 'DLBTRUST-AS2', MFTGATEWAY_PARTNER_AS2_ID: 'BANK-ODFI-AS2',
+    });
+    const submit = vi.spyOn(MftGatewayClient, 'submit').mockResolvedValue({
+      success: true, status_code: 202, message_id: 'MSG-1', as2_from: 'DLBTRUST-AS2', as2_to: 'BANK-ODFI-AS2', link: 'https://console.mftgateway.com/m/1', response_body: '{}',
+    } as any);
+    const deliver = vi.spyOn(MftOsEngine, 'deliver');
+
+    const result = await ACHEngine.transmitBatch('ACH-1', { approvedBy: 'trustee-two' });
+    expect(result).toMatchObject({ success: true, mode: 'mftgateway', message_id: 'MSG-1', batch_status: 'transmitted' });
+    expect(submit).toHaveBeenCalledWith('101 ...', 'ACH-1.ach', expect.objectContaining({ stationAs2Id: 'DLBTRUST-AS2', partnerAs2Id: 'BANK-ODFI-AS2', contentType: 'text/plain' }));
+    expect(deliver).not.toHaveBeenCalled();
+    expect(sql.some(s => s.startsWith('INSERT INTO ach_transmissions'))).toBe(true);
+
+    submit.mockClear();
+    (SystemSettings.getMode as any).mockResolvedValue('sandbox');
+    (SystemSettings.getProductionPartnerConfig as any).mockResolvedValue(null);
+    const sandbox = await ACHEngine.transmitBatch('ACH-1').catch((e: Error) => ({ mode: 'error', error: e.message }));
+    expect(submit).not.toHaveBeenCalled();
+    expect(sandbox.mode).not.toBe('mftgateway');
+    (SystemSettings.getMode as any).mockResolvedValue('production');
+
+    process.env.MFTGATEWAY_PARTNER_AS2_ID = 'dlbtrust-as2';
+    expect(ACHEngine.mftGatewayPartnerConfig()).toBeNull();
+    delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
+    expect(ACHEngine.mftGatewayPartnerConfig()).toBeNull();
+  });
+
+  it('fails the batch when MFT Gateway rejects the submission', async () => {
+    delete process.env.ACH_MFT_CHANNEL;
+    Object.assign(process.env, { MFTGATEWAY_API_TOKEN_ID: 'a', MFTGATEWAY_API_TOKEN_SECRET: 'b', MFTGATEWAY_PARTNER_AS2_ID: 'BANK-ODFI-AS2' });
+    vi.spyOn(MftGatewayClient, 'submit').mockResolvedValue({ success: false, status_code: 403, response_body: 'partner not linked' } as any);
+    await expect(ACHEngine.transmitBatch('ACH-1')).rejects.toThrow(/MFT Gateway submit failed \(403\)/);
+    expect(sql.some(s => /UPDATE ach_batches SET status = 'failed'/.test(s))).toBe(true);
+  });
+
   it('leaves the configured bank endpoint alone when no MFT channel is named', async () => {
     delete process.env.ACH_MFT_CHANNEL;
+    delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
     const deliver = vi.spyOn(MftOsEngine, 'deliver');
     const { OpenBankApi } = require('../server/integrations/ach/openBankApi');
     vi.spyOn(OpenBankApi, 'transmit').mockResolvedValue({ success: true, mode: 'remote', message_id: 'X', status_code: 200, mdn_received: true } as any);

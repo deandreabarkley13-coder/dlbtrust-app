@@ -294,7 +294,14 @@ partner IDs are plain env. Operator steps, in order:
 3. **Register the bank as a Partner** in the MFT Gateway console (its AS2 ID,
    URL and certificate). Then set `MFTGATEWAY_PARTNER_AS2_ID` and
    `EDI_820_RECEIVER_ID` in `runtime_environment` to the bank's registered
-   AS2 identifier (the same value for both) and `terraform apply`.
+   AS2 identifier (the same value for both) and `terraform apply`. The same
+   partner is the ODFI channel for treasury → Lili NACHA credits:
+   `ACHEngine.mftGatewayPartnerConfig()` routes `transmitBatch` through
+   `MftGatewayClient.submit` (`POST /message/submit?service=as2`) and
+   `LiliDirectDepositEngine.odfiStatus()` reports `mftgateway:<partner>`
+   as soon as the token pair and a partner ID other than `DLBTRUST-AS2` are
+   set. Without a partner profile the account has zero partners and ACH stays
+   fail-closed (`awaiting_odfi`).
 4. **Confirm readiness.** `GET /api/finops/edi/820/readiness` (operator
    auth; `Edi820RemittanceEngine.readiness()` in `server/routes/finops.js`)
    must report `ready: true`, `issues: []`, and `station.identifier ===
@@ -419,7 +426,8 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
   destination (RDFI).** The engine originates a NACHA ACH credit (entry 22,
   `CCD` by default, `LILI_CLEARING_SEC_CODE=PPD` to override) through
   `LiliDirectDepositEngine.createDirectDeposit` → the configured ODFI channel
-  (AS2 partner / MFT / production partner / `ACH_SFTP_URL`), and reconciles the
+  (MFT Gateway partner `MFTGATEWAY_PARTNER_AS2_ID` / AS2 partner / MFT /
+  production partner / `ACH_SFTP_URL`), and reconciles the
   incoming credit from the Lili MCP transaction feed
   (`LiliDirectDepositEngine.reconcile`; the MCP is read-only here). The
   destination is fixed to `LILI_DD_ROUTING_NUMBER` / `LILI_DD_ACCOUNT_NUMBER`
