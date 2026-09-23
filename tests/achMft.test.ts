@@ -7,6 +7,7 @@ const { SystemSettings } = require('../server/integrations/ach/systemSettings');
 const { AS2Partners } = require('../server/integrations/ach/as2Partners');
 const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
 const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
+const { OpenACHClient } = require('../server/integrations/openach/openachClient');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -90,6 +91,39 @@ describe('ACHEngine transmitting through the MFT register', () => {
     expect(ACHEngine.mftGatewayPartnerConfig()).toBeNull();
     delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
     expect(ACHEngine.mftGatewayPartnerConfig()).toBeNull();
+  });
+
+  it('originates every credit entry on OpenACH (the trust ODFI platform) in production, and never in sandbox', async () => {
+    delete process.env.ACH_MFT_CHANNEL;
+    Object.assign(process.env, { OPENACH_BASE_URL: 'https://openach.internal/api', OPENACH_API_TOKEN: 't', OPENACH_API_KEY: 'k', OPENACH_PAYMENT_TYPE_ID: 'pt-1' });
+    (ACHEngine.getBatch as any).mockResolvedValue(batch({
+      effective_date: '2026-09-04',
+      entries: [
+        { entry_sequence: 1, transaction_code: '22', receiving_routing: '121145307', account_number: '692101092959', amount_cents: 250_000, individual_id: 'DEP1', individual_name: 'DB NET MGMT LLC' },
+      ],
+    }));
+    const disburse = vi.spyOn(OpenACHClient, 'disburseToBeneficiary').mockResolvedValue({ success: true, payment_schedule_id: 'ps-1', external_account_id: 'ea-1', amount: '2500.00', send_date: '2026-09-04' } as any);
+
+    const result = await ACHEngine.transmitBatch('ACH-1', { approvedBy: 'trustee-two' });
+    expect(result).toMatchObject({ success: true, mode: 'openach', message_id: 'OPENACH-ACH-1', batch_status: 'transmitted' });
+    expect(disburse).toHaveBeenCalledTimes(1);
+    expect(disburse.mock.calls[0][0]).toMatchObject({ routing_number: '121145307', account_number: '692101092959', amount: '2500.00', send_date: '2026-09-04', payment_type_id: 'pt-1', external_id: 'ACH-1:1', account_type: 'Checking' });
+    expect(sql.some(s => s.startsWith('INSERT INTO ach_transmissions'))).toBe(true);
+
+    disburse.mockClear();
+    (ACHEngine.getBatch as any).mockResolvedValue(batch({ entries: [{ entry_sequence: 1, transaction_code: '27', receiving_routing: '1', account_number: '2', amount_cents: 1 }] }));
+    await expect(ACHEngine.transmitBatch('ACH-1')).rejects.toThrow(/credits only/);
+    expect(disburse).not.toHaveBeenCalled();
+
+    (SystemSettings.getMode as any).mockResolvedValue('sandbox');
+    (SystemSettings.getProductionPartnerConfig as any).mockResolvedValue(null);
+    (ACHEngine.getBatch as any).mockResolvedValue(batch());
+    const sandbox = await ACHEngine.transmitBatch('ACH-1').catch((e: Error) => ({ mode: 'error', error: e.message }));
+    expect(disburse).not.toHaveBeenCalled();
+    expect(sandbox.mode).not.toBe('openach');
+
+    process.env.OPENACH_ODFI_ENABLED = 'false';
+    expect(ACHEngine.openAchPartnerConfig()).toBeNull();
   });
 
   it('fails the batch when MFT Gateway rejects the submission', async () => {

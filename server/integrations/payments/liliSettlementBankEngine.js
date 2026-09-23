@@ -121,7 +121,7 @@ class LiliSettlementBankEngine {
     const odfi = await LiliDirectDepositEngine.odfiStatus();
     if (!odfi.ready) {
       throw Object.assign(
-        new Error(`${odfi.blocker || 'No ODFI channel configured'} — cannot originate the treasury -> Lili credit (configure an external AS2 partner / MFT / production partner / ACH_SFTP_URL)`),
+        new Error(`${odfi.blocker || 'No ODFI channel configured'} — cannot originate the treasury -> Lili credit (configure OpenACH, an external AS2 partner / MFT / production partner or ACH_SFTP_URL)`),
         { status: 503 },
       );
     }

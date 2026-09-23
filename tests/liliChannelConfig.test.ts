@@ -77,7 +77,7 @@ describe('Lili live channel configuration', () => {
 
   it('status() fails closed without an ODFI channel', async () => {
     vi.spyOn(LiliDirectDepositEngine, 'getDestination').mockResolvedValue({ configured: true, routingNumber: '121145307', accountNumberMasked: '****2959', accountName: 'DB NET MGMT LLC', _account: '692101092959' });
-    vi.spyOn(LiliDirectDepositEngine, 'odfiStatus').mockResolvedValue({ ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (AS2/MFT/REST/SFTP)' });
+    vi.spyOn(LiliDirectDepositEngine, 'odfiStatus').mockResolvedValue({ ready: false, channels: [], loopback: [], blocker: 'No ODFI channel configured (OpenACH/AS2/MFT/REST/SFTP)' });
     vi.spyOn(LiliMcpEngine, 'getPublicConfig').mockResolvedValue({ configured: true });
 
     const status = await LiliSettlementBankEngine.status();

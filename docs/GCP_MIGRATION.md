@@ -426,8 +426,12 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
   destination (RDFI).** The engine originates a NACHA ACH credit (entry 22,
   `CCD` by default, `LILI_CLEARING_SEC_CODE=PPD` to override) through
   `LiliDirectDepositEngine.createDirectDeposit` → the configured ODFI channel
-  (MFT Gateway partner `MFTGATEWAY_PARTNER_AS2_ID` / AS2 partner / MFT /
-  production partner / `ACH_SFTP_URL`), and reconciles the
+  (OpenACH — the in-project `dlbtrust-openach` Cloud Run service holding the
+  treasury origination account, ready when `OPENACH_BASE_URL`,
+  `OPENACH_API_TOKEN`/`OPENACH_API_KEY` and `OPENACH_PAYMENT_TYPE_ID` are
+  seeded, `GET /api/openach-rail/health` → `ready:true`; or MFT Gateway partner
+  `MFTGATEWAY_PARTNER_AS2_ID` / AS2 partner / MFT / production partner /
+  `ACH_SFTP_URL`), and reconciles the
   incoming credit from the Lili MCP transaction feed
   (`LiliDirectDepositEngine.reconcile`; the MCP is read-only here). The
   destination is fixed to `LILI_DD_ROUTING_NUMBER` / `LILI_DD_ACCOUNT_NUMBER`

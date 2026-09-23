@@ -166,8 +166,10 @@ variable "runtime_environment" {
     LILI_OAUTH_BASE_URL    = "https://mcp.lili.co"
     LILI_DD_ROUTING_NUMBER = "121145307"
     LILI_DD_ACCOUNT_NAME   = "DB NET MGMT LLC"
-    # ODFI channel for the treasury -> Lili credit: exactly one of
-    # MFTGATEWAY_PARTNER_AS2_ID (bank partner on the DLBTRUST-AS2 MFT Gateway
+    # ODFI channel for the treasury -> Lili credit. Default: OpenACH, the
+    # in-project dlbtrust-openach service (OPENACH_BASE_URL/API_TOKEN/API_KEY/
+    # PAYMENT_TYPE_ID in secret_names; OPENACH_ODFI_ENABLED=false opts out).
+    # Alternatives: MFTGATEWAY_PARTNER_AS2_ID (bank partner on the DLBTRUST-AS2 MFT Gateway
     # station, token pair in secret_names — see the EDI 820 block below),
     # ACH_SFTP_URL (sftp://user@host:port/incoming; key/password in secret_names
     # as ACH_SFTP_KEY / ACH_SFTP_PASSWORD) or ACH_MFT_CHANNEL (MFT OS channel id),
