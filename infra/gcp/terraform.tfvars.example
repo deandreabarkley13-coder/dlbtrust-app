@@ -1,0 +1,30 @@
+# Copy to terraform.tfvars (git-ignored) and regenerate the bulk of secret_names
+# with `node scripts/gcp/migrate-northflank-secrets.mjs --list`. Names only —
+# values are seeded with `gcloud secrets versions add`.
+#
+# The Lili block is REQUIRED when runtime_environment.LILI_CLEARING_LIVE=true
+# (cloudrun.tf precondition, secrets.tf lili_secret_names). PAYMENT_HUB_* and
+# PAYMENT_SERVER_SERVICE_TOKEN are always declared by secrets.tf and may be
+# omitted here.
+
+project_id = "dlb-treasury-management"
+
+secret_names = [
+  # … everything printed by migrate-northflank-secrets.mjs --list …
+
+  # Lili MCP OAuth (S2S reconciliation feed) — captured once by
+  # server/scripts/liliMcpOAuthSetup.js, then seeded here.
+  "LILI_OAUTH_CLIENT_ID",
+  "LILI_OAUTH_CLIENT_SECRET",
+  "LILI_OAUTH_REFRESH_TOKEN",
+  "LILI_BUSINESS_USER_ID",
+  # Full Lili (RDFI) account number; routing/name are plain runtime_environment.
+  "LILI_DD_ACCOUNT_NUMBER",
+  # Treasury (ODFI) operating account debited by the Lili credit.
+  "CLEARING_FUNDING_OPERATING_ACCOUNT",
+  # Bearer token for /api/payment-server/v1/* (server/routes/bankSettlement.js).
+  "PAYMENT_SERVER_SERVICE_TOKEN",
+  # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
+  # "ACH_SFTP_KEY",
+  # "ACH_SFTP_PASSWORD",
+]

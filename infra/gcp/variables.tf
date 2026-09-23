@@ -151,9 +151,28 @@ variable "runtime_environment" {
     PAYMENT_HUB_CALLBACK_URL      = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/webhooks/status"
     PAYMENT_HUB_ACH_CONNECTOR_URL = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app/api/payment-hub/connectors/us-ach/execute"
     PAYMENT_APPROVAL_THRESHOLD    = "2"
-    API_GATEWAY_PROVIDER          = "lili"
-    LILI_CLEARING_LIVE            = "true"
-    LILI_MCP_ENABLED              = "true"
+    # Lili as the settlement bank (server/integrations/payments/liliSettlementBankEngine.js).
+    # Lili is RDFI-only: treasury (ODFI) -> NACHA CCD credit -> ODFI channel ->
+    # Lili account; the Lili MCP feed is the S2S reconciliation channel. Full
+    # account number + OAuth credentials are Secret Manager only
+    # (secrets.tf lili_secret_names, enforced when LILI_CLEARING_LIVE=true).
+    # Routing/account defaults mirror .env.example APISIX_ODFI/RDFI; confirm with
+    # the operator before applying. Bootstrap: server/scripts/configureLiliChannels.js.
+    API_GATEWAY_PROVIDER   = "lili"
+    LILI_CLEARING_LIVE     = "true"
+    LILI_CLEARING_SEC_CODE = "CCD"
+    LILI_MCP_ENABLED       = "true"
+    LILI_MCP_URL           = "https://mcp.lili.co/mcp"
+    LILI_OAUTH_BASE_URL    = "https://mcp.lili.co"
+    LILI_DD_ROUTING_NUMBER = "121145307"
+    LILI_DD_ACCOUNT_NAME   = "DB NET MGMT LLC"
+    # ODFI channel for the treasury -> Lili credit: exactly one of
+    # ACH_SFTP_URL (sftp://user@host:port/incoming; key/password in secret_names
+    # as ACH_SFTP_KEY / ACH_SFTP_PASSWORD) or ACH_MFT_CHANNEL (MFT OS channel id),
+    # or a registered external AS2/production partner. Empty = fail closed:
+    # LiliDirectDepositEngine.odfiStatus().ready=false, deposits stay awaiting_odfi.
+    ACH_MFT_CHANNEL = ""
+    ACH_SFTP_URL    = ""
     # Interoperability OS (crossChainConversionEngine / m2mOsEngine). Live, as
     # on Northflank (DAPP_SHADOW=false there): DAPP_RPC_URL, DAPP_PRIVATE_KEY
     # and PAYMENT_DATA_ENCRYPTION_KEY come from the dlbtrust-runtime secret
@@ -215,9 +234,12 @@ variable "runtime_environment" {
     ACH_IMMEDIATE_ORIGIN             = "1091017138"
     ACH_COMPANY_ID                   = "1091017138"
     # usAchConnector.js originator block (what PHEE hands to /connectors/us-ach/execute)
-    ACH_ODFI_ROUTING      = "091017138"
+    # and the debtor side of LiliSettlementBankEngine._cfg() (ACH_ODFI_ROUTING /
+    # ACH_ORIGINATOR_NAME). CLEARING_FUNDING_OPERATING_ACCOUNT (trust operating
+    # account number) is Secret Manager only.
+    ACH_ODFI_ROUTING      = "121145307"
     ACH_ODFI_NAME         = "SUNRISE BANKS NA"
-    ACH_ORIGINATOR_NAME   = "DB NET MGMT"
+    ACH_ORIGINATOR_NAME   = "DB NET MGMT LLC"
     ACH_COMPANY_NAME      = "DB NET MGMT"
     APISIX_ODFI_ROUTING   = "091017138"
     APISIX_ODFI_NAME      = "DB NET MGMT"

@@ -85,6 +85,10 @@ try { app.use('/api/accounting', require(path.join(HD, 'server', 'routes', 'acco
 app.use('/api/payment-hub', require(path.join(HD, 'server', 'routes', 'paymentHub')));
 console.log('[payment-hub] loaded');
 
+// S2S clearing/settlement payment server (settlement banks: Lili RDFI, host-to-host, partner banks, API gateway)
+app.use('/api/payment-server/v1', require(path.join(HD, 'server', 'routes', 'bankSettlement')));
+console.log('[payment-server] loaded');
+
 // Stablecoin Payment Gateway + Treasury + Magic WaaS + WSO2 API Manager
 app.use('/api/stablecoin', require(path.join(HD, 'server', 'routes', 'stablecoin')));
 console.log('[stablecoin] loaded');
