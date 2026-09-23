@@ -7,6 +7,8 @@
  * allocations (1030) -> trustee payouts. Reading is operator work; planning,
  * staging (ERP -> USDC funding), executing and cancelling move trust value and
  * are admin-only. Every stage/execute still requires the on-chain checker.
+ * With FIXED_INCOME_RAIL=bank, execute takes approvalRef + screeningRef and
+ * originates the direct deposit into the payee settlement bank instead.
  */
 
 const express = require('express');
@@ -56,7 +58,7 @@ router.post('/distributions/:distributionId/stage', adminAuth, writeRateLimiter(
 });
 
 router.post('/distributions/:distributionId/execute', adminAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await FixedIncomeDistributionEngine.execute({ distributionId: req.params.distributionId, actor: principal(req) }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await FixedIncomeDistributionEngine.execute({ distributionId: req.params.distributionId, actor: principal(req), approvalRef: req.body?.approvalRef, screeningRef: req.body?.screeningRef }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/distributions/:distributionId/cancel', adminAuth, writeRateLimiter(), async (req, res) => {
