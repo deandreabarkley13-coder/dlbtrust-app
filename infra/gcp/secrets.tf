@@ -14,6 +14,10 @@ locals {
     "PAYMENT_DATA_ENCRYPTION_KEY",
     # S2S clearing/settlement server bearer token (server/routes/bankSettlement.js).
     "PAYMENT_SERVER_SERVICE_TOKEN",
+    # Stripe payment processing (funding leg of the Lili direct deposit):
+    # signing secret of the Stripe webhook endpoint that hits
+    # /api/payment-server/v1/stripe/webhook (stripePaymentIntakeEngine.js).
+    "STRIPE_WEBHOOK_SECRET",
   ]
   runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names))
 
