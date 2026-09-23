@@ -169,6 +169,12 @@ variable "runtime_environment" {
     API_GATEWAY_PROVIDER   = "lili"
     LILI_CLEARING_LIVE     = "true"
     LILI_CLEARING_SEC_CODE = "CCD"
+    # Inbound credit into Lili is originated by Spritz (off-ramp of trust USDC
+    # into the Lili account linked on the Spritz user); the trust holds no
+    # ODFI-capable account, so the NACHA/OpenACH path cannot be delivered.
+    LILI_ORIGINATOR        = "spritz"
+    LILI_SPRITZ_RAIL       = "ach_standard"
+    LILI_SPRITZ_PURPOSE    = "operating"
     LILI_MCP_ENABLED       = "true"
     LILI_MCP_URL           = "https://mcp.lili.co/mcp"
     LILI_OAUTH_BASE_URL    = "https://mcp.lili.co"

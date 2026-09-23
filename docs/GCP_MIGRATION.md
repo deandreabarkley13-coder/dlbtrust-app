@@ -525,6 +525,25 @@ them with the operator before applying. Without an ODFI channel
 `LiliDirectDepositEngine.odfiStatus().ready=false`, live clearings return 503
 and deposits stay `awaiting_odfi` (self-loopback AS2 partners do not count).
 
+**Originator (`LILI_ORIGINATOR`).** Lili is RDFI-only and the trust holds no
+ODFI-capable bank account, so a NACHA file built by OpenACH has nowhere to go
+(the MFT Gateway relay stays fail-closed with no bank partner). Production
+therefore sets `LILI_ORIGINATOR=spritz`: the credit is originated by Spritz as
+an off-ramp of trust USDC — Treasury-Core ERP → policy contract (maker/checker
+distribution) → payout wallet → Spritz `ach_standard|ach_same_day|rtp`
+(`LILI_SPRITZ_RAIL`) → the Lili account linked on the Spritz user (matched on
+routing + account last-4 against `LILI_DD_*`; any other Spritz bank is refused).
+`readiness.odfi` then reports `spritz:<bankAccountId>` and the blockers from
+`SpritzTreasuryLegEngine.readiness()`. `POST /settlements` answers 202
+`pending_approval` while the distribution is waiting on funding/approval/
+timelock; re-posting the same `reference` advances it (idempotent on the
+Spritz side) and returns 201 `originated` once the off-ramp is submitted.
+Prerequisites (from `GET /api/finops/spritz/pipeline`): USDC on the policy
+contract, `SPRITZ_PAYOUT_WALLET` allow-listed as a trustee beneficiary
+(`setBeneficiary`), and the purpose `LILI_SPRITZ_PURPOSE` (default `operating`)
+allocated in `trust_operating`. `LILI_ORIGINATOR=nacha` restores the
+OpenACH/AS2/MFT/SFTP file path.
+
 1. **Terraform** — add the secret names to `infra/gcp/terraform.tfvars`, set
    the ODFI channel var in `runtime_environment`, then
    `terraform plan && terraform apply` (creates the empty secret containers).

@@ -13,6 +13,9 @@
  *     -> Lili (RDFI) account ****last4
  *     -> Lili MCP transaction feed for reconciliation (read-only)
  *
+ * or, with LILI_ORIGINATOR=spritz, the credit is originated by Spritz from the
+ * trust's USDC (LiliSpritzOriginator) instead of a NACHA file.
+ *
  * Exposes the same `_cfg()` / `_sendPayment()` / `status()` surface as the
  * APISIX/Apigee gateway engines so ApiGatewayClearingEngine can treat Lili as
  * a provider (`API_GATEWAY_PROVIDER=lili`). The destination is fixed to the
@@ -26,6 +29,7 @@
 const crypto = require('crypto');
 const { LiliMcpEngine } = require('./liliMcpEngine');
 const { LiliDirectDepositEngine } = require('./liliDirectDepositEngine');
+const { LiliSpritzOriginator } = require('./liliSpritzOriginator');
 
 const DIRECTION = 'treasury_to_lili';
 
@@ -48,6 +52,22 @@ class LiliSettlementBankEngine {
       sourceAccount: env.CLEARING_FUNDING_OPERATING_ACCOUNT || env.CLEARING_FUNDING_SETTLEMENT_ACCOUNT || null,
       sourceName: env.ACH_ORIGINATOR_NAME || env.ACH_COMPANY_NAME || env.TRUST_NAME || 'DLB Trust',
       gcpProject: env.GCP_PROJECT || env.GOOGLE_CLOUD_PROJECT || null,
+      originator: String(env.LILI_ORIGINATOR || 'nacha').toLowerCase() === 'spritz' ? 'spritz' : 'nacha',
+    };
+  }
+
+  /** Originator readiness in the odfiStatus() shape, for whichever originator is selected. */
+  static async originatorStatus() {
+    const cfg = this._cfg();
+    if (cfg.originator !== 'spritz') return { originator: 'nacha', ...(await LiliDirectDepositEngine.odfiStatus()) };
+    const s = await LiliSpritzOriginator.status();
+    return {
+      originator: 'spritz',
+      ready: s.ready,
+      channels: s.ready ? [`spritz:${s.bankAccountId}`] : [],
+      loopback: [],
+      blocker: s.blocker,
+      spritz: s,
     };
   }
 
@@ -118,6 +138,35 @@ class LiliSettlementBankEngine {
       };
     }
 
+    if (cfg.originator === 'spritz') {
+      const sent = await LiliSpritzOriginator.send({ amount: n, reference, description });
+      return {
+        transferId: reference,
+        status: sent.status,
+        live: true,
+        shadow: false,
+        provider: 'lili',
+        direction: DIRECTION,
+        type,
+        amount: n,
+        currency,
+        reference,
+        destination: destinationSummary,
+        originator: 'spritz',
+        lili: {
+          odfiChannels: [`spritz:${sent.bankAccountId}`],
+          rail: sent.rail,
+          stage: sent.stage,
+          detail: sent.detail,
+          spritzQuoteId: sent.spritzQuoteId,
+          distributionId: sent.distributionId,
+          offRampId: sent.offRampId,
+          trail: sent.trail,
+          reconciliation: 'LiliDirectDepositEngine.reconcile (Lili MCP transaction feed)',
+        },
+      };
+    }
+
     const odfi = await LiliDirectDepositEngine.odfiStatus();
     if (!odfi.ready) {
       throw Object.assign(
@@ -175,7 +224,7 @@ class LiliSettlementBankEngine {
     const [mcp, dest, odfi] = await Promise.all([
       settle(LiliMcpEngine.getPublicConfig()),
       settle(LiliDirectDepositEngine.getDestination()),
-      settle(LiliDirectDepositEngine.odfiStatus()),
+      settle(this.originatorStatus()),
     ]);
 
     const destinationConfigured = dest.ok && Boolean(dest.value.configured);
@@ -200,8 +249,9 @@ class LiliSettlementBankEngine {
       message: cfg.live
         ? (originationReady ? 'Treasury -> Lili ACH credit can originate' : issues.join('; '))
         : 'shadow/simulated',
+      originator: cfg.originator,
       source: {
-        role: 'debtor (ODFI)',
+        role: cfg.originator === 'spritz' ? 'debtor (Spritz off-ramp from trust USDC)' : 'debtor (ODFI)',
         name: cfg.sourceName,
         routingConfigured: Boolean(cfg.sourceRouting),
         accountConfigured: Boolean(cfg.sourceAccount),

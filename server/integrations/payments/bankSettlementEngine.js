@@ -30,7 +30,7 @@ try { ({ SettlementEngine } = require('../dapp/settlementEngine')); } catch (e) 
 let HostToHostEngine;
 try { ({ HostToHostEngine } = require('../dapp/hostToHostEngine')); } catch (e) { HostToHostEngine = null; }
 
-const STATUSES = ['pending', 'originated', 'awaiting_odfi', 'shadow', 'settled', 'reconciled', 'failed', 'rejected'];
+const STATUSES = ['pending', 'originated', 'awaiting_odfi', 'pending_approval', 'shadow', 'settled', 'reconciled', 'failed', 'rejected'];
 const PARTNER_PROVIDERS = ['column', 'increase', 'generic'];
 
 function httpError(message, status) { return Object.assign(new Error(message), { status }); }
@@ -252,7 +252,7 @@ class BankSettlementEngine {
             description,
             reference: ref,
           });
-          out = { status: r.status === 'shadow' ? 'shadow' : (r.status === 'awaiting_odfi' ? 'awaiting_odfi' : 'originated'), providerReference: r.transferId || r.depositId || null, providerStatus: r.status, result: r };
+          out = { status: r.status === 'shadow' ? 'shadow' : (['awaiting_odfi', 'pending_approval'].includes(r.status) ? r.status : 'originated'), providerReference: r.transferId || r.depositId || null, providerStatus: r.status, result: r };
           break;
         }
         case 'host_to_host': {
