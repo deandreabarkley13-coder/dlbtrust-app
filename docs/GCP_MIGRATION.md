@@ -542,6 +542,42 @@ the account, and a bank_account external account whose last4 equals the
 `LILI_DD_ACCOUNT_NUMBER` last4. Fund the Stripe balance (card / ACH payments
 into the account) before settling.
 
+**Funding the Stripe balance — Stripe payment processing** (`server/integrations/payments/stripePaymentIntakeEngine.js`,
+routes in `server/routes/bankSettlement.js`). Every payer (trustee, beneficiary,
+grantor, counterparty) becomes a Stripe Customer and pays *into* the trust's
+Stripe account; nothing is ever debited from Lili.
+
+```text
+payer card / us_bank_account ACH debit
+  -> POST /api/payment-server/v1/stripe-intakes/payment-intents   (client_secret for an embedded flow)
+  |  POST /api/payment-server/v1/stripe-intakes/checkout-links    (hosted Stripe Checkout URL)
+  -> Stripe webhook  POST /api/payment-server/v1/stripe/webhook   (Stripe-signature verified)
+       payment_intent.succeeded -> DepositAndSettlementEngine.recordDeposit
+                                    (CA-STRIPE-BALANCE -> PTC-DEPOSIT-CLEARING), intake `received`
+  -> POST /api/payment-server/v1/stripe-intakes/:id/payout {approvalRef, screeningRef}
+       -> BankSettlementEngine.clearAndSettle(lili) -> Stripe Payout -> Lili ****2959
+```
+
+Readiness: `GET /stripe-intakes/readiness` (live key, `charges_enabled`,
+`card_payments`/`us_bank_account_ach_payments` active, `STRIPE_WEBHOOK_SECRET`
+present). The webhook only ever marks an intake `received` (idempotent per
+PaymentIntent, test-mode events rejected on a live key); it never triggers the
+payout — that is the separate, maker/checker-gated call above, and it fails
+with 409 until Stripe has moved the funds from `pending` to `available`
+(cards ≈ 2 business days, ACH debits ≈ 4). Setup:
+
+1. Stripe Dashboard → Developers → Webhooks → add endpoint
+   `https://<app>/api/payment-server/v1/stripe/webhook` with events
+   `payment_intent.succeeded`, `payment_intent.processing`,
+   `payment_intent.payment_failed`, `payment_intent.canceled`,
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded`,
+   `checkout.session.async_payment_failed`; copy the signing secret →
+   `gcloud secrets versions add STRIPE_WEBHOOK_SECRET --data-file=-`.
+2. The key used for intake needs Customers, PaymentIntents and Checkout
+   Sessions **write**: either extend `STRIPE_SECRET_KEY` or seed a second
+   restricted key as `STRIPE_PAYMENTS_SECRET_KEY` (add it to `secret_names`).
+3. `terraform apply` (`STRIPE_INTAKE_*` in `runtime_environment`) and redeploy.
+
 `LILI_ORIGINATOR=stripe_treasury` is the Stripe Treasury variant: the direct deposit is
 originated by the dlb-treasury Stripe Treasury financial account
 (`STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`) as a Treasury `OutboundPayment` to a

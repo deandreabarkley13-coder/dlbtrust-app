@@ -174,16 +174,23 @@ variable "runtime_environment" {
     # registered as the Stripe external bank account; STRIPE_SECRET_KEY must be
     # live-mode. stripe_treasury (OutboundPayment) needs a live Treasury
     # financial account, which this Stripe account does not have.
-    LILI_ORIGINATOR                   = "stripe_payout"
-    LILI_STRIPE_PAYOUT_METHOD         = "standard"
+    LILI_ORIGINATOR           = "stripe_payout"
+    LILI_STRIPE_PAYOUT_METHOD = "standard"
     # The Lili account as registered on the trust's live Stripe account (****2959).
     STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID = "ba_1U3OcSFE15CwMad3BBD35eGT"
-    LILI_STRIPE_TREASURY_NETWORK = "ach"
-    LILI_MCP_ENABLED       = "true"
-    LILI_MCP_URL           = "https://mcp.lili.co/mcp"
-    LILI_OAUTH_BASE_URL    = "https://mcp.lili.co"
-    LILI_DD_ROUTING_NUMBER = "121145307"
-    LILI_DD_ACCOUNT_NAME   = "DB NET MGMT LLC"
+    # Stripe payment processing funds that balance: card / us_bank_account ACH
+    # debit PaymentIntents and hosted Checkout links, confirmed by the Stripe
+    # webhook (STRIPE_WEBHOOK_SECRET) and posted to the treasury ledger
+    # (CA-STRIPE-BALANCE) before POST /stripe-intakes/:id/payout moves them to Lili.
+    STRIPE_INTAKE_ENABLED         = "true"
+    STRIPE_INTAKE_PAYMENT_METHODS = "card,us_bank_account"
+    STRIPE_INTAKE_RETURN_URL      = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    LILI_STRIPE_TREASURY_NETWORK  = "ach"
+    LILI_MCP_ENABLED              = "true"
+    LILI_MCP_URL                  = "https://mcp.lili.co/mcp"
+    LILI_OAUTH_BASE_URL           = "https://mcp.lili.co"
+    LILI_DD_ROUTING_NUMBER        = "121145307"
+    LILI_DD_ACCOUNT_NAME          = "DB NET MGMT LLC"
     # ODFI channel for the treasury -> Lili credit. Default: OpenACH, the
     # in-project dlbtrust-openach service (OPENACH_BASE_URL/API_TOKEN/API_KEY/
     # PAYMENT_TYPE_ID in secret_names; OPENACH_ODFI_ENABLED=false opts out).

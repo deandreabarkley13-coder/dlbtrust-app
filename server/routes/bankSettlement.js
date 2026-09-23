@@ -13,6 +13,7 @@ const { timingSafeEqual } = require('../integrations/paymentHub/paymentCrypto');
 const { writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { SettlementBankRegistry } = require('../integrations/payments/settlementBankRegistry');
 const { BankSettlementEngine } = require('../integrations/payments/bankSettlementEngine');
+const { StripePaymentIntakeEngine } = require('../integrations/payments/stripePaymentIntakeEngine');
 
 const router = express.Router();
 
@@ -38,7 +39,69 @@ function sendError(res, err) {
   res.status(status >= 400 && status <= 599 ? status : 400).json(body);
 }
 
+// Stripe-signed, not service-token'd: Stripe calls this directly.
+router.post('/stripe/webhook', async (req, res) => {
+  try {
+    const data = await StripePaymentIntakeEngine.handleWebhook(req.rawBody, req.headers['stripe-signature']);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.use(verifyServiceToken);
+
+router.get('/stripe-intakes/readiness', async (req, res) => {
+  try {
+    const data = await StripePaymentIntakeEngine.status();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/stripe-intakes', async (req, res) => {
+  try {
+    res.json({ success: true, data: await StripePaymentIntakeEngine.list({ status: req.query.status, limit: Math.min(Number(req.query.limit) || 50, 500) }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/stripe-intakes/payment-intents', writeRateLimiter(), async (req, res) => {
+  try {
+    res.status(201).json({ success: true, data: await StripePaymentIntakeEngine.createPaymentIntent({ ...req.body, createdBy: 'payment_server' }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/stripe-intakes/checkout-links', writeRateLimiter(), async (req, res) => {
+  try {
+    res.status(201).json({ success: true, data: await StripePaymentIntakeEngine.createCheckoutLink({ ...req.body, createdBy: 'payment_server' }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/stripe-intakes/:id', async (req, res) => {
+  try {
+    const data = await StripePaymentIntakeEngine.get(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'intake not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Received Stripe funds -> Lili direct deposit. Same live rules as POST /settlements
+// (approvalRef + screeningRef), amount defaults to the intake amount.
+router.post('/stripe-intakes/:id/payout', writeRateLimiter(), async (req, res) => {
+  try {
+    const intake = await StripePaymentIntakeEngine.get(req.params.id);
+    if (!intake) return res.status(404).json({ success: false, error: 'intake not found' });
+    if (intake.status !== 'received') return res.status(409).json({ success: false, error: `intake is ${intake.status}, not received` });
+    const amountCents = req.body && req.body.amountCents != null ? Number(req.body.amountCents) : intake.amountCents;
+    if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > intake.amountCents) return res.status(400).json({ success: false, error: 'amountCents must be a positive integer <= the intake amount' });
+    const data = await BankSettlementEngine.clearAndSettle({
+      bankId: 'lili', amountCents, rail: 'ach',
+      approvalRef: req.body && req.body.approvalRef, screeningRef: req.body && req.body.screeningRef,
+      reference: (req.body && req.body.reference) || intake.intakeId,
+      description: (req.body && req.body.description) || `Stripe intake ${intake.intakeId} -> Lili`,
+      paymentType: 'stripe_intake_payout', initiatedBy: 'payment_server',
+    });
+    const updated = ['originated', 'settled'].includes(data.status) ? await StripePaymentIntakeEngine.markPaidOut(intake.intakeId, data.settlementId) : null;
+    res.status(['awaiting_odfi', 'pending_approval'].includes(data.status) ? 202 : 201).json({ success: true, data: { settlement: data, intake: updated || intake } });
+  } catch (err) { sendError(res, err); }
+});
 
 router.get('/settlement-banks', async (req, res) => {
   try { res.json({ success: true, data: await SettlementBankRegistry.list() }); } catch (err) { sendError(res, err); }
