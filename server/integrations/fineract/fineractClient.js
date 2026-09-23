@@ -317,7 +317,7 @@ class FineractClient {
       dateFormat: 'dd MMMM yyyy',
       locale: 'en',
       paymentTypeId,
-      amount,
+      transactionAmount: amount,
       note: note || '',
     });
   }
@@ -332,7 +332,7 @@ class FineractClient {
       dateFormat: 'dd MMMM yyyy',
       locale: 'en',
       paymentTypeId,
-      amount,
+      transactionAmount: amount,
       note: note || '',
     });
   }
