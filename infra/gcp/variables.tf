@@ -34,6 +34,14 @@ variable "openach_image" {
   default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/openach:latest"
 }
 
+# Cloud Scheduler cron (America/New_York) for the OpenACH `cronnightly` job
+# that builds NACHA files for due schedules (openach_cron.tf). Weeknights,
+# after the day's settlements have been queued.
+variable "openach_nightly_schedule" {
+  type    = string
+  default = "0 20 * * 1-5"
+}
+
 # Payment Hub EE channel connector (paymenthub.tf). Mirrored from Docker Hub
 # openmf/ph-ee-connector-channel into Artifact Registry; Cloud Run only pulls
 # from registries it can authenticate to.
@@ -176,7 +184,13 @@ variable "runtime_environment" {
     # or a registered external AS2/production partner. Empty = fail closed:
     # LiliDirectDepositEngine.odfiStatus().ready=false, deposits stay awaiting_odfi.
     ACH_MFT_CHANNEL = ""
-    ACH_SFTP_URL    = ""
+    # OpenACH only records schedules; the dlbtrust-openach-nightly job
+    # (openach_cron.tf) builds the NACHA files into the OpenACH files bucket and
+    # the app relays them to the ODFI through MFT Gateway (OpenAchFileRelay,
+    # partner = MFTGATEWAY_PARTNER_AS2_ID). The bucket name is injected by
+    # openach_cron.tf; this is the polling cadence (0 disables the relay).
+    OPENACH_FILE_RELAY_INTERVAL_MS = "300000"
+    ACH_SFTP_URL                   = ""
     # Interoperability OS (crossChainConversionEngine / m2mOsEngine). Live, as
     # on Northflank (DAPP_SHADOW=false there): DAPP_RPC_URL, DAPP_PRIVATE_KEY
     # and PAYMENT_DATA_ENCRYPTION_KEY come from the dlbtrust-runtime secret

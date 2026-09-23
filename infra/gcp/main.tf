@@ -13,6 +13,7 @@ locals {
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "iap.googleapis.com",
+    "cloudscheduler.googleapis.com",
   ]
 }
 

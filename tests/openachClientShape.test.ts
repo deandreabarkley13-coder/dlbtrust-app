@@ -37,7 +37,7 @@ describe('OpenACH client — response shape', () => {
     expect(out).toMatchObject({ success: true, payment_profile_id: 'pp-1', external_account_id: 'ea-1', payment_schedule_id: 'ps-1' });
     expect(calls.map(c => c[0])).toEqual(['getPaymentProfileByExtId', 'savePaymentProfile', 'saveExternalAccount', 'savePaymentSchedule']);
     expect(calls[2][1]).toMatchObject({ external_account_payment_profile_id: 'pp-1', external_account_dfi_id: '121145307', external_account_type: 'checking' });
-    expect(calls[3][1]).toMatchObject({ payment_schedule_external_account_id: 'ea-1', payment_schedule_payment_type_id: 'pt-credit', payment_schedule_amount: '1.00', payment_schedule_next_date: '2026-09-23', payment_schedule_end_date: '2026-09-23' });
+    expect(calls[3][1]).toMatchObject({ payment_schedule_external_account_id: 'ea-1', payment_schedule_payment_type_id: 'pt-credit', payment_schedule_amount: '1.00', payment_schedule_next_date: '2026-09-23', payment_schedule_end_date: '2026-09-30' });
   });
 
   it('renders OpenACH field-validation errors (objects) in the thrown message', async () => {

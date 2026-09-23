@@ -1105,6 +1105,28 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[bond-token-supply-sync] scheduler:', e.message); }
 
+  // OpenACH NACHA file relay: export bucket -> ODFI via MFT Gateway.
+  // OFF unless OPENACH_FILE_RELAY_INTERVAL_MS is set; the relay itself fails closed
+  // without the bucket + MFT Gateway partner.
+  try {
+    var relayMs = parseInt(process.env.OPENACH_FILE_RELAY_INTERVAL_MS || '0', 10);
+    if (relayMs > 0) {
+      var relayTimer = null;
+      leader.register('openach-file-relay', function() {
+        relayTimer = setInterval(function() {
+          var OpenAchFileRelay = require(path.join(HD, 'server', 'integrations', 'openach', 'openachFileRelay')).OpenAchFileRelay;
+          OpenAchFileRelay.run().then(function(result) {
+            if (!result.ready) console.warn('[openach-relay] not ready:', result.issues.join('; '));
+            else if (result.files.length) console.log('[openach-relay] delivered ' + result.delivered + ', failed ' + result.failed);
+          }).catch(function(err) {
+            console.warn('[openach-relay] tick failed:', err.message);
+          });
+        }, relayMs);
+        console.log('[openach-relay] scheduler started every ' + relayMs + 'ms');
+      }, function() { if (relayTimer) { clearInterval(relayTimer); relayTimer = null; } });
+    }
+  } catch(e) { console.warn('[openach-relay] scheduler:', e.message); }
+
   // Melio vendor-payment sync scheduler (approves/exports pending melio invoices).
   // OFF unless MELIO_SYNC_SCHEDULE_MS is set. Set MELIO_SYNC_AUTO_APPROVE=true to auto-approve.
   try {

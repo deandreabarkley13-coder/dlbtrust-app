@@ -87,6 +87,13 @@ resource "google_cloud_run_v2_service" "app" {
         value = google_storage_bucket.clearing_evidence.name
       }
 
+      # NACHA files built by the dlbtrust-openach-nightly job (openach_cron.tf),
+      # relayed to the ODFI by OpenAchFileRelay.
+      env {
+        name  = "OPENACH_ACH_FILES_BUCKET"
+        value = google_storage_bucket.openach_files.name
+      }
+
       # Engine readiness (server/integrations/os/engineWiringReadiness.js)
       # checks these against the expected project, dlb-treasury-management.
       env {

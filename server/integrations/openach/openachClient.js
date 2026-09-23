@@ -154,6 +154,20 @@ function idField(res, key) {
   return (res && res.data && res.data[key]) || (res && res[key]) || null;
 }
 
+/**
+ * OpenACH's PaymentSchedulerCommand only picks a schedule up while
+ * payment_schedule_end_date >= today + AchBatch.LeadTime (3 days). A one-off
+ * schedule whose end date equals its send date is therefore never processed,
+ * so one-off schedules default to a week-long window after the send date.
+ */
+const SCHEDULE_END_DATE_WINDOW_DAYS = 7;
+function defaultScheduleEndDate(send_date) {
+  const d = new Date(`${send_date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return send_date;
+  d.setUTCDate(d.getUTCDate() + SCHEDULE_END_DATE_WINDOW_DAYS);
+  return d.toISOString().slice(0, 10);
+}
+
 class OpenACHClient {
 
   /**
@@ -272,7 +286,7 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: currency_code,
         payment_schedule_next_date: send_date,
-        payment_schedule_end_date: end_date || send_date,
+        payment_schedule_end_date: end_date || defaultScheduleEndDate(send_date),
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       };
@@ -398,7 +412,7 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: 'USD',
         payment_schedule_next_date: send_date,
-        payment_schedule_end_date: end_date || send_date,
+        payment_schedule_end_date: end_date || defaultScheduleEndDate(send_date),
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       });

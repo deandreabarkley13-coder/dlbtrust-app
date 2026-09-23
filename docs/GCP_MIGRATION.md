@@ -180,6 +180,30 @@ Still on Northflank until cutover: nothing that the app calls. Northflank's
 OpenACH's inbound webhooks (`OPENACH_WEBHOOK_SECRET`) and any bank-side IP
 allowlist need the new egress IP / app URL at cutover.
 
+### OpenACH processing + NACHA delivery (`infra/gcp/openach_cron.tf`)
+
+`POST /settlements` (Lili) only creates an OpenACH *payment schedule*. Turning it
+into an `ach_entry` → `ach_batch` → `ach_file` is OpenACH's `cronnightly`
+command, and the ODFI branch (`Sunrise Banks N.A.`) uses the `Manual` bank
+plugin, which just writes the file to `runtime/export/`. On GCP:
+
+1. Cloud Run job `dlbtrust-openach-nightly` (OpenACH image, same DB/secrets,
+   `runtime/` mounted from bucket `dlb-treasury-management-openach-ach-files`)
+   runs `yiic cronnightly run` + `confirmationprocessor` + `returnchangeprocessor`
+   on `var.openach_nightly_schedule` (default 20:00 America/New_York, Mon–Fri)
+   via Cloud Scheduler. Run it on demand with
+   `gcloud run jobs execute dlbtrust-openach-nightly --region us-east1 --wait`.
+2. The app's `OpenAchFileRelay` (`OPENACH_ACH_FILES_BUCKET`, every
+   `OPENACH_FILE_RELAY_INTERVAL_MS`) submits each `export/*.ach` to the ODFI
+   through MFT Gateway (`DLBTRUST-AS2` → `MFTGATEWAY_PARTNER_AS2_ID`) and moves
+   it to `sent/` (`failed/` on error), journaling to `openach_file_relays`.
+   `GET /api/openach-rail/file-relay` shows readiness/pending/history;
+   `POST /api/openach-rail/file-relay/run` forces a pass.
+
+**Prerequisite:** the relay fails closed until the ODFI bank is registered as an
+AS2 partner of `DLBTRUST-AS2` on mftgateway.com and `MFTGATEWAY_PARTNER_AS2_ID`
+is set in `runtime_environment`. Files accumulate in `export/` until then.
+
 ## Payment Hub EE (PHEE) — enabled 2026-09-20
 
 **Endpoint source decision:** no existing PHEE deployment existed in
