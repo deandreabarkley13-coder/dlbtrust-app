@@ -26,6 +26,10 @@
  *     on Horizon and must be a successful payment of the right asset, amount
  *     and destination before anything posts. Shadow mode returns a fabricated
  *     hash, so shadow mode cannot originate at all.
+ *   • Mainnet is armed deliberately, not by a typo. Pointing STABLECOIN_NETWORK
+ *     at mainnet is a network setting, not authority to move real value, so
+ *     origination there additionally requires STABLECOIN_MAINNET_AUTHORIZED and a
+ *     per-push ceiling (PAYER_OS_MAX_AMOUNT_CENTS). Testnet needs neither.
  *   • Only the Stellar rail is implemented. The Circle App Kit and Hedera
  *     engines in this repo cannot report a USDC position or verify a hash the
  *     same way, and a payout that cannot be funded from a read balance or
@@ -315,6 +319,23 @@ const StablecoinPayoutRail = {
     }
     if (!parseWallets() || !Object.keys(parseWallets()).length) {
       issues.push('PAYER_OS_WALLETS is empty: there is no registered wallet to credit');
+    }
+
+    // Real value leaves on mainnet, so the network setting alone does not arm
+    // the rail: somebody has to say so, and say how large a single push may be.
+    if (network === 'public') {
+      if (!/^(1|true|yes|on)$/i.test(str(process.env.STABLECOIN_MAINNET_AUTHORIZED))) {
+        issues.push(
+          'STABLECOIN_MAINNET_AUTHORIZED is not set: mainnet moves redeemable USDC,'
+          + ' so the rail stays closed until it is armed deliberately'
+        );
+      }
+      if (!Number(str(process.env.PAYER_OS_MAX_AMOUNT_CENTS))) {
+        issues.push(
+          'PAYER_OS_MAX_AMOUNT_CENTS is not set: mainnet will not originate without'
+          + ' a per-push ceiling to refuse against'
+        );
+      }
     }
 
     return {

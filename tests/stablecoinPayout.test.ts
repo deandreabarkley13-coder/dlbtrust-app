@@ -34,7 +34,12 @@ const INSERT_COLUMNS = [
 ];
 
 /** The rail configured the way a real USDC payout needs it. */
-function configured({ network = 'testnet', issuer = CIRCLE_USDC_ISSUERS.testnet, mode = 'testnet' } = {}) {
+function configured({
+  network = 'testnet',
+  issuer = CIRCLE_USDC_ISSUERS.testnet,
+  mode = 'testnet',
+  armed = true,
+} = {}) {
   process.env.STABLECOIN_ENABLED = 'true';
   process.env.STABLECOIN_MODE = mode;
   process.env.STABLECOIN_NETWORK = network;
@@ -43,6 +48,15 @@ function configured({ network = 'testnet', issuer = CIRCLE_USDC_ISSUERS.testnet,
   process.env.STABLECOIN_DISTRIBUTOR_PUBLIC = DISTRIBUTOR;
   process.env.STABLECOIN_DISTRIBUTOR_SECRET = DISTRIBUTOR_SECRET;
   process.env.PAYER_OS_WALLETS = JSON.stringify({ 'db-net-mgmt': WALLET });
+  // Mainnet is armed separately from being configured, so tests about anything
+  // else on mainnet still have to arm it.
+  if (armed) {
+    process.env.STABLECOIN_MAINNET_AUTHORIZED = 'true';
+    process.env.PAYER_OS_MAX_AMOUNT_CENTS = '100000';
+  } else {
+    delete process.env.STABLECOIN_MAINNET_AUTHORIZED;
+    delete process.env.PAYER_OS_MAX_AMOUNT_CENTS;
+  }
 }
 
 /**
@@ -142,6 +156,30 @@ describe('Real USDC as a Payer OS rail', () => {
     configured();
     process.env.PAYER_OS_REQUIRE_SCREENING = 'false';
     delete process.env.STABLECOIN_TRUSTED_ISSUERS;
+  });
+
+  describe('mainnet is armed on purpose, not by pointing at a network', () => {
+    it('refuses to originate on mainnet until it is authorized and given a ceiling', async () => {
+      configured({ network: 'mainnet', mode: 'mainnet', issuer: CIRCLE_USDC_ISSUERS.public, armed: false });
+      const readiness = await StablecoinPayoutRail.readiness();
+      expect(readiness.ready).toBe(false);
+      expect(readiness.issues.join(' ')).toMatch(/STABLECOIN_MAINNET_AUTHORIZED is not set/);
+      expect(readiness.issues.join(' ')).toMatch(/PAYER_OS_MAX_AMOUNT_CENTS is not set/);
+    });
+
+    it('still wants a ceiling once mainnet is authorized', async () => {
+      configured({ network: 'mainnet', mode: 'mainnet', issuer: CIRCLE_USDC_ISSUERS.public, armed: false });
+      process.env.STABLECOIN_MAINNET_AUTHORIZED = 'true';
+      const readiness = await StablecoinPayoutRail.readiness();
+      expect(readiness.ready).toBe(false);
+      expect(readiness.issues.join(' ')).toMatch(/PAYER_OS_MAX_AMOUNT_CENTS is not set/);
+      expect(readiness.issues.join(' ')).not.toMatch(/STABLECOIN_MAINNET_AUTHORIZED/);
+    });
+
+    it('asks nothing extra of testnet, where the asset is worth nothing', async () => {
+      configured({ armed: false });
+      expect((await StablecoinPayoutRail.readiness()).ready).toBe(true);
+    });
   });
 
   afterEach(() => {
