@@ -190,6 +190,7 @@ try { app.use('/api/tps-os', require(path.join(HD, 'server', 'routes', 'tpsOs'))
 try { app.use('/api/bond-redemption-os', require(path.join(HD, 'server', 'routes', 'bondRedemptionOs'))); console.log('[bond-redemption-os] loaded'); } catch(e) { console.warn('[bond-redemption-os]', e.message); }
 try { app.use('/api/collateral-os', require(path.join(HD, 'server', 'routes', 'collateralOs'))); console.log('[collateral-os] loaded'); } catch(e) { console.warn('[collateral-os]', e.message); }
 try { app.use('/api/fixed-income', require(path.join(HD, 'server', 'routes', 'fixedIncome'))); console.log('[fixed-income] loaded'); } catch(e) { console.warn('[fixed-income]', e.message); }
+try { app.use('/api/bond-issuance', require(path.join(HD, 'server', 'routes', 'bondIssuance'))); console.log('[bond-issuance] loaded'); } catch(e) { console.warn('[bond-issuance]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
@@ -1104,6 +1105,24 @@ initializeDatabase().then(function() {
       }, function() { if (subscriptionTimer) { clearInterval(subscriptionTimer); subscriptionTimer = null; } });
     }
   } catch(e) { console.warn('[bond-token-supply-sync] scheduler:', e.message); }
+
+  // Bond issuance: book due issuer -> holder P&I (Fineract + GL + Stripe intake).
+  // OFF unless BOND_ISSUANCE_RUN_DUE_MS is set.
+  try {
+    var issuanceMs = parseInt(process.env.BOND_ISSUANCE_RUN_DUE_MS || '0', 10);
+    if (issuanceMs > 0) {
+      var issuanceTimer = null;
+      leader.register('bond-issuance', function() {
+        issuanceTimer = setInterval(function() {
+          var BondIssuanceEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondIssuanceEngine')).BondIssuanceEngine;
+          BondIssuanceEngine.runDue().then(function(r) {
+            if (r.results.length) console.log('[bond-issuance] booked ' + r.results.filter(function(x) { return x.ok; }).length + '/' + r.results.length);
+          }).catch(function(err) { console.warn('[bond-issuance] tick failed:', err.message); });
+        }, issuanceMs);
+        console.log('[bond-issuance] scheduler started every ' + issuanceMs + 'ms');
+      }, function() { if (issuanceTimer) { clearInterval(issuanceTimer); issuanceTimer = null; } });
+    }
+  } catch(e) { console.warn('[bond-issuance] scheduler:', e.message); }
 
   // OpenACH NACHA file relay: export bucket -> ODFI via MFT Gateway.
   // OFF unless OPENACH_FILE_RELAY_INTERVAL_MS is set; the relay itself fails closed
