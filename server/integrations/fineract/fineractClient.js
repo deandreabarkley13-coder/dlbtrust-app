@@ -418,8 +418,12 @@ class FineractClient {
   /**
    * Send a command to a savings account (activate, block, close, etc.).
    */
-  static async commandSavingsAccount(accountId, command) {
-    return fineractRequest('POST', `savingsaccounts/${accountId}?command=${command}`, {});
+  static async commandSavingsAccount(accountId, command, body = {}) {
+    const dated = { locale: 'en', dateFormat: 'dd MMMM yyyy' };
+    const today = formatFineractDate(new Date());
+    if (command === 'approve') Object.assign(dated, { approvedOnDate: today });
+    if (command === 'activate') Object.assign(dated, { activatedOnDate: today });
+    return fineractRequest('POST', `savingsaccounts/${accountId}?command=${command}`, { ...dated, ...body });
   }
 
   /** Client by externalId (GET /clients?externalId=), or null. */
