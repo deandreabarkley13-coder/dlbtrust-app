@@ -28,3 +28,12 @@ secret_names = [
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",
 ]
+
+# Declared above but not yet seeded (`gcloud secrets versions add`): Cloud Run
+# rejects a revision referencing a version-less secret, so keep such names here
+# until seeded, then remove them and re-apply.
+unseeded_secret_names = [
+  "LILI_OAUTH_CLIENT_SECRET",
+  "LILI_OAUTH_REFRESH_TOKEN",
+  "LILI_BUSINESS_USER_ID",
+]
