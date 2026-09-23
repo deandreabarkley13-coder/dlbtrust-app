@@ -22,6 +22,12 @@
  *
  * coupon_income and trust_operating never share a source journal, a funding
  * request or a payee list (TrustAllocationEngine enforces both ends).
+ *
+ * FIXED_INCOME_RAIL=bank replaces the policy-contract leg with the settlement
+ * banks (settlementBankRegistry.js): payees are bank ids, funding is the
+ * treasury's Stripe balance (Stripe payment processing receipts), and execute
+ * originates the direct deposit through BankSettlementEngine.clearAndSettle
+ * (maker/checker approvalRef + screeningRef), booking Dr distributions / Cr cash.
  */
 
 const path = require('path');
@@ -38,6 +44,18 @@ try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine'
 
 let CustodyOsEngine;
 try { ({ CustodyOsEngine } = require('../custody/custodyOsEngine')); } catch (e) { CustodyOsEngine = null; }
+
+let BankSettlementEngine, SettlementBankRegistry, LiliStripePayoutOriginator;
+try { ({ BankSettlementEngine } = require('../payments/bankSettlementEngine')); } catch (e) { BankSettlementEngine = null; }
+try { ({ SettlementBankRegistry } = require('../payments/settlementBankRegistry')); } catch (e) { SettlementBankRegistry = null; }
+try { ({ LiliStripePayoutOriginator } = require('../payments/liliStripePayoutOriginator')); } catch (e) { LiliStripePayoutOriginator = null; }
+
+const RAILS = ['policy_contract', 'bank'];
+const DEFAULT_BANK_PAYEES = [
+  { bucket: 'coupon_income', bankId: 'lili', shareBps: 10000 },
+  { bucket: 'trust_operating', bankId: 'lili', shareBps: 10000 },
+];
+const BANK_FUNDING_SOURCE = 'stripe_balance';
 
 const POLICY_CONFIG = path.join(__dirname, '..', '..', '..', 'contracts', 'policy.base.json');
 const YEAR_SECONDS = 31536000;
@@ -66,6 +84,15 @@ function bool(name, def) { const v = str(name); return v ? v.toLowerCase() === '
 function round2(n) { return Math.round(Number(n || 0) * 100) / 100; }
 function newId(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function lower(a) { return String(a || '').toLowerCase(); }
+
+function bankPayeesFromEnv() {
+  const raw = str('FIXED_INCOME_BANK_PAYEES');
+  if (!raw) return DEFAULT_BANK_PAYEES;
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch (e) { throw new FixedIncomeError('FIXED_INCOME_BANK_PAYEES is not valid JSON', 'FIXED_INCOME_CONFIG', 500); }
+  if (!Array.isArray(parsed)) throw new FixedIncomeError('FIXED_INCOME_BANK_PAYEES must be a JSON array', 'FIXED_INCOME_CONFIG', 500);
+  return parsed.map((p) => ({ bucket: String(p.bucket || ''), bankId: lower(p.bankId), shareBps: Number(p.shareBps == null ? 10000 : p.shareBps) }));
+}
 
 function assertTransition(from, to) {
   if (!(TRANSITIONS[from] || []).includes(to)) {
@@ -129,11 +156,36 @@ const FixedIncomeDistributionEngine = {
       autoExecute: bool('FIXED_INCOME_AUTO_EXECUTE', false),
       minAmountUsd: Number(str('FIXED_INCOME_MIN_AMOUNT_USD', '1')),
       trusteeRail: str('FIXED_INCOME_TRUSTEE_RAIL', '') || undefined,
+      rail: RAILS.includes(str('FIXED_INCOME_RAIL', 'policy_contract')) ? str('FIXED_INCOME_RAIL', 'policy_contract') : 'policy_contract',
+      bankPayees: bankPayeesFromEnv(),
       gl: {
         treasuryAccount: str('SPRITZ_TREASURY_GL_ACCOUNT', '1210'),
         distributionsAccount: str('SPRITZ_DISTRIBUTIONS_GL_ACCOUNT', '2000'),
+        // Cash GL the Stripe intake deposits land on (depositAndSettlementEngine.recordDeposit).
+        bankCashAccount: str('FIXED_INCOME_BANK_CASH_GL_ACCOUNT', '1100'),
       },
     };
+  },
+
+  isBankRail(cfg = this.config()) { return cfg.rail === 'bank'; },
+
+  /** Bank payees of a bucket with the registry's public view (no account numbers). */
+  async bankPayees(bucketKey, cfg = this.config()) {
+    if (!SettlementBankRegistry) throw new FixedIncomeError('settlement bank registry unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
+    const rows = cfg.bankPayees.filter((p) => p.bucket === bucketKey);
+    const out = [];
+    for (const p of rows) {
+      const bank = SettlementBankRegistry.publicView(await SettlementBankRegistry.resolve(p.bankId));
+      out.push({ bankId: bank.bankId, name: bank.accountName || bank.name, provider: bank.provider, routingNumber: bank.routingNumber, accountNumberMasked: bank.accountNumberMasked, enabled: bank.enabled !== false, shareBps: p.shareBps });
+    }
+    return out;
+  },
+
+  /** Available treasury cash behind a bank payee (Stripe balance for the Stripe payout originator), null when unknown. */
+  async bankFundingAvailableCents(bankId) {
+    if (lower(bankId) !== 'lili' || !LiliStripePayoutOriginator || str('LILI_ORIGINATOR') !== 'stripe_payout') return null;
+    const st = await LiliStripePayoutOriginator.status();
+    return st.balance ? Number(st.balance.availableCents) : null;
   },
 
   async ensureTables() {
@@ -173,6 +225,7 @@ const FixedIncomeDistributionEngine = {
 
   async readiness() {
     const cfg = this.config();
+    if (this.isBankRail(cfg)) return this._bankReadiness(cfg);
     const [treasury, allocations] = await Promise.all([
       SpritzTreasuryLegEngine.readiness().catch((e) => ({ ready: false, issues: [e.message] })),
       Promise.resolve(policyAnnualAllocations()),
@@ -186,7 +239,36 @@ const FixedIncomeDistributionEngine = {
       if (!b.payees.length) issues.push(`${b.bucket} has no payees on the policy contract`);
       if (b.payees.some((p) => !p.annualAllocationUsd)) issues.push(`${b.bucket} payee without an annual allocation in contracts/policy.base.json`);
     }
-    return { enabled: cfg.enabled, autoStage: cfg.autoStage, autoExecute: cfg.autoExecute, ready: cfg.enabled && issues.length === 0, issues, treasury, buckets };
+    return { enabled: cfg.enabled, rail: cfg.rail, autoStage: cfg.autoStage, autoExecute: cfg.autoExecute, ready: cfg.enabled && issues.length === 0, issues, treasury, buckets };
+  },
+
+  async _bankReadiness(cfg) {
+    const issues = [];
+    if (!BankSettlementEngine) issues.push('BankSettlementEngine unavailable');
+    const banks = {};
+    const buckets = [];
+    for (const b of TrustAllocationEngine.buckets()) {
+      let payees = [];
+      try { payees = await this.bankPayees(b.key, cfg); } catch (e) { issues.push(`${b.key}: ${e.message}`); }
+      const share = payees.reduce((n, p) => n + p.shareBps, 0);
+      if (!payees.length) issues.push(`${b.key} has no bank payee (FIXED_INCOME_BANK_PAYEES)`);
+      if (share > 10000) issues.push(`${b.key} bank shares exceed 100% (${share} bps)`);
+      if (payees.some((p) => !(p.shareBps > 0))) issues.push(`${b.key} bank payee with a non-positive share`);
+      buckets.push({ bucket: b.key, label: b.label, glAccountCode: TrustAllocationEngine.glAccountCode(b.key), purposes: b.purposes, payees });
+      for (const p of payees) {
+        if (banks[p.bankId] || !BankSettlementEngine) continue;
+        try {
+          const r = await BankSettlementEngine.readiness(p.bankId);
+          const availableCents = await this.bankFundingAvailableCents(p.bankId).catch(() => null);
+          banks[p.bankId] = { bankId: r.bankId, provider: r.provider, mode: r.mode, ready: r.ready, blockers: r.blockers, requires: r.requires, fundingSource: BANK_FUNDING_SOURCE, availableCents };
+          if (!r.ready) issues.push(`${p.bankId}: ${(r.blockers || []).join('; ') || 'not ready'}`);
+        } catch (e) {
+          banks[p.bankId] = { bankId: p.bankId, ready: false, error: e.message };
+          issues.push(`${p.bankId}: ${e.message}`);
+        }
+      }
+    }
+    return { enabled: cfg.enabled, rail: 'bank', autoStage: cfg.autoStage, autoExecute: false, ready: cfg.enabled && issues.length === 0, issues, treasury: { fundingSource: BANK_FUNDING_SOURCE, banks }, buckets };
   },
 
   /** Source journals (posted, pushed or not) without a distribution plan yet. */
@@ -243,15 +325,34 @@ const FixedIncomeDistributionEngine = {
     return { bucket: bucket.key, periodsPerYear: periods, entitledUsd: entitled, availableUsd: available, allocatedUsd: allocated, retainedUsd: round2(available - allocated), lines: out };
   },
 
+  /** Bank rail: split one source journal across its bucket's settlement banks by shareBps. */
+  allocateBank(source, payees) {
+    const bucket = TrustAllocationEngine.bucket(source.bucket);
+    const available = round2(source.amountUsd);
+    const lines = payees.filter((p) => p.shareBps > 0 && p.enabled);
+    const totalBps = Math.min(lines.reduce((n, p) => n + p.shareBps, 0), 10000);
+    let allocated = 0;
+    const out = lines.map((p, i) => {
+      let amountUsd = round2(available * p.shareBps / 10000);
+      if (i === lines.length - 1 && totalBps === 10000) amountUsd = round2(available - allocated);
+      allocated = round2(allocated + amountUsd);
+      return { payee: p.bankId, payeeName: p.name, payeeRole: bucket.payeeRole, purpose: bucket.purposes[0], entitlementUsd: amountUsd, amountUsd };
+    });
+    return { bucket: bucket.key, periodsPerYear: PERIODS_PER_YEAR[source.paymentFreq] || 2, entitledUsd: allocated, availableUsd: available, allocatedUsd: allocated, retainedUsd: round2(available - allocated), lines: out };
+  },
+
   /** Create planned distributions for every unplanned source journal (idempotent). */
   async plan({ createdBy, dryRun = false } = {}) {
     const cfg = this.config();
     if (!cfg.enabled) throw new FixedIncomeError('Fixed income distribution disabled', 'FIXED_INCOME_DISABLED', 503);
     const sources = await this.unplannedSources();
     const allocations = policyAnnualAllocations();
+    const bank = this.isBankRail(cfg);
+    const bankPayees = {};
+    if (bank) for (const b of TrustAllocationEngine.buckets()) bankPayees[b.key] = await this.bankPayees(b.key, cfg);
     const planned = [];
     for (const s of sources) {
-      const split = this.allocate(s, allocations);
+      const split = bank ? this.allocateBank(s, bankPayees[s.bucket] || []) : this.allocate(s, allocations);
       const entry = { source: s, ...split, distributions: [] };
       for (const l of split.lines) {
         if (l.amountUsd < cfg.minAmountUsd) continue;
@@ -303,6 +404,7 @@ const FixedIncomeDistributionEngine = {
     const d = await this.get(distributionId);
     assertTransition(d.status, 'funding');
     const reference = d.fundingReference || `${d.distributionId}:FUND`;
+    if (this.isBankRail()) return this._stageBank(d, reference);
     try {
       const funding = await SpritzTreasuryLegEngine.fund({ amountUsd: d.amountUsd, bucket: d.bucket, reference, createdBy: actor || 'fixed-income', autoApprove });
       return {
@@ -320,10 +422,42 @@ const FixedIncomeDistributionEngine = {
     }
   },
 
+  /**
+   * Bank rail funding check: the treasury cash behind the payee bank (Stripe
+   * balance fed by payment processing) must cover the distribution. Nothing
+   * moves here; the distribution becomes `funded` and awaits maker/checker.
+   */
+  async _stageBank(d, reference) {
+    if (!BankSettlementEngine) throw new FixedIncomeError('BankSettlementEngine unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
+    const readiness = await BankSettlementEngine.readiness(d.payee);
+    if (!readiness.ready) {
+      await this._set(d.distributionId, { error: `bank ${d.payee} not ready: ${(readiness.blockers || []).join('; ')}` });
+      throw new FixedIncomeError(`settlement bank ${d.payee} not ready`, 'FIXED_INCOME_BANK_NOT_READY', 409, { blockers: readiness.blockers });
+    }
+    const availableCents = await this.bankFundingAvailableCents(d.payee);
+    const needCents = Math.round(d.amountUsd * 100);
+    if (availableCents != null && availableCents < needCents) {
+      await this._set(d.distributionId, { error: `insufficient ${BANK_FUNDING_SOURCE}: ${availableCents} < ${needCents} cents` });
+      throw new FixedIncomeError(`insufficient treasury funds for ${d.distributionId}`, 'FIXED_INCOME_UNFUNDED', 409, { availableCents, needCents, fundingSource: BANK_FUNDING_SOURCE });
+    }
+    await this._set(d.distributionId, { status: 'funding', funding_reference: reference, funding_request_id: BANK_FUNDING_SOURCE, error: null });
+    return {
+      ...(await this._set(d.distributionId, { status: 'funded' })),
+      funding: { source: BANK_FUNDING_SOURCE, availableCents, needCents, bank: readiness.bank },
+      next: 'reconcile() proposes the payout; execute() with approvalRef + screeningRef originates the direct deposit.',
+    };
+  },
+
   /** Move funded distributions forward: ERP request completed -> payout proposed on-chain / via Spritz. */
   async reconcile({ actor } = {}) {
     const cfg = this.config();
     const results = [];
+    if (this.isBankRail(cfg)) {
+      for (const d of await this.list({ status: 'funded', limit: 1000 })) {
+        results.push(await this._set(d.distributionId, { status: 'proposed', error: null }));
+      }
+      return { reconciled: results.length, rail: 'bank', distributions: results, next: 'execute() each proposed distribution with approvalRef + screeningRef' };
+    }
     for (const d of await this.list({ status: 'funding', limit: 1000 })) {
       if (!d.fundingRequestId) { results.push({ distributionId: d.distributionId, status: d.status, note: 'no ERP request id' }); continue; }
       let request = null;
@@ -378,10 +512,11 @@ const FixedIncomeDistributionEngine = {
   },
 
   /** Release a checker-approved distribution and book it. */
-  async execute({ distributionId, actor } = {}) {
+  async execute({ distributionId, actor, approvalRef, screeningRef } = {}) {
     const cfg = this.config();
     const d = await this.get(distributionId);
     assertTransition(d.status, 'executed');
+    if (this.isBankRail(cfg)) return this._executeBank(d, cfg, { actor, approvalRef, screeningRef });
     if (!d.policyDistributionId) throw new FixedIncomeError('no on-chain distribution id; reconcile() first', 'FIXED_INCOME_STATE', 409);
     const reference = `${d.distributionId}:PAY`;
     let settlement;
@@ -416,6 +551,62 @@ const FixedIncomeDistributionEngine = {
         journal_entry_id: settlement.journal && (settlement.journal.entryId || settlement.journal.entry_id) ? String(settlement.journal.entryId || settlement.journal.entry_id) : null,
       })),
       settlement,
+    };
+  },
+
+  /**
+   * Bank rail release: BankSettlementEngine.clearAndSettle originates the
+   * direct deposit into the payee bank (Lili: Stripe balance payout). The
+   * settlement engine enforces approvalRef/screeningRef for live banks.
+   */
+  async _executeBank(d, cfg, { actor, approvalRef, screeningRef }) {
+    if (!BankSettlementEngine) throw new FixedIncomeError('BankSettlementEngine unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
+    const reference = `${d.distributionId}:PAY`;
+    const amountCents = Math.round(d.amountUsd * 100);
+    let settlement;
+    try {
+      settlement = await BankSettlementEngine.clearAndSettle({
+        bankId: d.payee,
+        amountCents,
+        rail: 'ach',
+        approvalRef,
+        screeningRef,
+        reference,
+        description: `${d.bucket === 'trust_operating' ? 'Trust operating' : 'Coupon income'} distribution ${d.distributionId}`,
+        paymentType: 'fixed_income_distribution',
+        initiatedBy: actor || 'fixed-income',
+      });
+    } catch (err) {
+      await this._set(d.distributionId, { error: err.message });
+      throw err;
+    }
+    if (!['originated', 'settled'].includes(settlement.status)) {
+      return { ...(await this._set(d.distributionId, { policy_distribution_id: settlement.settlementId, error: null })), settlement, pending: true };
+    }
+    let journal = null;
+    if (TrustAccountingEngine) {
+      journal = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date().toISOString().slice(0, 10),
+        description: `${d.payeeRole === 'trustee' ? 'Trustee' : 'Beneficiary'} distribution ${d.amountUsd.toFixed(2)} USD to ${d.payeeName || d.payee} [${reference}]`,
+        lines: [
+          { accountCode: cfg.gl.distributionsAccount, debitAmount: d.amountUsd, creditAmount: 0, memo: `${d.bucket} distribution ${d.distributionId}` },
+          { accountCode: cfg.gl.bankCashAccount, debitAmount: 0, creditAmount: d.amountUsd, memo: `Direct deposit ${settlement.settlementId} -> ${d.payee}` },
+        ],
+        referenceType: 'fixed_income_distribution',
+        referenceId: d.distributionId,
+        bondId: d.bondId,
+        postedBy: actor || 'fixed-income',
+        postToFineract: false,
+      });
+    }
+    return {
+      ...(await this._set(d.distributionId, {
+        status: 'executed', executed_at: new Date(), error: null,
+        policy_distribution_id: settlement.settlementId,
+        tx_hash: settlement.providerReference || null,
+        journal_entry_id: journal && (journal.entryId || journal.entry_id) ? String(journal.entryId || journal.entry_id) : null,
+      })),
+      settlement: { ...settlement, journal },
     };
   },
 

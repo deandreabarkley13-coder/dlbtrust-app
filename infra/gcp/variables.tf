@@ -253,6 +253,9 @@ variable "runtime_environment" {
     FIXED_INCOME_AUTO_STAGE            = "false"
     FIXED_INCOME_AUTO_EXECUTE          = "false"
     FIXED_INCOME_MIN_AMOUNT_USD        = "1"
+    # Bank-only distribution: payees are settlement banks (Lili), funded by the
+    # Stripe balance, released through BankSettlementEngine (no policy contract).
+    FIXED_INCOME_RAIL                  = "bank"
     DISTRIBUTION_LIMIT_BENEFICIARY_USD = "100000"
     DISTRIBUTION_LIMIT_TRUSTEE_USD     = "500000"
     DISTRIBUTION_PURPOSES              = "lifestyle,medical,travel,home,education"

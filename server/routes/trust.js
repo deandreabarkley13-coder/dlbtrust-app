@@ -19,12 +19,16 @@
  *   GET  /token-rail/runs/:id          one run, all stages
  *   POST /token-rail/runs/:id/notarize record Fabric evidence for a run whose evidence stage failed (admin)
  *   POST /token-rail/reconcile         rail-wide reconciliation from state
+ *
+ * Trust administration workflow (Stripe payment processing → ledger → Fineract → distribution → Lili direct deposit):
+ *   GET  /administration/workflow      every stage's readiness + recent activity; ?includeFineract=true adds DataBridge status
  */
 
 const express = require('express');
 const { requireAuth } = require('../integrations/auth/securityMiddleware');
 const { TrustControlPlaneEngine } = require('../integrations/trust/trustControlPlaneEngine');
 const { TrustTokenRailEngine, UNNOTARIZED } = require('../integrations/dapp/trustTokenRailEngine');
+const { TrustAdministrationWorkflowEngine } = require('../integrations/trust/trustAdministrationWorkflowEngine');
 
 const router = express.Router();
 const INCOMPLETE = new Set(['failed', UNNOTARIZED]);
@@ -39,6 +43,17 @@ function sendError(res, err) {
 
 router.get('/mandate', operatorAuth, (req, res) => {
   res.json({ success: true, data: TrustControlPlaneEngine.mandate() });
+});
+
+router.get('/administration/workflow', operatorAuth, async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const data = await TrustAdministrationWorkflowEngine.status({
+      includeFineract: req.query.includeFineract === 'true' || req.query.includeFineract === '1',
+      limit: Math.min(Number(req.query.limit) || 10, 100),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/control-plane', operatorAuth, async (req, res) => {
