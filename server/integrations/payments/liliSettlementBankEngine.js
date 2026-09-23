@@ -159,7 +159,7 @@ class LiliSettlementBankEngine {
     if (cfg.originator === 'stripe_payout') {
       const sent = await LiliStripePayoutOriginator.send({ amount: n, reference, description });
       return {
-        transferId: reference,
+        transferId: sent.payoutId,
         status: sent.status,
         live: true,
         shadow: false,
@@ -176,6 +176,7 @@ class LiliSettlementBankEngine {
           network: sent.network,
           method: sent.method,
           payoutId: sent.payoutId,
+          depositId: sent.depositId,
           stripeStatus: sent.stripeStatus,
           expectedArrival: sent.expectedArrival,
           reconciliation: 'LiliDirectDepositEngine.reconcile (Lili MCP transaction feed)',

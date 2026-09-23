@@ -174,8 +174,10 @@ variable "runtime_environment" {
     # registered as the Stripe external bank account; STRIPE_SECRET_KEY must be
     # live-mode. stripe_treasury (OutboundPayment) needs a live Treasury
     # financial account, which this Stripe account does not have.
-    LILI_ORIGINATOR              = "stripe_payout"
-    LILI_STRIPE_PAYOUT_METHOD    = "standard"
+    LILI_ORIGINATOR                   = "stripe_payout"
+    LILI_STRIPE_PAYOUT_METHOD         = "standard"
+    # The Lili account as registered on the trust's live Stripe account (****2959).
+    STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID = "ba_1U3OcSFE15CwMad3BBD35eGT"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED       = "true"
     LILI_MCP_URL           = "https://mcp.lili.co/mcp"
