@@ -192,6 +192,7 @@ class LiliSettlementBankEngine {
       engine: 'lili',
       direction: DIRECTION,
       healthy: !cfg.live || originationReady,
+      originationReady,
       mode: cfg.live ? 'live' : 'shadow',
       live: cfg.live,
       apiUrl: cfg.mcpUrl,

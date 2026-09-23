@@ -177,6 +177,13 @@ resource "google_cloud_run_v2_service" "app" {
       condition     = length(local.missing_live_secrets) == 0
       error_message = "runtime_environment enables a live engine but secret_names lacks: ${join(", ", local.missing_live_secrets)}"
     }
+
+    # Treasury -> Lili ACH credit: LILI_CLEARING_LIVE=true needs every Lili
+    # credential container declared (secrets.tf lili_secret_names).
+    precondition {
+      condition     = length(local.missing_lili_secrets) == 0
+      error_message = "LILI_CLEARING_LIVE=true but secret_names lacks ${join(", ", local.missing_lili_secrets)}. Add them to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add`. The Lili OAuth tokens may also be captured into system_settings via server/scripts/liliMcpOAuthSetup.js, but the Secret Manager containers are still required for a live plan."
+    }
   }
 }
 

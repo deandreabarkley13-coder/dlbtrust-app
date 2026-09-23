@@ -12,15 +12,17 @@ locals {
     "PAYMENT_HUB_SERVICE_TOKEN",
     "PAYMENT_HUB_WEBHOOK_SECRET",
     "PAYMENT_DATA_ENCRYPTION_KEY",
+    # S2S clearing/settlement server bearer token (server/routes/bankSettlement.js).
+    "PAYMENT_SERVER_SERVICE_TOKEN",
   ]
   runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names))
 
   # Env-only credentials each live flag needs (cannot be generated; values come
   # from the provider, so they are listed in terraform.tfvars secret_names once
   # obtained). cloudrun.tf refuses to plan a live flag whose secrets are not
-  # declared. Lili is not here: its OAuth tokens may live encrypted in the
-  # system_settings table (dashboard OAuth flow) instead of env, so it is only
-  # a warning (check "lili_clearing_secrets") and reported at runtime by
+  # declared. Lili is handled separately below (local.missing_lili_secrets):
+  # LILI_CLEARING_LIVE=true is a hard failure unless every Lili credential is
+  # declared in secret_names, and it is reported at runtime by
   # GET /api/os/readiness/gateway.
   live_engine_requirements = {
     "APIGEE_LIVE" = {
@@ -42,19 +44,28 @@ locals {
     ]
   ]))
 
-  lili_secret_names = ["LILI_OAUTH_CLIENT_ID", "LILI_OAUTH_CLIENT_SECRET", "LILI_OAUTH_REFRESH_TOKEN", "LILI_BUSINESS_USER_ID"]
+  # Treasury -> Lili ACH credit (liliSettlementBankEngine.js). The MCP OAuth
+  # tokens feed reconciliation; LILI_DD_ACCOUNT_NUMBER is the full RDFI account
+  # number (never in runtime_environment); PAYMENT_SERVER_SERVICE_TOKEN guards
+  # the S2S settlement server.
+  lili_secret_names = [
+    "LILI_OAUTH_CLIENT_ID",
+    "LILI_OAUTH_CLIENT_SECRET",
+    "LILI_OAUTH_REFRESH_TOKEN",
+    "LILI_BUSINESS_USER_ID",
+    "LILI_DD_ACCOUNT_NUMBER",
+    "PAYMENT_SERVER_SERVICE_TOKEN",
+  ]
+  lili_clearing_live = lookup(var.runtime_environment, "LILI_CLEARING_LIVE", "false") == "true"
   missing_lili_secrets = [
     for s in local.lili_secret_names : s
-    if lookup(var.runtime_environment, "LILI_CLEARING_LIVE", "false") == "true" && !contains(local.runtime_secret_names, s)
+    if local.lili_clearing_live && !contains(local.runtime_secret_names, s)
   ]
 }
 
-check "lili_clearing_secrets" {
-  assert {
-    condition     = length(local.missing_lili_secrets) == 0
-    error_message = "LILI_CLEARING_LIVE=true but secret_names lacks ${join(", ", local.missing_lili_secrets)}; live Lili clearing then depends on tokens stored in system_settings via the dashboard OAuth flow."
-  }
-}
+# Enforced as a hard precondition on google_cloud_run_v2_service.app in
+# cloudrun.tf: a plan with LILI_CLEARING_LIVE=true fails unless every Lili
+# credential above is declared.
 
 resource "google_secret_manager_secret" "runtime" {
   for_each  = toset(local.runtime_secret_names)

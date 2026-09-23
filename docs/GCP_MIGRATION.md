@@ -468,6 +468,77 @@ request -> two_trustee_approval -> compliance_gate -> rail_routing
 Secrets to add to `secret_names` when going live: `APIGEE_API_KEY` or
 `APIGEE_CLIENT_ID`/`APIGEE_CLIENT_SECRET`, `GOOGLE_WALLET_SERVICE_ACCOUNT_KEY`.
 
+## Lili channel go-live runbook (treasury → Lili ACH credit)
+
+Lili is RDFI-only. The only direction is
+`treasury (ODFI/debtor) → NACHA CCD credit → ODFI channel → Lili account`,
+with the Lili MCP transaction feed as the S2S reconciliation channel. The
+full variable set is documented in `.env.example` ("API gateway clearing
+pipeline" block); on GCP it splits into:
+
+| Where | Variables |
+| --- | --- |
+| `runtime_environment` (variables.tf, plain env) | `LILI_CLEARING_LIVE=true`, `LILI_MCP_ENABLED=true`, `LILI_MCP_URL`, `LILI_OAUTH_BASE_URL`, `LILI_CLEARING_SEC_CODE=CCD`, `LILI_DD_ROUTING_NUMBER`, `LILI_DD_ACCOUNT_NAME`, `ACH_ODFI_ROUTING`, `ACH_ORIGINATOR_NAME`, `API_GATEWAY_PROVIDER=lili`, `GCP_PROJECT` (cloudrun.tf), and the chosen ODFI channel's non-secret vars (`ACH_SFTP_URL` or `ACH_MFT_CHANNEL`) |
+| `secret_names` (terraform.tfvars, see `terraform.tfvars.example`) | `LILI_OAUTH_CLIENT_ID`, `LILI_OAUTH_CLIENT_SECRET`, `LILI_OAUTH_REFRESH_TOKEN`, `LILI_BUSINESS_USER_ID`, `LILI_DD_ACCOUNT_NUMBER`, `CLEARING_FUNDING_OPERATING_ACCOUNT`, `PAYMENT_SERVER_SERVICE_TOKEN` (+ `ACH_SFTP_KEY`/`ACH_SFTP_PASSWORD` when SFTP is the ODFI channel) |
+
+`LILI_CLEARING_LIVE=true` with any of the Lili secrets missing from
+`secret_names` is a **hard plan failure** (cloudrun.tf precondition on
+`local.missing_lili_secrets`). The routing/account defaults (`121145307` /
+`DB NET MGMT LLC`) mirror the `APISIX_ODFI` block in `.env.example` — confirm
+them with the operator before applying. Without an ODFI channel
+`LiliDirectDepositEngine.odfiStatus().ready=false`, live clearings return 503
+and deposits stay `awaiting_odfi` (self-loopback AS2 partners do not count).
+
+1. **Terraform** — add the secret names to `infra/gcp/terraform.tfvars`, set
+   the ODFI channel var in `runtime_environment`, then
+   `terraform plan && terraform apply` (creates the empty secret containers).
+2. **Seed credentials** — one `gcloud secrets versions add <NAME> --data-file=-`
+   per secret above (values never enter Terraform state). At minimum
+   `LILI_DD_ACCOUNT_NUMBER`, `CLEARING_FUNDING_OPERATING_ACCOUNT` and
+   `PAYMENT_SERVER_SERVICE_TOKEN` (`openssl rand -hex 32`).
+3. **Lili OAuth capture (once, interactive)** —
+   `ADMIN_TOKEN=... API_BASE=https://<cloud run url> node server/scripts/liliMcpOAuthSetup.js`
+   logs in to Lili in a local browser and stores the client + tokens encrypted
+   in `system_settings`. Copy `LILI_OAUTH_CLIENT_ID` / `LILI_OAUTH_CLIENT_SECRET` /
+   `LILI_OAUTH_REFRESH_TOKEN` / `LILI_BUSINESS_USER_ID` into the Secret Manager
+   containers from step 1 so a fresh revision can reconcile without the DB row.
+4. **Configure channels** —
+   `ADMIN_TOKEN=... API_BASE=... LILI_DD_ROUTING_NUMBER=... LILI_DD_ACCOUNT_NUMBER=... node server/scripts/configureLiliChannels.js`
+   registers the destination (`syncDestinationFromLili` first, keyed values as
+   fallback; a routing/last-4 mismatch aborts), then prints
+   `LiliSettlementBankEngine.status()` and
+   `LiliDirectDepositEngine.getWorkflowStatus()`. It exits 0 only when
+   `mode: 'live'`, `destination.configured: true`, `odfi.ready: true` and
+   `mcp.configured: true`. `--dry-run` validates without writing.
+5. **Flush the backlog** — `configureLiliChannels.js --transmit` (or
+   `POST /api/finops/lili/direct-deposits/transmit-queued`) runs
+   `LiliDirectDepositEngine.transmitQueued` for every `awaiting_odfi` deposit.
+
+Afterwards `GET /api/payment-server/v1/settlement-banks/lili/readiness`
+(bearer `PAYMENT_SERVER_SERVICE_TOKEN`) reports `live: true, ready: true`, and
+`POST /api/payment-server/v1/settlements {bankId:'lili', amountCents, approvalRef,
+screeningRef}` originates a treasury → Lili ACH credit through the configured
+ODFI channel; `POST /settlements/:id/reconcile` matches it against the Lili
+MCP feed.
+
+### S2S clearing/settlement server
+
+`server/routes/bankSettlement.js` (mounted at `/api/payment-server/v1`) is a
+service-to-service surface authenticated by `PAYMENT_SERVER_SERVICE_TOKEN`
+(`Authorization: Bearer …` or `x-payment-server-service-token`, same
+`timingSafeEqual` check as the Payment Hub ACH connector):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /settlement-banks` | `SettlementBankRegistry.register` — `provider` in `lili`, `host_to_host`, `column`, `increase`, `generic`, `api_gateway`. Lili is auto-registered as `bank_id='lili'` from `LiliDirectDepositEngine.getDestination`; a Lili registration with any other destination is refused (same rule as `LiliSettlementBankEngine._resolveDestination`). |
+| `GET /settlement-banks`, `GET /settlement-banks/:id/readiness` | registry + per-bank readiness (`live`, `ready`, `blockers`) |
+| `POST /settlements` | `BankSettlementEngine.clearAndSettle` — `approvalRef` and `screeningRef` are mandatory on live calls; `lili` → `LiliSettlementBankEngine._sendPayment` (autoTransmit via the ODFI channel), `host_to_host` → `SettlementEngine`/`HostToHostEngine.executeSettlement`, `column|increase|generic` → `PartnerBankRails.originate`, `api_gateway` → `ApiGatewayClearingEngine.clearPayment` |
+| `GET /settlements/:id`, `POST /settlements/:id/reconcile` | ledger row from `settlement_bank_events`; reconcile → `LiliDirectDepositEngine.reconcile` for Lili |
+
+Status codes: 401 without the token, 400 destination mismatch / validation,
+409 missing `approvalRef`/`screeningRef`, 503 `awaiting_odfi` when no ODFI
+channel is configured (nothing leaves the platform).
+
 ## Platform engines — wiring state on `dlb-treasury-management`
 
 The eight platform engines are audited by one module,

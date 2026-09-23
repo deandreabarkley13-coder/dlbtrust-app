@@ -63,6 +63,7 @@ const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRai
 const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
 const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
 const { LiliDirectDepositEngine } = require('../integrations/payments/liliDirectDepositEngine');
+const { LiliSettlementBankEngine } = require('../integrations/payments/liliSettlementBankEngine');
 const { NickelMcpEngine } = require('../integrations/os/osEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 const { PaymentComplianceGate } = require('../integrations/compliance/paymentComplianceGate');
@@ -2744,6 +2745,10 @@ router.post('/compliance/screenings/:id/block', operatorAuth, writeRateLimiter()
 
 router.get('/lili/direct-deposits/status', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await LiliDirectDepositEngine.getWorkflowStatus() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/settlement-bank/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliSettlementBankEngine.status() }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/lili/direct-deposits/destination', operatorAuth, writeRateLimiter(), async (req, res) => {
