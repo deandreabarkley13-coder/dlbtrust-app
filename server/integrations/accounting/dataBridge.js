@@ -34,6 +34,10 @@ var ACCOUNTS = {
   // operating. Never journal between the two.
   COUPON_CASH:       '1020',
   OPERATING_CASH:    '1030',
+  // Bucket cash converted to USDC in the thirdweb treasury wallet by the Spritz
+  // on-ramp (spritzOnRampEngine); still segregated per bucket.
+  COUPON_WALLET_USDC:    '1025',
+  OPERATING_WALLET_USDC: '1035',
   BILL_CASH:         '1050',
   BOND_INVESTMENTS:  '1100',
   ACCRUED_INTEREST:  '1200',

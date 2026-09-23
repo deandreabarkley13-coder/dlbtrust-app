@@ -5,6 +5,35 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Fixed Income Distribution (backend API and CLI)
+
+- `/api/fixed-income` is separate from existing frontend Fixed Income bond-metric
+  cards. Use authenticated browser-context requests for the distribution routes.
+  CLI entry is `npm run trust:fixed-income -- plan --dry-run` or `-- summary`.
+- Keep `FIXED_INCOME_AUTO_STAGE=false`, `FIXED_INCOME_AUTO_EXECUTE=false` and LIVE
+  flags unset for local guarded-lifecycle testing. Missing `TRUST_POLICY_ADDRESS`
+  should block staging without changing the row out of `planned`.
+- Query posted `trust_journal_entries` for `coupon_period`, `coupon_payment`,
+  and `operating_allocation` before seeding. If absent, use
+  `TrustAccountingEngine.postJournalEntry` with `postToFineract:false`, unique
+  fixture references, and an existing bond ID to exercise its payment frequency.
+  Ensure GL1020/1030 accounts exist first; coupon debits1020, operating debits1030.
+- Monthly policy allocations can be tested with a small coupon source (pro-rata
+  cap) and a larger operating source (retained surplus). Verify dry-run through
+  both API and SQL before persisting; second plan must insert zero rows.
+- Provision disposable operators through admin `POST /api/auth/users` and log in
+  via `/api/auth/login`, rather than forging JWTs. Reads/reconcile require operator;
+  plan/stage/execute/cancel/cycle require admin.
+- Cancel fixture distributions after testing. Cancellation does not reverse the
+  source journal or its account balances; retain these as explicit audit fixtures
+  or separately reverse accounting entries when full database cleanup is needed.
+
+### Devin Secrets Needed
+
+- None beyond standard local database/admin configuration for dry-run, planning,
+  cancellation, and fail-closed staging. Live funded lifecycle needs separately
+  authorized policy/ERP/provider configuration and is not proved by these tests.
+
 ## Collateral OS (backend API and CLI)
 
 - For source-segregation testing, set `DLB_PRB_TOKEN_ADDRESS` and

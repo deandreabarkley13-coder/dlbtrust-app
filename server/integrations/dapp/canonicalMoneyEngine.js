@@ -1,7 +1,8 @@
 'use strict';
 
 const { query } = require('../bonds/pgPool');
-let StablecoinDexEngine, DexSwapEngine, PtcStablecoinEngine, CanonicalLiquidityEngine, CanonicalFundingSource, ThirdwebServerWalletEngine;
+let StablecoinDexEngine, DexSwapEngine, PtcStablecoinEngine, CanonicalLiquidityEngine, CanonicalFundingSource, ThirdwebServerWalletEngine, TrustAllocationEngine;
+try { ({ TrustAllocationEngine } = require('./trustAllocationEngine')); } catch (e) { /* optional */ }
 try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) { /* optional */ }
 try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { /* optional */ }
 try { ({ ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine')); } catch (e) { /* optional */ }
@@ -133,6 +134,25 @@ class CanonicalMoneyEngine {
     }
   }
 
+  /**
+   * Which canonical account an erp_treasury draw credits. When the bucket's cash
+   * was already on-ramped into the treasury wallet (SpritzOnRampEngine books it
+   * in the bucket's wallet USDC account, 1025/1035) and that account covers the
+   * amount, the draw credits the wallet account — the USDC deposited to the
+   * policy contract is that same USDC. Otherwise the bucket cash account itself.
+   */
+  static async _erpCashAccount(sourceAccountId, amount) {
+    const code = String(sourceAccountId);
+    if (!TrustAllocationEngine) return code;
+    const bucket = TrustAllocationEngine.bucketForSource({ sourceType: 'canonical', sourceAccountId: code });
+    if (!bucket) return code;
+    const walletCode = TrustAllocationEngine.walletGlAccountCode(bucket.key);
+    if (!walletCode || walletCode === code) return code;
+    const needed = Math.round(Number(amount) * 100);
+    const wallet = await CanonicalFundingSource.position({ accountCode: walletCode, purpose: `${bucket.key} wallet` }).catch(() => null);
+    return wallet && wallet.fundingEligible && wallet.availableBalanceCents >= needed ? walletCode : code;
+  }
+
   static async _pickRoute({ sourceType, sourceAccountId, sourceToken, sourceModule, targetAsset, poolAddress }) {
     // Treasury-Core ERP GL -> treasury USDC -> policy contract (no pool)
     if (sourceType && CANONICAL_SOURCE_TYPES.has(String(sourceType).toLowerCase())) {
@@ -188,12 +208,13 @@ class CanonicalMoneyEngine {
     switch (route.action) {
       case 'erp_treasury': {
         if (!CanonicalFundingSource) throw new Error('CanonicalFundingSource not available');
+        const cashAccountCode = await this._erpCashAccount(route.sourceAccountId, amount);
         const funding = await CanonicalFundingSource.commit({
           amountUsd: amount,
           reference: payload.requestId,
           referenceType: 'canonical_money',
-          memo: `ERP ${route.sourceAccountId} -> ${amount} USDC${recipient ? ' to ' + recipient : ''}`,
-          cashAccountCode: route.sourceAccountId,
+          memo: `ERP ${cashAccountCode} -> ${amount} USDC${recipient ? ' to ' + recipient : ''}`,
+          cashAccountCode,
           postedBy: 'canonical-money-engine',
           purpose: route.sourceModule ? `${route.sourceModule} funding` : 'treasury funding',
         });
@@ -213,7 +234,7 @@ class CanonicalMoneyEngine {
           });
         }
         const shadow = Boolean(funding.shadow) || Boolean(deposit && deposit.shadow);
-        return { action: route.action, status: shadow ? 'shadow' : 'completed', shadow, funding, deposit, journaledBy: 'canonical_funding_source' };
+        return { action: route.action, status: shadow ? 'shadow' : 'completed', shadow, funding, deposit, cashAccountCode, journaledBy: 'canonical_funding_source' };
       }
       case 'mint_and_swap':
         if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
