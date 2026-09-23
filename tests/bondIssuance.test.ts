@@ -14,6 +14,7 @@ const { FineractClient } = require('../server/integrations/fineract/fineractClie
 const { LiveBondEngine } = require('../server/integrations/bonds/liveEngine');
 const { DataBridge } = require('../server/integrations/accounting/dataBridge');
 const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
+const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fixedIncomeDistributionEngine');
 const { BondIssuanceEngine } = require('../server/integrations/bonds/bondIssuanceEngine');
 
 type Row = Record<string, any>;
@@ -42,15 +43,17 @@ function store() {
     if (/^SELECT payment_id, status FROM bond_issuance_payments/.test(text)) return { rows: t.bond_issuance_payments.filter(p => p.bond_id === params[0] && p.kind === params[1] && p.period_date === params[2]) };
     if (/^INSERT INTO bond_issuance_payments/.test(text)) {
       const ex = t.bond_issuance_payments.find(p => p.payment_id === params[0]);
-      if (ex) { ex.status = 'booked'; ex.error_message = null; return { rows: [] }; }
-      t.bond_issuance_payments.push({ payment_id: params[0], bond_id: params[1], kind: params[2], period_date: params[3], amount_usd: params[4], status: 'booked', initiated_by: params[5] });
+      if (ex) { ex.status = 'held'; ex.error_message = null; return { rows: [] }; }
+      t.bond_issuance_payments.push({ payment_id: params[0], bond_id: params[1], kind: params[2], period_date: params[3], amount_usd: params[4], status: 'held', initiated_by: params[5] });
       return { rows: [] };
     }
-    if (/^UPDATE bond_issuance_payments SET status = \$2, fineract_withdrawal_id/.test(text)) {
+    if (/^UPDATE bond_issuance_payments SET status = 'held', fineract_withdrawal_id/.test(text)) {
       const p = t.bond_issuance_payments.find(x => x.payment_id === params[0])!;
-      Object.assign(p, { status: params[1], fineract_withdrawal_id: params[2], fineract_deposit_id: params[3], issuer_entry_ids: params[4], holder_entry_id: params[5], intake_id: params[6], error_message: params[7] });
+      Object.assign(p, { status: 'held', fineract_withdrawal_id: params[1], fineract_deposit_id: params[2], issuer_entry_ids: params[3], holder_entry_id: params[4] });
       return { rows: [] };
     }
+    if (/^UPDATE bond_issuance_payments SET status = 'sent_to_bank'/.test(text)) { t.bond_issuance_payments.find(x => x.payment_id === params[0])!.status = 'sent_to_bank'; return { rows: [] }; }
+    if (/^UPDATE bond_issuance_payments SET status = 'awaiting_external_funds'/.test(text)) { const p = t.bond_issuance_payments.find(x => x.payment_id === params[0])!; p.status = 'awaiting_external_funds'; p.intake_id = params[1]; return { rows: [] }; }
     if (/^UPDATE bond_issuance_payments SET status = 'failed'/.test(text)) { const p = t.bond_issuance_payments.find(x => x.payment_id === params[0])!; p.status = 'failed'; p.error_message = params[1]; return { rows: [] }; }
     if (/^UPDATE bond_issuance_payments SET status = 'funded'/.test(text)) {
       const p = t.bond_issuance_payments.find(x => x.intake_id === params[0] && x.status === 'awaiting_external_funds');
@@ -114,12 +117,13 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
     await expect(BondIssuanceEngine.issue({ bondId: 7 })).rejects.toMatchObject({ status: 404 });
   });
 
-  it('books a due coupon: Fineract issuer withdrawal -> holder deposit, GL both sides, Stripe intake keyed to the payment', async () => {
+  it('books a due coupon: Fineract issuer withdrawal -> holder deposit, GL both sides, income HELD in the holder account', async () => {
     await BondIssuanceEngine.issue({ bondId: 42 });
     const p = await BondIssuanceEngine.payDue({ bondId: 42, actor: 'admin' });
     expect(p.amountUsd).toBe(1250);
     expect(p.periodDate).toBe('2026-10-01');
-    expect(p.status).toBe('awaiting_external_funds');
+    expect(p.status).toBe('held');
+    expect(intakes).toHaveLength(0);
     expect(p.fineractWithdrawalId).toBe('9001');
     expect(p.fineractDepositId).toBe('9002');
     expect(fin.txns.map(t => t.kind)).toEqual(['withdrawal', 'deposit']);
@@ -127,8 +131,29 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
     expect(fin.txns[1].accountId).toBe(s.t.bond_issuance_parties.find(r => r.role === 'holder')!.fineract_account_id);
     expect(journals.map(j => j.side)).toEqual(['issuer_due', 'issuer_paid', 'holder']);
     expect(journals[2]).toMatchObject({ referenceType: 'coupon_payment', referenceId: p.paymentId, amount: 1250 });
+    expect(p.next).toMatch(/held in the holder Fineract account/);
+  });
+
+  it('send-to-bank converts a held payment to fiat: plans Lili distributions from the holder journal, execution stays maker/checker', async () => {
+    await BondIssuanceEngine.issue({ bondId: 42 });
+    const p = await BondIssuanceEngine.payDue({ bondId: 42 });
+    const plan = vi.spyOn(FixedIncomeDistributionEngine, 'plan').mockResolvedValue({ planned: 1 });
+    vi.spyOn(FixedIncomeDistributionEngine, 'list').mockResolvedValue([{ distributionId: 'FID-1', sourceEntryId: 'JE-REC', amountUsd: 1250, status: 'planned' }, { distributionId: 'FID-0', sourceEntryId: 'JE-OTHER' }]);
+    const r = await BondIssuanceEngine.sendToBank({ paymentId: p.paymentId, actor: 'trustee' });
+    expect(plan).toHaveBeenCalledWith({ createdBy: 'trustee' });
+    expect(r.status).toBe('sent_to_bank');
+    expect(r.distributions.map(d => d.distributionId)).toEqual(['FID-1']);
+    expect(r.next).toMatch(/approvalRef, screeningRef/);
+    await expect(BondIssuanceEngine.sendToBank({ paymentId: p.paymentId })).rejects.toMatchObject({ code: 'NOT_HELD' });
+  });
+
+  it('fund-external is optional: opens a Stripe income intake keyed to the payment', async () => {
+    await BondIssuanceEngine.issue({ bondId: 42 });
+    const p = await BondIssuanceEngine.payDue({ bondId: 42 });
+    const f = await BondIssuanceEngine.fundExternal({ paymentId: p.paymentId });
+    expect(f.status).toBe('awaiting_external_funds');
     expect(intakes[0]).toMatchObject({ amountCents: 125000, purpose: 'coupon_income', reference: p.paymentId });
-    expect(p.intake.checkoutUrl).toMatch(/checkout\.stripe\.com/);
+    expect(f.intake.checkoutUrl).toMatch(/checkout\.stripe\.com/);
   });
 
   it('is idempotent per bond/kind/period and refuses when parties are not provisioned', async () => {
@@ -149,16 +174,19 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
     expect(intakes.length).toBe(0);
     expect(s.t.bond_issuance_payments[0].status).toBe('failed');
     const retry = await BondIssuanceEngine.payDue({ bondId: 42 });
-    expect(retry.status).toBe('awaiting_external_funds');
+    expect(retry.status).toBe('held');
   });
 
-  it('keeps the booking when the Stripe intake cannot be created, and marks funded on webhook receipt', async () => {
+  it('with BOND_ISSUANCE_AUTO_INTAKE the booking survives an intake failure; webhook receipt marks funded', async () => {
+    process.env.BOND_ISSUANCE_AUTO_INTAKE = 'true';
     await BondIssuanceEngine.issue({ bondId: 42 });
     (StripePaymentIntakeEngine.createIncomePaymentLink as any).mockRejectedValueOnce(new Error('stripe intake disabled'));
     const p = await BondIssuanceEngine.payDue({ bondId: 42 });
-    expect(p.status).toBe('booked');
-    expect(p.error).toMatch(/stripe intake disabled/);
+    expect(p.status).toBe('held');
+    expect(p.intakeError).toMatch(/stripe intake disabled/);
     const q = await BondIssuanceEngine.payDue({ bondId: 42, periodDate: '2027-01-01' });
+    expect(q.status).toBe('awaiting_external_funds');
+    delete process.env.BOND_ISSUANCE_AUTO_INTAKE;
     expect(await BondIssuanceEngine.markFunded('SPI-1')).toMatchObject({ paymentId: q.paymentId, status: 'funded' });
     expect(await BondIssuanceEngine.markFunded('SPI-1')).toBeNull();
   });
@@ -179,6 +207,6 @@ describe('BondIssuanceEngine — issuer -> holder P&I pipeline of record', () =>
     const after = await BondIssuanceEngine.status();
     expect(after.ready).toBe(true);
     expect(after.parties.issuer.fineract.accountNo).toMatch(/^SA/);
-    expect(after.pipeline).toMatch(/Lili direct deposit$/);
+    expect(after.pipeline).toMatch(/held, account of record.*Lili direct deposit$/);
   });
 });

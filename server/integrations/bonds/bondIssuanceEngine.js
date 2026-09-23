@@ -4,17 +4,18 @@
  *   issuer  = INCOME_OBLIGOR_* (DEANDREA LAVAR BARKLEY TRUST COMPANY, custodian/issuer)
  *   holder  = TRUST_HOLDER_*   (DeAndrea Lavar Barkley Irrevocable Trust)
  *
- * Both parties are Fineract clients with a savings account (the core-banking
- * account of record). Each due coupon / principal payment:
+ * The trust operates as a family financial institution: the holder's Fineract
+ * savings account is the account of record and income is HELD there. A bank is
+ * only a warehouse — converting a held payment to fiat (Stripe balance -> Lili
+ * direct deposit) is an explicit, optional step.
  *
- *   Fineract: withdrawal from issuer account -> deposit to holder account
- *   Treasury GL (DataBridge): issuer side Cr 2320 / Dr 2310|5100, Dr 2320 / Cr 1000
- *                             holder side Dr 1020 / Cr 1200|4100  (reference_type coupon_payment)
- *   -> FixedIncomeDistributionEngine picks the 1020 journal up as a distribution source
- *   -> Stripe income intake (external cash leg, reference = payment id) -> Lili payout
- *
- * Fineract balances are bookkeeping: the Stripe intake is what brings external
- * dollars in, and it is only ever confirmed by the signed Stripe webhook.
+ *   payDue:      Fineract withdrawal (issuer) -> deposit (holder)
+ *                GL: issuer Cr 2320 / Dr 2310|5100, Dr 2320 / Cr 1000 ; holder Dr 1020 / Cr 1200|4100
+ *                => status 'held'
+ *   sendToBank:  plans the held 1020 journal as fixed-income distributions to the
+ *                settlement bank (maker/checker execute via /api/fixed-income) => 'sent_to_bank'
+ *   fundExternal: optional Stripe income intake keyed to the payment when external
+ *                dollars must be brought in first => 'awaiting_external_funds' -> 'funded' (webhook)
  */
 
 const pool = require('./pgPool');
@@ -24,6 +25,8 @@ const { DataBridge } = require('../accounting/dataBridge');
 
 let StripePaymentIntakeEngine = null;
 try { ({ StripePaymentIntakeEngine } = require('../payments/stripePaymentIntakeEngine')); } catch (e) { StripePaymentIntakeEngine = null; }
+let FixedIncomeDistributionEngine = null;
+try { ({ FixedIncomeDistributionEngine } = require('../os/fixedIncomeDistributionEngine')); } catch (e) { FixedIncomeDistributionEngine = null; }
 
 const ROLES = ['issuer', 'holder'];
 const KINDS = ['coupon', 'principal'];
@@ -44,7 +47,7 @@ class BondIssuanceEngine {
     return {
       enabled: String(env.BOND_ISSUANCE_ENABLED || 'true').toLowerCase() !== 'false',
       savingsProductId: Number(env.FINERACT_SAVINGS_PRODUCT_ID || 1),
-      autoIntake: String(env.BOND_ISSUANCE_AUTO_INTAKE || 'true').toLowerCase() !== 'false',
+      autoIntake: String(env.BOND_ISSUANCE_AUTO_INTAKE || 'false').toLowerCase() === 'true',
       parties: {
         issuer: {
           role: 'issuer',
@@ -93,8 +96,8 @@ class BondIssuanceEngine {
         kind TEXT NOT NULL CHECK (kind IN ('coupon','principal')),
         period_date DATE NOT NULL,
         amount_usd NUMERIC(18,2) NOT NULL,
-        status TEXT NOT NULL DEFAULT 'booked'
-          CHECK (status IN ('booked','awaiting_external_funds','funded','failed')),
+        status TEXT NOT NULL DEFAULT 'held'
+          CHECK (status IN ('held','sent_to_bank','awaiting_external_funds','funded','failed')),
         fineract_withdrawal_id TEXT,
         fineract_deposit_id TEXT,
         issuer_entry_ids TEXT[],
@@ -307,8 +310,8 @@ class BondIssuanceEngine {
     const id = dup.rows[0] ? dup.rows[0].payment_id : paymentId();
     await pool.query(`
       INSERT INTO bond_issuance_payments (payment_id, bond_id, kind, period_date, amount_usd, status, initiated_by)
-      VALUES ($1, $2, $3, $4, $5, 'booked', $6)
-      ON CONFLICT (payment_id) DO UPDATE SET status = 'booked', error_message = NULL, updated_at = NOW()`,
+      VALUES ($1, $2, $3, $4, $5, 'held', $6)
+      ON CONFLICT (payment_id) DO UPDATE SET status = 'held', error_message = NULL, updated_at = NOW()`,
     [id, bondId, kind, period, amount, actor || null]);
 
     const label = kind === 'coupon' ? 'Coupon' : 'Principal';
@@ -340,33 +343,59 @@ class BondIssuanceEngine {
       holderEntry = String(rec.entryId || rec.entry_id);
     }
 
-    let intake = null; let intakeError = null;
-    if (cfg.autoIntake && StripePaymentIntakeEngine) {
-      try {
-        intake = await StripePaymentIntakeEngine.createIncomePaymentLink({
-          amountCents: Math.round(amount * 100),
-          purpose: kind === 'coupon' ? 'coupon_income' : 'principal_repayment',
-          reference: id,
-          description: `${bondCode} ${label.toLowerCase()} ${period} (Fineract ${withdrawalId}->${depositId})`,
-          createdBy: actor || 'bond_issuance',
-        });
-      } catch (err) { intakeError = err.message; }
-    }
-
     await pool.query(`
-      UPDATE bond_issuance_payments SET status = $2, fineract_withdrawal_id = $3, fineract_deposit_id = $4,
-        issuer_entry_ids = $5, holder_entry_id = $6, intake_id = $7, error_message = $8, updated_at = NOW()
+      UPDATE bond_issuance_payments SET status = 'held', fineract_withdrawal_id = $2, fineract_deposit_id = $3,
+        issuer_entry_ids = $4, holder_entry_id = $5, updated_at = NOW()
       WHERE payment_id = $1`,
-    [id, intake ? 'awaiting_external_funds' : 'booked', withdrawalId, depositId, issuerEntries, holderEntry, intake ? intake.intakeId : null, intakeError]);
+    [id, withdrawalId, depositId, issuerEntries, holderEntry]);
 
-    const { rows } = await pool.query('SELECT * FROM bond_issuance_payments WHERE payment_id = $1', [id]);
-    return {
-      ...this._paymentView(rows[0]),
-      intake: intake ? { intakeId: intake.intakeId, checkoutUrl: intake.checkoutUrl, expiresAt: intake.expiresAt } : null,
-      next: intake
-        ? 'issuer completes the Stripe Checkout (ACH debit from its bank); webhook marks the intake received -> POST /stripe-intakes/:id/payout to Lili'
-        : 'no external intake created (see error); the holder GL journal is a fixed-income distribution source',
-    };
+    let held = await this.getPayment(id);
+    if (cfg.autoIntake) {
+      try { held = await this.fundExternal({ paymentId: id, actor }); } catch (err) { held.intakeError = err.message; }
+    }
+    return { ...held, next: held.status === 'held'
+      ? 'income held in the holder Fineract account of record; POST /payments/:id/send-to-bank to convert to fiat (Lili), or /fund-external to bring outside dollars in first'
+      : 'issuer completes the Stripe Checkout; webhook marks the intake received -> payment funded -> send-to-bank' };
+  }
+
+  static async getPayment(paymentId) {
+    const { rows } = await pool.query('SELECT * FROM bond_issuance_payments WHERE payment_id = $1', [paymentId]);
+    if (!rows[0]) throw httpError(`payment ${paymentId} not found`, 404);
+    return this._paymentView(rows[0]);
+  }
+
+  /**
+   * Convert a held payment to fiat: its holder 1020 journal becomes fixed-income
+   * distributions to the settlement bank (Lili). Execution stays behind
+   * maker/checker (approvalRef + screeningRef) in FixedIncomeDistributionEngine.
+   */
+  static async sendToBank({ paymentId, actor } = {}) {
+    const p = await this.getPayment(paymentId);
+    if (!['held', 'funded'].includes(p.status)) throw httpError(`payment ${paymentId} is ${p.status}; only held/funded payments can be sent to bank`, 409, 'NOT_HELD');
+    if (!p.holderEntryId) throw httpError(`payment ${paymentId} has no holder journal to distribute`, 409, 'NO_HOLDER_ENTRY');
+    if (!FixedIncomeDistributionEngine) throw httpError('FixedIncomeDistributionEngine unavailable', 503);
+    await FixedIncomeDistributionEngine.plan({ createdBy: actor || 'bond_issuance' });
+    const all = await FixedIncomeDistributionEngine.list({ limit: 500 });
+    const distributions = all.filter((d) => String(d.sourceEntryId) === String(p.holderEntryId));
+    if (!distributions.length) throw httpError('no distribution planned for the holder journal (check FIXED_INCOME_BANK_PAYEES / minAmount)', 409, 'NOT_PLANNED');
+    await pool.query(`UPDATE bond_issuance_payments SET status = 'sent_to_bank', updated_at = NOW() WHERE payment_id = $1`, [paymentId]);
+    return { ...(await this.getPayment(paymentId)), distributions, next: 'POST /api/fixed-income/distributions/:id/execute {approvalRef, screeningRef} -> Stripe payout -> Lili direct deposit' };
+  }
+
+  /** Optional external funding leg: Stripe income intake keyed to the payment. */
+  static async fundExternal({ paymentId, actor } = {}) {
+    const p = await this.getPayment(paymentId);
+    if (p.status !== 'held') throw httpError(`payment ${paymentId} is ${p.status}; only held payments can be externally funded`, 409, 'NOT_HELD');
+    if (!StripePaymentIntakeEngine) throw httpError('StripePaymentIntakeEngine unavailable', 503);
+    const intake = await StripePaymentIntakeEngine.createIncomePaymentLink({
+      amountCents: Math.round(p.amountUsd * 100),
+      purpose: p.kind === 'coupon' ? 'coupon_income' : 'principal_repayment',
+      reference: p.paymentId,
+      description: `${p.kind} ${isoDate(p.periodDate)} bond ${p.bondId} (Fineract ${p.fineractWithdrawalId}->${p.fineractDepositId})`,
+      createdBy: actor || 'bond_issuance',
+    });
+    await pool.query(`UPDATE bond_issuance_payments SET status = 'awaiting_external_funds', intake_id = $2, updated_at = NOW() WHERE payment_id = $1`, [paymentId, intake.intakeId]);
+    return { ...(await this.getPayment(paymentId)), intake: { intakeId: intake.intakeId, checkoutUrl: intake.checkoutUrl, expiresAt: intake.expiresAt } };
   }
 
   static async _fail(id, message) {
@@ -411,7 +440,7 @@ class BondIssuanceEngine {
       enabled: cfg.enabled, ready: cfg.enabled && issues.length === 0, issues, fineractConnected: fineract,
       parties, issuances: issuances.length, bonds: issuances.map((i) => ({ bondId: i.bondId, bondName: i.bondName, nextCouponDate: i.nextCouponDate, couponPerPeriod: i.couponPerPeriod })),
       payments: counts.rows.map((r) => ({ status: r.status, count: r.n, totalUsd: Number(r.total) })),
-      pipeline: 'issuer Fineract account -> holder Fineract account -> treasury GL (1020) -> fixed-income distribution -> Stripe income intake -> Lili direct deposit',
+      pipeline: 'issuer Fineract account -> holder Fineract account (held, account of record) -> [send-to-bank] fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit',
     };
   }
 }

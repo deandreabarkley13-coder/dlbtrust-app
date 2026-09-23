@@ -9,7 +9,10 @@
  *   GET  /issuances                    issued bonds + recent payments
  *   POST /issuances                    {bondId} issue an active bond to the holder
  *   GET  /issuances/:bondId
- *   POST /issuances/:bondId/pay        {kind?, amountUsd?, periodDate?} book due P&I
+ *   POST /issuances/:bondId/pay        {kind?, amountUsd?, periodDate?} book due P&I -> held in holder account
+ *   GET  /payments/:paymentId
+ *   POST /payments/:paymentId/send-to-bank   convert held income to fiat: plan Lili distributions (maker/checker execute)
+ *   POST /payments/:paymentId/fund-external  optional Stripe income intake to bring outside dollars in
  *   POST /run-due                      book every issued bond whose coupon is due
  */
 const express = require('express');
@@ -66,6 +69,18 @@ router.post('/issuances/:bondId/pay', adminAuth, writeRateLimiter(), async (req,
   try {
     res.status(201).json({ success: true, data: await BondIssuanceEngine.payDue({ bondId: Number(req.params.bondId), kind: req.body?.kind, amountUsd: req.body?.amountUsd, periodDate: req.body?.periodDate, actor: principal(req) }) });
   } catch (err) { sendError(res, err); }
+});
+
+router.get('/payments/:paymentId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BondIssuanceEngine.getPayment(req.params.paymentId) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payments/:paymentId/send-to-bank', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await BondIssuanceEngine.sendToBank({ paymentId: req.params.paymentId, actor: principal(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payments/:paymentId/fund-external', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await BondIssuanceEngine.fundExternal({ paymentId: req.params.paymentId, actor: principal(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/run-due', adminAuth, writeRateLimiter(), async (req, res) => {
