@@ -5,6 +5,42 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Custody OS fixed-income feed (isolated local testing)
+
+- The feed writes custody rows at boot. For local-only requests, use a disposable
+  database and an explicitly clean environment: both `DATABASE_URL` and
+  `FINERACT_DATABASE_URL` must point to local PostgreSQL; set `FINERACT_URL` to
+  a loopback address rather than loading provider configuration from `.env.bonds`.
+  Disable `OPERATIONAL_UTILITIES_AUTO_RUN` and `OPEN_AGENT_ID_AUTO_REGISTER`.
+- For deterministic lifecycle tests, hold the leader-election PostgreSQL advisory
+  lock in a separate persistent connection to the same database before boot.
+  Find the current key in `server/integrations/cluster/leaderElection.js`
+  (currently `1146312020`), and confirm the server logs follower status.
+- A fresh-schema boot test must run before applying fixture migrations. Expect
+  the custody feed to report zero bonds, cash buckets and receipts when source
+  tables are absent. Other engines can emit missing-schema warnings; distinguish
+  those from `[custody-os]` errors. Core migrations can seed an additional bond,
+  so match the newly created bond ID rather than assuming exactly one position.
+- Navigate to `/dapp/finops.html`, find the Custody OS card, and use
+  Refresh Statement, Load Receipts, and Verify Chain of Title for visual proof.
+  The panel has no feed-sync button or explicit signer-name field. For those
+  API-only steps use same-origin browser requests with the configured
+  `x-admin-token`; do not extract browser credentials into shell requests.
+- Test sync idempotency before and after dual countersigning. One signature
+  must leave the receipt pending; repeating the same signer must be rejected.
+  Two distinct `signedBy` values should receipt the self-custody position without
+  creating a reserve attestation or marking it externally verified.
+- Check `/api/finops/custody/chain` independently: a receipted statement is not
+  proof that the event chain is intact. Capture both API breaks and the visible
+  Verify Chain of Title result if integrity fails; do not repair evidence rows.
+- Avoid the adjacent interest-conversion/payment buttons and Sync to Reserve
+  when only testing custody mirroring.
+
+### Devin Secrets Needed
+
+- None for isolated local tests: configure disposable local `ADMIN_SECRET_TOKEN`
+  and `JWT_SECRET` values plus the local PostgreSQL test credentials.
+
 ## Collateral OS (backend API and CLI)
 
 - For source-segregation testing, set `DLB_PRB_TOKEN_ADDRESS` and
