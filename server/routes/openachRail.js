@@ -23,6 +23,7 @@ const { requireAuth } = require('../integrations/auth/securityMiddleware');
 const { ZeroTrustGateway } = require('../integrations/inhouseBank/zeroTrustGateway');
 const { OpenAchRailEngine } = require('../integrations/openach/openachRailEngine');
 const { openAchRailReadiness } = require('../integrations/openach/openachRailConfig');
+const { OpenAchFileRelay } = require('../integrations/openach/openachFileRelay');
 const { CamelRouteEngine } = require('../integrations/camel/camelRouteEngine');
 const { installFamilyBankFlow } = require('../integrations/camel/familyBankFlow');
 
@@ -116,6 +117,23 @@ router.get('/health', optionalSession, guard('payments:read'), async (req, res) 
 router.get('/status', optionalSession, guard('payments:read'), async (req, res) => {
   try {
     res.json({ success: true, data: await OpenAchRailEngine.status() });
+  } catch (err) { sendError(res, err); }
+});
+
+// ── NACHA file relay (OpenACH export bucket -> ODFI via MFT Gateway) ────────
+
+router.get('/file-relay', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const status = OpenAchFileRelay.status();
+    const pending = status.ready ? await OpenAchFileRelay.listPending() : [];
+    res.json({ success: true, data: { ...status, pending, history: await OpenAchFileRelay.history(req.query.limit || 20) } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/file-relay/run', optionalSession, guard('payments:initiate'), async (req, res) => {
+  try {
+    const result = await OpenAchFileRelay.run();
+    res.status(result.ready ? 200 : 503).json({ success: result.ready && result.failed === 0, data: result });
   } catch (err) { sendError(res, err); }
 });
 
