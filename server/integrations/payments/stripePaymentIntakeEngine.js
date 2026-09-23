@@ -25,7 +25,16 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 let DepositAndSettlementEngine = null;
 try { ({ DepositAndSettlementEngine } = require('./depositAndSettlementEngine')); } catch (e) { DepositAndSettlementEngine = null; }
 
+let CouponService = null;
+try { ({ CouponService } = require('../bonds/couponService')); } catch (e) { CouponService = null; }
+
 const METHODS = new Set(['card', 'us_bank_account']);
+const INCOME_PURPOSES = new Set(['coupon_income', 'principal_repayment', 'trust_income']);
+
+function maskEin(ein) {
+  const d = String(ein || '').replace(/\D/g, '');
+  return d.length === 9 ? `**-***${d.slice(-4)}` : null;
+}
 const CASH_ACCOUNT = 'CA-STRIPE-BALANCE';
 
 function httpError(message, status, code) { return Object.assign(new Error(message), { status, code }); }
@@ -68,6 +77,13 @@ class StripePaymentIntakeEngine {
       webhookConfigured: Boolean(env.STRIPE_WEBHOOK_SECRET),
       returnUrl: env.STRIPE_INTAKE_RETURN_URL || env.APP_PUBLIC_URL || env.PUBLIC_URL || null,
       statementDescriptor: (env.STRIPE_INTAKE_DESCRIPTOR || env.ACH_COMPANY_NAME || 'DLB TRUST').slice(0, 22),
+      incomeObligor: env.INCOME_OBLIGOR_NAME ? {
+        payerId: env.INCOME_OBLIGOR_PAYER_ID || 'income-obligor',
+        name: env.INCOME_OBLIGOR_NAME,
+        email: env.INCOME_OBLIGOR_EMAIL || null,
+        ein: env.INCOME_OBLIGOR_EIN ? String(env.INCOME_OBLIGOR_EIN).replace(/\D/g, '') : null,
+        role: env.INCOME_OBLIGOR_ROLE || 'custodian_issuer',
+      } : null,
       _key: key,
       _webhookSecret: env.STRIPE_WEBHOOK_SECRET || null,
     };
@@ -141,15 +157,63 @@ class StripePaymentIntakeEngine {
     return out;
   }
 
-  static async _ensureCustomer(client, { payerEmail, payerName, payerId }) {
+  static async _ensureCustomer(client, { payerEmail, payerName, payerId, payerEin }) {
     if (!payerEmail && !payerId) return null;
     const query = payerId ? `metadata['payer_id']:'${String(payerId).replace(/'/g, '')}'` : `email:'${String(payerEmail).replace(/'/g, '')}'`;
     const found = await client.customers.search({ query, limit: 1 });
-    if (found && found.data && found.data[0]) return found.data[0];
-    return client.customers.create({
+    const customer = (found && found.data && found.data[0]) || await client.customers.create({
       email: payerEmail || undefined,
       name: payerName || undefined,
       metadata: { payer_id: payerId ? String(payerId) : '', source: 'dlb-treasury' },
+    });
+    if (payerEin) await this._ensureEin(client, customer, payerEin);
+    return customer;
+  }
+
+  static async _ensureEin(client, customer, ein) {
+    const value = String(ein).replace(/\D/g, '');
+    if (value.length !== 9) return;
+    const formatted = `${value.slice(0, 2)}-${value.slice(2)}`;
+    const existing = await client.customers.listTaxIds(customer.id, { limit: 10 });
+    const has = (existing.data || []).some((t) => t.type === 'us_ein' && String(t.value).replace(/\D/g, '') === value);
+    if (!has) await client.customers.createTaxId(customer.id, { type: 'us_ein', value: formatted });
+  }
+
+  /** Configured payer of the trust's fixed-income P&I (INCOME_OBLIGOR_*), never exposing the full EIN. */
+  static incomeObligor() {
+    const o = this.getConfig().incomeObligor;
+    if (!o) return { configured: false, issues: ['INCOME_OBLIGOR_NAME not set'] };
+    return { configured: true, payerId: o.payerId, name: o.name, email: o.email, role: o.role, einMasked: maskEin(o.ein), issues: o.ein ? [] : ['INCOME_OBLIGOR_EIN not set'] };
+  }
+
+  /**
+   * Hosted Checkout link for an income payment owed by the configured obligor
+   * (custodian/issuer of the trust's fixed income). Amount defaults to the
+   * bond's coupon_per_period when bondId is given without amountCents.
+   */
+  static async createIncomePaymentLink({ bondId, amountCents, purpose = 'coupon_income', reference, description, paymentMethodTypes, successUrl, cancelUrl, createdBy = 'payment_server' } = {}) {
+    const cfg = this.getConfig();
+    const o = cfg.incomeObligor;
+    if (!o) throw httpError('INCOME_OBLIGOR_NAME not configured', 503, 'INCOME_OBLIGOR_NOT_CONFIGURED');
+    if (!INCOME_PURPOSES.has(purpose)) throw httpError(`purpose must be one of ${[...INCOME_PURPOSES].join(', ')}`, 400);
+    let cents = amountCents == null ? null : Number(amountCents);
+    let ref = reference || null;
+    let desc = description || null;
+    if (bondId) {
+      if (!CouponService) throw httpError('CouponService unavailable', 503);
+      const s = await CouponService.getCouponSchedule(bondId);
+      if (cents == null) cents = Math.round(Number(s.coupon_per_period || 0) * 100);
+      const due = s.next_coupon_date ? String(s.next_coupon_date).slice(0, 10) : 'na';
+      ref = ref || `BOND-${bondId}-${purpose.toUpperCase()}-${due}`;
+      desc = desc || `${s.bond_name || `Bond ${bondId}`} ${purpose.replace('_', ' ')} due ${due}`;
+    }
+    if (cents == null) throw httpError('amountCents or bondId is required', 400);
+    return this.createCheckoutLink({
+      amountCents: cents,
+      paymentMethodTypes: paymentMethodTypes || ['us_bank_account'],
+      payerId: o.payerId, payerName: o.name, payerEmail: o.email, payerEin: o.ein,
+      reference: ref, purpose, description: desc || `${o.name} ${purpose.replace('_', ' ')}`,
+      successUrl, cancelUrl, createdBy,
     });
   }
 
@@ -200,7 +264,7 @@ class StripePaymentIntakeEngine {
   }
 
   /** Hosted Stripe Checkout link — payer pays in Stripe's UI, nothing card-related touches this server. */
-  static async createCheckoutLink({ amountCents, currency = 'usd', paymentMethodTypes, payerEmail, payerName, payerId, reference, purpose, description, successUrl, cancelUrl, createdBy = 'payment_server' } = {}) {
+  static async createCheckoutLink({ amountCents, currency = 'usd', paymentMethodTypes, payerEmail, payerName, payerId, payerEin, reference, purpose, description, successUrl, cancelUrl, createdBy = 'payment_server' } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw httpError('Stripe intake disabled', 503);
     const { cents, methods } = this._validate({ amountCents, currency, paymentMethodTypes }, cfg);
@@ -208,7 +272,7 @@ class StripePaymentIntakeEngine {
     const cancel = cancelUrl || (cfg.returnUrl ? `${cfg.returnUrl.replace(/\/$/, '')}/payment-server/stripe/return?status=cancel` : null);
     if (!success) throw httpError('successUrl (or STRIPE_INTAKE_RETURN_URL) is required for Checkout', 400);
     const client = this._client(cfg);
-    const customer = await this._ensureCustomer(client, { payerEmail, payerName, payerId });
+    const customer = await this._ensureCustomer(client, { payerEmail, payerName, payerId, payerEin });
     const id = intakeId();
     const meta = this._metadata({ intake: id, reference, purpose, payerId });
     const session = await client.checkout.sessions.create({

@@ -185,6 +185,12 @@ variable "runtime_environment" {
     STRIPE_INTAKE_ENABLED         = "true"
     STRIPE_INTAKE_PAYMENT_METHODS = "card,us_bank_account"
     STRIPE_INTAKE_RETURN_URL      = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
+    INCOME_OBLIGOR_NAME     = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    INCOME_OBLIGOR_EIN      = "99-6411566"
+    INCOME_OBLIGOR_EMAIL    = "deandreabarkley13@gmail.com"
+    INCOME_OBLIGOR_PAYER_ID = "dlb-trust-company"
+    INCOME_OBLIGOR_ROLE     = "custodian_issuer"
     LILI_STRIPE_TREASURY_NETWORK  = "ach"
     LILI_MCP_ENABLED              = "true"
     LILI_MCP_URL                  = "https://mcp.lili.co/mcp"
