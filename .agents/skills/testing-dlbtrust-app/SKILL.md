@@ -5,6 +5,31 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 # Testing DLB Trust (`dlbtrust-app`)
 
+## Mobile PWA cache and deployment checks
+
+- `/dapp/mobile.html` registers its worker even on the unauthenticated login
+  shell; wallet provisioning is not required for cache lifecycle tests.
+- Inspect Application > Service workers and Cache storage in Chrome. If an
+  automation profile's worker stalls before installation or crashes, retry in
+  an isolated Chrome user-data directory without extensions and report the
+  initial environment failure separately.
+- A network-first response may still report `fromServiceWorker: true`.
+  Check CDP `serviceWorkerResponseSource: network` rather than treating all
+  worker-intercepted responses as cached.
+- Count main-frame navigations separately from worker precache fetches. A
+  passive document-start observer with sessionStorage counters can preserve
+  reload/controllerchange counts across an automatic reload.
+- For a deploy test, add only a uniquely identifiable harmless comment to the
+  worker and remove that exact comment afterward. Distinguish idle-tab
+  detection from activation after Chrome's **Update** control: an explicit
+  update check proves lifecycle behavior, not automatic periodic polling.
+- Cache entries can include query-string variants in addition to precache
+  paths. Assert required paths and obsolete cache deletion, not exact counts.
+
+### Devin Secrets Needed
+
+- None for localhost unauthenticated mobile-shell/cache tests.
+
 ## Collateral OS (backend API and CLI)
 
 - For source-segregation testing, set `DLB_PRB_TOKEN_ADDRESS` and
