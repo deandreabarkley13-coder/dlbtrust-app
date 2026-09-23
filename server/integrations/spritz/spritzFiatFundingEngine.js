@@ -83,7 +83,8 @@ async function ensureTable() {
         created_by TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )`).catch((e) => { tableReady = null; throw e; });
+      );
+      ALTER TABLE ${TABLE} ADD COLUMN IF NOT EXISTS destination TEXT;`).catch((e) => { tableReady = null; throw e; });
   }
   await tableReady;
 }
@@ -96,6 +97,7 @@ function mapRow(r) {
     amountUsd: Number(r.amount_usd),
     rail: r.rail,
     autoRampAccountId: r.auto_ramp_account_id,
+    destination: r.destination || null,
     depositInstructions: r.deposit_instructions || null,
     sourceAccount: r.source_account,
     erpCommit: r.erp_commit || null,
@@ -120,9 +122,9 @@ function loadCollateralOs() {
 }
 
 class SpritzFiatFundingEngine {
-  static config() {
+  static config({ destination: override } = {}) {
     const leg = loadLeg().config();
-    const destination = str('SPRITZ_AUTO_RAMP_DESTINATION') || leg.policyAddress || null;
+    const destination = (override && String(override).trim()) || str('SPRITZ_AUTO_RAMP_DESTINATION') || leg.policyAddress || null;
     return {
       policyAddress: leg.policyAddress,
       // Wallet the auto-ramp converts fiat into: the policy contract (governed) unless overridden.
@@ -163,8 +165,8 @@ class SpritzFiatFundingEngine {
    * policy chain). Found by SPRITZ_AUTO_RAMP_ACCOUNT_ID or by matching
    * destination; created only when `ensure` is set.
    */
-  static async account({ ensure = false } = {}) {
-    const cfg = this.config();
+  static async account({ ensure = false, destination } = {}) {
+    const cfg = this.config({ destination });
     if (!cfg.destination) throw conflict('SPRITZ_AUTO_RAMP_DESTINATION / TRUST_POLICY_ADDRESS not configured', 'TRUST_POLICY_NOT_CONFIGURED');
     if (!cfg.network) throw badRequest(`chain ${cfg.chainId} is not a Spritz network`);
     const list = await SpritzEngine.listAutoRampAccounts();
@@ -172,7 +174,8 @@ class SpritzFiatFundingEngine {
     const matches = (a) => sameAddress(a.address, cfg.destination)
       && String(a.network || '').toLowerCase() === cfg.network
       && String(a.token || '').toUpperCase() === cfg.token;
-    let match = cfg.autoRampAccountId ? accounts.find((a) => a.id === cfg.autoRampAccountId) || null : null;
+    // The pinned account id only applies to the configured destination, never to an override.
+    let match = cfg.autoRampAccountId && !destination ? accounts.find((a) => a.id === cfg.autoRampAccountId) || null : null;
     if (match && !matches(match)) {
       throw conflict(`SPRITZ_AUTO_RAMP_ACCOUNT_ID ${match.id} converts to ${match.address} on ${match.network}, not the destination ${cfg.destination} on ${cfg.network}`, 'AUTO_RAMP_ACCOUNT_MISMATCH');
     }
@@ -231,8 +234,8 @@ class SpritzFiatFundingEngine {
     };
   }
 
-  static async readiness() {
-    const cfg = this.config();
+  static async readiness({ destination } = {}) {
+    const cfg = this.config({ destination });
     const issues = [];
     if (!str('SPRITZ_API_KEY')) issues.push('SPRITZ_API_KEY not configured');
     const integratorCreds = Boolean(str('SPRITZ_INTEGRATOR_KEY') && str('SPRITZ_INTEGRATOR_SECRET'));
@@ -255,7 +258,7 @@ class SpritzFiatFundingEngine {
         for (const c of capabilities) {
           if (!c.active) issues.push(`Spritz fiat_to_crypto ${c.method} is ${c.status}${c.requirements.length ? ` (${c.requirements.map((r) => `${r.type || 'requirement'}${r.actionUrl ? ' ' + r.actionUrl : ''}`).join('; ')})` : ''}`);
         }
-        account = await this.account();
+        account = await this.account({ destination });
         if (!account) issues.push(`no Spritz auto-ramp account converting to ${cfg.destination} (create one with ensureAccount)`);
         else if (!account.active) issues.push(`Spritz auto-ramp account ${account.id} is ${account.status}`);
       } catch (e) {
@@ -322,8 +325,8 @@ class SpritzFiatFundingEngine {
     return { ...out, detail: 'no wire channel (PARTNER_BANK_* or wire_endpoint setting)' };
   }
 
-  static async ensureAccount() {
-    const account = await this.account({ ensure: true });
+  static async ensureAccount({ destination } = {}) {
+    const account = await this.account({ ensure: true, destination });
     return account;
   }
 
@@ -333,9 +336,9 @@ class SpritzFiatFundingEngine {
    * here: the ACH batch / wire payout is originated and left for `send`.
    * `sameDay` (ACH only) originates the credit push as Same Day ACH.
    */
-  static async fund({ amountUsd, bucket, reference, rail, createdBy, memo, sameDay = false } = {}) {
+  static async fund({ amountUsd, bucket, reference, rail, createdBy, memo, sameDay = false, destination, assetAccountCode, sourceType, sourceAccountId } = {}) {
     await ensureTable();
-    const cfg = this.config();
+    const cfg = this.config({ destination });
     if (!reference) throw badRequest('reference required (ERP reference)');
     const amount = usd(amountUsd);
     const useRail = String(rail || cfg.defaultRail).toLowerCase();
@@ -346,7 +349,10 @@ class SpritzFiatFundingEngine {
     const existing = await this.get(reference);
     if (existing) return { ...existing, idempotent: true };
 
-    const segregated = TrustAllocationEngine.assertFundingSource({ bucket, ...cfg.fundingSource });
+    const requestedSource = sourceType || sourceAccountId
+      ? { sourceType: sourceType || 'canonical', sourceAccountId: sourceAccountId || cfg.fundingSource.sourceAccountId, sourceToken: '', sourceModule: '' }
+      : cfg.fundingSource;
+    const segregated = TrustAllocationEngine.assertFundingSource({ bucket, ...requestedSource });
     const source = segregated.source;
     if (String(source.sourceType || '').toLowerCase() !== 'canonical' || !source.sourceAccountId) {
       throw conflict('fiat funding originates only from the Treasury-Core canonical cash account (sourceType canonical)', 'FIAT_FUNDING_SOURCE_NOT_CANONICAL');
@@ -358,7 +364,7 @@ class SpritzFiatFundingEngine {
       const action = capability.requirements.map((r) => r.actionUrl).filter(Boolean)[0];
       throw conflict(`Spritz fiat_to_crypto ${capability.method} is ${capability.status}${action ? `; complete ${action}` : ''}`, 'FIAT_FUNDING_CAPABILITY_INACTIVE');
     }
-    const account = await this.account({ ensure: true });
+    const account = await this.account({ ensure: true, destination });
     if (!account.active) throw conflict(`Spritz auto-ramp account ${account.id} is ${account.status}, not active`, 'AUTO_RAMP_ACCOUNT_INACTIVE');
     const di = account.depositInstructions;
     if (!di || !di.bankRoutingNumber || !di.bankAccountNumber) throw conflict(`Spritz auto-ramp account ${account.id} has no US deposit instructions`, 'AUTO_RAMP_INSTRUCTIONS_MISSING');
@@ -378,7 +384,7 @@ class SpritzFiatFundingEngine {
       referenceType: 'spritz_fiat_funding',
       memo: memo || `ERP credit push to Spritz auto-ramp ${account.id} [${reference}]`,
       cashAccountCode: source.sourceAccountId,
-      assetAccountCode: cfg.gl.treasuryAccount,
+      assetAccountCode: assetAccountCode || cfg.gl.treasuryAccount,
       postedBy: createdBy || 'spritz-fiat-funding',
       purpose: 'spritz_fiat_funding',
     });
@@ -410,12 +416,16 @@ class SpritzFiatFundingEngine {
     const status = error ? 'failed' : 'prepared';
     if (pool && pool.query) {
       await pool.query(
-        `INSERT INTO ${TABLE} (reference, bucket, amount_usd, rail, auto_ramp_account_id, deposit_instructions, source_account, erp_commit, transfer_id, transfer_status, status, error, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        `INSERT INTO ${TABLE} (reference, bucket, amount_usd, rail, auto_ramp_account_id, deposit_instructions, source_account, erp_commit, transfer_id, transfer_status, status, error, created_by, destination)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (reference) DO NOTHING`,
         [reference, bucket, amount.toFixed(2), useRail, account.id, JSON.stringify(di), String(source.sourceAccountId),
-          JSON.stringify({ shadow: Boolean(erpCommit && erpCommit.shadow), committed: Boolean(erpCommit && erpCommit.committed), reason: erpCommit && erpCommit.reason, entryId: erpCommit && (erpCommit.entryId || erpCommit.entry_id) || null }),
-          transfer ? transfer.transfer_id : null, transfer ? transfer.status : null, status, error, createdBy || null]
+          JSON.stringify({
+            shadow: Boolean(erpCommit && erpCommit.shadow), committed: Boolean(erpCommit && erpCommit.committed), reason: erpCommit && erpCommit.reason,
+            entryId: erpCommit && (erpCommit.journalEntryId || erpCommit.entryId || erpCommit.entry_id) || null,
+            fineractTransactionId: erpCommit && erpCommit.fineractTransactionId || null,
+          }),
+          transfer ? transfer.transfer_id : null, transfer ? transfer.status : null, status, error, createdBy || null, cfg.destination]
       );
     }
     if (error) throw conflict(`ERP credit-push origination failed after the ERP commit: ${error}`, 'FIAT_FUNDING_ORIGINATION_FAILED');
@@ -426,6 +436,7 @@ class SpritzFiatFundingEngine {
       amountUsd: amount.toFixed(2),
       rail: useRail,
       source: { kind: 'treasury_core_erp', account: source.sourceAccountId, shadow: Boolean(erpCommit && erpCommit.shadow) },
+      destination: cfg.destination,
       autoRampAccount: account,
       erpCommit,
       collateral,
@@ -487,7 +498,9 @@ class SpritzFiatFundingEngine {
     for (const row of open) {
       let match = row.onRampId ? onRamps.find((o) => o.id === row.onRampId) : null;
       if (!match) {
+        const accountOf = (o) => o.autoRampAccountId || o.accountId || (o.account && o.account.id) || null;
         match = onRamps.find((o) => !claimed.has(o.id)
+          && (!accountOf(o) || !row.autoRampAccountId || accountOf(o) === row.autoRampAccountId)
           && String(o.input && o.input.rail || '') === RAILS[row.rail].onRampRail
           && Math.abs(Number(o.input && o.input.amount) - row.amountUsd) < 0.005
           && (!o.createdAt || !row.createdAt || new Date(o.createdAt) >= new Date(row.createdAt))) || null;

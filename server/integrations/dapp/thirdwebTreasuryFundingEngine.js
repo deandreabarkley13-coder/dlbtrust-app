@@ -29,6 +29,18 @@
  * drift against the sub-ledger blocks the draw, and the settlement entry posts
  * to both books in one call. Any other value keeps the previous behaviour of
  * asking SourceOfFundsAdapter (trust sub-ledger, cash, bonds, sub-ledgers).
+ *
+ * Settlement leg (TREASURY_TOPUP_SETTLEMENT_LEG) decides how the fiat actually
+ * becomes tokens in the wallet:
+ *   hosted_checkout  thirdweb collects the fiat itself (card / wallet prompt);
+ *                    booked when the bridge reports COMPLETED.
+ *   erp_credit_push  the ERP originates the money: SpritzFiatFundingEngine
+ *                    posts DR asset / CR canonical cash in Fineract, pushes an
+ *                    ACH / wire credit from the canonical cash account to the
+ *                    Spritz auto-ramp account for the treasury wallet, and the
+ *                    auto-ramp converts the deposit to USDC at that wallet.
+ *                    No checkout link exists; the top-up completes when the
+ *                    Spritz on-ramp settles. Requires a canonical source.
  */
 
 const DistributionPolicy = require('./distributionPolicy');
@@ -36,6 +48,13 @@ const { ThirdwebPriceOracle, NATIVE_TOKEN } = require('./thirdwebPriceOracle');
 const { ThirdwebServerWalletEngine } = require('./thirdwebServerWalletEngine');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
 const { CanonicalFundingSource } = require('../fineract/canonicalFundingSource');
+
+let SpritzFiatFundingEngine = null;
+try { ({ SpritzFiatFundingEngine } = require('../spritz/spritzFiatFundingEngine')); } catch (e) { /* optional */ }
+
+const SETTLEMENT_LEGS = new Set(['hosted_checkout', 'erp_credit_push']);
+const ERP_LEG = 'erp_credit_push';
+const CHECKOUT_LEG = 'hosted_checkout';
 
 const CANONICAL_SOURCE_TYPES = new Set(['canonical', 'erp', 'core_banking_canonical']);
 
@@ -85,6 +104,8 @@ async function ensureTables() {
     ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS journal_entry_id TEXT;
     ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS fineract_transaction_id TEXT;
     ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS booked_at TIMESTAMPTZ;
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS settlement_leg TEXT NOT NULL DEFAULT 'hosted_checkout';
+    ALTER TABLE thirdweb_treasury_topups ADD COLUMN IF NOT EXISTS settlement JSONB;
   `).catch((e) => { tablesReady = null; throw e; });
   return tablesReady;
 }
@@ -109,6 +130,8 @@ class ThirdwebTreasuryFundingEngine {
       holdSourceAccountId: str('TREASURY_TOPUP_HOLD_ACCOUNT_ID') || str('EXPENSE_WALLET_HOLD_ACCOUNT_ID') || null,
       cryptoAccountCode: str('TREASURY_TOPUP_CRYPTO_ACCOUNT_CODE', '1210'),
       cashAccountCode: str('TREASURY_TOPUP_CASH_ACCOUNT_CODE', '1000'),
+      settlementLeg: str('TREASURY_TOPUP_SETTLEMENT_LEG', CHECKOUT_LEG).toLowerCase(),
+      erpRail: str('TREASURY_TOPUP_ERP_RAIL') || null,
       maxTopUpUsd: num('TREASURY_TOPUP_MAX_USD', 0),
       slippageBps: num('TREASURY_SWAP_SLIPPAGE_BPS', 50),
     };
@@ -122,6 +145,11 @@ class ThirdwebTreasuryFundingEngine {
     if (!cfg.holdSourceAccountId) issues.push('TREASURY_TOPUP_HOLD_ACCOUNT_ID not configured (pass sourceAccountId per request)');
     const canonical = this._isCanonical(cfg.holdSourceType) ? CanonicalFundingSource.readiness() : null;
     if (canonical && !canonical.ready) issues.push(...canonical.issues.map((i) => `canonical source: ${i}`));
+    if (!SETTLEMENT_LEGS.has(cfg.settlementLeg)) issues.push(`TREASURY_TOPUP_SETTLEMENT_LEG ${cfg.settlementLeg} is not ${[...SETTLEMENT_LEGS].join(' or ')}`);
+    if (cfg.settlementLeg === ERP_LEG) {
+      if (!this._isCanonical(cfg.holdSourceType)) issues.push('erp_credit_push settlement requires TREASURY_TOPUP_HOLD_SOURCE_TYPE=canonical');
+      if (!SpritzFiatFundingEngine) issues.push('SpritzFiatFundingEngine (ERP credit-push origination) not available');
+    }
     return {
       provider: 'thirdweb-bridge',
       apiUrl: cfg.apiUrl,
@@ -132,6 +160,7 @@ class ThirdwebTreasuryFundingEngine {
       treasuryAddress: cfg.treasuryAddress || null,
       holdSourceType: cfg.holdSourceType,
       holdSourceAccountId: cfg.holdSourceAccountId,
+      settlementLeg: cfg.settlementLeg,
       maxTopUpUsd: cfg.maxTopUpUsd || null,
       live: cfg.live,
       // Inbound funding needs no live flag; rebalancing treasury assets does.
@@ -145,6 +174,25 @@ class ThirdwebTreasuryFundingEngine {
 
   static _isCanonical(sourceType) {
     return CANONICAL_SOURCE_TYPES.has(String(sourceType || '').toLowerCase());
+  }
+
+  /**
+   * readiness() plus the settlement leg's own gates. For erp_credit_push that
+   * is SpritzFiatFundingEngine.readiness() against the treasury wallet: Spritz
+   * integrator credentials, fiat_to_crypto capability, an auto-ramp account
+   * converting to this wallet, and a bank channel the credit push can leave by.
+   */
+  static async settlementReadiness() {
+    const base = this.readiness();
+    if (base.settlementLeg !== ERP_LEG || !SpritzFiatFundingEngine) return { ...base, settlement: null };
+    let settlement;
+    try {
+      settlement = await SpritzFiatFundingEngine.readiness({ destination: base.treasuryAddress || undefined });
+    } catch (e) {
+      settlement = { provider: 'spritz-fiat-funding', ready: false, issues: [e.message] };
+    }
+    const issues = [...base.issues, ...(settlement.issues || []).map((i) => `erp credit push: ${i}`)];
+    return { ...base, settlement, canTopUp: base.canTopUp && settlement.ready, ready: issues.length === 0, issues };
   }
 
   /** Fiat → token amount straight from thirdweb (independent of the oracle). */
@@ -218,7 +266,7 @@ class ThirdwebTreasuryFundingEngine {
    */
   static async createTopUp({
     amountFiat, currency, chainId, tokenAddress,
-    sourceType, sourceAccountId, requestedBy = null, requesterRole = 'trustee',
+    sourceType, sourceAccountId, requestedBy = null, requesterRole = 'trustee', rail,
   } = {}) {
     const cfg = this.getConfig();
     const fiat = Number(amountFiat);
@@ -238,6 +286,10 @@ class ThirdwebTreasuryFundingEngine {
 
     const quote = await this.convert({ amountFiat: fiat, currency, chainId, tokenAddress });
     const recipient = await ThirdwebServerWalletEngine.resolveAddress();
+    if (cfg.settlementLeg === ERP_LEG) return this._createErpTopUp({ cfg, fiat, quote, recipient, source, requestedBy, rail });
+    if (cfg.settlementLeg !== CHECKOUT_LEG) {
+      throw Object.assign(new Error(`TREASURY_TOPUP_SETTLEMENT_LEG ${cfg.settlementLeg} is not supported`), { status: 409, code: 'SETTLEMENT_LEG_UNSUPPORTED' });
+    }
     const payment = await ThirdwebServerWalletEngine._request('POST', '/v1/bridge/payments', {
       name: `DLB Trust treasury top-up (${quote.symbol})`,
       description: `Fund trust treasury wallet ${cfg.treasuryIdentifier} with ${quote.amount} ${quote.symbol} from ${source.sourceType}:${source.sourceAccountId}`,
@@ -259,11 +311,136 @@ class ThirdwebTreasuryFundingEngine {
       recipient,
       sourceType: source.sourceType,
       sourceAccountId: source.sourceAccountId,
+      settlementLeg: CHECKOUT_LEG,
+      settlement: null,
       status: 'PENDING',
       booked: false,
       transactionHash: null,
       requestedBy,
     });
+  }
+
+  /**
+   * ERP-originated settlement: the canonical cash account is drawn in Fineract
+   * and an ACH / wire credit is pushed to the Spritz auto-ramp account that
+   * converts into USDC at the treasury wallet. The ERP entry (DR crypto asset /
+   * CR canonical cash) posts at origination because that is when the cash
+   * leaves the ERP; the on-chain leg is tracked by syncTopUp.
+   */
+  static async _createErpTopUp({ cfg, fiat, quote, recipient, source, requestedBy, rail }) {
+    if (!this._isCanonical(source.sourceType)) {
+      throw Object.assign(
+        new Error(`erp_credit_push settlement originates only from the canonical ERP cash account, not ${source.sourceType}:${source.sourceAccountId}`),
+        { status: 409, code: 'SETTLEMENT_SOURCE_NOT_CANONICAL' }
+      );
+    }
+    if (!SpritzFiatFundingEngine) {
+      throw Object.assign(new Error('SpritzFiatFundingEngine (ERP credit-push origination) not available'), { status: 503, code: 'ERP_ORIGINATION_UNAVAILABLE' });
+    }
+    const topUpId = id();
+    const base = {
+      id: topUpId, paymentId: null, link: null,
+      chainId: quote.chainId, tokenAddress: quote.tokenAddress, symbol: quote.symbol, quantity: quote.quantity,
+      amountFiat: fiat, currency: quote.currency, recipient,
+      sourceType: source.sourceType, sourceAccountId: source.sourceAccountId,
+      settlementLeg: ERP_LEG, transactionHash: null, requestedBy,
+    };
+    let funding;
+    try {
+      funding = await SpritzFiatFundingEngine.fund({
+        amountUsd: fiat,
+        reference: topUpId,
+        rail: rail || cfg.erpRail || undefined,
+        createdBy: requestedBy || 'thirdweb-treasury-funding-engine',
+        memo: `ERP credit push: treasury top-up ${quote.amount} ${quote.symbol} to ${cfg.treasuryIdentifier} ${recipient} [${topUpId}]`,
+        destination: recipient,
+        assetAccountCode: cfg.cryptoAccountCode,
+        sourceType: source.sourceType,
+        sourceAccountId: source.sourceAccountId,
+      });
+    } catch (err) {
+      // Origination can fail after the ERP commit; keep the top-up so the
+      // Fineract draw stays visible and syncable instead of orphaned.
+      const failed = await SpritzFiatFundingEngine.get(topUpId).catch(() => null);
+      if (failed) {
+        await this._recordTopUp({ ...base, ...this._bookingFromCommit(failed.erpCommit), settlement: this._settlementFromFunding(failed), status: 'FAILED' });
+      }
+      throw err;
+    }
+    return this._recordTopUp({
+      ...base,
+      ...this._bookingFromCommit(funding.erpCommit),
+      settlement: this._settlementFromFunding(funding),
+      status: 'PENDING',
+    });
+  }
+
+  static _bookingFromCommit(commit) {
+    if (!commit || !commit.committed) return { booked: false, bookOfRecord: null, journalEntryId: null, fineractTransactionId: null, bookedAt: null };
+    return {
+      booked: true,
+      bookOfRecord: 'fineract',
+      journalEntryId: commit.journalEntryId || commit.entryId || null,
+      fineractTransactionId: commit.fineractTransactionId || null,
+      bookedAt: new Date(),
+    };
+  }
+
+  static _settlementFromFunding(funding) {
+    if (!funding) return null;
+    const transfer = funding.transfer || {};
+    const account = funding.autoRampAccount || {};
+    return {
+      leg: ERP_LEG,
+      provider: 'spritz-fiat-funding',
+      status: funding.status || null,
+      rail: funding.rail || null,
+      destination: funding.destination || account.address || null,
+      autoRampAccountId: account.id || funding.autoRampAccountId || null,
+      transferId: transfer.id || funding.transferId || null,
+      transferStatus: transfer.status || funding.transferStatus || null,
+      onRampId: funding.onRampId || null,
+      onRampStatus: funding.onRamp && funding.onRamp.status || null,
+      error: funding.error || null,
+    };
+  }
+
+  /**
+   * ERP leg sync: transmit the originated credit push if it is still only
+   * prepared, then follow the Spritz on-ramp until it completes.
+   */
+  static async _syncErpTopUp(record) {
+    if (!SpritzFiatFundingEngine) return record;
+    let funding = await SpritzFiatFundingEngine.get(record.id);
+    if (!funding) return record;
+    if (funding.status === 'prepared') {
+      try {
+        funding = await SpritzFiatFundingEngine.send({ reference: record.id });
+      } catch (err) {
+        // The credit push stays originated-but-untransmitted (e.g. no bank channel yet); surface why on the row.
+        await this._updateTopUp(record.id, { settlement: { ...this._settlementFromFunding(funding), error: err.message } });
+        throw err;
+      }
+    }
+    if (!['completed', 'failed', 'cancelled'].includes(funding.status)) {
+      await SpritzFiatFundingEngine.reconcile();
+      funding = (await SpritzFiatFundingEngine.get(record.id)) || funding;
+    }
+    const status = funding.status === 'completed' ? 'COMPLETED'
+      : ['failed', 'cancelled'].includes(funding.status) ? 'FAILED'
+        : 'PENDING';
+    const output = funding.onRamp && funding.onRamp.output || {};
+    const hash = output.transactionHash || output.txHash || record.transactionHash || null;
+    const patch = { status, transactionHash: hash, booked: record.booked, settlement: this._settlementFromFunding(funding) };
+    if (record.booked) {
+      Object.assign(patch, {
+        bookOfRecord: record.bookOfRecord, journalEntryId: record.journalEntryId,
+        fineractTransactionId: record.fineractTransactionId, bookedAt: record.bookedAt,
+      });
+    } else if (funding.erpCommit && funding.erpCommit.committed) {
+      Object.assign(patch, this._bookingFromCommit(funding.erpCommit));
+    }
+    return this._updateTopUp(record.id, patch);
   }
 
   /**
@@ -273,8 +450,9 @@ class ThirdwebTreasuryFundingEngine {
   static async syncTopUp(topUpId) {
     const record = await this.getTopUp(topUpId);
     if (!record) throw Object.assign(new Error(`top-up ${topUpId} not found`), { status: 404 });
-    if (!record.paymentId) return record;
     if (TERMINAL_STATUSES.has(record.status) && record.booked) return record;
+    if (record.settlementLeg === ERP_LEG) return this._syncErpTopUp(record);
+    if (!record.paymentId) return record;
 
     const response = await ThirdwebServerWalletEngine._request('GET', `/v1/bridge/payments/${record.paymentId}`);
     const payments = Array.isArray(response) ? response : (response.data || []);
@@ -282,7 +460,10 @@ class ThirdwebTreasuryFundingEngine {
     const status = latest.status || record.status;
     const hash = (latest.transactions || []).map((t) => t.transactionHash).find(Boolean) || record.transactionHash;
 
-    const patch = { status, transactionHash: hash, booked: record.booked };
+    const patch = {
+      status, transactionHash: hash, booked: record.booked, bookOfRecord: record.bookOfRecord,
+      journalEntryId: record.journalEntryId, fineractTransactionId: record.fineractTransactionId, bookedAt: record.bookedAt,
+    };
     if (status === 'COMPLETED' && !record.booked) {
       Object.assign(patch, await this._book(record));
     }
@@ -402,11 +583,14 @@ class ThirdwebTreasuryFundingEngine {
     await pool.query(
       `INSERT INTO thirdweb_treasury_topups
          (id, payment_id, link, chain_id, token_address, symbol, quantity, amount_fiat, currency,
-          recipient, source_type, source_account_id, status, booked, transaction_hash, requested_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          recipient, source_type, source_account_id, status, booked, transaction_hash, requested_by,
+          settlement_leg, settlement, book_of_record, journal_entry_id, fineract_transaction_id, booked_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [record.id, record.paymentId, record.link, record.chainId, record.tokenAddress, record.symbol,
         record.quantity, record.amountFiat, record.currency, record.recipient, record.sourceType,
-        record.sourceAccountId, record.status, record.booked, record.transactionHash, record.requestedBy]
+        record.sourceAccountId, record.status, record.booked, record.transactionHash, record.requestedBy,
+        record.settlementLeg || CHECKOUT_LEG, record.settlement ? JSON.stringify(record.settlement) : null,
+        record.bookOfRecord || null, record.journalEntryId || null, record.fineractTransactionId || null, record.bookedAt || null]
     );
     return record;
   }
@@ -422,10 +606,11 @@ class ThirdwebTreasuryFundingEngine {
     await pool.query(
       `UPDATE thirdweb_treasury_topups
           SET status = $2, transaction_hash = $3, booked = $4, book_of_record = $5,
-              journal_entry_id = $6, fineract_transaction_id = $7, booked_at = $8, updated_at = NOW()
+              journal_entry_id = $6, fineract_transaction_id = $7, booked_at = $8, settlement = $9, updated_at = NOW()
         WHERE id = $1`,
       [topUpId, next.status, next.transactionHash, next.booked, next.bookOfRecord || null,
-        next.journalEntryId || null, next.fineractTransactionId || null, next.bookedAt || null]
+        next.journalEntryId || null, next.fineractTransactionId || null, next.bookedAt || null,
+        next.settlement ? JSON.stringify(next.settlement) : null]
     );
     return next;
   }
@@ -444,6 +629,8 @@ class ThirdwebTreasuryFundingEngine {
       recipient: row.recipient,
       sourceType: row.source_type,
       sourceAccountId: row.source_account_id,
+      settlementLeg: row.settlement_leg || CHECKOUT_LEG,
+      settlement: row.settlement || null,
       status: row.status,
       booked: row.booked,
       bookOfRecord: row.book_of_record || null,
@@ -477,12 +664,12 @@ class ThirdwebTreasuryFundingEngine {
   static async openTopUps({ limit = 500 } = {}) {
     const n = Math.min(Math.max(Number(limit) || 500, 1), 2000);
     if (!pool || !pool.query) {
-      return memoryTopUps.filter((r) => r.paymentId && (!TERMINAL_STATUSES.has(r.status) || (r.status === 'COMPLETED' && !r.booked))).slice(0, n);
+      return memoryTopUps.filter((r) => (r.paymentId || r.settlementLeg === ERP_LEG) && (!TERMINAL_STATUSES.has(r.status) || (r.status === 'COMPLETED' && !r.booked))).slice(0, n);
     }
     await ensureTables();
     const { rows } = await pool.query(
       `SELECT * FROM thirdweb_treasury_topups
-        WHERE payment_id IS NOT NULL
+        WHERE (payment_id IS NOT NULL OR settlement_leg = '${ERP_LEG}')
           AND (status NOT IN ('COMPLETED', 'FAILED') OR (status = 'COMPLETED' AND booked = FALSE))
         ORDER BY created_at ASC LIMIT $1`,
       [n]
