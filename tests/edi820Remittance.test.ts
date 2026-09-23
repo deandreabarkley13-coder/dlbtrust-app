@@ -367,6 +367,45 @@ describe('Edi820RemittanceEngine over MFT Gateway', () => {
     expect(stored.errorMessage).toContain('Unable to find partner');
   });
 
+  it('an unknown EDI_820_TRANSPORT fails closed instead of falling back to AS2', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    process.env.EDI_820_TRANSPORT = 'mftgatway';
+    const result = await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true });
+    expect(result.transmitted).toBe(false);
+    expect(result.reason).toContain('EDI_820_TRANSPORT=mftgatway is not a supported transport');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(transmit).not.toHaveBeenCalled();
+    const readiness = await Edi820RemittanceEngine.readiness();
+    expect(readiness.ready).toBe(false);
+    expect(readiness.mode).toBe('shadow');
+  });
+
+  it('refuses a non-HTTPS or credentialed MFTGATEWAY_API_URL', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    for (const bad of ['http://api.mftgateway.com', 'https://user:pw@api.mftgateway.com', 'not a url']) {
+      process.env.MFTGATEWAY_API_URL = bad;
+      const result = await Edi820RemittanceEngine.emit({ run: run(`ERP-${bad.length}`), fundingCommitted: true });
+      expect(result.transmitted).toBe(false);
+      expect(result.reason).toContain('MFTGATEWAY_API_URL must be an https:// URL');
+      const readiness = await Edi820RemittanceEngine.readiness();
+      expect(readiness.issues.join(' ')).toContain('MFTGATEWAY_API_URL must be an https:// URL');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('every gateway request carries an abort timeout', async () => {
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    process.env.EDI_820_LIVE = 'true';
+    process.env.MFTGATEWAY_TIMEOUT_MS = '5000';
+    await Edi820RemittanceEngine.emit({ run: run(), fundingCommitted: true });
+    await Edi820RemittanceEngine.readiness();
+    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(3);
+    for (const [, init] of fetchMock.mock.calls) expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(MftGatewayClient.getConfig().timeoutMs).toBe(5000);
+  });
+
   it('readiness reports the station and the missing partner id', async () => {
     delete process.env.MFTGATEWAY_PARTNER_AS2_ID;
     delete process.env.EDI_820_RECEIVER_ID;
