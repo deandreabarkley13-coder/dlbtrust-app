@@ -258,6 +258,7 @@ class OpenACHClient {
     payment_type_id,
     amount,
     send_date,
+    end_date = null,
     currency_code = 'USD',
     occurrences = 1,
     frequency = 'once',
@@ -271,6 +272,7 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: currency_code,
         payment_schedule_next_date: send_date,
+        payment_schedule_end_date: end_date || send_date,
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       };
@@ -334,6 +336,7 @@ class OpenACHClient {
     // Payment
     amount,
     send_date,
+    end_date = null,
     payment_type_id,
     frequency = 'once',
     occurrences = 1,
@@ -395,6 +398,7 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: 'USD',
         payment_schedule_next_date: send_date,
+        payment_schedule_end_date: end_date || send_date,
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       });
