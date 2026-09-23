@@ -46,7 +46,9 @@ class BondIssuanceEngine {
     const env = process.env;
     return {
       enabled: String(env.BOND_ISSUANCE_ENABLED || 'true').toLowerCase() !== 'false',
-      savingsProductId: Number(env.FINERACT_SAVINGS_PRODUCT_ID || 1),
+      savingsProductId: env.FINERACT_SAVINGS_PRODUCT_ID ? Number(env.FINERACT_SAVINGS_PRODUCT_ID) : null,
+      savingsProductName: env.FINERACT_SAVINGS_PRODUCT_NAME || 'Trust Account of Record (USD)',
+      paymentTypeName: env.FINERACT_PAYMENT_TYPE_NAME || 'Ledger Transfer',
       autoIntake: String(env.BOND_ISSUANCE_AUTO_INTAKE || 'false').toLowerCase() === 'true',
       parties: {
         issuer: {
@@ -123,6 +125,31 @@ class BondIssuanceEngine {
     return r || null;
   }
 
+  /** Savings product the party accounts are opened under: FINERACT_SAVINGS_PRODUCT_ID, else lookup/create by name. */
+  static async ensureSavingsProduct() {
+    const cfg = this.getConfig();
+    const products = await FineractClient.listSavingsProducts();
+    if (cfg.savingsProductId) {
+      const byId = products.find((p) => Number(p.id) === cfg.savingsProductId);
+      if (!byId) throw httpError(`Fineract savings product ${cfg.savingsProductId} (FINERACT_SAVINGS_PRODUCT_ID) not found`, 503, 'SAVINGS_PRODUCT_NOT_FOUND');
+      return byId;
+    }
+    const byName = products.find((p) => p.name === cfg.savingsProductName);
+    if (byName) return byName;
+    const created = await FineractClient.createSavingsProduct({ name: cfg.savingsProductName, shortName: 'TAOR' });
+    return { id: created.resourceId || created.id, name: cfg.savingsProductName };
+  }
+
+  /** Payment type stamped on issuer->holder Fineract transactions (lookup/create by name). */
+  static async ensurePaymentType() {
+    const cfg = this.getConfig();
+    const types = await FineractClient.listPaymentTypes();
+    const found = types.find((t) => t.name === cfg.paymentTypeName);
+    if (found) return Number(found.id);
+    const created = await FineractClient.createPaymentType({ name: cfg.paymentTypeName, description: 'Internal ledger transfer between trust accounts of record' });
+    return Number(created.resourceId || created.id);
+  }
+
   /** Create/lookup the Fineract client + active savings account for one party. Idempotent. */
   static async ensureParty(role) {
     if (!ROLES.includes(role)) throw httpError(`unknown party role '${role}'`, 400);
@@ -142,7 +169,8 @@ class BondIssuanceEngine {
     const acctExternalId = `${p.externalId}:savings`;
     let account = await this._findSavings(acctExternalId);
     if (!account) {
-      const created = await FineractClient.createSavingsAccount({ clientId, productId: cfg.savingsProductId, externalId: acctExternalId });
+      const product = await this.ensureSavingsProduct();
+      const created = await FineractClient.createSavingsAccount({ clientId, productId: Number(product.id), externalId: acctExternalId });
       const accountId = created.savingsId || created.resourceId || created.id;
       await FineractClient.commandSavingsAccount(accountId, 'approve');
       await FineractClient.commandSavingsAccount(accountId, 'activate');
@@ -216,7 +244,8 @@ class BondIssuanceEngine {
     const amt = round2(amountUsd);
     if (!(amt > 0)) throw httpError('amountUsd must be positive', 400);
     const issuer = await this.ensureParty('issuer');
-    const txn = await FineractClient.depositSavings({ accountId: issuer.fineract.accountId, amount: amt, note: note || `Issuer capital (${actor || 'operator'})` });
+    const paymentTypeId = await this.ensurePaymentType();
+    const txn = await FineractClient.depositSavings({ accountId: issuer.fineract.accountId, amount: amt, paymentTypeId, note: note || `Issuer capital (${actor || 'operator'})` });
     const account = await FineractClient.getAccountBalance(issuer.fineract.accountId);
     return { transactionId: String(txn.resourceId || txn.id || ''), issuer: this._partyView('issuer', this.getConfig().parties.issuer, { clientId: issuer.fineract.clientId, account }) };
   }
@@ -316,9 +345,10 @@ class BondIssuanceEngine {
 
     const label = kind === 'coupon' ? 'Coupon' : 'Principal';
     const note = `${label} ${period} ${bondCode} [${id}]`;
-    let withdrawal;
+    let withdrawal; let paymentTypeId;
     try {
-      withdrawal = await FineractClient.withdrawSavings({ accountId: issuerAcct, amount, transactionDate: new Date(), note: `${note} -> holder` });
+      paymentTypeId = await this.ensurePaymentType();
+      withdrawal = await FineractClient.withdrawSavings({ accountId: issuerAcct, amount, transactionDate: new Date(), paymentTypeId, note: `${note} -> holder` });
     } catch (err) {
       await this._fail(id, `fineract issuer withdrawal: ${err.message}`);
       throw httpError(`Fineract withdrawal from issuer account failed: ${err.message}`, 502, 'FINERACT_WITHDRAWAL_FAILED');
@@ -326,7 +356,7 @@ class BondIssuanceEngine {
     const withdrawalId = String(withdrawal.resourceId || withdrawal.id || '');
     let deposit;
     try {
-      deposit = await FineractClient.depositSavings({ accountId: holderAcct, amount, transactionDate: new Date(), note: `${note} <- issuer` });
+      deposit = await FineractClient.depositSavings({ accountId: holderAcct, amount, transactionDate: new Date(), paymentTypeId, note: `${note} <- issuer` });
     } catch (err) {
       await this._fail(id, `fineract holder deposit (issuer withdrawal ${withdrawalId} stands): ${err.message}`);
       throw httpError(`Fineract deposit to holder account failed: ${err.message}`, 502, 'FINERACT_DEPOSIT_FAILED', { withdrawalId });
