@@ -1028,6 +1028,7 @@ router.get('/thirdweb/sponsorship/policy', operatorAuth, async (req, res) => {
       success: true,
       data: {
         policy: ThirdwebSponsorshipPolicy.describe(),
+        checklist: await ThirdwebSponsorshipPolicy.goLiveChecklist(),
         recentDecisions: await ThirdwebSponsorshipPolicy.recentDecisions(req.query.limit),
       },
     });

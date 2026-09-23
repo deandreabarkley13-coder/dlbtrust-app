@@ -50,6 +50,19 @@ describe('shadow paymaster whitelisting', () => {
   });
 });
 
+// A read-only status view must work without the operator signing key,
+// otherwise one credentialed read hides the whole panel.
+describe('shadow paymaster balance', () => {
+  it('reports shadow without an operator signing key', async () => {
+    process.env.AA_SHADOW = 'true';
+    delete process.env.DAPP_PRIVATE_KEY;
+    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 0 } as any);
+
+    const balance = await AccountAbstractionEngine.getPaymasterBalance();
+    expect(balance.shadow).toBe(true);
+  });
+});
+
 describe('dApp auth identity resolution', () => {
   it('keeps the user session as the identity when an admin token is sent alongside it', async () => {
     process.env.ADMIN_SECRET_TOKEN = 'test-admin-token';
