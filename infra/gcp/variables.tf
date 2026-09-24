@@ -185,6 +185,18 @@ variable "runtime_environment" {
     STRIPE_INTAKE_ENABLED         = "true"
     STRIPE_INTAKE_PAYMENT_METHODS = "card,us_bank_account"
     STRIPE_INTAKE_RETURN_URL      = "https://dlbtrust-app-r5oawu76jq-ue.a.run.app"
+    # Payment Processor OS (server/integrations/os/paymentProcessorOsEngine.js):
+    # maker/checker front door to paymentProcessorServerEngine / gateway /
+    # Payment Hub. Shadow until PAYMENT_PROCESSOR_LIVE=true; a live plan needs
+    # STRIPE_SECRET_KEY, STRIPE_PAYMENTS_SECRET_KEY and PAYMENT_DATA_ENCRYPTION_KEY
+    # in secret_names (cloudrun.tf precondition, secrets.tf
+    # missing_payment_processor_secrets). The approval/screening gates cannot be
+    # relaxed in a live plan; GET /api/os/readiness/payment-processor lists the blockers.
+    PAYMENT_PROCESSOR_LIVE                  = "false"
+    PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF  = "true"
+    PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF = "true"
+    PAYMENT_PROCESSOR_DEFAULT               = "lili"
+
     # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
     INCOME_OBLIGOR_NAME          = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     INCOME_OBLIGOR_EIN           = "99-6411566"

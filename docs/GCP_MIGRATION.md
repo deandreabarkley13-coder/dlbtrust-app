@@ -657,10 +657,10 @@ channel is configured (nothing leaves the platform).
 The eight platform engines are audited by one module,
 `server/integrations/os/engineWiringReadiness.js`, exposed as
 `GET /api/os/readiness` (all eight; HTTP 503 until every engine is `ready`) and
-`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os}`.
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os|payment-processor}`.
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
-`interop`, `credit`, `debt`, `liquidity`, `funding-os` map onto the nine reports; other engines get the generic Cloud SQL +
+`interop`, `credit`, `debt`, `liquidity`, `funding-os`, `payment-processor` map onto the ten reports; other engines get the generic Cloud SQL +
 project check). Each report carries `gcp` (project vs. the expected
 `dlb-treasury-management`, Cloud Run revision, Cloud SQL connectivity, evidence
 bucket), `tables` (which Cloud SQL tables exist), `liveFlags`, `secrets` and
@@ -682,6 +682,7 @@ reported as a blocker.
 | Debt OS | OS `DebtEngine` → `debtOsEngine` (`obligations()` via `LiveBondEngine.getBondLiveMetrics`, `placementCompliance()`, `schedule(days)`) | `/api/os/debt/*`, `/api/os/readiness/debt`, `/api/bonds/*` | Private placement only: every bond must have `placement_type='private'`; holders (`crm_bond_subscriptions` → `crm_contacts`) must be `trustee`/`beneficiary` with verified KYC and clear AML. `PUBLIC_OFFER=false`, `TRANSFERABLE=false` are fixed. `live` iff compliant | `bonds`, `bond_balances`, `bond_transactions`, `coupon_payments` (ensured at boot by `DebtEngine.ensureTables` → `CouponService.ensureTable`), `crm_bond_subscriptions`, `crm_contacts` | — | none beyond `DATABASE_URL`; `FINERACT_*` for GL posting of accruals/coupons |
 | Liquidity OS | OS `LiquidityEngine` → `liquidityOsEngine` (`cashPosition()` via `CashEngine.getPositionSummary`, `coverage()` at 30/90/365d against the Debt OS schedule, reserve tier vs annual coupon, real-value payout via Credit OS funding sources) | `/api/os/liquidity/*`, `/api/os/readiness/liquidity`, `/api/cash/*` | `live` iff every horizon is covered by liquid ledger cash (`operating`+`reserve`+`bond_proceeds`; `distribution`/`escrow`/`fee` are earmarked), reserve ≥ 1x annual coupon, and a real-value payout source exists. Balances are `cash_accounts` book balances, not bank-confirmed funds | `cash_accounts`, `cash_movements`, `bonds`, `bond_balances`, `coupon_payments` | — | none beyond `DATABASE_URL`; payout needs a credit-engine funding source |
 | Funding OS | OS `FundingOsPlatformEngine` → `fundingOsEngine` (`sources()` = Credit OS funding sources + `manual_bank_deposit` + Lili destination with `canFundLedger`/`canOriginateBankCredit`; `funding_requests` maker/checker flow `request-funding` → `approve-funding` (distinct approver) → `confirm-funding` (requires bank/provider `externalRef`, posts `CashEngine.deposit`); `unified-path` = fund_ledger + Debt OS bank stages) | `/api/os/funding-os/*`, `/api/os/readiness/funding-os` | `live` iff a real-value source exists (live Stripe Treasury or external bank ODFI); otherwise `shadow` — requests can still be recorded and confirmed manually against a bank reference. The ledger is never credited without an external reference | `funding_requests`, `cash_accounts`, `cash_movements` | — | none beyond `DATABASE_URL`; live needs a Credit OS real-value source |
+| Payment Processor OS | OS `PaymentProcessorPlatformEngine` → `paymentProcessorOsEngine` wrapping `PaymentProcessorServerEngine.processPayment`, `paymentGatewayServerEngine`, `paymentHubEngine`; maker/checker flow `submit` (maker, `requestedBy`) → `approve` (distinct `approvedBy`) → dispatch. Every real-value submission must carry `approvalRef` + `screeningRef` (same fail-closed rule as `ApiGatewayClearingEngine` / `BankSettlementEngine`) and self-loopback partners (`DLBTRUST-DIRECT`, `partner_url=direct`, own `APP_URL`) are refused. The Lili rail dispatches through `BankSettlementEngine.clearAndSettle` (`api_gateway` rail → `ApiGatewayClearingEngine.clearPayment`); `pipeline` = submission counts + live exposure, also the `payment_processor` stage of `POST /api/os/canonical-money/process action=pipeline` | `/api/os/payment-processor/{status,readiness,list,process}` (actions `submit`, `approve`, `cancel`, `status`, `reconcile`, `list`, `pipeline`, `processors`; direct calls like `processPayment`/`sale`/`clearPayment` are rejected), `/api/os/readiness/payment-processor` | `PAYMENT_PROCESSOR_LIVE` (default `false` → every submission is recorded as `shadow`, no provider call); `live` iff it is `true` **and** a real-value processor exists: live `STRIPE_SECRET_KEY` (+ `STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`), `PAYMENT_HUB_LIVE=true`, `LILI_CLEARING_LIVE=true` or `CLEARING_API_ENDPOINT` (+ `CLEARING_API_KEY`). `PAYMENT_PROCESSOR_REQUIRE_{APPROVAL,SCREENING}_REF` must stay `true` (cloudrun.tf precondition) | `payment_processor_transactions`, `payment_gateway_transactions`, `payment_intents`, `payment_approvals`, `payment_processor_submissions`, `os_events` (bootstrapped by `OSEngine.ensureAll`) | evidence bucket via the gateway pipeline | `STRIPE_SECRET_KEY`, `STRIPE_PAYMENTS_SECRET_KEY`, `PAYMENT_DATA_ENCRYPTION_KEY` (cloudrun.tf precondition when `PAYMENT_PROCESSOR_LIVE=true`, `local.missing_payment_processor_secrets`); the Lili rail inherits `lili_secret_names` + `PAYMENT_SERVER_SERVICE_TOKEN`; PHEE inherits the Payment Hub set |
 
 Status on `dlb-treasury-management` at the time of writing:
 
@@ -724,6 +725,20 @@ Status on `dlb-treasury-management` at the time of writing:
   least 1x the annual coupon and a real-value payout source exists (today
   bond proceeds sit in `bond_proceeds`, `reserve` is 0, and the only payout
   source is the loopback partner).
+- **Payment Processor OS** — wired; `shadow` on the deployed project
+  (`PAYMENT_PROCESSOR_LIVE=false`, Stripe key is `sk_test_`). Go-live steps:
+  (1) seed `STRIPE_SECRET_KEY` (live), `STRIPE_PAYMENTS_SECRET_KEY` and
+  `PAYMENT_DATA_ENCRYPTION_KEY` versions and keep them in `secret_names`;
+  (2) bring at least one processor to real value (live Stripe Treasury,
+  `PAYMENT_HUB_LIVE=true` with the PHEE secrets, or `LILI_CLEARING_LIVE=true`
+  with the Lili OAuth secrets and an external ODFI partner — not
+  `DLBTRUST-DIRECT`); (3) set `runtime_environment.PAYMENT_PROCESSOR_LIVE="true"`
+  leaving both `*_REQUIRE_*_REF` flags `true` and `terraform apply` (the
+  cloudrun.tf preconditions fail otherwise); (4) confirm
+  `GET /api/os/readiness/payment-processor` reports `mode: live` with an
+  empty `blockers` list and `GET /api/os/readiness` returns 200. Until then
+  `submit`/`approve` still record maker/checker submissions in
+  `payment_processor_submissions` but never call a provider.
 
 Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
 the admin token): Cloud SQL connected, evidence bucket present, all five

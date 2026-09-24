@@ -56,6 +56,7 @@ const {
   DebtEngine,
   LiquidityEngine,
   FundingOsPlatformEngine,
+  PaymentProcessorPlatformEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -74,6 +75,9 @@ const APPROVAL_GATED_ACTIONS = {
   nickel: new Set(['payBill', 'submitInvoice', 'settlePayment', 'settle']),
   apisix: new Set(['sendPayment', 'sendWire', 'createPayment', 'sendPush', 'pushToCard']),
   apigee: new Set(['sendPayment', 'sendWire', 'createPayment', 'sendPush', 'pushToCard']),
+  // Direct processor calls never run from the OS route: money moves only through
+  // the maker/checker submit → approve flow of PaymentProcessorOsEngine.
+  'payment-processor': new Set(['processPayment', 'process-payment', 'sale', 'authorize', 'capture', 'refund', 'void', 'clearPayment', 'clearAndSettle', 'sendPayment', 'createIntent', 'submitIntent', 'execute', 'dispatch']),
 };
 
 const ENGINES = {
@@ -118,6 +122,7 @@ const ENGINES = {
   debt: DebtEngine,
   liquidity: LiquidityEngine,
   'funding-os': FundingOsPlatformEngine,
+  'payment-processor': PaymentProcessorPlatformEngine,
 };
 
 function sendError(res, err) {

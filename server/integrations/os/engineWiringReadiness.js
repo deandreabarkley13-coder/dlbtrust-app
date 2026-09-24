@@ -13,6 +13,7 @@
  *   debt             Debt OS                 DebtOsEngine: private-placement bond obligations, holder compliance, schedule
  *   liquidity        Liquidity OS            LiquidityOsEngine: cash coverage of debt service, reserve tier
  *   funding-os       Funding OS              FundingOsEngine: real-value sources, funding requests → ledger
+ *   payment-processor Payment Processor OS   PaymentProcessorOsEngine: gated processor/gateway/hub submissions
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -25,7 +26,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -37,6 +38,7 @@ const ENGINE_TITLES = {
   debt: 'Debt OS Engine',
   liquidity: 'Liquidity OS Engine',
   'funding-os': 'Funding OS Engine',
+  'payment-processor': 'Payment Processor OS Engine',
 };
 
 const TABLES = {
@@ -49,6 +51,7 @@ const TABLES = {
   debt: ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'crm_contacts'],
   liquidity: ['cash_accounts', 'cash_movements', 'bonds', 'bond_balances', 'coupon_payments'],
   'funding-os': ['funding_requests', 'cash_accounts', 'cash_movements'],
+  'payment-processor': ['payment_processor_transactions', 'payment_gateway_transactions', 'payment_intents', 'payment_approvals', 'payment_processor_submissions', 'os_events'],
 };
 
 function tryRequire(mod) {
@@ -297,6 +300,7 @@ const REPORTERS = {
   debt: debtReadiness,
   liquidity: liquidityReadiness,
   'funding-os': fundingOsReadiness,
+  'payment-processor': paymentProcessorReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -441,6 +445,61 @@ async function fundingOsReadiness(ctx) {
     },
     routes: ['/api/os/funding-os/{status,readiness,process}', '/api/os/readiness/funding-os'],
     secrets: ['STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, or an external bank ODFI partner; manual_bank_deposit needs none'],
+    tables,
+    blockers,
+  };
+}
+
+async function paymentProcessorReadiness(ctx) {
+  const P = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
+  const inventory = P ? await settle(() => P.processors()) : { ok: false, error: 'PaymentProcessorOsEngine unavailable' };
+  const pipeline = P ? await settle(() => P.pipeline()) : { ok: false, error: 'PaymentProcessorOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES['payment-processor']);
+  const env = process.env;
+  const cfg = inventory.ok ? inventory.value.config : (P ? P.getConfig() : {});
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!inventory.ok) blockers.push(`payment processor: ${inventory.error}`);
+  else {
+    const modules = { processor: Boolean(P._processor()), gateway: Boolean(P._gateway()), paymentHub: Boolean(P._hub()), bankSettlement: Boolean(P._settlement()), gatewayClearing: Boolean(P._gatewayClearing()) };
+    const notLoadable = Object.entries(modules).filter(([, ok]) => !ok).map(([k]) => k);
+    if (notLoadable.length) blockers.push(`payment processor modules not loadable: ${notLoadable.join(', ')}`);
+    if (!cfg.live) blockers.push('PAYMENT_PROCESSOR_LIVE is not true (runtime_environment in infra/gcp/variables.tf); submissions are recorded in shadow mode');
+    if (!inventory.value.anyRealValueCapable) {
+      const reasons = inventory.value.sources.filter((s) => s.liveFlag && !s.realValueCapable).map((s) => `${s.id}: ${s.reason}`);
+      blockers.push(`no real-value processor: ${reasons.join('; ')}`);
+    }
+    if (!cfg.requireApproval) blockers.push('PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF=false disables the approvalRef gate');
+    if (!cfg.requireScreening) blockers.push('PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF=false disables the screeningRef gate');
+    if (cfg.stripeKeyMode === 'live' && !cfg.stripePaymentsKeyMode) blockers.push('STRIPE_PAYMENTS_SECRET_KEY not set (restricted payments key; secrets.tf payment_hub_secret_names)');
+    if (cfg.stripePaymentsKeyMode === 'test') blockers.push('STRIPE_PAYMENTS_SECRET_KEY is sk_test_ (test mode)');
+    if (cfg.liliClearingLive && !env.PAYMENT_SERVER_SERVICE_TOKEN) blockers.push('PAYMENT_SERVER_SERVICE_TOKEN not set (S2S settlement server behind the Lili rail)');
+    if (cfg.clearingApiEndpoint && !cfg.clearingApiKey) blockers.push('CLEARING_API_KEY not set while CLEARING_API_ENDPOINT is configured');
+  }
+  if (!env.PAYMENT_DATA_ENCRYPTION_KEY) blockers.push('PAYMENT_DATA_ENCRYPTION_KEY not set (payment methods are stored encrypted)');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const realValue = inventory.ok && inventory.value.anyRealValueCapable;
+  return {
+    provider: realValue ? inventory.value.realValueCapable.join('+') : 'shadow (no real-value processor)',
+    mode: cfg.live && realValue ? 'live' : 'shadow',
+    liveFlags: {
+      PAYMENT_PROCESSOR_LIVE: Boolean(cfg.live),
+      STRIPE_KEY_MODE: cfg.stripeKeyMode || null,
+      STRIPE_PAYMENTS_KEY_MODE: cfg.stripePaymentsKeyMode || null,
+      PAYMENT_HUB_LIVE: isTrue(env.PAYMENT_HUB_LIVE),
+      LILI_CLEARING_LIVE: isTrue(env.LILI_CLEARING_LIVE),
+      CLEARING_API_ENDPOINT: cfg.clearingApiEndpoint || null,
+      REQUIRE_APPROVAL_REF: cfg.requireApproval !== false,
+      REQUIRE_SCREENING_REF: cfg.requireScreening !== false,
+      REAL_VALUE_PROCESSORS: inventory.ok ? inventory.value.realValueCapable : [],
+    },
+    modules: {
+      processors: inventory.ok ? inventory.value.sources : { error: inventory.error },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+    },
+    routes: ['/api/os/payment-processor/{status,readiness,list,process}', '/api/os/readiness/payment-processor', '/api/os/canonical-money/process action=pipeline (payment_processor stage)'],
+    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID', 'STRIPE_PAYMENTS_SECRET_KEY', 'PAYMENT_HUB_AUTH_TOKEN', 'PAYMENT_HUB_SERVICE_TOKEN', 'PAYMENT_HUB_WEBHOOK_SECRET', 'PAYMENT_SERVER_SERVICE_TOKEN + Lili OAuth secrets (Lili rail)', 'CLEARING_API_KEY (only when CLEARING_API_ENDPOINT is set)'],
     tables,
     blockers,
   };
