@@ -130,6 +130,8 @@ const ProofOfAssetOsEngine = {
       enabled: String(env.PROOF_OF_ASSET_ENABLED || 'true').toLowerCase() !== 'false',
       intervalMinutes: Number.isFinite(n) && n >= 0 ? n : 0,
       holderCashAccount: env.PROOF_OF_ASSET_HOLDER_CASH_ACCOUNT || HOLDER_CASH_ACCOUNT,
+      autoCertify: String(env.PROOF_OF_ASSET_AUTO_CERTIFY || 'false').toLowerCase() === 'true',
+      certifier: env.PROOF_OF_ASSET_CERTIFIER || null,
     };
   },
 
@@ -393,13 +395,24 @@ const ProofOfAssetOsEngine = {
     return rowToProof(rows[0]);
   },
 
-  async proveAll({ createdBy = 'scheduler' } = {}) {
+  /**
+   * Prove every issued bond + the portfolio. With PROOF_OF_ASSET_AUTO_CERTIFY=true
+   * each `proven` proof is certified under PROOF_OF_ASSET_CERTIFIER; variance and
+   * unproven proofs are never auto-certified.
+   */
+  async proveAll({ createdBy = 'scheduler', autoCertify = null } = {}) {
     await this.ensureTables();
+    const cfg = this.config();
+    const certify = autoCertify == null ? cfg.autoCertify : Boolean(autoCertify);
+    if (certify && !cfg.certifier) throw new ProofOfAssetError('PROOF_OF_ASSET_CERTIFIER required for auto-certification', 'CERTIFIER_REQUIRED', 400);
     const { rows } = await pool.query('SELECT bond_id FROM bond_issuances ORDER BY bond_id');
     const proofs = [];
     for (const r of rows) proofs.push(await this.prove({ bondId: Number(r.bond_id), createdBy }));
     proofs.push(await this.prove({ bondId: null, createdBy }));
-    return proofs;
+    if (!certify) return proofs;
+    return Promise.all(proofs.map((p) => (p.verdict === 'proven'
+      ? this.certify(p.proofId, { certifiedBy: `auto:${createdBy}`, signerName: cfg.certifier })
+      : Promise.resolve(p))));
   },
 
   async get(id) {
@@ -466,8 +479,11 @@ const ProofOfAssetOsEngine = {
     if (!FineractClient) issues.push('FineractClient unavailable');
     if (!latest) issues.push('no portfolio proof yet (POST /api/proof-of-asset/proofs)');
     else if (latest.verdict !== 'proven') issues.push(`latest portfolio proof is ${latest.verdict}`);
+    else if (!latest.certifiedBy) issues.push(`latest portfolio proof ${latest.proofId} is not certified`);
+    if (cfg.autoCertify && !cfg.certifier) issues.push('PROOF_OF_ASSET_AUTO_CERTIFY set without PROOF_OF_ASSET_CERTIFIER');
     return {
       enabled: cfg.enabled, ready: cfg.enabled && issues.length === 0, issues,
+      autoCertify: cfg.autoCertify, certifier: cfg.certifier,
       scheduler: { ...schedulerState, intervalMinutes: cfg.intervalMinutes },
       latest: latest ? { proofId: latest.proofId, verdict: latest.verdict, asOf: latest.asOf, recordOfValueCents: latest.recordOfValueCents, fineractHeldCents: latest.fineractHeldCents, fiatSettledCents: latest.fiatSettledCents, hash: latest.hash, certifiedBy: latest.certifiedBy } : null,
       counts: counts.rows.map((r) => ({ verdict: r.verdict, count: r.n })),

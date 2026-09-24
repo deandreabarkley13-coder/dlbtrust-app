@@ -198,6 +198,8 @@ variable "runtime_environment" {
     BOND_ISSUANCE_RUN_DUE_MS     = "3600000"
     PROOF_OF_ASSET_ENABLED       = "true"
     PROOF_OF_ASSET_INTERVAL_MINUTES = "1440"
+    PROOF_OF_ASSET_AUTO_CERTIFY  = "true"
+    PROOF_OF_ASSET_CERTIFIER     = "DeAndrea Lavar Barkley, Trustee"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED             = "true"
     LILI_MCP_URL                 = "https://mcp.lili.co/mcp"
