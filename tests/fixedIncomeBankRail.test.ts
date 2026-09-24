@@ -20,6 +20,7 @@ const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fix
 const { TrustAdministrationWorkflowEngine } = require('../server/integrations/trust/trustAdministrationWorkflowEngine');
 const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
 const { BondIssuanceEngine } = require('../server/integrations/bonds/bondIssuanceEngine');
+const { ProofOfAssetOsEngine } = require('../server/integrations/os/proofOfAssetOsEngine');
 const { DepositAndSettlementEngine } = require('../server/integrations/payments/depositAndSettlementEngine');
 
 type Row = Record<string, any>;
@@ -179,10 +180,12 @@ describe('TrustAdministrationWorkflowEngine', () => {
     vi.spyOn(SettlementBankRegistry, 'list').mockResolvedValue([LILI]);
     vi.spyOn(BankSettlementEngine, 'readiness').mockResolvedValue({ bankId: 'lili', provider: 'lili', mode: 'live', ready: true, blockers: [], bank: SettlementBankRegistry.publicView(LILI) });
     vi.spyOn(BankSettlementEngine, 'list').mockResolvedValue([]);
+    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: true, issues: [], latest: { verdict: 'proven' } });
 
     const w = await TrustAdministrationWorkflowEngine.status();
     expect(w.ready).toBe(false);
     expect(w.gaps).toEqual(['distribution: lili: Stripe balance is test-mode']);
+    expect(w.stages.proof.status.latest.verdict).toBe('proven');
     expect(w.stages.issuance.status.issuances).toBe(1);
     expect(w.stages.intake.recent).toHaveLength(1);
     expect(w.stages.ledger.deposits).toEqual([{ order_id: 'DEP-1' }]);
@@ -202,9 +205,10 @@ describe('TrustAdministrationWorkflowEngine', () => {
     vi.spyOn(FixedIncomeDistributionEngine, 'summary').mockResolvedValue([]);
     vi.spyOn(SettlementBankRegistry, 'list').mockResolvedValue([]);
     vi.spyOn(BankSettlementEngine, 'list').mockResolvedValue([]);
+    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: false, issues: ['no portfolio proof yet'] });
     const w = await TrustAdministrationWorkflowEngine.status();
     expect(w.ready).toBe(false);
-    expect(w.gaps).toEqual(['issuance: issuer Fineract account not provisioned', 'intake: stripe down', 'settlement: not ready']);
+    expect(w.gaps).toEqual(['issuance: issuer Fineract account not provisioned', 'intake: stripe down', 'settlement: not ready', 'proof: no portfolio proof yet']);
     expect(w.stages.distribution.ready).toBe(true);
   });
 });

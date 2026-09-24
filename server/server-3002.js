@@ -191,6 +191,7 @@ try { app.use('/api/bond-redemption-os', require(path.join(HD, 'server', 'routes
 try { app.use('/api/collateral-os', require(path.join(HD, 'server', 'routes', 'collateralOs'))); console.log('[collateral-os] loaded'); } catch(e) { console.warn('[collateral-os]', e.message); }
 try { app.use('/api/fixed-income', require(path.join(HD, 'server', 'routes', 'fixedIncome'))); console.log('[fixed-income] loaded'); } catch(e) { console.warn('[fixed-income]', e.message); }
 try { app.use('/api/bond-issuance', require(path.join(HD, 'server', 'routes', 'bondIssuance'))); console.log('[bond-issuance] loaded'); } catch(e) { console.warn('[bond-issuance]', e.message); }
+try { app.use('/api/proof-of-asset', require(path.join(HD, 'server', 'routes', 'proofOfAsset'))); console.log('[proof-of-asset] loaded'); } catch(e) { console.warn('[proof-of-asset]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
@@ -1123,6 +1124,25 @@ initializeDatabase().then(function() {
       }, function() { if (issuanceTimer) { clearInterval(issuanceTimer); issuanceTimer = null; } });
     }
   } catch(e) { console.warn('[bond-issuance] scheduler:', e.message); }
+
+  // Proof of Asset: prove every issued bond + the portfolio across contract,
+  // Fineract, GL, fiat settlement and custody. OFF unless PROOF_OF_ASSET_INTERVAL_MINUTES > 0.
+  try {
+    var proofMinutes = parseInt(process.env.PROOF_OF_ASSET_INTERVAL_MINUTES || '0', 10);
+    if (proofMinutes > 0) {
+      var proofTimer = null;
+      leader.register('proof-of-asset', function() {
+        proofTimer = setInterval(function() {
+          var ProofOfAssetOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'proofOfAssetOsEngine')).ProofOfAssetOsEngine;
+          ProofOfAssetOsEngine.schedulerState.nextRunAt = new Date(Date.now() + proofMinutes * 60000).toISOString();
+          ProofOfAssetOsEngine.proveAll().then(function(proofs) {
+            console.log('[proof-of-asset] ' + proofs.map(function(p) { return (p.scope === 'bond' ? 'bond ' + p.bondId : 'portfolio') + '=' + p.verdict; }).join(', '));
+          }).catch(function(err) { console.warn('[proof-of-asset] tick failed:', err.message); });
+        }, proofMinutes * 60000);
+        console.log('[proof-of-asset] scheduler started every ' + proofMinutes + ' minutes');
+      }, function() { if (proofTimer) { clearInterval(proofTimer); proofTimer = null; } });
+    }
+  } catch(e) { console.warn('[proof-of-asset] scheduler:', e.message); }
 
   // OpenACH NACHA file relay: export bucket -> ODFI via MFT Gateway.
   // OFF unless OPENACH_FILE_RELAY_INTERVAL_MS is set; the relay itself fails closed
