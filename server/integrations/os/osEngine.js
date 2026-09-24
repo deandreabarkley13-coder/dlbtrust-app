@@ -8272,22 +8272,25 @@ async function unifiedPipeline({ limit = 20 } = {}) {
   const Funding = tryRequire('../fineract/canonicalFundingSource')?.CanonicalFundingSource;
   const GatewayClearing = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
   const PaymentProcessor = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
-  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing, paymentProcessor] = await Promise.all([
+  const PaymentGateway = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
+  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing, paymentProcessor, paymentGateway] = await Promise.all([
     SpritzLeg ? settle(SpritzLeg.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'SpritzTreasuryLegEngine not available' }),
     ControlPlane ? settle(ControlPlane.controlPlane()) : Promise.resolve({ ok: false, error: 'TrustControlPlaneEngine not available' }),
     Collateral ? settle(Collateral.status()) : Promise.resolve({ ok: false, error: 'CollateralOsEngine not available' }),
     Funding ? settle(Promise.resolve(Funding.readiness())) : Promise.resolve({ ok: false, error: 'CanonicalFundingSource not available' }),
     GatewayClearing ? settle(GatewayClearing.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'ApiGatewayClearingEngine not available' }),
     PaymentProcessor ? settle(PaymentProcessor.status()) : Promise.resolve({ ok: false, error: 'PaymentProcessorOsEngine not available' }),
+    PaymentGateway ? settle(PaymentGateway.status()) : Promise.resolve({ ok: false, error: 'PaymentGatewayOsEngine not available' }),
   ]);
   return {
-    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing', 'payment_processor'],
+    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing', 'payment_processor', 'payment_gateway'],
     canonicalFunding,
     treasuryLeg,
     controlPlane,
     collateral,
     gatewayClearing,
     paymentProcessor,
+    paymentGateway,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -9116,6 +9119,54 @@ class PaymentProcessorPlatformEngine extends BaseOSEngine {
   }
 }
 
+// ─── Payment Gateway OS Engine ────────────────────────────────────────────────
+// Disbursement gateway for trust distributions / disbursements: tokenized
+// beneficiary payout methods, submit (maker) → approve (distinct checker,
+// approvalRef + screeningRef for real value, bound distribution request must be
+// two-trustee approved, self-loopback refused) → PaymentGatewayServerEngine.
+
+class PaymentGatewayPlatformEngine extends BaseOSEngine {
+  static get engineName() { return 'payment-gateway'; }
+  static get platformEngine() { return 'payment-gateway'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const G = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
+    if (G && pool) await G.ensureTables();
+  }
+
+  static async status() {
+    const G = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
+    if (!G) return { engine: 'payment-gateway', healthy: false, mode: 'shadow', integrations: { paymentGatewayOs: false }, timestamp: new Date().toISOString() };
+    const s = await G.status();
+    return { ...s, integrations: { ...s.integrations, paymentGatewayOs: true } };
+  }
+
+  static async _process(action, payload = {}) {
+    const G = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
+    if (!G) return { mode: 'shadow', note: 'PaymentGatewayOsEngine not available' };
+    switch (action) {
+      case 'processors': return await G.processors();
+      case 'pipeline': return await G.pipeline();
+      case 'tokenize': return await G.tokenize(payload);
+      case 'methods': return await G.methods(payload);
+      case 'disableMethod': return await G.disableMethod(payload);
+      case 'list': return await G.listIntents(payload);
+      case 'submit': return await G.submit(payload);
+      case 'approve': return await G.approve(payload);
+      case 'cancel': return await G.cancel(payload);
+      case 'reconcile': return await G.reconcile(payload);
+      case 'webhook': return await G.webhook(payload);
+      case 'readiness': return await this.readiness();
+      case 'status':
+        if (payload.intentId || payload.gatewayTxId) return await G.intentStatus(payload);
+        return await this.status();
+      default:
+        throw Object.assign(new Error(`Unknown payment-gateway action: ${action}. Disbursements must go through submit → approve`), { status: 400 });
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -9159,6 +9210,7 @@ const ENGINES = {
   liquidity: LiquidityEngine,
   'funding-os': FundingOsPlatformEngine,
   'payment-processor': PaymentProcessorPlatformEngine,
+  'payment-gateway': PaymentGatewayPlatformEngine,
 };
 
 async function ensureAll() {
@@ -9183,6 +9235,7 @@ module.exports = {
   LiquidityEngine,
   FundingOsPlatformEngine,
   PaymentProcessorPlatformEngine,
+  PaymentGatewayPlatformEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

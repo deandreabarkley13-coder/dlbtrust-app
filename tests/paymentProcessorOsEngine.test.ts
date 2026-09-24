@@ -22,7 +22,7 @@ const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngi
 const ENV_KEYS = [
   'GCP_PROJECT', 'GOOGLE_CLOUD_PROJECT', 'DATABASE_URL', 'APP_URL', 'DEPLOY_URL', 'DOMAIN',
   'PAYMENT_PROCESSOR_LIVE', 'PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF', 'PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF',
-  'PAYMENT_PROCESSOR_DEFAULT', 'STRIPE_SECRET_KEY', 'STRIPE_PAYMENTS_SECRET_KEY', 'STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID',
+  'PAYMENT_PROCESSOR_DEFAULT', 'PAYMENT_GATEWAY_LIVE', 'PAYMENT_GATEWAY_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_PAYMENTS_SECRET_KEY', 'STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID',
   'PAYMENT_HUB_LIVE', 'LILI_CLEARING_LIVE', 'CLEARING_API_ENDPOINT', 'CLEARING_API_KEY',
   'PAYMENT_DATA_ENCRYPTION_KEY', 'PAYMENT_SERVER_SERVICE_TOKEN', 'CLEARING_REQUIRE_APPROVAL_REF',
   'K_SERVICE', 'K_REVISION', 'GCS_CLEARING_EVIDENCE_BUCKET', 'API_GATEWAY_PROVIDER', 'PAYMENT_HUB_MODE', 'CROSS_CHAIN_ENABLED', 'CROSS_CHAIN_SHADOW',
@@ -125,7 +125,7 @@ describe('payment-processor OS engine registration and routing', () => {
     expect(OS.PaymentProcessorPlatformEngine.platformEngine).toBe('payment-processor');
     expect(OS.PaymentProcessorPlatformEngine.engineName).toBe('payment-processor');
     expect(EngineWiringReadiness.ENGINE_KEYS).toContain('payment-processor');
-    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(10);
+    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(11);
     expect(EngineWiringReadiness.ENGINE_TITLES['payment-processor']).toBe('Payment Processor OS Engine');
     const paths = osRouter.stack.filter((l: any) => l.route).map((l: any) => l.route.path);
     expect(paths).toEqual(expect.arrayContaining(['/:engine/status', '/:engine/readiness', '/:engine/list', '/:engine/process', '/readiness/:platformEngine']));
@@ -377,7 +377,7 @@ describe('payment-processor readiness on dlb-treasury-management', () => {
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, all);
     expect(all.statusCode).toBe(503);
     expect(all.body.data.ready).toBe(false);
-    expect(all.body.data.total).toBe(10);
+    expect(all.body.data.total).toBe(11);
     expect(all.body.data.readyCount).toBe(9);
     expect(all.body.data.engines['payment-processor'].ready).toBe(false);
 
@@ -389,11 +389,13 @@ describe('payment-processor readiness on dlb-treasury-management', () => {
 
     process.env.PAYMENT_PROCESSOR_LIVE = 'true';
     process.env.PAYMENT_SERVER_SERVICE_TOKEN = 'svc';
+    process.env.PAYMENT_GATEWAY_LIVE = 'true';
+    process.env.PAYMENT_GATEWAY_WEBHOOK_SECRET = 'whsec';
     vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue({ ...liveInventory('payment_hub'), config: PaymentProcessorOsEngine.getConfig() });
     const ok = responseStub();
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, ok);
     expect(ok.statusCode).toBe(200);
-    expect(ok.body.data.readyCount).toBe(10);
+    expect(ok.body.data.readyCount).toBe(11);
   });
 });
 

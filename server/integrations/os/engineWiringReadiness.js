@@ -26,7 +26,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -39,6 +39,7 @@ const ENGINE_TITLES = {
   liquidity: 'Liquidity OS Engine',
   'funding-os': 'Funding OS Engine',
   'payment-processor': 'Payment Processor OS Engine',
+  'payment-gateway': 'Payment Gateway OS Engine (distributions & disbursements)',
 };
 
 const TABLES = {
@@ -52,6 +53,7 @@ const TABLES = {
   liquidity: ['cash_accounts', 'cash_movements', 'bonds', 'bond_balances', 'coupon_payments'],
   'funding-os': ['funding_requests', 'cash_accounts', 'cash_movements'],
   'payment-processor': ['payment_processor_transactions', 'payment_gateway_transactions', 'payment_intents', 'payment_approvals', 'payment_processor_submissions', 'os_events'],
+  'payment-gateway': ['payment_gateway_intents', 'payment_gateway_transactions', 'payment_methods', 'dapp_distribution_requests', 'os_events'],
 };
 
 function tryRequire(mod) {
@@ -301,6 +303,7 @@ const REPORTERS = {
   liquidity: liquidityReadiness,
   'funding-os': fundingOsReadiness,
   'payment-processor': paymentProcessorReadiness,
+  'payment-gateway': paymentGatewayReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -500,6 +503,60 @@ async function paymentProcessorReadiness(ctx) {
     },
     routes: ['/api/os/payment-processor/{status,readiness,list,process}', '/api/os/readiness/payment-processor', '/api/os/canonical-money/process action=pipeline (payment_processor stage)'],
     secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'STRIPE_SECRET_KEY (live) + STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID', 'STRIPE_PAYMENTS_SECRET_KEY', 'PAYMENT_HUB_AUTH_TOKEN', 'PAYMENT_HUB_SERVICE_TOKEN', 'PAYMENT_HUB_WEBHOOK_SECRET', 'PAYMENT_SERVER_SERVICE_TOKEN + Lili OAuth secrets (Lili rail)', 'CLEARING_API_KEY (only when CLEARING_API_ENDPOINT is set)'],
+    tables,
+    blockers,
+  };
+}
+
+async function paymentGatewayReadiness(ctx) {
+  const G = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
+  const inventory = G ? await settle(() => G.processors()) : { ok: false, error: 'PaymentGatewayOsEngine unavailable' };
+  const pipeline = G ? await settle(() => G.pipeline()) : { ok: false, error: 'PaymentGatewayOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES['payment-gateway']);
+  const env = process.env;
+  const cfg = inventory.ok ? inventory.value.config : (G ? G.getConfig() : {});
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!inventory.ok) blockers.push(`payment gateway: ${inventory.error}`);
+  else {
+    const modules = { gateway: Boolean(G._gateway()), paymentProcessorOs: Boolean(G._processorOs()), distributionRequests: Boolean(G._distributions()) };
+    const notLoadable = Object.entries(modules).filter(([, ok]) => !ok).map(([k]) => k);
+    if (notLoadable.length) blockers.push(`payment gateway modules not loadable: ${notLoadable.join(', ')}`);
+    if (!cfg.live) blockers.push('PAYMENT_GATEWAY_LIVE is not true (runtime_environment in infra/gcp/variables.tf); disbursement intents are recorded in shadow mode');
+    if (!cfg.processorLive) blockers.push('PAYMENT_PROCESSOR_LIVE is not true (the gateway dispatches through the payment-processor engine)');
+    if (!inventory.value.anyRealValueCapable) {
+      const reasons = inventory.value.sources.filter((s) => s.liveFlag && !s.realValueCapable).map((s) => `${s.id}: ${s.reason}`);
+      blockers.push(`no real-value gateway processor: ${reasons.join('; ')}`);
+    }
+    if (!cfg.requireApproval) blockers.push('PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF=false disables the approvalRef gate');
+    if (!cfg.requireScreening) blockers.push('PAYMENT_GATEWAY_REQUIRE_SCREENING_REF=false disables the screeningRef gate');
+    if (cfg.stripePaymentsKeyMode === 'test') blockers.push('STRIPE_PAYMENTS_SECRET_KEY is sk_test_ (test mode)');
+    if (!cfg.webhookSecret) blockers.push('PAYMENT_GATEWAY_WEBHOOK_SECRET not set (processor callbacks to /api/os/payment-gateway/webhook cannot be verified)');
+  }
+  if (!env.PAYMENT_DATA_ENCRYPTION_KEY) blockers.push('PAYMENT_DATA_ENCRYPTION_KEY not set (beneficiary payout methods are stored encrypted)');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const realValue = inventory.ok && inventory.value.anyRealValueCapable;
+  return {
+    provider: realValue ? inventory.value.realValueCapable.join('+') : 'shadow (no real-value gateway processor)',
+    mode: cfg.live && realValue ? 'live' : 'shadow',
+    liveFlags: {
+      PAYMENT_GATEWAY_LIVE: Boolean(cfg.live),
+      PAYMENT_PROCESSOR_LIVE: Boolean(cfg.processorLive),
+      STRIPE_PAYMENTS_KEY_MODE: cfg.stripePaymentsKeyMode || null,
+      REQUIRE_APPROVAL_REF: cfg.requireApproval !== false,
+      REQUIRE_SCREENING_REF: cfg.requireScreening !== false,
+      REQUIRE_DISTRIBUTION_REQUEST: Boolean(cfg.requireDistributionRequest),
+      MAX_DISBURSEMENT_CENTS: cfg.maxDisbursementCents || null,
+      WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
+      REAL_VALUE_PROCESSORS: inventory.ok ? inventory.value.realValueCapable : [],
+    },
+    modules: {
+      processors: inventory.ok ? inventory.value.sources : { error: inventory.error },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+    },
+    routes: ['/api/os/payment-gateway/{status,readiness,list,process}', '/api/os/payment-gateway/webhook', '/api/os/readiness/payment-gateway', '/api/os/canonical-money/process action=pipeline (payment_gateway stage)'],
+    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PAYMENT_GATEWAY_WEBHOOK_SECRET', 'STRIPE_PAYMENTS_SECRET_KEY (live)', 'plus the payment-processor secrets of every real-value processor the gateway disburses over'],
     tables,
     blockers,
   };

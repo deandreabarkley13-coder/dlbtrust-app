@@ -12,6 +12,11 @@
 # REQUIRED when runtime_environment.PAYMENT_PROCESSOR_LIVE=true; the plan also
 # fails if PAYMENT_PROCESSOR_REQUIRE_{APPROVAL,SCREENING}_REF are turned off
 # while live. The Lili rail additionally needs the Lili block.
+#
+# The Payment Gateway OS block (PAYMENT_GATEWAY_WEBHOOK_SECRET plus the two
+# shared keys above — secrets.tf payment_gateway_secret_names) is REQUIRED when
+# runtime_environment.PAYMENT_GATEWAY_LIVE=true, which also requires
+# PAYMENT_PROCESSOR_LIVE=true and the PAYMENT_GATEWAY_REQUIRE_* gates on.
 
 project_id = "dlb-treasury-management"
 
@@ -35,6 +40,9 @@ secret_names = [
   "STRIPE_SECRET_KEY",
   "STRIPE_PAYMENTS_SECRET_KEY",
   "PAYMENT_DATA_ENCRYPTION_KEY",
+  # Payment Gateway OS live plan (PAYMENT_GATEWAY_LIVE=true): HMAC-SHA256 key
+  # for processor callbacks to /api/os/payment-gateway/webhook.
+  "PAYMENT_GATEWAY_WEBHOOK_SECRET",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

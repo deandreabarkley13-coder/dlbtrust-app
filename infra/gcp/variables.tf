@@ -196,6 +196,21 @@ variable "runtime_environment" {
     PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF  = "true"
     PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF = "true"
     PAYMENT_PROCESSOR_DEFAULT               = "lili"
+    # Payment Gateway OS (server/integrations/os/paymentGatewayOsEngine.js):
+    # trust distribution / disbursement gateway over paymentGatewayServerEngine
+    # (tokenized beneficiary ACH/card/wallet/crypto methods, submit → approve).
+    # Shadow until PAYMENT_GATEWAY_LIVE=true; a live plan additionally needs
+    # PAYMENT_PROCESSOR_LIVE=true, PAYMENT_GATEWAY_WEBHOOK_SECRET,
+    # PAYMENT_DATA_ENCRYPTION_KEY and STRIPE_PAYMENTS_SECRET_KEY in secret_names
+    # (cloudrun.tf precondition, secrets.tf missing_payment_gateway_secrets).
+    # REQUIRE_DISTRIBUTION_REQUEST=true binds every intent to an approved
+    # dapp_distribution_requests row; MAX_DISBURSEMENT_CENTS caps one intent.
+    PAYMENT_GATEWAY_LIVE                         = "false"
+    PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF         = "true"
+    PAYMENT_GATEWAY_REQUIRE_SCREENING_REF        = "true"
+    PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST = "true"
+    PAYMENT_GATEWAY_DEFAULT_PROCESSOR            = ""
+    PAYMENT_GATEWAY_MAX_DISBURSEMENT_CENTS       = ""
 
     # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
     INCOME_OBLIGOR_NAME          = "DEANDREA LAVAR BARKLEY TRUST COMPANY"

@@ -100,6 +100,30 @@ locals {
     lookup(var.runtime_environment, "PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF", "true") == "false" ||
     lookup(var.runtime_environment, "PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF", "true") == "false"
   )
+
+  # Payment Gateway OS (paymentGatewayOsEngine.js): trust distributions and
+  # disbursements to tokenized beneficiary payout methods. PAYMENT_GATEWAY_LIVE
+  # =true lets an approved intent reach paymentGatewayServerEngine, so the
+  # processor callback HMAC secret, the payment-data encryption key and the
+  # Stripe payments key must exist, PAYMENT_PROCESSOR_LIVE must also be true
+  # (the gateway dispatches through the processor engine) and the approval /
+  # screening / distribution-request gates must stay on.
+  payment_gateway_secret_names = [
+    "PAYMENT_GATEWAY_WEBHOOK_SECRET",
+    "PAYMENT_DATA_ENCRYPTION_KEY",
+    "STRIPE_PAYMENTS_SECRET_KEY",
+  ]
+  payment_gateway_live = lookup(var.runtime_environment, "PAYMENT_GATEWAY_LIVE", "false") == "true"
+  missing_payment_gateway_secrets = [
+    for s in local.payment_gateway_secret_names : s
+    if local.payment_gateway_live && !contains(local.runtime_secret_names, s)
+  ]
+  payment_gateway_without_processor = local.payment_gateway_live && !local.payment_processor_live
+  payment_gateway_gates_relaxed = local.payment_gateway_live && (
+    lookup(var.runtime_environment, "PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "PAYMENT_GATEWAY_REQUIRE_SCREENING_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST", "true") != "true"
+  )
 }
 
 # Enforced as a hard precondition on google_cloud_run_v2_service.app in

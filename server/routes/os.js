@@ -57,6 +57,7 @@ const {
   LiquidityEngine,
   FundingOsPlatformEngine,
   PaymentProcessorPlatformEngine,
+  PaymentGatewayPlatformEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -78,6 +79,9 @@ const APPROVAL_GATED_ACTIONS = {
   // Direct processor calls never run from the OS route: money moves only through
   // the maker/checker submit → approve flow of PaymentProcessorOsEngine.
   'payment-processor': new Set(['processPayment', 'process-payment', 'sale', 'authorize', 'capture', 'refund', 'void', 'clearPayment', 'clearAndSettle', 'sendPayment', 'createIntent', 'submitIntent', 'execute', 'dispatch']),
+  // Disbursements leave through PaymentGatewayOsEngine submit → approve only; the
+  // raw PaymentGatewayServerEngine operations are never reachable as OS actions.
+  'payment-gateway': new Set(['sale', 'authorize', 'capture', 'refund', 'void', 'processPayment', 'process-payment', 'createSession', 'clearPayment', 'clearAndSettle', 'sendPayment', 'execute', 'dispatch', 'payout', 'disburse']),
 };
 
 const ENGINES = {
@@ -123,6 +127,7 @@ const ENGINES = {
   liquidity: LiquidityEngine,
   'funding-os': FundingOsPlatformEngine,
   'payment-processor': PaymentProcessorPlatformEngine,
+  'payment-gateway': PaymentGatewayPlatformEngine,
 };
 
 function sendError(res, err) {
@@ -219,12 +224,27 @@ router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async 
   try {
     const payload = req.body || {};
     if (APPROVAL_GATED_ACTIONS[req.params.engine]?.has(payload.action)) {
+      if (typeof req.osEngine._log === 'function') {
+        await req.osEngine._log(payload.action, payload, { rejected: true, reason: 'direct money movement outside maker-checker workflow', actor: req.user?.username || req.user?.email || req.user?.userId || null }, 'rejected');
+      }
       return res.status(409).json({
         success: false,
         error: 'Money movement must use the authenticated maker-checker workflow (distribution requests, vendor bills, Payer OS or settlement orders)',
       });
     }
     const data = await req.osEngine.process(payload);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Public payment gateway processor callback (HMAC-SHA256 over the raw body with
+// PAYMENT_GATEWAY_WEBHOOK_SECRET, verified by PaymentGatewayOsEngine).
+router.post('/payment-gateway/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const signature = req.get('x-gateway-signature') || req.get('x-signature') || payload.signature;
+    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+    const data = await PaymentGatewayPlatformEngine.process({ action: 'webhook', rawBody, signature, payload });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
