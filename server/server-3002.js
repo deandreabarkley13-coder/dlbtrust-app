@@ -8,6 +8,10 @@ var HD = path.resolve(__dirname, '..');
 // Patch viem chain resolution for Base mainnet before any DApp modules load
 require(path.join(HD, 'server', 'integrations', 'dapp', 'viemChainPatch'));
 
+// Project the trust's ODFI bank (ACH_ODFI_BANK=betterment, secret-backed
+// routing/account) onto the NACHA originator env before any ACH module loads.
+require(path.join(HD, 'server', 'integrations', 'ach', 'treasuryOdfiBank')).TreasuryOdfiBank.apply();
+
 // Background loops that post to the ledger run on the leader instance only, so
 // the service can be scaled past one replica without double-posting.
 var leader = require(path.join(HD, 'server', 'integrations', 'cluster', 'leaderElection'));

@@ -10,6 +10,10 @@
  *   posted 1020/1030 -> FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)
  *                    -> maker/checker (approvalRef + screeningRef)
  *                    -> BankSettlementEngine -> Stripe payout -> Lili direct deposit
+ *   funding          -> dlb-treasury originates + funds the NACHA file (OpenACH /
+ *                       Payment Hub / ACHEngine); the trust's own checking account
+ *                       (Betterment, trust name) is the ODFI that accepts the file
+ *                       (MFT Gateway file drop / SFTP / S2S) and executes it
  *
  * Every stage is read best-effort so one unavailable engine never hides the
  * others; `ready` is true only when intake, distribution and settlement are.
@@ -32,7 +36,13 @@ try { ({ ProofOfAssetOsEngine } = require('../os/proofOfAssetOsEngine')); } catc
 let OdfiApiConnectorEngine = null;
 try { ({ OdfiApiConnectorEngine } = require('../ach/odfiApiConnectorEngine')); } catch (e) { OdfiApiConnectorEngine = null; }
 
-const STAGES = ['issuance', 'intake', 'ledger', 'fineract', 'distribution', 'settlement', 'proof'];
+let TreasuryFundingBankEngine = null;
+try { ({ TreasuryFundingBankEngine } = require('../payments/treasuryFundingBankEngine')); } catch (e) { TreasuryFundingBankEngine = null; }
+
+let TreasuryOdfiBank = null;
+try { ({ TreasuryOdfiBank } = require('../ach/treasuryOdfiBank')); } catch (e) { TreasuryOdfiBank = null; }
+
+const STAGES = ['issuance', 'intake', 'funding', 'ledger', 'fineract', 'distribution', 'settlement', 'proof'];
 
 async function attempt(fn, unavailable) {
   if (!fn) return { available: false, error: unavailable };
@@ -100,6 +110,27 @@ class TrustAdministrationWorkflowEngine {
     }), 'BankSettlementEngine unavailable');
   }
 
+  /**
+   * Funding = the trust's own bank acting as ODFI for the files dlb-treasury
+   * originates (primary). The Stripe ACH-debit mandate on the same account is
+   * an optional secondary path (TREASURY_BANK_ENABLED) and never gates `ready`.
+   */
+  static async funding() {
+    return attempt(TreasuryOdfiBank && (async () => {
+      const odfi = TreasuryOdfiBank.status();
+      let stripeDebit = null;
+      if (TreasuryFundingBankEngine) {
+        try {
+          const s = await TreasuryFundingBankEngine.status();
+          const enabled = !(s.issues || []).includes('TREASURY_BANK_ENABLED=false');
+          stripeDebit = { enabled, ready: enabled ? Boolean(s.ready) : null, verification: s.verification || null, issues: s.issues || [] };
+        } catch (e) { stripeDebit = { enabled: null, ready: null, issues: [e.message] }; }
+      }
+      const issues = odfi.enabled ? odfi.issues : [];
+      return { ready: odfi.enabled ? Boolean(odfi.ready) : null, enabled: odfi.enabled, status: { ...odfi, issues }, odfi, stripeDebit };
+    }), 'TreasuryOdfiBank unavailable');
+  }
+
   static async proof() {
     return attempt(ProofOfAssetOsEngine && (async () => {
       const status = await ProofOfAssetOsEngine.status();
@@ -108,16 +139,17 @@ class TrustAdministrationWorkflowEngine {
   }
 
   static async status({ includeFineract = false, limit = 10 } = {}) {
-    const [issuance, intake, ledger, fineract, distribution, settlement, proof] = await Promise.all([
+    const [issuance, intake, funding, ledger, fineract, distribution, settlement, proof] = await Promise.all([
       this.issuance(),
       this.intake({ limit }),
+      this.funding(),
       this.ledger({ limit }),
       this.fineract({ includeFineract }),
       this.distribution(),
       this.settlement({ limit }),
       this.proof(),
     ]);
-    const stages = { issuance, intake, ledger, fineract, distribution, settlement, proof };
+    const stages = { issuance, intake, funding, ledger, fineract, distribution, settlement, proof };
     const gaps = [];
     for (const name of STAGES) {
       const s = stages[name];
@@ -125,7 +157,7 @@ class TrustAdministrationWorkflowEngine {
       if (!s.available) gaps.push(`${name}: ${s.error}`);
       else if (s.error) gaps.push(`${name}: ${s.error}`);
       else if (s.ready === false) {
-        const detail = (name === 'intake' || name === 'issuance' || name === 'proof') ? (s.status.issues || []).join('; ')
+        const detail = (name === 'intake' || name === 'issuance' || name === 'proof' || name === 'funding') ? (s.status.issues || []).join('; ')
           : name === 'distribution' ? (s.readiness.issues || []).join('; ')
             : name === 'settlement' ? s.banks.flatMap((b) => b.blockers.map((x) => `${b.bankId}: ${x}`)).join('; ')
               : '';
@@ -133,7 +165,7 @@ class TrustAdministrationWorkflowEngine {
       }
     }
     return {
-      pipeline: 'issuer Fineract account -> holder Fineract account (held, account of record) -> [send-to-bank] fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit; proof of asset over contract + Fineract + GL + fiat + custody',
+      pipeline: 'issuer Fineract account -> holder Fineract account (held, account of record) -> [send-to-bank] fixed-income distribution -> maker/checker -> NACHA file originated by dlb-treasury (OpenACH/Payment Hub) -> file drop to the ODFI bank (Betterment, trust name) via MFT Gateway/SFTP/S2S -> ACH credit direct deposit (Betterment/Lili/beneficiary) -> bank acknowledgement/return evidence; proof of asset over contract + Fineract + GL + fiat + custody + collateral',
       ready: gaps.length === 0 && intake.ready === true && distribution.ready === true && settlement.ready === true,
       gaps,
       stages,

@@ -22,6 +22,7 @@ const { LiliSettlementBankEngine } = require('./liliSettlementBankEngine');
 const { LiliDirectDepositEngine } = require('./liliDirectDepositEngine');
 const { PartnerBankRails } = require('../rails/partnerBankRails');
 const { ApiGatewayClearingEngine } = require('../dapp/apiGatewayClearingEngine');
+const { StripePayoutSettlementOriginator } = require('./stripePayoutSettlementOriginator');
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
@@ -42,6 +43,7 @@ function isLive(provider) {
     case 'lili': return String(env.LILI_CLEARING_LIVE || 'false').toLowerCase() === 'true';
     case 'host_to_host': return true;
     case 'api_gateway': return String(env.LILI_CLEARING_LIVE || env.APIGEE_LIVE || env.APISIX_LIVE || 'false').toLowerCase() === 'true';
+    case 'stripe_payout': return StripePayoutSettlementOriginator.getConfig().keyMode === 'live';
     default: return PartnerBankRails.status().ready;
   }
 }
@@ -179,6 +181,11 @@ class BankSettlementEngine {
       ready = Boolean(r.ready);
       detail = r;
       if (!r.ready) blockers.push(...(r.blockers || [r.message || 'API gateway not ready']));
+    } else if (bank.provider === 'stripe_payout') {
+      const st = await StripePayoutSettlementOriginator.status(bank);
+      ready = Boolean(st.ready);
+      detail = { keyMode: st.keyMode, account: st.account, externalAccount: st.externalAccount, balance: st.balance, destination: st.destination };
+      blockers.push(...(st.issues || []));
     }
     return {
       bankId: bank.bankId,
@@ -305,6 +312,11 @@ class BankSettlementEngine {
             initiatedBy,
           });
           out = { status: r.status === 'shadow' || r.shadow ? 'shadow' : (r.status === 'awaiting_odfi' ? 'awaiting_odfi' : 'originated'), providerReference: r.gatewayReference || r.transferId || r.eventId || null, providerStatus: r.status, result: r };
+          break;
+        }
+        case 'stripe_payout': {
+          const r = await StripePayoutSettlementOriginator.send(bank, { amountCents: cents, reference: ref, description });
+          out = { status: 'originated', providerReference: r.payoutId, providerStatus: r.stripeStatus, result: r };
           break;
         }
         default:

@@ -49,6 +49,8 @@ let BankSettlementEngine, SettlementBankRegistry, LiliStripePayoutOriginator;
 try { ({ BankSettlementEngine } = require('../payments/bankSettlementEngine')); } catch (e) { BankSettlementEngine = null; }
 try { ({ SettlementBankRegistry } = require('../payments/settlementBankRegistry')); } catch (e) { SettlementBankRegistry = null; }
 try { ({ LiliStripePayoutOriginator } = require('../payments/liliStripePayoutOriginator')); } catch (e) { LiliStripePayoutOriginator = null; }
+let StripePayoutSettlementOriginator = null;
+try { ({ StripePayoutSettlementOriginator } = require('../payments/stripePayoutSettlementOriginator')); } catch (e) { StripePayoutSettlementOriginator = null; }
 
 const RAILS = ['policy_contract', 'bank'];
 const DEFAULT_BANK_PAYEES = [
@@ -183,8 +185,15 @@ const FixedIncomeDistributionEngine = {
 
   /** Available treasury cash behind a bank payee (Stripe balance for the Stripe payout originator), null when unknown. */
   async bankFundingAvailableCents(bankId) {
-    if (lower(bankId) !== 'lili' || !LiliStripePayoutOriginator || str('LILI_ORIGINATOR') !== 'stripe_payout') return null;
-    const st = await LiliStripePayoutOriginator.status();
+    if (lower(bankId) === 'lili') {
+      if (!LiliStripePayoutOriginator || str('LILI_ORIGINATOR') !== 'stripe_payout') return null;
+      const st = await LiliStripePayoutOriginator.status();
+      return st.balance ? Number(st.balance.availableCents) : null;
+    }
+    if (!SettlementBankRegistry) return null;
+    const bank = await SettlementBankRegistry.resolve(bankId).catch(() => null);
+    if (!bank || bank.provider !== 'stripe_payout' || !StripePayoutSettlementOriginator) return null;
+    const st = await StripePayoutSettlementOriginator.status(bank);
     return st.balance ? Number(st.balance.availableCents) : null;
   },
 

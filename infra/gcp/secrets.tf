@@ -21,6 +21,11 @@ locals {
     # Restricted key scoped to Customers/PaymentIntents/Checkout write (payment
     # processing); the payout key (STRIPE_SECRET_KEY) stays Payouts/Balance only.
     "STRIPE_PAYMENTS_SECRET_KEY",
+    # ODFI bank (treasuryOdfiBank.js): routing/account of the trust's Betterment
+    # Checking, projected onto the NACHA originator env at startup (and read by
+    # treasuryFundingBankEngine.js if enabled); never emitted by the API (last4 only).
+    "BETTERMENT_ROUTING_NUMBER",
+    "BETTERMENT_ACCOUNT_NUMBER",
   ]
   runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names))
 
