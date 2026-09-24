@@ -208,6 +208,28 @@ variable "runtime_environment" {
     ACH_ODFI_PROVIDER            = ""
     ACH_ODFI_ACCOUNT_ID          = ""
     ACH_ODFI_SYNC_INTERVAL_MS    = "900000"
+    # ODFI bank (server/integrations/ach/treasuryOdfiBank.js): the trust's own
+    # Betterment Checking (in the trust name) accepts and executes the NACHA
+    # files dlb-treasury originates and funds (OpenACH / Payment Hub -> MFT
+    # Gateway file drop / SFTP / S2S). At startup its secret-backed routing /
+    # account (BETTERMENT_ROUTING_NUMBER / BETTERMENT_ACCOUNT_NUMBER in
+    # secret_names) are projected onto ACH_ODFI_ROUTING, NACHA_ODFI_ROUTING,
+    # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_OPERATING_ACCOUNT, LILI_ODFI_*,
+    # etc., superseding the Lili/Sunrise originator values below. Company id
+    # defaults to "1" + INCOME_OBLIGOR_EIN unless Betterment assigns one.
+    ACH_ODFI_BANK                = "betterment"
+    ACH_ODFI_BANK_NAME           = "BETTERMENT"
+    ACH_ODFI_ORIGINATOR_NAME     = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    ACH_ODFI_COMPANY_NAME        = "DLB TRUST CO"
+    ACH_ODFI_COMPANY_ID          = ""
+    # Optional secondary path (treasuryFundingBankEngine.js): the same account
+    # saved in Stripe as an ACH-debit mandate feeding the Stripe balance. Off:
+    # dlb-treasury funds the files directly; Betterment is not funding Stripe.
+    TREASURY_BANK_ENABLED        = "false"
+    TREASURY_BANK_ID             = "betterment"
+    TREASURY_BANK_NAME           = "Betterment Checking"
+    TREASURY_BANK_ACCOUNT_HOLDER = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    TREASURY_BANK_REGISTER_SETTLEMENT = "true"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED             = "true"
     LILI_MCP_URL                 = "https://mcp.lili.co/mcp"

@@ -14,6 +14,8 @@ const { writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { SettlementBankRegistry } = require('../integrations/payments/settlementBankRegistry');
 const { BankSettlementEngine } = require('../integrations/payments/bankSettlementEngine');
 const { StripePaymentIntakeEngine } = require('../integrations/payments/stripePaymentIntakeEngine');
+const { TreasuryFundingBankEngine } = require('../integrations/payments/treasuryFundingBankEngine');
+const { TreasuryOdfiBank } = require('../integrations/ach/treasuryOdfiBank');
 
 const router = express.Router();
 
@@ -101,16 +103,54 @@ router.post('/stripe-intakes/:id/payout', writeRateLimiter(), async (req, res) =
     if (intake.status !== 'received') return res.status(409).json({ success: false, error: `intake is ${intake.status}, not received` });
     const amountCents = req.body && req.body.amountCents != null ? Number(req.body.amountCents) : intake.amountCents;
     if (!Number.isInteger(amountCents) || amountCents <= 0 || amountCents > intake.amountCents) return res.status(400).json({ success: false, error: 'amountCents must be a positive integer <= the intake amount' });
+    const bankId = String((req.body && req.body.bankId) || 'lili').toLowerCase();
     const data = await BankSettlementEngine.clearAndSettle({
-      bankId: 'lili', amountCents, rail: 'ach',
+      bankId, amountCents, rail: 'ach',
       approvalRef: req.body && req.body.approvalRef, screeningRef: req.body && req.body.screeningRef,
       reference: (req.body && req.body.reference) || intake.intakeId,
-      description: (req.body && req.body.description) || `Stripe intake ${intake.intakeId} -> Lili`,
+      description: (req.body && req.body.description) || `Stripe intake ${intake.intakeId} -> ${bankId}`,
       paymentType: 'stripe_intake_payout', initiatedBy: 'payment_server',
     });
     const updated = ['originated', 'settled'].includes(data.status) ? await StripePaymentIntakeEngine.markPaidOut(intake.intakeId, data.settlementId) : null;
     res.status(['awaiting_odfi', 'pending_approval'].includes(data.status) ? 202 : 201).json({ success: true, data: { settlement: data, intake: updated || intake } });
   } catch (err) { sendError(res, err); }
+});
+
+// ODFI bank: the trust's own checking account (Betterment, trust name) that
+// accepts and executes the NACHA files dlb-treasury originates and funds.
+router.get('/odfi-bank', (req, res) => {
+  try { res.json({ success: true, data: TreasuryOdfiBank.status() }); } catch (err) { sendError(res, err); }
+});
+
+// Treasury funding bank, optional secondary path: the same account saved as
+// the trust company's ACH-debit payment method in Stripe under a mandate;
+// `pull` originates a real debit from it into the Stripe balance.
+router.get('/treasury-bank', async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryFundingBankEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-bank/link', writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await TreasuryFundingBankEngine.link({
+      acceptedBy: req.body && req.body.acceptedBy,
+      ipAddress: (req.body && req.body.ipAddress) || req.ip,
+      userAgent: (req.body && req.body.userAgent) || req.headers['user-agent'],
+      actor: (req.body && req.body.actor) || 'payment_server',
+    });
+    res.status(data.verification === 'verified' ? 200 : 202).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-bank/verify', writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryFundingBankEngine.verify(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-bank/refresh', writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryFundingBankEngine.refresh(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-bank/pull', writeRateLimiter(), async (req, res) => {
+  try { res.status(202).json({ success: true, data: await TreasuryFundingBankEngine.pull(req.body || {}) }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/settlement-banks', async (req, res) => {

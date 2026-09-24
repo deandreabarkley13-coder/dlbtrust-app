@@ -16,7 +16,7 @@ const { LiliSettlementBankEngine } = require('./liliSettlementBankEngine');
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const PROVIDERS = ['lili', 'host_to_host', 'column', 'increase', 'generic', 'api_gateway'];
+const PROVIDERS = ['lili', 'host_to_host', 'column', 'increase', 'generic', 'api_gateway', 'stripe_payout'];
 const LILI_BANK_ID = 'lili';
 
 function httpError(message, status) {

@@ -18,6 +18,8 @@
  *   fiat       fixed-income distributions + settlement-bank events for the
  *              payments explicitly sent to bank (Stripe payout -> Lili)
  *   custody    AttestationOsEngine — what outside custodians actually hold
+ *   collateral CollateralOsEngine — pledged positions / borrowing base against
+ *              the bond (pledged value can never exceed the proven record)
  *
  * The verdict never confuses the layers:
  *
@@ -49,6 +51,8 @@ let BankSettlementEngine = null;
 try { ({ BankSettlementEngine } = require('../payments/bankSettlementEngine')); } catch (e) { BankSettlementEngine = null; }
 let AttestationOsEngine = null;
 try { ({ AttestationOsEngine } = require('./attestationOsEngine')); } catch (e) { AttestationOsEngine = null; }
+let CollateralOsEngine = null;
+try { ({ CollateralOsEngine } = require('./collateralOsEngine')); } catch (e) { CollateralOsEngine = null; }
 
 const VERDICTS = ['proven', 'variance', 'unproven'];
 const SCOPES = ['bond', 'portfolio'];
@@ -292,6 +296,49 @@ const ProofOfAssetOsEngine = {
     return out;
   },
 
+  /**
+   * Collateral OS evidence: active pledged positions (filtered to the bond in
+   * scope through metadata.bondId when present) and the facility state. A
+   * pledge is a claim *against* the record of value, so it is reported as
+   * collateral evidence and checked against the proven record, never added to it.
+   */
+  async _collateral(bondId) {
+    if (!CollateralOsEngine) return { available: false };
+    try {
+      const [readiness, facility, positions] = await Promise.all([
+        CollateralOsEngine.readiness(),
+        CollateralOsEngine.facility(),
+        CollateralOsEngine.positions({ limit: 1000 }),
+      ]);
+      const active = positions.filter((p) => p.status !== 'released');
+      const forBond = (p) => bondId == null || String((p.metadata || {}).bondId || '') === String(bondId);
+      const scoped = active.filter(forBond);
+      const byPos = new Map((facility.byPosition || []).map((b) => [b.positionId, b]));
+      const cents = (usd) => Math.round(Number(usd || 0) * 100);
+      return {
+        available: true,
+        ready: Boolean(readiness.ready),
+        issues: readiness.issues || [],
+        facility: {
+          collateralCents: cents(facility.collateralUsd), spendableCents: cents(facility.spendableUsd),
+          drawnCents: cents(facility.drawnUsd), availableCents: cents(facility.availableUsd),
+          utilizationBps: facility.utilizationBps, maxUtilizationBps: facility.maxUtilizationBps,
+          marginCall: Boolean(facility.marginCall), openDraws: facility.openDraws || 0, positions: facility.positions || 0,
+        },
+        pledgedCents: scoped.reduce((s, p) => s + cents(p.valueUsd), 0),
+        spendableCents: scoped.reduce((s, p) => s + cents(p.spendableUsd), 0),
+        drawnCents: scoped.reduce((s, p) => s + cents((byPos.get(p.positionId) || {}).drawnUsd), 0),
+        positions: scoped.map((p) => ({
+          positionId: p.positionId, tokenSymbol: p.tokenSymbol, bondId: (p.metadata || {}).bondId || null, status: p.status,
+          valueCents: cents(p.valueUsd), advanceRateBps: p.advanceRateBps, spendableCents: cents(p.spendableUsd),
+          drawnCents: cents((byPos.get(p.positionId) || {}).drawnUsd), priceSource: p.priceSource, verification: p.verification || null, valuedAt: p.valuedAt,
+        })),
+      };
+    } catch (e) {
+      return { available: false, error: e.message };
+    }
+  },
+
   async _custody() {
     if (!AttestationOsEngine) return { available: false };
     try {
@@ -320,7 +367,7 @@ const ProofOfAssetOsEngine = {
     }
     const schedules = {};
     for (const c of contracts) schedules[c.bondId] = await this._schedule(c.bondId);
-    const [payments, fineract, custody] = await Promise.all([this._payments(bondId), this._fineract(), this._custody()]);
+    const [payments, fineract, custody, collateral] = await Promise.all([this._payments(bondId), this._fineract(), this._custody(), this._collateral(bondId)]);
     const [ledger, fiat] = await Promise.all([this._ledger(payments), this._fiat(payments)]);
 
     // Held value of record for this scope, and everything the holder account must cover overall.
@@ -359,8 +406,23 @@ const ProofOfAssetOsEngine = {
       }));
     }
 
-    const recordVerdict = worst(checks);
     const contractValueCents = contracts.reduce((s, c) => s + c.faceValueCents, 0);
+    if (collateral.available && collateral.positions.length) {
+      checks.push({
+        name: 'collateral_pledged_within_record', source: 'collateral_positions',
+        verdict: collateral.pledgedCents <= Math.max(scopeHeld, contractValueCents) ? 'proven' : 'variance',
+        expectedCents: Math.max(scopeHeld, contractValueCents), actualCents: collateral.pledgedCents,
+        note: `${collateral.positions.length} pledged position(s) valued ${collateral.pledgedCents} against record ${scopeHeld} / contract ${contractValueCents}`,
+      });
+      checks.push({
+        name: 'collateral_draws_within_borrowing_base', source: 'collateral_draws',
+        verdict: collateral.facility.marginCall ? 'variance' : 'proven',
+        expectedCents: collateral.spendableCents, actualCents: collateral.drawnCents,
+        note: collateral.facility.marginCall ? `margin call: utilization ${collateral.facility.utilizationBps} > ${collateral.facility.maxUtilizationBps} bps` : `utilization ${collateral.facility.utilizationBps} bps`,
+      });
+    }
+
+    const recordVerdict = worst(checks);
     return {
       scope, bondId: bondId == null ? null : Number(bondId), asOf: new Date().toISOString(),
       verdict: recordVerdict,
@@ -371,7 +433,14 @@ const ProofOfAssetOsEngine = {
         note: 'Held value lives in the holder Fineract account of record; only settledCents has been converted to fiat at a bank, and only custodyAttestedCents is confirmed by an outside custodian.',
       },
       contractValueCents,
-      contracts, schedules, payments, fineract, ledger, fiat, custody,
+      collateral: {
+        available: collateral.available, ready: collateral.available ? collateral.ready : null,
+        pledgedCents: collateral.available ? collateral.pledgedCents : null, spendableCents: collateral.available ? collateral.spendableCents : null,
+        drawnCents: collateral.available ? collateral.drawnCents : null, positions: collateral.available ? collateral.positions.length : null,
+        marginCall: collateral.available ? collateral.facility.marginCall : null,
+        note: 'Pledged value is a claim against the record of value (Collateral OS borrowing base); it is evidence of encumbrance, never additional value.',
+      },
+      contracts, schedules, payments, fineract, ledger, fiat, custody, collateralDetail: collateral,
     };
   },
 
@@ -487,7 +556,7 @@ const ProofOfAssetOsEngine = {
       scheduler: { ...schedulerState, intervalMinutes: cfg.intervalMinutes },
       latest: latest ? { proofId: latest.proofId, verdict: latest.verdict, asOf: latest.asOf, recordOfValueCents: latest.recordOfValueCents, fineractHeldCents: latest.fineractHeldCents, fiatSettledCents: latest.fiatSettledCents, hash: latest.hash, certifiedBy: latest.certifiedBy } : null,
       counts: counts.rows.map((r) => ({ verdict: r.verdict, count: r.n })),
-      layers: ['contract (bonds/bond_issuances)', 'schedule (LiveBondEngine)', 'record (bond_issuance_payments)', 'fineract (holder/issuer accounts of record)', 'ledger (trust_journal_entries)', 'fiat (distributions/settlements -> Lili)', 'custody (AttestationOs)'],
+      layers: ['contract (bonds/bond_issuances)', 'schedule (LiveBondEngine)', 'record (bond_issuance_payments)', 'fineract (holder/issuer accounts of record)', 'ledger (trust_journal_entries)', 'fiat (distributions/settlements -> settlement banks)', 'custody (AttestationOs)', 'collateral (CollateralOs positions/facility)'],
     };
   },
 };
