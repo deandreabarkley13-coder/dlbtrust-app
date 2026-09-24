@@ -80,6 +80,26 @@ locals {
     for s in local.lili_secret_names : s
     if local.lili_clearing_live && !contains(local.runtime_secret_names, s)
   ]
+
+  # Payment Processor OS (paymentProcessorOsEngine.js). PAYMENT_PROCESSOR_LIVE=true
+  # lets an approved submission (approvalRef + screeningRef) reach a processor,
+  # so the Stripe payout/payments keys and the payment-data encryption key must
+  # exist; the Lili rail additionally inherits lili_secret_names. The
+  # approval / screening gates must stay on in a live plan.
+  payment_processor_secret_names = [
+    "STRIPE_SECRET_KEY",
+    "STRIPE_PAYMENTS_SECRET_KEY",
+    "PAYMENT_DATA_ENCRYPTION_KEY",
+  ]
+  payment_processor_live = lookup(var.runtime_environment, "PAYMENT_PROCESSOR_LIVE", "false") == "true"
+  missing_payment_processor_secrets = [
+    for s in local.payment_processor_secret_names : s
+    if local.payment_processor_live && !contains(local.runtime_secret_names, s)
+  ]
+  payment_processor_gates_relaxed = local.payment_processor_live && (
+    lookup(var.runtime_environment, "PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF", "true") == "false"
+  )
 }
 
 # Enforced as a hard precondition on google_cloud_run_v2_service.app in

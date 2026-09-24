@@ -16,6 +16,7 @@ const OS = require('../server/integrations/os/osEngine');
 const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
 const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngine');
+const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentProcessorOsEngine');
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -31,6 +32,8 @@ const GCP_ENV: Record<string, string> = {
   PAYMENT_DATA_ENCRYPTION_KEY: 'ab'.repeat(32),
   CROSS_CHAIN_ENABLED: 'true',
   CROSS_CHAIN_SHADOW: 'true',
+  PAYMENT_PROCESSOR_LIVE: 'true',
+  PAYMENT_SERVER_SERVICE_TOKEN: 'svc-token',
 };
 
 const ENV_KEYS = [...Object.keys(GCP_ENV), 'DAPP_RPC_URL', 'DAPP_USDC_ADDRESS'];
@@ -72,6 +75,11 @@ function stubProviders() {
     horizons: { '30d': { covered: true }, '90d': { covered: true }, '365d': { covered: true } },
     reserve: { balance: 1000000, annualCoupon: 1000000, coverage: 1, target: 1 }, payout: { realValueCapable: true, sources: ['bank_odfi'] },
   });
+  vi.spyOn(PaymentProcessorOsEngine, 'processors').mockImplementation(async () => ({
+    config: PaymentProcessorOsEngine.getConfig(),
+    sources: [{ id: 'payment_hub', liveFlag: 'PAYMENT_HUB_LIVE', mode: 'live', configured: true, realValueCapable: true, reason: null }],
+    realValueCapable: ['payment_hub'], anyRealValueCapable: true,
+  }));
 }
 
 beforeEach(() => {
@@ -87,8 +95,8 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the nine capabilities in the OS route map', () => {
-    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os']) {
+  it('registers every engine behind the ten capabilities in the OS route map', () => {
+    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
     }
@@ -103,6 +111,7 @@ describe('platform engine registry', () => {
     expect(OS.DebtEngine.platformEngine).toBe('debt');
     expect(OS.LiquidityEngine.platformEngine).toBe('liquidity');
     expect(OS.FundingOsPlatformEngine.platformEngine).toBe('funding-os');
+    expect(OS.PaymentProcessorPlatformEngine.platformEngine).toBe('payment-processor');
   });
 
   it('exposes readiness through the OS router and the finops cross-chain router', () => {
@@ -118,7 +127,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all nine engines ready and healthy with the GCP config in place', async () => {
+  it('reports all ten engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -128,7 +137,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-processor', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -137,7 +146,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(9);
+    expect(report.readyCount).toBe(10);
+    expect(report.total).toBe(10);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -153,6 +163,29 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.debt.liveFlags.PUBLIC_OFFER).toBe(false);
     expect(report.engines.liquidity.mode).toBe('live');
     expect(report.engines.liquidity.liveFlags.RESERVE_COVERAGE).toBe(1);
+    expect(report.engines['payment-processor'].mode).toBe('live');
+    expect(report.engines['payment-processor'].provider).toBe('payment_hub');
+    expect(report.engines['payment-processor'].liveFlags.PAYMENT_PROCESSOR_LIVE).toBe(true);
+  });
+
+  it('payment-processor engine is the tenth blocker until PAYMENT_PROCESSOR_LIVE and a real-value processor exist', async () => {
+    stubCloudSql();
+    stubProviders();
+    delete process.env.PAYMENT_PROCESSOR_LIVE;
+    (PaymentProcessorOsEngine.processors as any).mockImplementation(async () => ({
+      config: PaymentProcessorOsEngine.getConfig(),
+      sources: [{ id: 'stripe_treasury', liveFlag: 'STRIPE_SECRET_KEY', mode: 'test', realValueCapable: false, reason: 'STRIPE_SECRET_KEY is sk_test_ (test mode)' }],
+      realValueCapable: [], anyRealValueCapable: false,
+    }));
+    const report = await EngineWiringReadiness.readiness();
+    expect(report.ready).toBe(false);
+    expect(report.readyCount).toBe(9);
+    expect(report.total).toBe(10);
+    const pp = report.engines['payment-processor'];
+    expect(pp.ready).toBe(false);
+    expect(pp.mode).toBe('shadow');
+    expect(pp.blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);
+    expect(pp.blockers.some((b: string) => /no real-value processor: stripe_treasury: STRIPE_SECRET_KEY is sk_test_/.test(b))).toBe(true);
   });
 
   it('debt engine blocks a public placement or a holder outside the trust/family', async () => {
@@ -225,6 +258,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       [OS.PaymentEngine, 'payment'], [OS.ClearingEngine, 'clearing'], [OS.SettlementEngine, 'clearing'],
       [OS.ApigeeGatewayEngine, 'gateway'], [OS.ApacheApisixEngine, 'gateway'],
       [OS.ReconciliationEngine, 'reconciliation'], [OS.InteropEngine, 'interop'],
+      [OS.PaymentProcessorPlatformEngine, 'payment-processor'],
     ];
     for (const [Engine, key] of pairs) {
       const r = await Engine.readiness();

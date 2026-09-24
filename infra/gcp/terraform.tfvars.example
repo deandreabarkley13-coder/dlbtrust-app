@@ -6,6 +6,12 @@
 # (cloudrun.tf precondition, secrets.tf lili_secret_names). PAYMENT_HUB_* and
 # PAYMENT_SERVER_SERVICE_TOKEN are always declared by secrets.tf and may be
 # omitted here.
+#
+# The Payment Processor OS block (STRIPE_SECRET_KEY, STRIPE_PAYMENTS_SECRET_KEY,
+# PAYMENT_DATA_ENCRYPTION_KEY — secrets.tf payment_processor_secret_names) is
+# REQUIRED when runtime_environment.PAYMENT_PROCESSOR_LIVE=true; the plan also
+# fails if PAYMENT_PROCESSOR_REQUIRE_{APPROVAL,SCREENING}_REF are turned off
+# while live. The Lili rail additionally needs the Lili block.
 
 project_id = "dlb-treasury-management"
 
@@ -24,6 +30,11 @@ secret_names = [
   "CLEARING_FUNDING_OPERATING_ACCOUNT",
   # Bearer token for /api/payment-server/v1/* (server/routes/bankSettlement.js).
   "PAYMENT_SERVER_SERVICE_TOKEN",
+  # Payment Processor OS live plan (PAYMENT_PROCESSOR_LIVE=true). Already in
+  # the migrate-northflank-secrets.mjs --list output; listed for clarity.
+  "STRIPE_SECRET_KEY",
+  "STRIPE_PAYMENTS_SECRET_KEY",
+  "PAYMENT_DATA_ENCRYPTION_KEY",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

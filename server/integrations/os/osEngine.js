@@ -8271,20 +8271,23 @@ async function unifiedPipeline({ limit = 20 } = {}) {
   const Collateral = tryRequire('./collateralOsEngine')?.CollateralOsEngine;
   const Funding = tryRequire('../fineract/canonicalFundingSource')?.CanonicalFundingSource;
   const GatewayClearing = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
-  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing] = await Promise.all([
+  const PaymentProcessor = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
+  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing, paymentProcessor] = await Promise.all([
     SpritzLeg ? settle(SpritzLeg.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'SpritzTreasuryLegEngine not available' }),
     ControlPlane ? settle(ControlPlane.controlPlane()) : Promise.resolve({ ok: false, error: 'TrustControlPlaneEngine not available' }),
     Collateral ? settle(Collateral.status()) : Promise.resolve({ ok: false, error: 'CollateralOsEngine not available' }),
     Funding ? settle(Promise.resolve(Funding.readiness())) : Promise.resolve({ ok: false, error: 'CanonicalFundingSource not available' }),
     GatewayClearing ? settle(GatewayClearing.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'ApiGatewayClearingEngine not available' }),
+    PaymentProcessor ? settle(PaymentProcessor.status()) : Promise.resolve({ ok: false, error: 'PaymentProcessorOsEngine not available' }),
   ]);
   return {
-    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing'],
+    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing', 'payment_processor'],
     canonicalFunding,
     treasuryLeg,
     controlPlane,
     collateral,
     gatewayClearing,
+    paymentProcessor,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -9069,6 +9072,50 @@ class FundingOsPlatformEngine extends BaseOSEngine {
   }
 }
 
+// ─── Payment Processor OS Engine ──────────────────────────────────────────────
+// Gated front door to PaymentProcessorServerEngine / PaymentGatewayServerEngine /
+// PaymentHubEngine: submit (maker) → approve (distinct checker, approvalRef +
+// screeningRef for real value, self-loopback partners refused) → dispatch. The
+// Lili rail is routed through BankSettlementEngine / ApiGatewayClearingEngine.
+
+class PaymentProcessorPlatformEngine extends BaseOSEngine {
+  static get engineName() { return 'payment-processor'; }
+  static get platformEngine() { return 'payment-processor'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const P = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
+    if (P && pool) await P.ensureTables();
+  }
+
+  static async status() {
+    const P = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
+    if (!P) return { engine: 'payment-processor', healthy: false, mode: 'shadow', integrations: { paymentProcessorOs: false }, timestamp: new Date().toISOString() };
+    const s = await P.status();
+    return { ...s, integrations: { ...s.integrations, paymentProcessorOs: true } };
+  }
+
+  static async _process(action, payload = {}) {
+    const P = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
+    if (!P) return { mode: 'shadow', note: 'PaymentProcessorOsEngine not available' };
+    switch (action) {
+      case 'processors': return await P.processors();
+      case 'pipeline': return await P.pipeline();
+      case 'list': return await P.listSubmissions(payload);
+      case 'submit': return await P.submit(payload);
+      case 'approve': return await P.approve(payload);
+      case 'cancel': return await P.cancel(payload);
+      case 'reconcile': return await P.reconcile(payload);
+      case 'readiness': return await this.readiness();
+      case 'status':
+        if (payload.submissionId || payload.processorTxId) return await P.submissionStatus(payload);
+        return await this.status();
+      default:
+        throw Object.assign(new Error(`Unknown payment-processor action: ${action}. Money movement must go through submit → approve`), { status: 400 });
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -9111,6 +9158,7 @@ const ENGINES = {
   debt: DebtEngine,
   liquidity: LiquidityEngine,
   'funding-os': FundingOsPlatformEngine,
+  'payment-processor': PaymentProcessorPlatformEngine,
 };
 
 async function ensureAll() {
@@ -9134,6 +9182,7 @@ module.exports = {
   DebtEngine,
   LiquidityEngine,
   FundingOsPlatformEngine,
+  PaymentProcessorPlatformEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

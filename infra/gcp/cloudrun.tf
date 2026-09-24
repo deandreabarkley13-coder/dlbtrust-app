@@ -199,6 +199,19 @@ resource "google_cloud_run_v2_service" "app" {
       condition     = length(local.missing_lili_secrets) == 0
       error_message = "LILI_CLEARING_LIVE=true but secret_names lacks ${join(", ", local.missing_lili_secrets)}. Add them to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add`. The Lili OAuth tokens may also be captured into system_settings via server/scripts/liliMcpOAuthSetup.js, but the Secret Manager containers are still required for a live plan."
     }
+
+    # Payment Processor OS: PAYMENT_PROCESSOR_LIVE=true needs the processor
+    # credentials declared (secrets.tf payment_processor_secret_names) and the
+    # approvalRef / screeningRef gates left on.
+    precondition {
+      condition     = length(local.missing_payment_processor_secrets) == 0
+      error_message = "PAYMENT_PROCESSOR_LIVE=true but secret_names lacks ${join(", ", local.missing_payment_processor_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/payment-processor reports the same blockers at runtime."
+    }
+
+    precondition {
+      condition     = !local.payment_processor_gates_relaxed
+      error_message = "PAYMENT_PROCESSOR_LIVE=true requires PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF and PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF to stay \"true\": every real-value processor submission must carry a maker/checker approvalRef and a compliance screeningRef."
+    }
   }
 }
 
