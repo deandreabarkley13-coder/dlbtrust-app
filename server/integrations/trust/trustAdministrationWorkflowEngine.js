@@ -26,7 +26,10 @@ try { ({ DataBridge } = require('../accounting/dataBridge')); } catch (e) { Data
 let BondIssuanceEngine = null;
 try { ({ BondIssuanceEngine } = require('../bonds/bondIssuanceEngine')); } catch (e) { BondIssuanceEngine = null; }
 
-const STAGES = ['issuance', 'intake', 'ledger', 'fineract', 'distribution', 'settlement'];
+let ProofOfAssetOsEngine = null;
+try { ({ ProofOfAssetOsEngine } = require('../os/proofOfAssetOsEngine')); } catch (e) { ProofOfAssetOsEngine = null; }
+
+const STAGES = ['issuance', 'intake', 'ledger', 'fineract', 'distribution', 'settlement', 'proof'];
 
 async function attempt(fn, unavailable) {
   if (!fn) return { available: false, error: unavailable };
@@ -91,16 +94,24 @@ class TrustAdministrationWorkflowEngine {
     }), 'BankSettlementEngine unavailable');
   }
 
+  static async proof() {
+    return attempt(ProofOfAssetOsEngine && (async () => {
+      const status = await ProofOfAssetOsEngine.status();
+      return { ready: Boolean(status.ready), status };
+    }), 'ProofOfAssetOsEngine unavailable');
+  }
+
   static async status({ includeFineract = false, limit = 10 } = {}) {
-    const [issuance, intake, ledger, fineract, distribution, settlement] = await Promise.all([
+    const [issuance, intake, ledger, fineract, distribution, settlement, proof] = await Promise.all([
       this.issuance(),
       this.intake({ limit }),
       this.ledger({ limit }),
       this.fineract({ includeFineract }),
       this.distribution(),
       this.settlement({ limit }),
+      this.proof(),
     ]);
-    const stages = { issuance, intake, ledger, fineract, distribution, settlement };
+    const stages = { issuance, intake, ledger, fineract, distribution, settlement, proof };
     const gaps = [];
     for (const name of STAGES) {
       const s = stages[name];
@@ -108,7 +119,7 @@ class TrustAdministrationWorkflowEngine {
       if (!s.available) gaps.push(`${name}: ${s.error}`);
       else if (s.error) gaps.push(`${name}: ${s.error}`);
       else if (s.ready === false) {
-        const detail = (name === 'intake' || name === 'issuance') ? (s.status.issues || []).join('; ')
+        const detail = (name === 'intake' || name === 'issuance' || name === 'proof') ? (s.status.issues || []).join('; ')
           : name === 'distribution' ? (s.readiness.issues || []).join('; ')
             : name === 'settlement' ? s.banks.flatMap((b) => b.blockers.map((x) => `${b.bankId}: ${x}`)).join('; ')
               : '';
@@ -116,7 +127,7 @@ class TrustAdministrationWorkflowEngine {
       }
     }
     return {
-      pipeline: 'issuer Fineract account -> holder Fineract account -> Stripe payment processing -> deposit ledger -> Fineract GL -> fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit',
+      pipeline: 'issuer Fineract account -> holder Fineract account (held, account of record) -> [send-to-bank] fixed-income distribution -> maker/checker -> Stripe payout -> Lili direct deposit; proof of asset over contract + Fineract + GL + fiat + custody',
       ready: gaps.length === 0 && intake.ready === true && distribution.ready === true && settlement.ready === true,
       gaps,
       stages,

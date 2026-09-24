@@ -196,6 +196,8 @@ variable "runtime_environment" {
     BOND_ISSUANCE_ENABLED        = "true"
     BOND_ISSUANCE_AUTO_INTAKE    = "false"
     BOND_ISSUANCE_RUN_DUE_MS     = "3600000"
+    PROOF_OF_ASSET_ENABLED       = "true"
+    PROOF_OF_ASSET_INTERVAL_MINUTES = "1440"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED             = "true"
     LILI_MCP_URL                 = "https://mcp.lili.co/mcp"
