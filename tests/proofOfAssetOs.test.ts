@@ -149,9 +149,28 @@ describe('ProofOfAssetOsEngine — private placement bond proven across contract
     let s = await ProofOfAssetOsEngine.status();
     expect(s.ready).toBe(false);
     expect(s.issues[0]).toContain('no portfolio proof');
-    await ProofOfAssetOsEngine.prove({});
+    const p = await ProofOfAssetOsEngine.prove({});
+    s = await ProofOfAssetOsEngine.status();
+    expect(s.ready).toBe(false);
+    expect(s.issues[0]).toContain('not certified');
+    await ProofOfAssetOsEngine.certify(p.proofId, { certifiedBy: 'trustee' });
     s = await ProofOfAssetOsEngine.status();
     expect(s.ready).toBe(true);
     expect(s.latest.verdict).toBe('proven');
+  });
+
+  it('auto-certifies only proven proofs under the configured trustee when PROOF_OF_ASSET_AUTO_CERTIFY is on', async () => {
+    process.env.PROOF_OF_ASSET_AUTO_CERTIFY = 'true';
+    delete process.env.PROOF_OF_ASSET_CERTIFIER;
+    await expect(ProofOfAssetOsEngine.proveAll()).rejects.toMatchObject({ code: 'CERTIFIER_REQUIRED' });
+    process.env.PROOF_OF_ASSET_CERTIFIER = 'DeAndrea Lavar Barkley, Trustee';
+    const ok = await ProofOfAssetOsEngine.proveAll();
+    expect(ok.map((p: any) => p.certifiedBy)).toEqual(['DeAndrea Lavar Barkley, Trustee <auto:scheduler>', 'DeAndrea Lavar Barkley, Trustee <auto:scheduler>']);
+    expect(ok[1].certificationSignature).toMatch(/^[0-9a-f]{64}$/);
+    w.fineract[2] = 0;
+    const bad = await ProofOfAssetOsEngine.proveAll();
+    expect(bad.every((p: any) => p.verdict === 'variance' && !p.certifiedBy)).toBe(true);
+    expect((await ProofOfAssetOsEngine.status()).ready).toBe(false);
+    delete process.env.PROOF_OF_ASSET_AUTO_CERTIFY; delete process.env.PROOF_OF_ASSET_CERTIFIER;
   });
 });
