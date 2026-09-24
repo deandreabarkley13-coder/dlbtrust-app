@@ -200,6 +200,14 @@ variable "runtime_environment" {
     PROOF_OF_ASSET_INTERVAL_MINUTES = "1440"
     PROOF_OF_ASSET_AUTO_CERTIFY  = "true"
     PROOF_OF_ASSET_CERTIFIER     = "DeAndrea Lavar Barkley, Trustee"
+    # US ACH API Connector OS (server/integrations/ach/odfiApiConnectorEngine.js):
+    # the bank-as-API ODFI executing treasury credits from a real funded account.
+    # Set ACH_ODFI_PROVIDER to increase|column and ACH_ODFI_ACCOUNT_ID once the
+    # Trust Company's origination account exists; secrets.tf then requires
+    # ACH_ODFI_API_KEY + ACH_ODFI_WEBHOOK_SECRET in secret_names.
+    ACH_ODFI_PROVIDER            = ""
+    ACH_ODFI_ACCOUNT_ID          = ""
+    ACH_ODFI_SYNC_INTERVAL_MS    = "900000"
     LILI_STRIPE_TREASURY_NETWORK = "ach"
     LILI_MCP_ENABLED             = "true"
     LILI_MCP_URL                 = "https://mcp.lili.co/mcp"

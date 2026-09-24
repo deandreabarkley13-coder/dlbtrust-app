@@ -44,6 +44,13 @@ locals {
       flag    = lookup(var.runtime_environment, "CROSS_CHAIN_SHADOW", "true") == "false"
       secrets = ["DAPP_RPC_URL", "DAPP_PRIVATE_KEY"]
     }
+    # US ACH API Connector OS (odfiApiConnectorEngine.js): a configured
+    # bank-as-API ODFI executes real credits, so its key and webhook signing
+    # secret must exist before the channel can be planned live.
+    "ACH_ODFI_PROVIDER" = {
+      flag    = lookup(var.runtime_environment, "ACH_ODFI_PROVIDER", "") != ""
+      secrets = ["ACH_ODFI_API_KEY", "ACH_ODFI_WEBHOOK_SECRET"]
+    }
   }
   missing_live_secrets = distinct(flatten([
     for name, req in local.live_engine_requirements : [
