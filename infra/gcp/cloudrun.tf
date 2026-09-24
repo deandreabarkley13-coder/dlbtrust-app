@@ -212,6 +212,25 @@ resource "google_cloud_run_v2_service" "app" {
       condition     = !local.payment_processor_gates_relaxed
       error_message = "PAYMENT_PROCESSOR_LIVE=true requires PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF and PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF to stay \"true\": every real-value processor submission must carry a maker/checker approvalRef and a compliance screeningRef."
     }
+
+    # Payment Gateway OS (trust distributions / disbursements):
+    # PAYMENT_GATEWAY_LIVE=true needs the gateway secrets declared (secrets.tf
+    # payment_gateway_secret_names), the processor engine live underneath it,
+    # and the approvalRef / screeningRef / distribution-request gates left on.
+    precondition {
+      condition     = length(local.missing_payment_gateway_secrets) == 0
+      error_message = "PAYMENT_GATEWAY_LIVE=true but secret_names lacks ${join(", ", local.missing_payment_gateway_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/payment-gateway reports the same blockers at runtime."
+    }
+
+    precondition {
+      condition     = !local.payment_gateway_without_processor
+      error_message = "PAYMENT_GATEWAY_LIVE=true requires PAYMENT_PROCESSOR_LIVE=true: gateway disbursements dispatch through the payment-processor engine, which otherwise records every intent in shadow mode."
+    }
+
+    precondition {
+      condition     = !local.payment_gateway_gates_relaxed
+      error_message = "PAYMENT_GATEWAY_LIVE=true requires PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF, PAYMENT_GATEWAY_REQUIRE_SCREENING_REF and PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST to stay \"true\": every real-value distribution or disbursement must carry a maker/checker approvalRef, a compliance screeningRef and a two-trustee-approved dapp_distribution_requests row."
+    }
   }
 }
 
