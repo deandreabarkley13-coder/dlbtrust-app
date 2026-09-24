@@ -192,6 +192,7 @@ try { app.use('/api/collateral-os', require(path.join(HD, 'server', 'routes', 'c
 try { app.use('/api/fixed-income', require(path.join(HD, 'server', 'routes', 'fixedIncome'))); console.log('[fixed-income] loaded'); } catch(e) { console.warn('[fixed-income]', e.message); }
 try { app.use('/api/bond-issuance', require(path.join(HD, 'server', 'routes', 'bondIssuance'))); console.log('[bond-issuance] loaded'); } catch(e) { console.warn('[bond-issuance]', e.message); }
 try { app.use('/api/proof-of-asset', require(path.join(HD, 'server', 'routes', 'proofOfAsset'))); console.log('[proof-of-asset] loaded'); } catch(e) { console.warn('[proof-of-asset]', e.message); }
+try { app.use('/api/ach-odfi', require(path.join(HD, 'server', 'routes', 'achOdfi'))); console.log('[ach-odfi] loaded'); } catch(e) { console.warn('[ach-odfi]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
@@ -1143,6 +1144,25 @@ initializeDatabase().then(function() {
       }, function() { if (proofTimer) { clearInterval(proofTimer); proofTimer = null; } });
     }
   } catch(e) { console.warn('[proof-of-asset] scheduler:', e.message); }
+
+  // US ACH API Connector: poll the ODFI provider for settlement/returns of
+  // non-final transfers (webhook fallback). OFF unless ACH_ODFI_SYNC_INTERVAL_MS > 0
+  // and ACH_ODFI_PROVIDER is configured.
+  try {
+    var odfiSyncMs = parseInt(process.env.ACH_ODFI_SYNC_INTERVAL_MS || '0', 10);
+    if (odfiSyncMs > 0 && process.env.ACH_ODFI_PROVIDER) {
+      var odfiTimer = null;
+      leader.register('ach-odfi-sync', function() {
+        odfiTimer = setInterval(function() {
+          var OdfiApiConnectorEngine = require(path.join(HD, 'server', 'integrations', 'ach', 'odfiApiConnectorEngine')).OdfiApiConnectorEngine;
+          OdfiApiConnectorEngine.sync().then(function(r) {
+            if (r.updated.length) console.log('[ach-odfi] synced ' + r.updated.length + ' of ' + r.checked + ' transfers');
+          }).catch(function(err) { console.warn('[ach-odfi] sync failed:', err.message); });
+        }, odfiSyncMs);
+        console.log('[ach-odfi] sync scheduler started every ' + odfiSyncMs + 'ms');
+      }, function() { if (odfiTimer) { clearInterval(odfiTimer); odfiTimer = null; } });
+    }
+  } catch(e) { console.warn('[ach-odfi] scheduler:', e.message); }
 
   // OpenACH NACHA file relay: export bucket -> ODFI via MFT Gateway.
   // OFF unless OPENACH_FILE_RELAY_INTERVAL_MS is set; the relay itself fails closed

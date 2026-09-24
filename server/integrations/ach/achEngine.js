@@ -253,6 +253,11 @@ class ACHEngine {
       // It keeps the bytes, the hash and the release decision, so it wins
       // over any bare endpoint.
       partnerConfig = ACHEngine.mftPartnerConfig();
+    } else if (systemMode === 'production' && ACHEngine.odfiApiPartnerConfig()) {
+      // Bank-as-API ODFI (Increase / Column): the funded origination account
+      // that executes credits on FedACH. Wins over file channels because it is
+      // the only channel that can confirm real dollars left the account.
+      partnerConfig = ACHEngine.odfiApiPartnerConfig();
     } else if (systemMode === 'production' && ACHEngine.mftGatewayPartnerConfig()) {
       // Hosted AS2 station on MFT Gateway delivering to the bank's registered
       // partner profile — the ODFI channel for treasury -> RDFI credits.
@@ -359,6 +364,10 @@ class ACHEngine {
           response_body: JSON.stringify({ as2_from: sent.as2_from, as2_to: sent.as2_to, message_id: sent.message_id, link: sent.link, response: sent.response_body }),
         };
         console.log(`[ACH] transmitBatch(${batchId}): MFT Gateway → ${sent.as2_to} message=${sent.message_id}`);
+      } else if (protocol === 'odfi_api') {
+        const { OdfiApiConnectorEngine } = require('./odfiApiConnectorEngine');
+        result = await OdfiApiConnectorEngine.originateBatch(batch);
+        console.log(`[ACH] transmitBatch(${batchId}): ODFI API ${partnerConfig.provider} → ${result.message_id} (${result.odfi.transfers.length} transfers)`);
       } else if (protocol === 'openach') {
         result = await ACHEngine._originateOnOpenAch(batch, partnerConfig);
         console.log(`[ACH] transmitBatch(${batchId}): OpenACH → ${result.message_id} (${result.openach.entries.length} entries)`);
@@ -461,6 +470,16 @@ class ACHEngine {
         [err.message, batchId]
       ).catch(e => console.error(`[ACH] Failed to set batch status to failed:`, e.message));
       throw err;
+    }
+  }
+
+  /** Bank-as-API ODFI channel (odfiApiConnectorEngine.js), or null when not configured. */
+  static odfiApiPartnerConfig() {
+    try {
+      const { OdfiApiConnectorEngine } = require('./odfiApiConnectorEngine');
+      return OdfiApiConnectorEngine.partnerConfig();
+    } catch (e) {
+      return null;
     }
   }
 

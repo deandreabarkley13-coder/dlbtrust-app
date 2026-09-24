@@ -29,6 +29,9 @@ try { ({ BondIssuanceEngine } = require('../bonds/bondIssuanceEngine')); } catch
 let ProofOfAssetOsEngine = null;
 try { ({ ProofOfAssetOsEngine } = require('../os/proofOfAssetOsEngine')); } catch (e) { ProofOfAssetOsEngine = null; }
 
+let OdfiApiConnectorEngine = null;
+try { ({ OdfiApiConnectorEngine } = require('../ach/odfiApiConnectorEngine')); } catch (e) { OdfiApiConnectorEngine = null; }
+
 const STAGES = ['issuance', 'intake', 'ledger', 'fineract', 'distribution', 'settlement', 'proof'];
 
 async function attempt(fn, unavailable) {
@@ -90,7 +93,10 @@ class TrustAdministrationWorkflowEngine {
         banks.push({ bankId: r.bankId, provider: r.provider, mode: r.mode, ready: r.ready, blockers: r.blockers || [], bank: r.bank || SettlementBankRegistry.publicView(bank) });
       }
       const recent = await BankSettlementEngine.list({ limit }).catch(() => []);
-      return { ready: banks.length > 0 && banks.every((b) => b.ready), banks, recent };
+      // External real-value rail: the bank-as-API ODFI (informational; the
+      // Stripe-payout bank leg above decides readiness until it is configured).
+      const odfi = OdfiApiConnectorEngine ? OdfiApiConnectorEngine.readiness() : null;
+      return { ready: banks.length > 0 && banks.every((b) => b.ready), banks, recent, odfiApi: odfi && { ready: odfi.ready, provider: odfi.provider || null, issues: odfi.issues } };
     }), 'BankSettlementEngine unavailable');
   }
 

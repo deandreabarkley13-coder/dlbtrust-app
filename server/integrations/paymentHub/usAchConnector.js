@@ -6,6 +6,7 @@ const { ACHEngine } = require('../ach/achEngine');
 const { AS2Partners } = require('../ach/as2Partners');
 const { SystemSettings } = require('../ach/systemSettings');
 const { validateRouting } = require('../ach/nachaGenerator');
+const { OdfiApiConnectorEngine } = require('../ach/odfiApiConnectorEngine');
 
 function originatorConfig() {
   return {
@@ -37,10 +38,14 @@ class USAchConnector {
     const registeredPartner = configuredPartnerId
       ? await AS2Partners.getPartnerConfig(configuredPartnerId)
       : null;
-    const partner = registeredPartner || (mode === 'production' ? await SystemSettings.getProductionPartnerConfig() : null);
+    const odfiApi = OdfiApiConnectorEngine.readiness();
+    const odfiApiPartner = odfiApi.ready ? OdfiApiConnectorEngine.partnerConfig() : null;
+    const partner = registeredPartner || odfiApiPartner || (mode === 'production' ? await SystemSettings.getProductionPartnerConfig() : null);
     if (production && mode !== 'production') issues.push('System Settings must be in production mode for live ACH transmission');
     if (production && configuredPartnerId && !registeredPartner) issues.push('ACH_PARTNER_ID does not identify an active partner');
-    if (production && !partner) issues.push('A verified external ODFI endpoint is required');
+    if (production && !partner) issues.push('A verified external ODFI endpoint is required (set ACH_ODFI_PROVIDER + ACH_ODFI_API_KEY + ACH_ODFI_ACCOUNT_ID for a bank-as-API ODFI)');
+    if (odfiApi.provider && !odfiApi.ready) issues.push(...odfiApi.issues.map((i) => `ODFI API: ${i}`));
+    warnings.push(...odfiApi.warnings.map((w) => `ODFI API: ${w}`));
     if (partner && partner.protocol === 'bill_api') {
       issues.push('BILL deposit recording is not a supported outbound ACH connector');
     }
@@ -83,6 +88,7 @@ class USAchConnector {
       issues,
       warnings,
       systemMode: mode,
+      odfiApi: { ready: odfiApi.ready, provider: odfiApi.provider, accountConfigured: odfiApi.accountConfigured, webhookConfigured: odfiApi.webhookConfigured },
       partner: partner ? {
         partnerId: partner.partnerId,
         partnerName: partner.partnerName,
