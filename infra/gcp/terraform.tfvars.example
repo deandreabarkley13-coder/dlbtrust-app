@@ -93,9 +93,9 @@ secret_names = [
   # Rails requires on every sync and the AES-256-GCM key every transaction is
   # stored under upstream and decrypted only inside Cloud Run. Bank login
   # happens in the Quiltt widget (POST /api/aggregator/connections/:id/link-token).
-  # "ORANGERAILS_PLATFORM_API_KEY",
-  # "ORANGERAILS_CREDENTIALS_KEY",
-  # "ORANGERAILS_TRANSACTIONS_KEY",
+  "ORANGERAILS_PLATFORM_API_KEY",
+  "ORANGERAILS_CREDENTIALS_KEY",
+  "ORANGERAILS_TRANSACTIONS_KEY",
   # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY /
   #  _CREDENTIALS_KEY / _TRANSACTIONS_KEY)
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
