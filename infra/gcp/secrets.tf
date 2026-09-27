@@ -155,10 +155,21 @@ locals {
     "STRIPE_PAYMENTS_SECRET_KEY",
   ]
   private_payment_network_live = lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_LIVE", "false") == "true"
-  missing_private_payment_network_secrets = [
+  # PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true lets an approved mft_as2 payout drop a
+  # NACHA file through the MFT Gateway AS2 station, so its API token pair must
+  # be mounted as well.
+  private_payment_network_mft_live = local.private_payment_network_live && lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_MFT_LIVE", "false") == "true"
+  private_payment_network_mft_secret_names = [
+    "MFTGATEWAY_API_TOKEN_ID",
+    "MFTGATEWAY_API_TOKEN_SECRET",
+  ]
+  missing_private_payment_network_secrets = concat([
     for s in local.private_payment_network_secret_names : s
     if local.private_payment_network_live && !contains(local.runtime_secret_names, s)
-  ]
+    ], [
+    for s in local.private_payment_network_mft_secret_names : s
+    if local.private_payment_network_mft_live && !contains(local.runtime_secret_names, s)
+  ])
   private_payment_network_without_dependencies = local.private_payment_network_live && (!local.payment_processor_live || !local.enterprise_network_live)
   private_payment_network_gates_relaxed = local.private_payment_network_live && (
     lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF", "true") == "false" ||

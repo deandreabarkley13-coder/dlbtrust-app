@@ -224,6 +224,9 @@ class EnterpriseNetworkOsEngine {
 
   /** Participants whose endpoint resolves back to this platform are refused (self-loopback partner). */
   static loopbackReason(endpoint = {}, processor) {
+    const partner = String(endpoint?.partnerAs2Id || '').trim();
+    const station = String(tryRequire('../edi/mftGatewayClient')?.MftGatewayClient?.getConfig().stationAs2Id || '').trim();
+    if (partner && station && partner.toUpperCase() === station.toUpperCase()) return `partner ${partner} is this platform's own AS2 station`;
     const P = this._processorOs();
     if (P) return P.loopbackReason(endpoint || {}, processor);
     const d = endpoint || {};

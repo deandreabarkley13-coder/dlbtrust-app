@@ -236,30 +236,36 @@ variable "runtime_environment" {
     PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT   = "true"
     PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR     = ""
     PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS    = ""
+    # mft_as2 payout processor: approved payouts become a single-entry NACHA
+    # credit file submitted from the MFTGATEWAY_STATION_AS2_ID station to the
+    # participant's AS2 partner (endpoint.partnerAs2Id, else
+    # MFTGATEWAY_PARTNER_AS2_ID). Shadow until this is "true"; also needs
+    # PRIVATE_PAYMENT_NETWORK_LIVE=true and MFTGATEWAY_API_TOKEN_ID/SECRET.
+    PRIVATE_PAYMENT_NETWORK_MFT_LIVE = "false"
 
     # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
-    INCOME_OBLIGOR_NAME          = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
-    INCOME_OBLIGOR_EIN           = "99-6411566"
-    INCOME_OBLIGOR_EMAIL         = "deandreabarkley13@gmail.com"
-    INCOME_OBLIGOR_PAYER_ID      = "dlb-trust-company"
-    INCOME_OBLIGOR_ROLE          = "custodian_issuer"
-    TRUST_HOLDER_NAME            = "DeAndrea Lavar Barkley Irrevocable Trust"
-    TRUST_HOLDER_ID              = "dlb-irrevocable-trust"
-    BOND_ISSUANCE_ENABLED        = "true"
-    BOND_ISSUANCE_AUTO_INTAKE    = "false"
-    BOND_ISSUANCE_RUN_DUE_MS     = "3600000"
-    PROOF_OF_ASSET_ENABLED       = "true"
+    INCOME_OBLIGOR_NAME             = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    INCOME_OBLIGOR_EIN              = "99-6411566"
+    INCOME_OBLIGOR_EMAIL            = "deandreabarkley13@gmail.com"
+    INCOME_OBLIGOR_PAYER_ID         = "dlb-trust-company"
+    INCOME_OBLIGOR_ROLE             = "custodian_issuer"
+    TRUST_HOLDER_NAME               = "DeAndrea Lavar Barkley Irrevocable Trust"
+    TRUST_HOLDER_ID                 = "dlb-irrevocable-trust"
+    BOND_ISSUANCE_ENABLED           = "true"
+    BOND_ISSUANCE_AUTO_INTAKE       = "false"
+    BOND_ISSUANCE_RUN_DUE_MS        = "3600000"
+    PROOF_OF_ASSET_ENABLED          = "true"
     PROOF_OF_ASSET_INTERVAL_MINUTES = "1440"
-    PROOF_OF_ASSET_AUTO_CERTIFY  = "true"
-    PROOF_OF_ASSET_CERTIFIER     = "DeAndrea Lavar Barkley, Trustee"
+    PROOF_OF_ASSET_AUTO_CERTIFY     = "true"
+    PROOF_OF_ASSET_CERTIFIER        = "DeAndrea Lavar Barkley, Trustee"
     # US ACH API Connector OS (server/integrations/ach/odfiApiConnectorEngine.js):
     # the bank-as-API ODFI executing treasury credits from a real funded account.
     # Set ACH_ODFI_PROVIDER to increase|column and ACH_ODFI_ACCOUNT_ID once the
     # Trust Company's origination account exists; secrets.tf then requires
     # ACH_ODFI_API_KEY + ACH_ODFI_WEBHOOK_SECRET in secret_names.
-    ACH_ODFI_PROVIDER            = ""
-    ACH_ODFI_ACCOUNT_ID          = ""
-    ACH_ODFI_SYNC_INTERVAL_MS    = "900000"
+    ACH_ODFI_PROVIDER         = ""
+    ACH_ODFI_ACCOUNT_ID       = ""
+    ACH_ODFI_SYNC_INTERVAL_MS = "900000"
     # ODFI bank (server/integrations/ach/treasuryOdfiBank.js): the trust's own
     # Betterment Checking (in the trust name) accepts and executes the NACHA
     # files dlb-treasury originates and funds (OpenACH / Payment Hub -> MFT
@@ -269,25 +275,25 @@ variable "runtime_environment" {
     # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_OPERATING_ACCOUNT, LILI_ODFI_*,
     # etc., superseding the Lili/Sunrise originator values below. Company id
     # defaults to "1" + INCOME_OBLIGOR_EIN unless Betterment assigns one.
-    ACH_ODFI_BANK                = "betterment"
-    ACH_ODFI_BANK_NAME           = "BETTERMENT"
-    ACH_ODFI_ORIGINATOR_NAME     = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
-    ACH_ODFI_COMPANY_NAME        = "DLB TRUST CO"
-    ACH_ODFI_COMPANY_ID          = ""
+    ACH_ODFI_BANK            = "betterment"
+    ACH_ODFI_BANK_NAME       = "BETTERMENT"
+    ACH_ODFI_ORIGINATOR_NAME = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    ACH_ODFI_COMPANY_NAME    = "DLB TRUST CO"
+    ACH_ODFI_COMPANY_ID      = ""
     # Optional secondary path (treasuryFundingBankEngine.js): the same account
     # saved in Stripe as an ACH-debit mandate feeding the Stripe balance. Off:
     # dlb-treasury funds the files directly; Betterment is not funding Stripe.
-    TREASURY_BANK_ENABLED        = "false"
-    TREASURY_BANK_ID             = "betterment"
-    TREASURY_BANK_NAME           = "Betterment Checking"
-    TREASURY_BANK_ACCOUNT_HOLDER = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    TREASURY_BANK_ENABLED             = "false"
+    TREASURY_BANK_ID                  = "betterment"
+    TREASURY_BANK_NAME                = "Betterment Checking"
+    TREASURY_BANK_ACCOUNT_HOLDER      = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     TREASURY_BANK_REGISTER_SETTLEMENT = "true"
-    LILI_STRIPE_TREASURY_NETWORK = "ach"
-    LILI_MCP_ENABLED             = "true"
-    LILI_MCP_URL                 = "https://mcp.lili.co/mcp"
-    LILI_OAUTH_BASE_URL          = "https://mcp.lili.co"
-    LILI_DD_ROUTING_NUMBER       = "121145307"
-    LILI_DD_ACCOUNT_NAME         = "DB NET MGMT LLC"
+    LILI_STRIPE_TREASURY_NETWORK      = "ach"
+    LILI_MCP_ENABLED                  = "true"
+    LILI_MCP_URL                      = "https://mcp.lili.co/mcp"
+    LILI_OAUTH_BASE_URL               = "https://mcp.lili.co"
+    LILI_DD_ROUTING_NUMBER            = "121145307"
+    LILI_DD_ACCOUNT_NAME              = "DB NET MGMT LLC"
     # ODFI channel for the treasury -> Lili credit. Default: OpenACH, the
     # in-project dlbtrust-openach service (OPENACH_BASE_URL/API_TOKEN/API_KEY/
     # PAYMENT_TYPE_ID in secret_names; OPENACH_ODFI_ENABLED=false opts out).

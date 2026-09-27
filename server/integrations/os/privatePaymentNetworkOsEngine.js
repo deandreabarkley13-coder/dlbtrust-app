@@ -15,6 +15,11 @@
  *                    payout         → PaymentGatewayServerEngine.sale, which dispatches
  *                                     through PaymentProcessorServerEngine (cleared,
  *                                     settled by reconcile / webhook)
+ *                    payout over mft_as2 → a single-entry NACHA credit file dropped
+ *                                     through the trust's MFT Gateway AS2 station
+ *                                     (MFTGATEWAY_STATION_AS2_ID) to the participant's
+ *                                     AS2 partner (cleared, settled / returned by
+ *                                     reconcile / webhook on the AS2 message id)
  *   cancel()       withdraw a submitted transaction
  *   reconcile()    processor settlement / return status back onto the transaction
  *   webhook()      HMAC-verified processor callback → reconcile
@@ -25,7 +30,9 @@
  * trust ledger for book transfers) AND the checker supplied both an approvalRef
  * and a screeningRef. Otherwise the approval is recorded in shadow mode and no
  * ledger posting or provider call is made. Payouts are admitted only for
- * enterprise-network participants within their exposure limit.
+ * enterprise-network participants within their exposure limit. The mft_as2
+ * file drop additionally needs PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true and never
+ * submits to our own station or a self-loopback partner.
  */
 
 const crypto = require('crypto');
@@ -58,6 +65,9 @@ const TABLES = [
 const STATUSES = ['submitted', 'approved', 'shadow', 'cleared', 'settled', 'returned', 'failed', 'cancelled'];
 const TYPES = ['book_transfer', 'payout'];
 const LEDGER_PROCESSOR = 'internal_ledger';
+const MFT_PROCESSOR = 'mft_as2';
+const MFT_ARCHIVE_PREFIX = 'private-network/outbound/';
+const SEC_CODES = ['CCD', 'PPD'];
 const METHOD_RAILS = { ach: 'ach', card: 'card', wallet: 'wallet', crypto: 'crypto' };
 const SETTLED = new Set(['settled', 'succeeded', 'paid', 'completed', 'posted']);
 const RETURNED = new Set(['returned', 'failed', 'reversed', 'declined', 'refunded', 'voided']);
@@ -112,6 +122,10 @@ class PrivatePaymentNetworkOsEngine {
   static _processorOs() { return tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine || null; }
   static _network() { return tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine || null; }
   static _ledger() { return tryRequire('../cash/cashEngine')?.CashEngine || null; }
+  static _mft() { return tryRequire('../edi/mftGatewayClient')?.MftGatewayClient || null; }
+  static _nacha() { return tryRequire('../ach/nachaGenerator'); }
+  static _fileRelay() { return tryRequire('../openach/openachFileRelay')?.OpenAchFileRelay || null; }
+  static _paymentCrypto() { return tryRequire('../paymentHub/paymentCrypto'); }
 
   static async ensureTables() {
     if (!pool) return;
@@ -166,6 +180,7 @@ class PrivatePaymentNetworkOsEngine {
       defaultProcessor: env.PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR || null,
       processorLive: isTrue(env.PAYMENT_PROCESSOR_LIVE),
       networkLive: isTrue(env.ENTERPRISE_NETWORK_LIVE),
+      mftLive: isTrue(env.PRIVATE_PAYMENT_NETWORK_MFT_LIVE),
       webhookSecret: Boolean(env.PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET),
       encryptionKey: Boolean(env.PAYMENT_DATA_ENCRYPTION_KEY),
       maxTransferCents: Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) > 0 ? Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) : null,
@@ -188,6 +203,50 @@ class PrivatePaymentNetworkOsEngine {
     for (const k of ['url', 'apiBaseUrl', 'partnerUrl', 'endpoint', 'webhookUrl', 'callbackUrl']) {
       if (d[k] && this.isSelfLoopbackUrl(d[k])) return `destination.${k}=${d[k]} points back at this platform`;
     }
+    return null;
+  }
+
+  /** AS2 partners that are our own station or a self-loopback partner id. */
+  static as2LoopbackReason(partnerAs2Id, stationAs2Id) {
+    const partner = String(partnerAs2Id || '').trim();
+    if (!partner) return null;
+    const station = String(stationAs2Id || this._mft()?.getConfig().stationAs2Id || '').trim();
+    if (station && partner.toUpperCase() === station.toUpperCase()) return `partner ${partner} is this platform's own AS2 station`;
+    return this.loopbackReason({ partnerAs2Id: partner });
+  }
+
+  /**
+   * AS2 route for an mft_as2 file drop: the destination's partnerAs2Id, else the
+   * participant endpoint's, else MFTGATEWAY_PARTNER_AS2_ID. Refuses loopback.
+   */
+  static _as2Route(destination = {}, participant = null) {
+    const Mft = this._mft();
+    const mcfg = Mft ? Mft.getConfig() : {};
+    const candidates = [
+      ['destination', destination?.partnerAs2Id],
+      ['participant', participant?.endpoint?.partnerAs2Id],
+      ['MFTGATEWAY_PARTNER_AS2_ID', mcfg.partnerAs2Id],
+    ];
+    const [source, id] = candidates.find(([, v]) => String(v || '').trim()) || [null, null];
+    const partnerAs2Id = id ? String(id).trim() : null;
+    const stationAs2Id = mcfg.stationAs2Id || null;
+    const loop = this.as2LoopbackReason(partnerAs2Id, stationAs2Id);
+    if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
+    return { stationAs2Id, partnerAs2Id, partnerSource: source };
+  }
+
+  /** Why the mft_as2 file drop cannot carry real value (null = it can). */
+  static _mftGate(cfg = this.getConfig()) {
+    if (!cfg.live) return 'PRIVATE_PAYMENT_NETWORK_LIVE=false';
+    if (!cfg.encryptionKey) return 'PAYMENT_DATA_ENCRYPTION_KEY not set (payout instruments cannot be tokenized safely)';
+    if (!cfg.networkLive) return 'ENTERPRISE_NETWORK_LIVE=false (payout participants and exposure limits are shadow-only)';
+    if (!cfg.mftLive) return 'PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false (NACHA file drop through the MFT Gateway AS2 station is shadow-only)';
+    const Mft = this._mft();
+    const Nacha = this._nacha();
+    if (!Mft || !Nacha || !this._paymentCrypto() || !this._gateway()) return 'MftGatewayClient / nachaGenerator / paymentCrypto / PaymentGatewayServerEngine unavailable';
+    const issues = Mft.issues().filter((i) => !/PARTNER_AS2_ID/.test(i));
+    if (issues.length) return issues.join('; ');
+    if (!Nacha.validateRouting(String(Nacha.ODFI_ROUTING || ''))) return 'NACHA_ODFI_ROUTING is not a valid ABA routing number';
     return null;
   }
 
@@ -232,9 +291,23 @@ class PrivatePaymentNetworkOsEngine {
       reason: ledgerGate,
       route: 'CashEngine.transfer',
     };
-    const sources = [ledger, ...external];
+    const mftGate = this._mftGate(cfg);
+    const Mft = this._mft();
+    const mcfg = Mft ? Mft.getConfig() : {};
+    const fileDrop = {
+      id: MFT_PROCESSOR,
+      kind: 'payout',
+      mode: mftGate ? 'shadow' : 'live',
+      configured: Boolean(Mft && Mft.configured()),
+      realValueCapable: !mftGate,
+      reason: mftGate,
+      route: 'nachaGenerator → MftGatewayClient.submit (AS2 station file drop)',
+      stationAs2Id: mcfg.stationAs2Id || null,
+      defaultPartnerAs2Id: mcfg.partnerAs2Id || null,
+    };
+    const sources = [ledger, ...external, fileDrop];
     const realValueCapable = sources.filter((s) => s.realValueCapable).map((s) => s.id);
-    return { config: cfg, gate, ledgerGate, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
+    return { config: cfg, gate, ledgerGate, mftGate, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
   }
 
   static async isRealValue(processor, inventory) {
@@ -316,9 +389,14 @@ class PrivatePaymentNetworkOsEngine {
       routePolicyId = route && !processor ? route.policyId : null;
       const loop = this.loopbackReason(destination, chosen);
       if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
+      if (chosen === MFT_PROCESSOR) {
+        if (method.type !== 'ach') throw httpError(`${MFT_PROCESSOR} carries NACHA credits only; payment method ${methodId} is ${method.type}`, 409);
+        if (destination?.secCode && !SEC_CODES.includes(String(destination.secCode).toUpperCase())) throw httpError(`destination.secCode must be one of ${SEC_CODES.join(', ')}`);
+      }
     }
     const realValue = await this.isRealValue(chosen);
-    if (type === 'payout') await this._admitParticipant(participantId, cents, false);
+    const admission = type === 'payout' ? await this._admitParticipant(participantId, cents, false) : null;
+    const as2 = chosen === MFT_PROCESSOR ? this._as2Route(destination, admission?.participant) : null;
 
     const id = newId();
     const res = await pool.query(
@@ -326,7 +404,7 @@ class PrivatePaymentNetworkOsEngine {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'submitted',$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17,$18) RETURNING *`,
       [id, type, sourceAccountId, type === 'book_transfer' ? destinationAccountId : null, type === 'payout' ? methodId : null,
         participantId || null, chosen, routePolicyId, cents, String(currency).toUpperCase(), realValue, reference || null, memo || null,
-        JSON.stringify(destination || {}), JSON.stringify({ ...(metadata || {}), methodType: method ? method.type : null }),
+        JSON.stringify(destination || {}), JSON.stringify({ ...(metadata || {}), methodType: method ? method.type : null, ...(as2 ? { as2 } : {}) }),
         requestedBy, approvalRef || null, screeningRef || null]
     );
     return rowToTx(res.rows[0]);
@@ -345,18 +423,25 @@ class PrivatePaymentNetworkOsEngine {
     const tx = rowToTx(row);
     const inventory = await this.processors();
     if (tx.type === 'payout') {
-      const loop = this.loopbackReason(tx.destination, tx.processor);
+      const loop = this.loopbackReason(tx.destination, tx.processor)
+        || (tx.processor === MFT_PROCESSOR ? this.as2LoopbackReason(tx.metadata?.as2?.partnerAs2Id) : null);
       if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
     }
     const realValue = await this.isRealValue(tx.processor, inventory);
+    let as2 = null;
     if (realValue) {
       if (cfg.requireApproval && !approvalRef) throw httpError('approvalRef (maker/checker record) is required from the checker before a real-value network transaction is cleared', 409);
       if (cfg.requireScreening && !screeningRef) throw httpError('screeningRef (compliance screening id) is required from the checker before a real-value network transaction is cleared', 409);
       await this._account(tx.sourceAccountId, 'sourceAccountId', { cents: tx.amountCents });
       if (tx.type === 'book_transfer') await this._account(tx.destinationAccountId, 'destinationAccountId');
       else {
-        await this._method(tx.methodId);
-        await this._admitParticipant(tx.participantId, 0, true);
+        const method = await this._method(tx.methodId);
+        const admission = await this._admitParticipant(tx.participantId, 0, true);
+        if (tx.processor === MFT_PROCESSOR) {
+          if (method.type !== 'ach') throw httpError(`${MFT_PROCESSOR} carries NACHA credits only; payment method ${tx.methodId} is ${method.type}`, 409);
+          as2 = this._as2Route(tx.destination, admission?.participant);
+          if (!as2.partnerAs2Id) throw httpError('no AS2 partner for the MFT file drop: set destination.partnerAs2Id, the participant endpoint.partnerAs2Id or MFTGATEWAY_PARTNER_AS2_ID', 409);
+        }
       }
     }
 
@@ -367,13 +452,13 @@ class PrivatePaymentNetworkOsEngine {
 
     if (!realValue) {
       const src = inventory.sources.find((s) => s.id === tx.processor);
-      const note = (tx.type === 'book_transfer' ? inventory.ledgerGate : inventory.gate) || src?.reason || `${tx.processor} is not real-value capable`;
+      const note = (src && src.reason) || (tx.type === 'book_transfer' ? inventory.ledgerGate : inventory.gate) || `${tx.processor} is not real-value capable`;
       await pool.query(`UPDATE ${TABLE} SET status = 'shadow', route = 'shadow', result = $2::jsonb WHERE transaction_id = $1`,
         [transactionId, JSON.stringify({ mode: 'shadow', note })]);
       return { ...rowToTx(await this._get(transactionId)), dispatched: false, note };
     }
 
-    const dispatch = await settle(() => this._dispatch({ ...tx, approvedBy, approvalRef, screeningRef }));
+    const dispatch = await settle(() => this._dispatch({ ...tx, approvedBy, approvalRef, screeningRef, as2 }));
     if (!dispatch.ok) {
       await pool.query(`UPDATE ${TABLE} SET status = 'failed', error_message = $2 WHERE transaction_id = $1`, [transactionId, dispatch.error]);
       throw httpError(`dispatch failed: ${dispatch.error}`, 502);
@@ -416,6 +501,7 @@ class PrivatePaymentNetworkOsEngine {
       });
       return { route: 'CashEngine.transfer', status: 'settled', movementId: movement?.movement_id || null, result: { movement, metadata } };
     }
+    if (tx.processor === MFT_PROCESSOR) return this._dispatchFileDrop(tx, metadata);
     const Gateway = this._gateway();
     if (!Gateway) throw new Error('PaymentGatewayServerEngine not available');
     const sale = await Gateway.sale({
@@ -437,6 +523,82 @@ class PrivatePaymentNetworkOsEngine {
       gatewayTxId: sale.gatewayTxId || null,
       processorTxId: sale.processorTxId || null,
       result: sale,
+    };
+  }
+
+  /**
+   * Builds a single-entry NACHA credit for the payout instrument, archives it in
+   * the OpenACH files bucket (outside the relay's export/ prefix) and submits it
+   * from our AS2 station to the partner. The account number never leaves the
+   * file: the transaction result only keeps the file hash and AS2 message id.
+   */
+  static async _dispatchFileDrop(tx, metadata) {
+    const Gateway = this._gateway();
+    const Mft = this._mft();
+    const Nacha = this._nacha();
+    const PaymentCrypto = this._paymentCrypto();
+    if (!Gateway || !Mft || !Nacha || !PaymentCrypto) throw new Error('MFT file drop dependencies unavailable');
+    const as2 = tx.as2;
+    if (!as2 || !as2.partnerAs2Id) throw new Error('AS2 partner not resolved');
+    const method = await Gateway.getMethod(tx.methodId, true);
+    if (!method || method.type !== 'ach' || !method.encrypted_payload) throw new Error(`payment method ${tx.methodId} has no tokenized ACH instrument`);
+    let bank;
+    try { bank = JSON.parse(PaymentCrypto.decrypt(method.encrypted_payload)); } catch (e) { throw new Error(`payment method ${tx.methodId} could not be decrypted`); }
+    const routing = String(bank.routingNumber || '').trim();
+    const accountNumber = String(bank.accountNumber || '').trim();
+    if (!Nacha.validateRouting(routing)) throw new Error(`payment method ${tx.methodId} has an invalid routing number`);
+    if (!/^[0-9A-Za-z-]{1,17}$/.test(accountNumber)) throw new Error(`payment method ${tx.methodId} has an invalid account number`);
+
+    const d = tx.destination || {};
+    const secCode = SEC_CODES.includes(String(d.secCode || '').toUpperCase()) ? String(d.secCode).toUpperCase() : 'CCD';
+    const savings = /sav/i.test(String(d.accountType || bank.accountType || ''));
+    const name = String(d.name || method.billing_details?.name || tx.participantId || '').toUpperCase();
+    const content = Nacha.generateNACHAFile({}, [{
+      secCode,
+      companyEntryDescription: String(d.entryDescription || 'PAYOUT').toUpperCase().slice(0, 10),
+      serviceClassCode: '220',
+      entries: [{
+        receivingRouting: routing,
+        accountNumber,
+        amountCents: tx.amountCents,
+        transactionCode: savings ? '32' : '22',
+        individualId: tx.transactionId.slice(-15),
+        individualName: name.slice(0, 22),
+      }],
+    }]);
+    const payload = Buffer.from(content, 'utf8');
+    const filename = `${tx.transactionId}.ach`;
+    const sha256 = crypto.createHash('sha256').update(payload).digest('hex');
+
+    const Relay = this._fileRelay();
+    const archivedTo = Relay && Relay.getConfig().bucket ? await Relay.archive(MFT_ARCHIVE_PREFIX + filename, payload) : null;
+
+    const sent = await Mft.submit(payload, filename, {
+      stationAs2Id: as2.stationAs2Id,
+      partnerAs2Id: as2.partnerAs2Id,
+      contentType: 'text/plain',
+      subject: `NACHA ${filename}`,
+    });
+    if (!sent.success) throw new Error(`MFT Gateway ${sent.status_code}: ${sent.response_body || 'submit rejected'}`);
+    return {
+      route: 'MftGatewayClient.submit',
+      status: 'cleared',
+      processorTxId: sent.message_id || null,
+      result: {
+        transport: 'mftgateway',
+        as2From: sent.as2_from,
+        as2To: sent.as2_to,
+        partnerSource: as2.partnerSource,
+        messageId: sent.message_id || null,
+        filename,
+        bytes: payload.length,
+        sha256,
+        secCode,
+        entries: 1,
+        archivedTo,
+        transmittedAt: sent.transmitted_at,
+        metadata,
+      },
     };
   }
 
@@ -478,12 +640,19 @@ class PrivatePaymentNetworkOsEngine {
       return { transactionId: tx.transactionId, type: tx.type, status: tx.status, movementId: tx.movementId, reconciliation: null };
     }
     const txId = gatewayTxId || tx.gatewayTxId;
-    if (!txId && !processorTxId && !tx.processorTxId) throw httpError('transaction has no gateway transaction to reconcile', 409);
-    const Gateway = this._gateway();
-    if (!Gateway) throw httpError('PaymentGatewayServerEngine not available', 503);
     const s = String(status || '').toLowerCase();
-    const gatewayStatus = SETTLED.has(s) ? 'settled' : RETURNED.has(s) ? 'failed' : s;
-    const out = await Gateway.reconcileWebhook({ gatewayTxId: txId, processorTxId: processorTxId || tx.processorTxId, status: gatewayStatus, raw });
+    let out;
+    if (tx.processor === MFT_PROCESSOR) {
+      const messageId = processorTxId || tx.processorTxId;
+      if (!messageId) throw httpError('file drop has no MFT Gateway message id to reconcile', 409);
+      out = { transport: 'mftgateway', messageId, status: s || null };
+    } else {
+      if (!txId && !processorTxId && !tx.processorTxId) throw httpError('transaction has no gateway transaction to reconcile', 409);
+      const Gateway = this._gateway();
+      if (!Gateway) throw httpError('PaymentGatewayServerEngine not available', 503);
+      const gatewayStatus = SETTLED.has(s) ? 'settled' : RETURNED.has(s) ? 'failed' : s;
+      out = await Gateway.reconcileWebhook({ gatewayTxId: txId, processorTxId: processorTxId || tx.processorTxId, status: gatewayStatus, raw });
+    }
     let next = tx.status;
     if (tx.status === 'cleared' && SETTLED.has(s)) next = 'settled';
     else if (['cleared', 'settled'].includes(tx.status) && RETURNED.has(s)) next = 'returned';
@@ -561,6 +730,7 @@ class PrivatePaymentNetworkOsEngine {
       live: inventory.config.live,
       gate: inventory.gate,
       ledgerGate: inventory.ledgerGate,
+      mftGate: inventory.mftGate,
       realValueCapable: inventory.anyRealValueCapable,
       realValueProcessors: inventory.realValueCapable,
       processors: inventory.sources,
@@ -570,6 +740,7 @@ class PrivatePaymentNetworkOsEngine {
         paymentProcessorOs: Boolean(this._processorOs()),
         enterpriseNetwork: Boolean(this._network()),
         cashLedger: Boolean(this._ledger()),
+        mftGateway: Boolean(this._mft()),
         webhookSecret: inventory.config.webhookSecret,
       },
       pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },

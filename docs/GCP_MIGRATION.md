@@ -785,6 +785,23 @@ Status on `dlb-treasury-management` at the time of writing:
   via Payment Gateway OS `tokenize`; the maker `submit`s a `payout` with
   `sourceAccountId` + `methodId` + `participantId`; a distinct checker
   `approve`s with `approvalRef` + `screeningRef`.
+- **Private Payment Network — MFT/AS2 file drop (`mft_as2`)** — a payout with
+  `processor: "mft_as2"` (or a routing policy `{ rail: "ach", processor:
+  "mft_as2" }`) over a tokenized `ach` instrument becomes a single-entry NACHA
+  credit file (`CCD` default, `destination.secCode: "PPD"` allowed), archived to
+  `gs://<project>-openach-ach-files/private-network/outbound/` (outside the
+  OpenACH relay's `export/`) and submitted from `MFTGATEWAY_STATION_AS2_ID`
+  (`DLBTRUST-AS2`) to the AS2 partner in `destination.partnerAs2Id`, else the
+  participant's `endpoint.partnerAs2Id`, else `MFTGATEWAY_PARTNER_AS2_ID`. The
+  partner must be registered on the MFT Gateway station; our own station id and
+  `*-DIRECT`/`*-LOOPBACK`/`*-SELF` partners are refused. Real value needs
+  `PRIVATE_PAYMENT_NETWORK_LIVE=true`, `ENTERPRISE_NETWORK_LIVE=true`,
+  `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true`, the MFT Gateway token pair, a valid
+  `NACHA_ODFI_ROUTING` and the usual checker `approvalRef` + `screeningRef`;
+  otherwise the approval is `shadow` and no file is built. The transaction is
+  `cleared` with the AS2 message id as `processor_tx_id`; ODFI acknowledgement
+  / return is applied through `reconcile` or the HMAC `webhook`
+  (`{ processorTxId: <AS2 message id>, status }`).
 
 Deployment: both engines are modules of the existing `dlbtrust-app` Cloud Run
 service (`server/server-3002.js` → `/api/os`) and create their tables through
