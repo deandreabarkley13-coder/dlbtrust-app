@@ -60,7 +60,7 @@ const { getConnector, listConnectorTypes } = require('./connectors');
 const SECRET_CONFIG_KEYS = [
   'apiKey', 'apiSecret', 'bearerToken', 'token', 'password',
   'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret', 'accessToken',
-  'credentialsKey', 'transactionsKey',
+  'credentialsKey', 'transactionsKey', 'accessUrl', 'setupToken',
 ];
 
 const HANDSHAKE_STATES = ['pending', 'challenged', 'verified', 'failed'];
@@ -84,6 +84,7 @@ const ENV_CREDENTIAL_KEYS = {
   _ACCESS_TOKEN: 'accessToken',
   _CREDENTIALS_KEY: 'credentialsKey',
   _TRANSACTIONS_KEY: 'transactionsKey',
+  _ACCESS_URL: 'accessUrl',
 };
 
 function defaultMode() {

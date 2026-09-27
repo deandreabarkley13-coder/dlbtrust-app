@@ -181,9 +181,10 @@ locals {
   # an approved + screened push reach a provider, so the admin token guarding
   # /api/aggregator/* and at least one per-connection credential
   # (AGGREGATOR_<CONNECTION>_API_KEY / _WEBHOOK_SECRET / _CLIENT_SECRET /
-  # _ACCESS_TOKEN / _CREDENTIALS_KEY / _TRANSACTIONS_KEY, or the workspace-wide
-  # BANKSYNC_API_KEY / ORANGERAILS_PLATFORM_API_KEY used by the banksync /
-  # orangerails read-only connectors) must be declared. Credentials are
+  # _ACCESS_TOKEN / _CREDENTIALS_KEY / _TRANSACTIONS_KEY / _ACCESS_URL, or the
+  # workspace-wide BANKSYNC_API_KEY / ORANGERAILS_PLATFORM_API_KEY /
+  # SIMPLEFIN_ACCESS_URL used by the banksync / orangerails / simplefin
+  # read-only connectors) must be declared. Credentials are
   # loaded into the connection's config from these env names; the API never
   # returns them.
   aggregator_enabled    = lookup(var.runtime_environment, "AGGREGATOR_ENABLED", "true") != "false"
@@ -191,11 +192,11 @@ locals {
   aggregator_mode_valid = contains(["live", "shadow"], lookup(var.runtime_environment, "AGGREGATOR_DEFAULT_MODE", "shadow"))
   aggregator_credential_secret_names = [
     for s in local.runtime_secret_names : s
-    if can(regex("^AGGREGATOR_[A-Z0-9_]+_(API_KEY|WEBHOOK_SECRET|CLIENT_SECRET|ACCESS_TOKEN|CREDENTIALS_KEY|TRANSACTIONS_KEY)$", s)) || contains(["BANKSYNC_API_KEY", "ORANGERAILS_PLATFORM_API_KEY"], s)
+    if can(regex("^AGGREGATOR_[A-Z0-9_]+_(API_KEY|WEBHOOK_SECRET|CLIENT_SECRET|ACCESS_TOKEN|CREDENTIALS_KEY|TRANSACTIONS_KEY|ACCESS_URL)$", s)) || contains(["BANKSYNC_API_KEY", "ORANGERAILS_PLATFORM_API_KEY", "SIMPLEFIN_ACCESS_URL"], s)
   ]
   missing_aggregator_secrets = concat(
     [for s in ["ADMIN_SECRET_TOKEN"] : s if local.aggregator_live && !contains(local.runtime_secret_names, s)],
-    local.aggregator_live && length(local.aggregator_credential_secret_names) == 0 ? ["AGGREGATOR_<CONNECTION>_API_KEY / _WEBHOOK_SECRET / _CLIENT_SECRET / _ACCESS_TOKEN / _CREDENTIALS_KEY / _TRANSACTIONS_KEY, BANKSYNC_API_KEY or ORANGERAILS_PLATFORM_API_KEY"] : [],
+    local.aggregator_live && length(local.aggregator_credential_secret_names) == 0 ? ["AGGREGATOR_<CONNECTION>_API_KEY / _WEBHOOK_SECRET / _CLIENT_SECRET / _ACCESS_TOKEN / _CREDENTIALS_KEY / _TRANSACTIONS_KEY / _ACCESS_URL, BANKSYNC_API_KEY, ORANGERAILS_PLATFORM_API_KEY or SIMPLEFIN_ACCESS_URL"] : [],
   )
 }
 

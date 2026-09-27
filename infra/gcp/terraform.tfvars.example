@@ -98,6 +98,14 @@ secret_names = [
   "ORANGERAILS_TRANSACTIONS_KEY",
   # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY /
   #  _CREDENTIALS_KEY / _TRANSACTIONS_KEY)
+  # SimpleFIN connection CONN-BETTERMENT-TRUST-CHECKING-SIMPLEFIN (simplefin
+  # connector — the bank-data path of the Apache-2.0 Alderfi platform,
+  # github.com/Earleybeast/mcp): the SimpleFIN Bridge Access URL
+  # (https://user:pass@beta-bridge.simplefin.org/simplefin) claimed once from a
+  # Setup Token via aggregateBettermentTrustChecking.js --claim-setup-token.
+  # Betterment is connected in the Bridge ("Login with App Password").
+  "SIMPLEFIN_ACCESS_URL",
+  # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_SIMPLEFIN_ACCESS_URL)
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

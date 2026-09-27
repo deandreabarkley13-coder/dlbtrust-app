@@ -7,8 +7,10 @@
  *
  * Betterment exposes no public API, so the account is read through a data
  * aggregator: BankSync (banksync.io, default) after it has been linked in the
- * BankSync dashboard, or Orange Rails (--connector orangerails) after the bank
- * has been linked in Orange Rails' Quiltt widget. This script is idempotent:
+ * BankSync dashboard, SimpleFIN (--connector simplefin, the Alderfi bank-data
+ * path) after Betterment has been connected in the SimpleFIN Bridge, or Orange
+ * Rails (--connector orangerails) after the bank has been linked in Orange
+ * Rails' Quiltt widget. This script is idempotent:
  *   1. Ensures the aggregator tables exist.
  *   2. Creates (or reuses) the CONN-BETTERMENT-TRUST-CHECKING connection:
  *        connector banksync, direction inbound, mode live, bankName "Betterment",
@@ -28,6 +30,12 @@
  *   node server/scripts/aggregateBettermentTrustChecking.js
  *   node server/scripts/aggregateBettermentTrustChecking.js --pull
  *   node server/scripts/aggregateBettermentTrustChecking.js --bank-id bnk_123 --pull
+ *   node server/scripts/aggregateBettermentTrustChecking.js --connector simplefin --pull
+ *       (SimpleFIN: CONN-BETTERMENT-TRUST-CHECKING-SIMPLEFIN; needs the Access URL
+ *        SIMPLEFIN_ACCESS_URL / AGGREGATOR_BETTERMENT_TRUST_CHECKING_SIMPLEFIN_ACCESS_URL.
+ *        To obtain it once: create a Setup Token at https://beta-bridge.simplefin.org and run
+ *        --connector simplefin --claim-setup-token <token> --claim-to <file>; the Access URL is
+ *        written to <file> (mode 0600) for upload to Secret Manager and never printed)
  *   node server/scripts/aggregateBettermentTrustChecking.js --connector orangerails --pull
  *       (Orange Rails: CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS; needs the platform key
  *        ORANGERAILS_PLATFORM_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY and
@@ -36,7 +44,9 @@
  *        POST /api/aggregator/connections/:id/link-token first)
  */
 
+const fs = require('fs');
 const { BankingAggregator } = require('../integrations/aggregator/bankingAggregator');
+const { claimSetupToken } = require('../integrations/aggregator/connectors/simpleFinConnector');
 const pool = require('../integrations/bonds/pgPool');
 
 const CONNECTION_ID = 'CONN-BETTERMENT-TRUST-CHECKING';
@@ -49,6 +59,9 @@ function arg(flag) {
 
 const CONNECTORS = {
   banksync: (o) => Object.assign({ bankName: 'Betterment' }, o.bankId ? { bankId: o.bankId } : {}),
+  simplefin: (o) => Object.assign({ orgName: 'Betterment', lookbackDays: 90 },
+    o.bankId ? { connId: o.bankId } : {},
+    o.accountIds ? { accountIds: o.accountIds } : {}),
   orangerails: (o) => Object.assign({ institutionName: 'Betterment', appUserId: 'dlb-family-trust' },
     o.baseUrl ? { baseUrl: o.baseUrl } : {},
     o.accountIds ? { accountIds: o.accountIds } : {}),
@@ -72,8 +85,23 @@ async function ensureConnection(o) {
   return BankingAggregator.updateConnection(id, { active: true, config });
 }
 
+async function claimToken(setupToken, outFile) {
+  if (!outFile) throw new Error('--claim-setup-token requires --claim-to <file> (the Access URL is a secret and is never printed)');
+  const accessUrl = await claimSetupToken(setupToken);
+  fs.writeFileSync(outFile, accessUrl + '\n', { mode: 0o600 });
+  console.log(`SimpleFIN Access URL claimed and written to ${outFile}. Store it as Secret Manager SIMPLEFIN_ACCESS_URL and mount it on Cloud Run; the Setup Token is now spent.`);
+}
+
 async function main() {
   const doPull = process.argv.includes('--pull');
+  const setupToken = arg('--claim-setup-token');
+  if (setupToken) {
+    await claimToken(setupToken, arg('--claim-to'));
+    if (!process.env.SIMPLEFIN_ACCESS_URL) {
+      console.log('Re-run with SIMPLEFIN_ACCESS_URL set to seed the connection and handshake.');
+      return;
+    }
+  }
   const accountIds = arg('--account-ids');
   const conn = await ensureConnection({
     connector: arg('--connector'),
@@ -89,7 +117,7 @@ async function main() {
   console.log(`handshake: ${hs.handshake_state}` + (hs.external_connection_id ? ` bank=${hs.external_connection_id}` : '')
     + (hs.error ? ` error=${hs.error}` : ''));
   if (hs.handshake_state !== 'verified') {
-    console.log('Betterment is not readable yet. Fix the error above (BankSync plan/API access, link Betterment in BankSync, credentials) and re-run.');
+    console.log('Betterment is not readable yet. Fix the error above (provider plan/API access, link Betterment with the provider, credentials) and re-run.');
     process.exitCode = 2;
     return;
   }
