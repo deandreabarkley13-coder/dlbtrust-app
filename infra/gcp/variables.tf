@@ -211,6 +211,31 @@ variable "runtime_environment" {
     PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST = "true"
     PAYMENT_GATEWAY_DEFAULT_PROCESSOR            = ""
     PAYMENT_GATEWAY_MAX_DISBURSEMENT_CENTS       = ""
+    # Enterprise Network OS (server/integrations/os/enterpriseNetworkOsEngine.js):
+    # trust-network registry (participant onboarding, routing policy, per-
+    # participant exposure limits) via submit → approve; never moves money.
+    # Shadow until ENTERPRISE_NETWORK_LIVE=true; a live plan needs
+    # ENTERPRISE_NETWORK_WEBHOOK_SECRET in secret_names (cloudrun.tf
+    # precondition, secrets.tf missing_enterprise_network_secrets) and the
+    # approvalRef / screeningRef gates left on.
+    ENTERPRISE_NETWORK_LIVE                  = "false"
+    ENTERPRISE_NETWORK_REQUIRE_APPROVAL_REF  = "true"
+    ENTERPRISE_NETWORK_REQUIRE_SCREENING_REF = "true"
+    # Private Electronic Payment Network (server/integrations/os/
+    # privatePaymentNetworkOsEngine.js): clears trust ledger accounts to
+    # approved payout instruments of enterprise-network participants through
+    # CashEngine / paymentGatewayServerEngine. Shadow until
+    # PRIVATE_PAYMENT_NETWORK_LIVE=true; a live plan additionally needs
+    # PAYMENT_PROCESSOR_LIVE=true, ENTERPRISE_NETWORK_LIVE=true,
+    # PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET, PAYMENT_DATA_ENCRYPTION_KEY and
+    # STRIPE_PAYMENTS_SECRET_KEY in secret_names (secrets.tf
+    # missing_private_payment_network_secrets) and every REQUIRE_* gate on.
+    PRIVATE_PAYMENT_NETWORK_LIVE                  = "false"
+    PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF  = "true"
+    PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF = "true"
+    PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT   = "true"
+    PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR     = ""
+    PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS    = ""
 
     # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
     INCOME_OBLIGOR_NAME          = "DEANDREA LAVAR BARKLEY TRUST COMPANY"

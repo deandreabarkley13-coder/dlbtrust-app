@@ -17,6 +17,18 @@
 # shared keys above — secrets.tf payment_gateway_secret_names) is REQUIRED when
 # runtime_environment.PAYMENT_GATEWAY_LIVE=true, which also requires
 # PAYMENT_PROCESSOR_LIVE=true and the PAYMENT_GATEWAY_REQUIRE_* gates on.
+#
+# The Enterprise Network OS block (ENTERPRISE_NETWORK_WEBHOOK_SECRET —
+# secrets.tf enterprise_network_secret_names) is REQUIRED when
+# runtime_environment.ENTERPRISE_NETWORK_LIVE=true, with the
+# ENTERPRISE_NETWORK_REQUIRE_* gates on.
+#
+# The Private Payment Network block (PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET plus
+# PAYMENT_DATA_ENCRYPTION_KEY and STRIPE_PAYMENTS_SECRET_KEY — secrets.tf
+# private_payment_network_secret_names) is REQUIRED when
+# runtime_environment.PRIVATE_PAYMENT_NETWORK_LIVE=true, which also requires
+# PAYMENT_PROCESSOR_LIVE=true, ENTERPRISE_NETWORK_LIVE=true and the
+# PRIVATE_PAYMENT_NETWORK_REQUIRE_* gates on.
 
 project_id = "dlb-treasury-management"
 
@@ -43,6 +55,12 @@ secret_names = [
   # Payment Gateway OS live plan (PAYMENT_GATEWAY_LIVE=true): HMAC-SHA256 key
   # for processor callbacks to /api/os/payment-gateway/webhook.
   "PAYMENT_GATEWAY_WEBHOOK_SECRET",
+  # Enterprise Network OS live plan (ENTERPRISE_NETWORK_LIVE=true): HMAC-SHA256
+  # key for screening / partner callbacks to /api/os/enterprise-network/webhook.
+  "ENTERPRISE_NETWORK_WEBHOOK_SECRET",
+  # Private Payment Network live plan (PRIVATE_PAYMENT_NETWORK_LIVE=true): HMAC-
+  # SHA256 key for processor callbacks to /api/os/private-payment-network/webhook.
+  "PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

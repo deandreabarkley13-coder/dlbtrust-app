@@ -654,13 +654,13 @@ channel is configured (nothing leaves the platform).
 
 ## Platform engines — wiring state on `dlb-treasury-management`
 
-The eight platform engines are audited by one module,
+The thirteen platform engines are audited by one module,
 `server/integrations/os/engineWiringReadiness.js`, exposed as
-`GET /api/os/readiness` (all eight; HTTP 503 until every engine is `ready`) and
-`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os|payment-processor}`.
+`GET /api/os/readiness` (all thirteen; HTTP 503 until every engine is `ready`) and
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os|payment-processor|payment-gateway|enterprise-network|private-payment-network}`.
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
-`interop`, `credit`, `debt`, `liquidity`, `funding-os`, `payment-processor` map onto the ten reports; other engines get the generic Cloud SQL +
+`interop`, `credit`, `debt`, `liquidity`, `funding-os`, `payment-processor`, `payment-gateway`, `enterprise-network`, `private-payment-network` map onto the ten reports; other engines get the generic Cloud SQL +
 project check). Each report carries `gcp` (project vs. the expected
 `dlb-treasury-management`, Cloud Run revision, Cloud SQL connectivity, evidence
 bucket), `tables` (which Cloud SQL tables exist), `liveFlags`, `secrets` and
@@ -684,6 +684,8 @@ reported as a blocker.
 | Funding OS | OS `FundingOsPlatformEngine` → `fundingOsEngine` (`sources()` = Credit OS funding sources + `manual_bank_deposit` + Lili destination with `canFundLedger`/`canOriginateBankCredit`; `funding_requests` maker/checker flow `request-funding` → `approve-funding` (distinct approver) → `confirm-funding` (requires bank/provider `externalRef`, posts `CashEngine.deposit`); `unified-path` = fund_ledger + Debt OS bank stages) | `/api/os/funding-os/*`, `/api/os/readiness/funding-os` | `live` iff a real-value source exists (live Stripe Treasury or external bank ODFI); otherwise `shadow` — requests can still be recorded and confirmed manually against a bank reference. The ledger is never credited without an external reference | `funding_requests`, `cash_accounts`, `cash_movements` | — | none beyond `DATABASE_URL`; live needs a Credit OS real-value source |
 | Payment Processor OS | OS `PaymentProcessorPlatformEngine` → `paymentProcessorOsEngine` wrapping `PaymentProcessorServerEngine.processPayment`, `paymentGatewayServerEngine`, `paymentHubEngine`; maker/checker flow `submit` (maker, `requestedBy`) → `approve` (distinct `approvedBy`) → dispatch. Every real-value submission must carry `approvalRef` + `screeningRef` (same fail-closed rule as `ApiGatewayClearingEngine` / `BankSettlementEngine`) and self-loopback partners (`DLBTRUST-DIRECT`, `partner_url=direct`, own `APP_URL`) are refused. The Lili rail dispatches through `BankSettlementEngine.clearAndSettle` (`api_gateway` rail → `ApiGatewayClearingEngine.clearPayment`); `pipeline` = submission counts + live exposure, also the `payment_processor` stage of `POST /api/os/canonical-money/process action=pipeline` | `/api/os/payment-processor/{status,readiness,list,process}` (actions `submit`, `approve`, `cancel`, `status`, `reconcile`, `list`, `pipeline`, `processors`; direct calls like `processPayment`/`sale`/`clearPayment` are rejected), `/api/os/readiness/payment-processor` | `PAYMENT_PROCESSOR_LIVE` (default `false` → every submission is recorded as `shadow`, no provider call); `live` iff it is `true` **and** a real-value processor exists: live `STRIPE_SECRET_KEY` (+ `STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID`), `PAYMENT_HUB_LIVE=true`, `LILI_CLEARING_LIVE=true` or `CLEARING_API_ENDPOINT` (+ `CLEARING_API_KEY`). `PAYMENT_PROCESSOR_REQUIRE_{APPROVAL,SCREENING}_REF` must stay `true` (cloudrun.tf precondition) | `payment_processor_transactions`, `payment_gateway_transactions`, `payment_intents`, `payment_approvals`, `payment_processor_submissions`, `os_events` (bootstrapped by `OSEngine.ensureAll`) | evidence bucket via the gateway pipeline | `STRIPE_SECRET_KEY`, `STRIPE_PAYMENTS_SECRET_KEY`, `PAYMENT_DATA_ENCRYPTION_KEY` (cloudrun.tf precondition when `PAYMENT_PROCESSOR_LIVE=true`, `local.missing_payment_processor_secrets`); the Lili rail inherits `lili_secret_names` + `PAYMENT_SERVER_SERVICE_TOKEN`; PHEE inherits the Payment Hub set |
 | Payment Gateway OS (trust distributions & disbursements) | OS `PaymentGatewayPlatformEngine` → `paymentGatewayOsEngine` over `PaymentGatewayServerEngine` (`tokenizePaymentMethod`, `sale`/`authorize`/`capture`/`refund`/`void`, `reconcileWebhook`). Outbound-first: a beneficiary's payout instrument (ACH / card / wallet / crypto) is tokenized once (`tokenize`, `methods`, `disableMethod`), then every `distribution` or `disbursement` is an intent — `submit` (maker, `requestedBy`, bound to a `dapp_distribution_requests` row via `distributionRequestId` whose amount must match) → `approve` (distinct `approvedBy`; real value needs `approvalRef` + `screeningRef` and the distribution request `approved` by both trustees) → gateway dispatch, after which the distribution request moves to `payout_created`. Self-loopback destinations (own `APP_URL`, `DLBTRUST-DIRECT`, `partner_url=direct`) are refused; `PAYMENT_GATEWAY_MAX_DISBURSEMENT_CENTS` caps a single intent. `pipeline` = intents by status × purpose + live exposure, also the `payment_gateway` stage of `POST /api/os/canonical-money/process action=pipeline` | `/api/os/payment-gateway/{status,readiness,list,process}` (actions `tokenize`, `methods`, `disableMethod`, `submit`, `approve`, `cancel`, `status`, `reconcile`, `list`, `pipeline`, `processors`; direct `sale`/`authorize`/`capture`/`refund`/`void`/`payout` are rejected with 409 and logged to `os_events` as `rejected`), public `POST /api/os/payment-gateway/webhook` (HMAC-SHA256 `x-gateway-signature`), `/api/os/readiness/payment-gateway` | `PAYMENT_GATEWAY_LIVE` (default `false` → approved intents are recorded as `shadow`, no gateway call); `live` iff it is `true`, `PAYMENT_PROCESSOR_LIVE=true`, `PAYMENT_DATA_ENCRYPTION_KEY` is set **and** the payment-processor engine reports a real-value processor. `PAYMENT_GATEWAY_REQUIRE_{APPROVAL,SCREENING}_REF` and `PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST` must stay `true` (cloudrun.tf precondition); `PAYMENT_GATEWAY_DEFAULT_PROCESSOR` optional | `payment_gateway_intents`, `payment_gateway_transactions`, `payment_methods`, `dapp_distribution_requests`, `os_events` (bootstrapped by `OSEngine.ensureAll`) | — | `PAYMENT_GATEWAY_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY`, `STRIPE_PAYMENTS_SECRET_KEY` (cloudrun.tf precondition when `PAYMENT_GATEWAY_LIVE=true`, `local.missing_payment_gateway_secrets`) plus the processor secrets of whichever rail the intent disburses over |
+| Enterprise Network OS (participants, routing, exposure limits) | OS `EnterpriseNetworkPlatformEngine` → `enterpriseNetworkOsEngine`. Maker/checker `submit` (`requestedBy`, `kind` = `onboard_participant` / `update_participant` / `suspend_participant` / `reinstate_participant` / `set_routing_policy` / `set_exposure_limit`) → `approve` (distinct `approvedBy`; live changes need a checker `approvalRef`, participant changes also a `screeningRef`; self-loopback endpoints refused). Read side: `participants`, `participant`, `policies`, `resolveRoute`, `exposure`; `reconcile` (open exposure vs. limit, screening holds) and HMAC `webhook`. **Never moves money.** | `/api/os/enterprise-network/{status,readiness,list,process}`, `/api/os/enterprise-network/webhook`, `/api/os/readiness/enterprise-network` | `ENTERPRISE_NETWORK_LIVE` (default `false` → registry rows written as `shadow`), `ENTERPRISE_NETWORK_REQUIRE_{APPROVAL,SCREENING}_REF=true` | `enterprise_network_intents`, `enterprise_network_participants`, `enterprise_network_routing_policies`, `enterprise_network_exposure_limits`, `os_events` | — | `ENTERPRISE_NETWORK_WEBHOOK_SECRET` |
+| Private Electronic Payment Network (ledger clearing & settlement) | OS `PrivatePaymentNetworkPlatformEngine` → `privatePaymentNetworkOsEngine`. `submit` (maker) a `book_transfer` (trust ledger `cash_accounts` → `cash_accounts`) or `payout` (trust ledger account → approved tokenized `payment_methods` instrument of an enterprise-network participant, admitted against its exposure limit and routed by its routing policy) → `approve` (distinct checker). Real value only when `PRIVATE_PAYMENT_NETWORK_LIVE=true` AND the processor is real-value capable (payouts: `PaymentProcessorOsEngine` live + `ENTERPRISE_NETWORK_LIVE`; book transfers: trust ledger reachable) AND the checker supplies `approvalRef` + `screeningRef`; then `CashEngine.transfer` (settled) or `PaymentGatewayServerEngine.sale` (cleared → settled/returned by `reconcile` / HMAC `webhook`). Otherwise `shadow`, no posting or provider call. | `/api/os/private-payment-network/{status,readiness,list,process}`, `/api/os/private-payment-network/webhook`, `/api/os/readiness/private-payment-network` | `PRIVATE_PAYMENT_NETWORK_LIVE` (default `false`), `PRIVATE_PAYMENT_NETWORK_REQUIRE_{APPROVAL_REF,SCREENING_REF,PARTICIPANT}=true`, `PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS`; needs `PAYMENT_PROCESSOR_LIVE` + `ENTERPRISE_NETWORK_LIVE` | `private_payment_network_transactions`, `cash_accounts`, `cash_movements`, `payment_methods`, `payment_gateway_transactions`, `enterprise_network_participants`, `enterprise_network_exposure_limits`, `os_events` | — | `PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY`, `STRIPE_PAYMENTS_SECRET_KEY` + the payment-processor secrets of the payout rail |
 
 Status on `dlb-treasury-management` at the time of writing:
 
@@ -759,6 +761,37 @@ Status on `dlb-treasury-management` at the time of writing:
   with `distributionRequestId` + `methodId`, a distinct checker `approve`s
   with `approvalRef` + `screeningRef`. Until live, `approve` records the
   intent as `shadow` and never calls the gateway.
+- **Enterprise Network OS** — wired; `shadow` by default
+  (`ENTERPRISE_NETWORK_LIVE=false`): approved changes are written to the
+  registry with status `shadow`, which the payment network will not pay out
+  against (suspensions take effect in either mode). Go-live: (1) seed
+  `ENTERPRISE_NETWORK_WEBHOOK_SECRET` (shared with the screening / partner
+  callback); (2) set `runtime_environment.ENTERPRISE_NETWORK_LIVE="true"`
+  leaving both `ENTERPRISE_NETWORK_REQUIRE_*_REF` at `"true"` and
+  `terraform apply` (cloudrun.tf preconditions fail otherwise); (3) re-onboard
+  / re-approve participants and exposure limits so they are `active`;
+  (4) confirm `GET /api/os/readiness/enterprise-network` has no blockers.
+- **Private Electronic Payment Network** — wired; `shadow` by default
+  (`PRIVATE_PAYMENT_NETWORK_LIVE=false`). Go-live: (1) bring Payment Processor
+  OS and Enterprise Network OS to `live`; (2) seed
+  `PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET` and keep
+  `PAYMENT_DATA_ENCRYPTION_KEY` / `STRIPE_PAYMENTS_SECRET_KEY` in
+  `secret_names`; (3) set `runtime_environment.PRIVATE_PAYMENT_NETWORK_LIVE="true"`
+  leaving every `PRIVATE_PAYMENT_NETWORK_REQUIRE_*` gate `"true"` and
+  `terraform apply`; (4) confirm `GET /api/os/readiness/private-payment-network`
+  reports `mode: live` with an empty `blockers` list. Operating sequence per
+  payout: onboard the participant, set its exposure limit and (optionally) a
+  routing policy through Enterprise Network OS; tokenize the payout instrument
+  via Payment Gateway OS `tokenize`; the maker `submit`s a `payout` with
+  `sourceAccountId` + `methodId` + `participantId`; a distinct checker
+  `approve`s with `approvalRef` + `screeningRef`.
+
+Deployment: both engines are modules of the existing `dlbtrust-app` Cloud Run
+service (`server/server-3002.js` → `/api/os`) and create their tables through
+`ensureAll()` at startup — no new service, job, bucket or network, and no
+topology change: the service stays at `min=max=1`. Their flags and secrets
+flow through the existing `runtime_environment` / `secret_names` →
+Secret Manager → Cloud Run env path.
 
 Verified against the deployed Cloud Run revision (`GET /api/os/readiness` with
 the admin token): Cloud SQL connected, evidence bucket present, all five

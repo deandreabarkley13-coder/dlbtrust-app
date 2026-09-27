@@ -1,0 +1,596 @@
+'use strict';
+
+/**
+ * Private Electronic Payment Network OS Engine — DLB Trust Platform
+ *
+ * Clears and settles value between internal trust ledger accounts
+ * (cash_accounts) and approved external payout instruments (tokenized
+ * payment_methods) belonging to enterprise-network participants.
+ *
+ *   submit()       maker records a network transaction
+ *                    book_transfer  internal ledger account → internal ledger account
+ *                    payout         internal ledger account → approved payout instrument
+ *   approve()      checker (distinct from maker) clears the transaction:
+ *                    book_transfer  → CashEngine.transfer (settled on the trust ledger)
+ *                    payout         → PaymentGatewayServerEngine.sale, which dispatches
+ *                                     through PaymentProcessorServerEngine (cleared,
+ *                                     settled by reconcile / webhook)
+ *   cancel()       withdraw a submitted transaction
+ *   reconcile()    processor settlement / return status back onto the transaction
+ *   webhook()      HMAC-verified processor callback → reconcile
+ *   pipeline()     transactions by status and type, open exposure by participant
+ *
+ * Nothing executes unless PRIVATE_PAYMENT_NETWORK_LIVE=true AND the underlying
+ * processor is real-value capable (PaymentProcessorOsEngine for payouts; the
+ * trust ledger for book transfers) AND the checker supplied both an approvalRef
+ * and a screeningRef. Otherwise the approval is recorded in shadow mode and no
+ * ledger posting or provider call is made. Payouts are admitted only for
+ * enterprise-network participants within their exposure limit.
+ */
+
+const crypto = require('crypto');
+
+let pool;
+try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
+
+function tryRequire(mod) {
+  try { return require(mod); } catch (e) { return null; }
+}
+
+async function settle(fn) {
+  try { return { ok: true, value: await fn() }; } catch (e) { return { ok: false, error: e.message }; }
+}
+
+function httpError(message, status = 400) { return Object.assign(new Error(message), { status }); }
+function isTrue(v) { return String(v || '').toLowerCase() === 'true'; }
+
+const TABLE = 'private_payment_network_transactions';
+const TABLES = [
+  TABLE,
+  'cash_accounts',
+  'cash_movements',
+  'payment_methods',
+  'payment_gateway_transactions',
+  'enterprise_network_participants',
+  'enterprise_network_exposure_limits',
+  'os_events',
+];
+const STATUSES = ['submitted', 'approved', 'shadow', 'cleared', 'settled', 'returned', 'failed', 'cancelled'];
+const TYPES = ['book_transfer', 'payout'];
+const LEDGER_PROCESSOR = 'internal_ledger';
+const METHOD_RAILS = { ach: 'ach', card: 'card', wallet: 'wallet', crypto: 'crypto' };
+const SETTLED = new Set(['settled', 'succeeded', 'paid', 'completed', 'posted']);
+const RETURNED = new Set(['returned', 'failed', 'reversed', 'declined', 'refunded', 'voided']);
+
+const toCents = (amount) => Math.round(Number(amount) * 100);
+const newId = () => 'PPN-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
+
+function rowToTx(row) {
+  if (!row) return null;
+  return {
+    transactionId: row.transaction_id,
+    type: row.type,
+    sourceAccountId: row.source_account_id,
+    destinationAccountId: row.destination_account_id,
+    methodId: row.method_id,
+    participantId: row.participant_id,
+    processor: row.processor,
+    routePolicyId: row.route_policy_id,
+    amountCents: Number(row.amount_cents),
+    amount: Number(row.amount_cents) / 100,
+    currency: row.currency,
+    status: row.status,
+    realValue: Boolean(row.real_value),
+    reference: row.reference,
+    memo: row.memo,
+    destination: row.destination || {},
+    metadata: row.metadata || {},
+    requestedBy: row.requested_by,
+    approvedBy: row.approved_by,
+    approvalRef: row.approval_ref,
+    screeningRef: row.screening_ref,
+    movementId: row.movement_id,
+    gatewayTxId: row.gateway_tx_id,
+    processorTxId: row.processor_tx_id,
+    route: row.route,
+    result: row.result || null,
+    error: row.error_message,
+    createdAt: row.created_at,
+    approvedAt: row.approved_at,
+    clearedAt: row.cleared_at,
+    settledAt: row.settled_at,
+  };
+}
+
+class PrivatePaymentNetworkOsEngine {
+  static get engineName() { return 'private-payment-network'; }
+  static get TABLES() { return TABLES; }
+  static get STATUSES() { return STATUSES; }
+  static get TYPES() { return TYPES; }
+
+  static _gateway() { return tryRequire('../payments/paymentGatewayServerEngine')?.PaymentGatewayServerEngine || null; }
+  static _processorOs() { return tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine || null; }
+  static _network() { return tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine || null; }
+  static _ledger() { return tryRequire('../cash/cashEngine')?.CashEngine || null; }
+
+  static async ensureTables() {
+    if (!pool) return;
+    const Network = this._network();
+    if (Network && typeof Network.ensureTables === 'function') await Network.ensureTables();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS ${TABLE} (
+        transaction_id          VARCHAR(64) PRIMARY KEY,
+        type                    VARCHAR(20) NOT NULL,
+        source_account_id       VARCHAR(64) NOT NULL,
+        destination_account_id  VARCHAR(64),
+        method_id               VARCHAR(64),
+        participant_id          VARCHAR(64),
+        processor               VARCHAR(64) NOT NULL,
+        route_policy_id         VARCHAR(64),
+        amount_cents            BIGINT NOT NULL CHECK (amount_cents > 0),
+        currency                VARCHAR(3) NOT NULL DEFAULT 'USD',
+        status                  VARCHAR(20) NOT NULL DEFAULT 'submitted',
+        real_value              BOOLEAN NOT NULL DEFAULT FALSE,
+        reference               TEXT,
+        memo                    TEXT,
+        destination             JSONB DEFAULT '{}',
+        metadata                JSONB DEFAULT '{}',
+        requested_by            VARCHAR(255),
+        approved_by             VARCHAR(255),
+        approval_ref            TEXT,
+        screening_ref           TEXT,
+        movement_id             TEXT,
+        gateway_tx_id           TEXT,
+        processor_tx_id         TEXT,
+        route                   VARCHAR(96),
+        result                  JSONB,
+        error_message           TEXT,
+        created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        approved_at             TIMESTAMPTZ,
+        cleared_at              TIMESTAMPTZ,
+        settled_at              TIMESTAMPTZ
+      )`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ppnt_status ON ${TABLE}(status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ppnt_participant ON ${TABLE}(participant_id, status)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_ppnt_gateway_tx ON ${TABLE}(gateway_tx_id)`);
+  }
+
+  // ── Configuration and processor inventory ──────────────────────────────
+
+  static getConfig(env = process.env) {
+    return {
+      live: isTrue(env.PRIVATE_PAYMENT_NETWORK_LIVE),
+      requireApproval: env.PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF !== 'false',
+      requireScreening: env.PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF !== 'false',
+      requireParticipant: env.PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT !== 'false',
+      defaultProcessor: env.PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR || null,
+      processorLive: isTrue(env.PAYMENT_PROCESSOR_LIVE),
+      networkLive: isTrue(env.ENTERPRISE_NETWORK_LIVE),
+      webhookSecret: Boolean(env.PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET),
+      encryptionKey: Boolean(env.PAYMENT_DATA_ENCRYPTION_KEY),
+      maxTransferCents: Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) > 0 ? Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) : null,
+    };
+  }
+
+  static isSelfLoopbackUrl(url, env = process.env) {
+    const P = this._processorOs();
+    if (P) return P.isSelfLoopbackUrl(url, env);
+    const u = String(url || '').trim().toLowerCase();
+    return !u ? false : /^(direct|local|self|loopback)$/.test(u) || /^https?:\/\/(localhost|127\.0\.0\.1)/.test(u);
+  }
+
+  /** Reject payout destinations that resolve to this platform (self-loopback partner). */
+  static loopbackReason(destination = {}, processor) {
+    const P = this._processorOs();
+    if (P) return P.loopbackReason(destination || {}, processor);
+    const d = destination || {};
+    if (d.loopback === true || d.selfLoopback === true) return 'destination flagged as self-loopback';
+    for (const k of ['url', 'apiBaseUrl', 'partnerUrl', 'endpoint', 'webhookUrl', 'callbackUrl']) {
+      if (d[k] && this.isSelfLoopbackUrl(d[k])) return `destination.${k}=${d[k]} points back at this platform`;
+    }
+    return null;
+  }
+
+  /**
+   * Network processors. External payouts inherit real-value capability from
+   * the payment-processor engine (every payout dispatches through it via the
+   * gateway) and additionally need PRIVATE_PAYMENT_NETWORK_LIVE, the
+   * payment-data encryption key and a live enterprise-network registry. Book
+   * transfers settle on the trust ledger and need PRIVATE_PAYMENT_NETWORK_LIVE
+   * plus a reachable ledger.
+   */
+  static async processors() {
+    const cfg = this.getConfig();
+    const P = this._processorOs();
+    const upstream = P ? await settle(() => P.processors()) : { ok: false, error: 'PaymentProcessorOsEngine unavailable' };
+    const gate = !cfg.live ? 'PRIVATE_PAYMENT_NETWORK_LIVE=false'
+      : !cfg.encryptionKey ? 'PAYMENT_DATA_ENCRYPTION_KEY not set (payout instruments cannot be tokenized safely)'
+        : !cfg.networkLive ? 'ENTERPRISE_NETWORK_LIVE=false (payout participants and exposure limits are shadow-only)'
+          : !this._gateway() ? 'PaymentGatewayServerEngine unavailable'
+            : !upstream.ok ? `payment-processor: ${upstream.error}`
+              : !upstream.value.config.live ? 'PAYMENT_PROCESSOR_LIVE=false (payouts dispatch through the payment-processor engine)'
+                : null;
+    const ledgerGate = !cfg.live ? 'PRIVATE_PAYMENT_NETWORK_LIVE=false'
+      : !pool ? 'ledger database unavailable'
+        : !this._ledger() ? 'CashEngine unavailable'
+          : null;
+    const external = (upstream.ok ? upstream.value.sources : []).map((up) => ({
+      id: up.id,
+      kind: 'payout',
+      mode: up.mode || 'unset',
+      configured: Boolean(up.configured),
+      realValueCapable: !gate && Boolean(up.realValueCapable),
+      reason: !gate && up.realValueCapable ? null : (gate || up.reason || `${up.id} is not real-value capable`),
+      route: 'PaymentGatewayServerEngine.sale → PaymentProcessorServerEngine.processPayment',
+    }));
+    const ledger = {
+      id: LEDGER_PROCESSOR,
+      kind: 'book_transfer',
+      mode: ledgerGate ? 'shadow' : 'live',
+      configured: Boolean(pool && this._ledger()),
+      realValueCapable: !ledgerGate,
+      reason: ledgerGate,
+      route: 'CashEngine.transfer',
+    };
+    const sources = [ledger, ...external];
+    const realValueCapable = sources.filter((s) => s.realValueCapable).map((s) => s.id);
+    return { config: cfg, gate, ledgerGate, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
+  }
+
+  static async isRealValue(processor, inventory) {
+    const inv = inventory || await this.processors();
+    const src = inv.sources.find((s) => s.id === processor);
+    return Boolean(inv.config.live && src && src.realValueCapable);
+  }
+
+  // ── Admission checks ────────────────────────────────────────────────────
+
+  static async _account(accountId, label, { cents } = {}) {
+    const Ledger = this._ledger();
+    if (!Ledger) throw httpError('CashEngine (trust ledger) not available', 503);
+    if (!accountId) throw httpError(`${label} required`);
+    const acct = await Ledger.getAccount(accountId);
+    if (!acct) throw httpError(`ledger account ${accountId} not found`, 404);
+    if (acct.status && acct.status !== 'active') throw httpError(`ledger account ${accountId} is ${acct.status}`, 409);
+    if (cents != null && Number(acct.balance_cents) < cents) {
+      throw httpError(`insufficient balance in ${accountId}: ${acct.balance_cents} < ${cents} cents`, 409);
+    }
+    return acct;
+  }
+
+  static async _method(methodId) {
+    const Gateway = this._gateway();
+    if (!Gateway) throw httpError('PaymentGatewayServerEngine not available', 503);
+    if (!methodId) throw httpError('methodId (approved payout instrument) required for a payout');
+    const method = await Gateway.getMethod(methodId);
+    if (!method) throw httpError(`payment method ${methodId} not found`, 404);
+    if (method.status && method.status !== 'active') throw httpError(`payment method ${methodId} is ${method.status}`, 409);
+    return method;
+  }
+
+  static async _admitParticipant(participantId, cents, realValue) {
+    const cfg = this.getConfig();
+    if (!participantId) {
+      if (cfg.requireParticipant || realValue) throw httpError('participantId (enterprise-network participant) is required for a payout', 409);
+      return null;
+    }
+    const Network = this._network();
+    if (!Network) throw httpError('EnterpriseNetworkOsEngine not available', 503);
+    return Network.admit({ participantId, amountCents: cents, realValue });
+  }
+
+  // ── Maker / checker flow ───────────────────────────────────────────────
+
+  static async submit({
+    type = 'payout', sourceAccountId, destinationAccountId, methodId, participantId, processor,
+    amount, amountCents, currency = 'USD', reference, memo, destination = {}, metadata = {},
+    requestedBy, approvalRef, screeningRef,
+  } = {}) {
+    if (!pool) throw httpError('ledger database unavailable', 503);
+    const cfg = this.getConfig();
+    if (!TYPES.includes(type)) throw httpError(`type must be one of ${TYPES.join(', ')}`);
+    if (!requestedBy) throw httpError('requestedBy required');
+    const cents = amountCents != null ? Math.round(Number(amountCents)) : toCents(amount);
+    if (!Number.isFinite(cents) || cents <= 0) throw httpError('amount must be > 0');
+    if (cfg.maxTransferCents && cents > cfg.maxTransferCents) {
+      throw httpError(`amount ${cents} exceeds PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS=${cfg.maxTransferCents}`, 409);
+    }
+    await this._account(sourceAccountId, 'sourceAccountId');
+
+    let chosen;
+    let routePolicyId = null;
+    let method = null;
+    if (type === 'book_transfer') {
+      await this._account(destinationAccountId, 'destinationAccountId');
+      if (destinationAccountId === sourceAccountId) throw httpError('book transfer source and destination must differ', 409);
+      chosen = LEDGER_PROCESSOR;
+    } else {
+      method = await this._method(methodId);
+      const Network = this._network();
+      const rail = METHOD_RAILS[method.type] || method.type;
+      const route = participantId && Network ? await Network.resolveRoute({ participantId, rail, amountCents: cents }) : null;
+      const Gateway = this._gateway();
+      chosen = String(processor || route?.processor || (method.processor && method.processor !== 'generic' ? method.processor : '') || cfg.defaultProcessor || Gateway._processorFromMethod(method)).trim();
+      if (!chosen) throw httpError('processor required');
+      if (chosen === LEDGER_PROCESSOR) throw httpError(`${LEDGER_PROCESSOR} cannot carry an external payout`, 409);
+      routePolicyId = route && !processor ? route.policyId : null;
+      const loop = this.loopbackReason(destination, chosen);
+      if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
+    }
+    const realValue = await this.isRealValue(chosen);
+    if (type === 'payout') await this._admitParticipant(participantId, cents, false);
+
+    const id = newId();
+    const res = await pool.query(
+      `INSERT INTO ${TABLE} (transaction_id, type, source_account_id, destination_account_id, method_id, participant_id, processor, route_policy_id, amount_cents, currency, status, real_value, reference, memo, destination, metadata, requested_by, approval_ref, screening_ref)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'submitted',$11,$12,$13,$14::jsonb,$15::jsonb,$16,$17,$18) RETURNING *`,
+      [id, type, sourceAccountId, type === 'book_transfer' ? destinationAccountId : null, type === 'payout' ? methodId : null,
+        participantId || null, chosen, routePolicyId, cents, String(currency).toUpperCase(), realValue, reference || null, memo || null,
+        JSON.stringify(destination || {}), JSON.stringify({ ...(metadata || {}), methodType: method ? method.type : null }),
+        requestedBy, approvalRef || null, screeningRef || null]
+    );
+    return rowToTx(res.rows[0]);
+  }
+
+  static async approve({ transactionId, approvedBy, approvalRef, screeningRef } = {}) {
+    if (!pool) throw httpError('ledger database unavailable', 503);
+    if (!transactionId) throw httpError('transactionId required');
+    if (!approvedBy) throw httpError('approvedBy required');
+    const row = await this._get(transactionId);
+    if (!row) throw httpError('transaction not found', 404);
+    if (row.status !== 'submitted') throw httpError(`transaction ${transactionId} is ${row.status}, expected submitted`, 409);
+    if (row.requested_by && row.requested_by === approvedBy) throw httpError('maker/checker: approver must differ from requester', 409);
+
+    const cfg = this.getConfig();
+    const tx = rowToTx(row);
+    const inventory = await this.processors();
+    if (tx.type === 'payout') {
+      const loop = this.loopbackReason(tx.destination, tx.processor);
+      if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
+    }
+    const realValue = await this.isRealValue(tx.processor, inventory);
+    if (realValue) {
+      if (cfg.requireApproval && !approvalRef) throw httpError('approvalRef (maker/checker record) is required from the checker before a real-value network transaction is cleared', 409);
+      if (cfg.requireScreening && !screeningRef) throw httpError('screeningRef (compliance screening id) is required from the checker before a real-value network transaction is cleared', 409);
+      await this._account(tx.sourceAccountId, 'sourceAccountId', { cents: tx.amountCents });
+      if (tx.type === 'book_transfer') await this._account(tx.destinationAccountId, 'destinationAccountId');
+      else {
+        await this._method(tx.methodId);
+        await this._admitParticipant(tx.participantId, 0, true);
+      }
+    }
+
+    await pool.query(
+      `UPDATE ${TABLE} SET status = 'approved', approved_by = $2, approval_ref = $3, screening_ref = $4, real_value = $5, approved_at = NOW() WHERE transaction_id = $1`,
+      [transactionId, approvedBy, approvalRef || null, screeningRef || null, realValue]
+    );
+
+    if (!realValue) {
+      const src = inventory.sources.find((s) => s.id === tx.processor);
+      const note = (tx.type === 'book_transfer' ? inventory.ledgerGate : inventory.gate) || src?.reason || `${tx.processor} is not real-value capable`;
+      await pool.query(`UPDATE ${TABLE} SET status = 'shadow', route = 'shadow', result = $2::jsonb WHERE transaction_id = $1`,
+        [transactionId, JSON.stringify({ mode: 'shadow', note })]);
+      return { ...rowToTx(await this._get(transactionId)), dispatched: false, note };
+    }
+
+    const dispatch = await settle(() => this._dispatch({ ...tx, approvedBy, approvalRef, screeningRef }));
+    if (!dispatch.ok) {
+      await pool.query(`UPDATE ${TABLE} SET status = 'failed', error_message = $2 WHERE transaction_id = $1`, [transactionId, dispatch.error]);
+      throw httpError(`dispatch failed: ${dispatch.error}`, 502);
+    }
+    const { route, status, movementId, gatewayTxId, processorTxId, result } = dispatch.value;
+    await pool.query(
+      `UPDATE ${TABLE} SET status = $2, route = $3, movement_id = $4, gateway_tx_id = $5, processor_tx_id = $6, result = $7::jsonb,
+         cleared_at = NOW(), settled_at = CASE WHEN $2 = 'settled' THEN NOW() ELSE settled_at END
+       WHERE transaction_id = $1`,
+      [transactionId, status, route, movementId || null, gatewayTxId || null, processorTxId || null, JSON.stringify(result || {})]
+    );
+    return { ...rowToTx(await this._get(transactionId)), dispatched: true };
+  }
+
+  /** Real-value clearing; only reached from approve() after every gate passed. */
+  static async _dispatch(tx) {
+    const metadata = {
+      ...tx.metadata,
+      network: 'private-payment-network',
+      transactionId: tx.transactionId,
+      participantId: tx.participantId,
+      sourceAccountId: tx.sourceAccountId,
+      approvalRef: tx.approvalRef,
+      screeningRef: tx.screeningRef,
+      approvedBy: tx.approvedBy,
+      processor: tx.processor,
+    };
+    if (tx.type === 'book_transfer') {
+      const Ledger = this._ledger();
+      if (!Ledger) throw new Error('CashEngine not available');
+      const movement = await Ledger.transfer({
+        fromAccountId: tx.sourceAccountId,
+        toAccountId: tx.destinationAccountId,
+        amountCents: tx.amountCents,
+        movementType: 'private_network_transfer',
+        memo: tx.memo || `private payment network ${tx.transactionId}`,
+        referenceId: tx.transactionId,
+        referenceType: 'private_payment_network',
+        initiatedBy: tx.approvedBy,
+      });
+      return { route: 'CashEngine.transfer', status: 'settled', movementId: movement?.movement_id || null, result: { movement, metadata } };
+    }
+    const Gateway = this._gateway();
+    if (!Gateway) throw new Error('PaymentGatewayServerEngine not available');
+    const sale = await Gateway.sale({
+      amount: tx.amount,
+      currency: tx.currency,
+      methodId: tx.methodId,
+      reference: tx.reference || tx.transactionId,
+      direction: 'outbound',
+      source: { ledgerAccountId: tx.sourceAccountId },
+      destination: tx.destination,
+      processor: tx.processor,
+      metadata,
+      initiatedBy: tx.approvedBy,
+    });
+    if (sale.status === 'failed') throw new Error(`processor rejected payout ${sale.gatewayTxId || ''}`.trim());
+    return {
+      route: 'PaymentGatewayServerEngine.sale',
+      status: sale.status === 'settled' ? 'settled' : 'cleared',
+      gatewayTxId: sale.gatewayTxId || null,
+      processorTxId: sale.processorTxId || null,
+      result: sale,
+    };
+  }
+
+  static async cancel({ transactionId, cancelledBy, reason } = {}) {
+    if (!pool) throw httpError('ledger database unavailable', 503);
+    const row = await this._get(transactionId);
+    if (!row) throw httpError('transaction not found', 404);
+    if (row.status !== 'submitted') throw httpError(`transaction ${transactionId} is ${row.status}; cannot cancel`, 409);
+    await pool.query(`UPDATE ${TABLE} SET status = 'cancelled', error_message = $2, result = $3::jsonb WHERE transaction_id = $1`,
+      [transactionId, reason || null, JSON.stringify({ cancelledBy: cancelledBy || null, reason: reason || null })]);
+    return rowToTx(await this._get(transactionId));
+  }
+
+  // ── Status / reconcile / webhook ────────────────────────────────────────
+
+  static async transactionStatus({ transactionId, gatewayTxId } = {}) {
+    if (!transactionId && !gatewayTxId) throw httpError('transactionId or gatewayTxId required');
+    const row = transactionId ? await this._get(transactionId) : await this._getByTx(gatewayTxId);
+    if (!row) throw httpError('transaction not found', 404);
+    const tx = rowToTx(row);
+    const Gateway = this._gateway();
+    const gw = tx.gatewayTxId && Gateway ? await settle(() => Gateway.getStatus(tx.gatewayTxId)) : null;
+    return { ...tx, gatewayTransaction: gw ? (gw.ok ? gw.value : { error: gw.error }) : null };
+  }
+
+  /**
+   * Moves a cleared payout to settled / returned from the processor status and
+   * mirrors it onto the gateway transaction. Book transfers settle on approval,
+   * so reconciling one only reports its ledger movement.
+   */
+  static async reconcile({ transactionId, gatewayTxId, processorTxId, status, raw = {} } = {}) {
+    if (!pool) throw httpError('ledger database unavailable', 503);
+    let row = null;
+    if (transactionId) row = await this._get(transactionId);
+    else if (gatewayTxId || processorTxId) row = await this._getByTx(gatewayTxId || processorTxId);
+    if (!row) throw httpError('transaction not found', 404);
+    const tx = rowToTx(row);
+    if (tx.type === 'book_transfer') {
+      return { transactionId: tx.transactionId, type: tx.type, status: tx.status, movementId: tx.movementId, reconciliation: null };
+    }
+    const txId = gatewayTxId || tx.gatewayTxId;
+    if (!txId && !processorTxId && !tx.processorTxId) throw httpError('transaction has no gateway transaction to reconcile', 409);
+    const Gateway = this._gateway();
+    if (!Gateway) throw httpError('PaymentGatewayServerEngine not available', 503);
+    const s = String(status || '').toLowerCase();
+    const gatewayStatus = SETTLED.has(s) ? 'settled' : RETURNED.has(s) ? 'failed' : s;
+    const out = await Gateway.reconcileWebhook({ gatewayTxId: txId, processorTxId: processorTxId || tx.processorTxId, status: gatewayStatus, raw });
+    let next = tx.status;
+    if (tx.status === 'cleared' && SETTLED.has(s)) next = 'settled';
+    else if (['cleared', 'settled'].includes(tx.status) && RETURNED.has(s)) next = 'returned';
+    await pool.query(
+      `UPDATE ${TABLE} SET status = $2, processor_tx_id = COALESCE(processor_tx_id, $3), result = COALESCE(result, '{}'::jsonb) || $4::jsonb,
+         settled_at = CASE WHEN $2 = 'settled' AND settled_at IS NULL THEN NOW() ELSE settled_at END
+       WHERE transaction_id = $1`,
+      [tx.transactionId, next, processorTxId || null, JSON.stringify({ reconciliation: { status: s || null, at: new Date().toISOString(), gateway: out } })]
+    );
+    return { transactionId: tx.transactionId, gatewayTxId: txId || null, previousStatus: tx.status, status: next, reconciliation: out };
+  }
+
+  /** Processor callback: HMAC-SHA256 over the raw body with PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET. */
+  static verifyWebhookSignature(rawBody, signature, env = process.env) {
+    const secret = env.PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET;
+    if (!secret) return { ok: false, reason: 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET not set' };
+    if (!signature) return { ok: false, reason: 'missing signature' };
+    const expected = crypto.createHmac('sha256', secret).update(typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody || {})).digest('hex');
+    const given = String(signature).replace(/^sha256=/, '').trim();
+    if (given.length !== expected.length) return { ok: false, reason: 'invalid signature' };
+    const ok = crypto.timingSafeEqual(Buffer.from(given, 'utf8'), Buffer.from(expected, 'utf8'));
+    return ok ? { ok: true } : { ok: false, reason: 'invalid signature' };
+  }
+
+  static async webhook({ rawBody, signature, payload = {} } = {}) {
+    const check = this.verifyWebhookSignature(rawBody ?? payload, signature);
+    if (!check.ok) throw httpError(`webhook rejected: ${check.reason}`, 401);
+    return this.reconcile({ transactionId: payload.transactionId, gatewayTxId: payload.gatewayTxId, processorTxId: payload.processorTxId, status: payload.status, raw: payload });
+  }
+
+  static async listTransactions({ status, type, participantId, processor, limit = 50 } = {}) {
+    if (!pool) return [];
+    const where = [];
+    const params = [];
+    if (status) { params.push(status); where.push(`status = $${params.length}`); }
+    if (type) { params.push(type); where.push(`type = $${params.length}`); }
+    if (participantId) { params.push(participantId); where.push(`participant_id = $${params.length}`); }
+    if (processor) { params.push(processor); where.push(`processor = $${params.length}`); }
+    params.push(Math.min(Number(limit) || 50, 500));
+    const res = await pool.query(`SELECT * FROM ${TABLE} ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY created_at DESC LIMIT $${params.length}`, params);
+    return res.rows.map(rowToTx);
+  }
+
+  static async pipeline() {
+    const byStatus = Object.fromEntries(STATUSES.map((s) => [s, { count: 0, amountCents: 0 }]));
+    const byType = Object.fromEntries(TYPES.map((t) => [t, { count: 0, amountCents: 0 }]));
+    const openByParticipant = {};
+    let liveExposureCents = 0;
+    if (pool) {
+      const res = await pool.query(`SELECT status, type, participant_id, real_value, COUNT(*)::int AS n, COALESCE(SUM(amount_cents),0)::bigint AS cents FROM ${TABLE} GROUP BY status, type, participant_id, real_value`);
+      for (const r of res.rows) {
+        if (!byStatus[r.status]) byStatus[r.status] = { count: 0, amountCents: 0 };
+        if (!byType[r.type]) byType[r.type] = { count: 0, amountCents: 0 };
+        byStatus[r.status].count += Number(r.n);
+        byStatus[r.status].amountCents += Number(r.cents);
+        byType[r.type].count += Number(r.n);
+        byType[r.type].amountCents += Number(r.cents);
+        const open = ['submitted', 'approved', 'cleared'].includes(r.status);
+        if (open && r.participant_id) openByParticipant[r.participant_id] = (openByParticipant[r.participant_id] || 0) + Number(r.cents);
+        if (r.real_value && open) liveExposureCents += Number(r.cents);
+      }
+    }
+    return {
+      byStatus, byType, openByParticipant, liveExposureCents,
+      gates: { approvalRef: true, screeningRef: true, distinctApprover: true, selfLoopbackRefused: true, participantAdmitted: true, exposureLimit: true },
+    };
+  }
+
+  static async status() {
+    const [inventory, pipeline] = await Promise.all([this.processors(), settle(() => this.pipeline())]);
+    return {
+      engine: 'private-payment-network',
+      healthy: Boolean(this._gateway() && this._ledger()),
+      mode: inventory.config.live && inventory.anyRealValueCapable ? 'live' : 'shadow',
+      live: inventory.config.live,
+      gate: inventory.gate,
+      ledgerGate: inventory.ledgerGate,
+      realValueCapable: inventory.anyRealValueCapable,
+      realValueProcessors: inventory.realValueCapable,
+      processors: inventory.sources,
+      types: TYPES,
+      integrations: {
+        gateway: Boolean(this._gateway()),
+        paymentProcessorOs: Boolean(this._processorOs()),
+        enterpriseNetwork: Boolean(this._network()),
+        cashLedger: Boolean(this._ledger()),
+        webhookSecret: inventory.config.webhookSecret,
+      },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async readiness() {
+    const { EngineWiringReadiness } = require('./engineWiringReadiness');
+    return EngineWiringReadiness.engineReadiness('private-payment-network');
+  }
+
+  static async _get(id) {
+    const res = await pool.query(`SELECT * FROM ${TABLE} WHERE transaction_id = $1`, [id]);
+    return res.rows[0] || null;
+  }
+
+  static async _getByTx(txId) {
+    const res = await pool.query(`SELECT * FROM ${TABLE} WHERE gateway_tx_id = $1 OR processor_tx_id = $1 ORDER BY created_at DESC LIMIT 1`, [txId]);
+    return res.rows[0] || null;
+  }
+}
+
+module.exports = { PrivatePaymentNetworkOsEngine };

@@ -31,6 +31,7 @@ const ENV_KEYS = [
   'PAYMENT_HUB_LIVE', 'LILI_CLEARING_LIVE', 'CLEARING_API_ENDPOINT', 'CLEARING_API_KEY',
   'PAYMENT_DATA_ENCRYPTION_KEY', 'PAYMENT_SERVER_SERVICE_TOKEN', 'CLEARING_REQUIRE_APPROVAL_REF',
   'K_SERVICE', 'K_REVISION', 'GCS_CLEARING_EVIDENCE_BUCKET', 'API_GATEWAY_PROVIDER', 'PAYMENT_HUB_MODE', 'CROSS_CHAIN_ENABLED', 'CROSS_CHAIN_SHADOW',
+  'ENTERPRISE_NETWORK_LIVE', 'ENTERPRISE_NETWORK_WEBHOOK_SECRET', 'PRIVATE_PAYMENT_NETWORK_LIVE', 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET',
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -40,6 +41,7 @@ function stubOtherEnginesReady() {
     K_SERVICE: 'dlbtrust-app', K_REVISION: 'dlbtrust-app-00042-abc', GCS_CLEARING_EVIDENCE_BUCKET: 'dlb-treasury-management-clearing-evidence',
     API_GATEWAY_PROVIDER: 'lili', LILI_CLEARING_LIVE: 'true', PAYMENT_HUB_MODE: 'phee', PAYMENT_HUB_LIVE: 'true',
     PAYMENT_DATA_ENCRYPTION_KEY: 'ab'.repeat(32), CROSS_CHAIN_ENABLED: 'true', CROSS_CHAIN_SHADOW: 'true',
+    ENTERPRISE_NETWORK_LIVE: 'true', ENTERPRISE_NETWORK_WEBHOOK_SECRET: 'whsec_network', PRIVATE_PAYMENT_NETWORK_LIVE: 'true', PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET: 'whsec_ppn',
     PAYMENT_PROCESSOR_LIVE: 'true', PAYMENT_SERVER_SERVICE_TOKEN: 'svc',
   });
   vi.spyOn(ApiGatewayClearingEngine, 'readiness').mockResolvedValue({ provider: 'lili', mode: 'live', ready: true, blockers: [], storage: { ledger: { connected: true }, gcpProject: 'dlb-treasury-management' } });
@@ -158,7 +160,7 @@ describe('payment-gateway OS engine registration and routing', () => {
     expect(OS.PaymentGatewayPlatformEngine.platformEngine).toBe('payment-gateway');
     expect(OS.PaymentGatewayPlatformEngine.engineName).toBe('payment-gateway');
     expect(EngineWiringReadiness.ENGINE_KEYS).toContain('payment-gateway');
-    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(11);
+    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(13);
     expect(EngineWiringReadiness.ENGINE_TITLES['payment-gateway']).toMatch(/Payment Gateway OS Engine/);
     expect(PaymentGatewayOsEngine.PURPOSES).toEqual(['distribution', 'disbursement']);
     const paths = osRouter.stack.filter((l: any) => l.route).map((l: any) => l.route.path);
@@ -462,8 +464,8 @@ describe('payment-gateway readiness on dlb-treasury-management', () => {
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, all);
     expect(all.statusCode).toBe(503);
     expect(all.body.data.ready).toBe(false);
-    expect(all.body.data.total).toBe(11);
-    expect(all.body.data.readyCount).toBe(10);
+    expect(all.body.data.total).toBe(13);
+    expect(all.body.data.readyCount).toBe(12);
     expect(all.body.data.engines['payment-gateway'].ready).toBe(false);
     expect(all.body.data.engines['payment-processor'].ready).toBe(true);
 
@@ -478,7 +480,7 @@ describe('payment-gateway readiness on dlb-treasury-management', () => {
     const ok = responseStub();
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, ok);
     expect(ok.statusCode).toBe(200);
-    expect(ok.body.data.readyCount).toBe(11);
+    expect(ok.body.data.readyCount).toBe(13);
   });
 });
 
