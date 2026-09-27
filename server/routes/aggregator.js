@@ -104,19 +104,17 @@ router.get('/connections/:id/handshake', requireAdmin, async (req, res) => {
   catch (err) { fail(res, err); }
 });
 
-// ─── Account linking bootstrap (Plaid Link) ──────────────────────────────────
-// POST link-token → open Plaid Link with data.linkToken; POST link-exchange
-// with the public_token → one-time access token to store in Secret Manager.
+// ─── Account linking bootstrap (Orange Rails → Quiltt widget) ────────────────
+// POST link-token → open the Quiltt Connector widget with data.linkToken /
+// data.connectorId; GET link-status → whether the bank is now linked upstream.
 router.post('/connections/:id/link-token', requireAdmin, async (req, res) => {
   try { res.json({ success: true, data: await BankingAggregator.createLinkToken(req.params.id, req.body || {}) }); }
   catch (err) { fail(res, err); }
 });
 
-router.post('/connections/:id/link-exchange', requireAdmin, async (req, res) => {
-  try {
-    const publicToken = req.body && (req.body.publicToken || req.body.public_token);
-    res.json({ success: true, data: await BankingAggregator.exchangeLinkToken(req.params.id, publicToken) });
-  } catch (err) { fail(res, err); }
+router.get('/connections/:id/link-status', requireAdmin, async (req, res) => {
+  try { res.json({ success: true, data: await BankingAggregator.linkStatus(req.params.id) }); }
+  catch (err) { fail(res, err); }
 });
 
 // ─── Inbound: trigger a pull/sync ────────────────────────────────────────────

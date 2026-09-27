@@ -3,12 +3,12 @@
 
 /**
  * Aggregate the trust's Betterment Trust Checking account through the Banking
- * Aggregator (read-only, BankSync connector).
+ * Aggregator (read-only).
  *
  * Betterment exposes no public API, so the account is read through a data
  * aggregator: BankSync (banksync.io, default) after it has been linked in the
- * BankSync dashboard, or Plaid (--connector plaid) after Plaid Link. This
- * script is idempotent:
+ * BankSync dashboard, or Orange Rails (--connector orangerails) after the bank
+ * has been linked in Orange Rails' Quiltt widget. This script is idempotent:
  *   1. Ensures the aggregator tables exist.
  *   2. Creates (or reuses) the CONN-BETTERMENT-TRUST-CHECKING connection:
  *        connector banksync, direction inbound, mode live, bankName "Betterment",
@@ -16,7 +16,10 @@
  *   3. Runs / retries the handshake (whoami + bank resolution).
  *   4. With --pull, performs an initial pull so accounts/transactions land in
  *      banking_aggregator_accounts / banking_aggregator_transactions; the
- *      scheduler then feeds them to trust GL / Fineract via DataBridge.
+ *      scheduler then feeds them to trust GL / Fineract via DataBridge, which
+ *      books this connection as trust principal (config.accounting.creditDefault
+ *      = principal: unclassified credits → 3000 Trust Corpus; coupon / interest
+ *      credits → 1020 Coupon Cash + 4100 / 4000 income).
  *
  * Credentials: BANKSYNC_API_KEY (workspace key) or
  * AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY (Secret Manager, connection-scoped).
@@ -25,9 +28,12 @@
  *   node server/scripts/aggregateBettermentTrustChecking.js
  *   node server/scripts/aggregateBettermentTrustChecking.js --pull
  *   node server/scripts/aggregateBettermentTrustChecking.js --bank-id bnk_123 --pull
- *   node server/scripts/aggregateBettermentTrustChecking.js --connector plaid --pull
- *       (Plaid: CONN-BETTERMENT-TRUST-CHECKING-PLAID; needs PLAID_CLIENT_ID/PLAID_SECRET and the
- *        Link access token as AGGREGATOR_BETTERMENT_TRUST_CHECKING_ACCESS_TOKEN / PLAID_ACCESS_TOKEN)
+ *   node server/scripts/aggregateBettermentTrustChecking.js --connector orangerails --pull
+ *       (Orange Rails: CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS; needs the platform key
+ *        ORANGERAILS_PLATFORM_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY and
+ *        the vault keys ORANGERAILS_CREDENTIALS_KEY + ORANGERAILS_TRANSACTIONS_KEY (or the
+ *        per-connection _CREDENTIALS_KEY / _TRANSACTIONS_KEY); link Betterment via
+ *        POST /api/aggregator/connections/:id/link-token first)
  */
 
 const { BankingAggregator } = require('../integrations/aggregator/bankingAggregator');
@@ -43,7 +49,8 @@ function arg(flag) {
 
 const CONNECTORS = {
   banksync: (o) => Object.assign({ bankName: 'Betterment' }, o.bankId ? { bankId: o.bankId } : {}),
-  plaid: (o) => Object.assign({ env: o.plaidEnv || process.env.PLAID_ENV || 'production' },
+  orangerails: (o) => Object.assign({ institutionName: 'Betterment', appUserId: 'dlb-family-trust' },
+    o.baseUrl ? { baseUrl: o.baseUrl } : {},
     o.accountIds ? { accountIds: o.accountIds } : {}),
 };
 
@@ -55,6 +62,7 @@ async function ensureConnection(o) {
     mode: o.mode || 'live',
     pullKinds: ['accounts', 'transactions'],
     autoHandshake: false,
+    accounting: { creditDefault: 'principal' },
   }, CONNECTORS[connectorType](o));
   const existing = await BankingAggregator.getConnection(id).catch(() => null);
   if (!existing) {
@@ -71,7 +79,7 @@ async function main() {
     connector: arg('--connector'),
     bankId: arg('--bank-id'),
     mode: arg('--mode'),
-    plaidEnv: arg('--plaid-env'),
+    baseUrl: arg('--base-url'),
     accountIds: accountIds ? accountIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
   });
   const id = conn.id;

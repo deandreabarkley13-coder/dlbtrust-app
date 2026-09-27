@@ -542,10 +542,11 @@ describe.skipIf(!pgAvailable)('BankingAggregator read/write with handshake + liv
   });
 });
 
-// ─── Data-aggregator connectors (BankSync / Plaid) for API-less banks such as
-// the trust's Betterment Trust Checking account ──────────────────────────────
+// ─── Data-aggregator connectors (BankSync / Orange Rails) for API-less banks
+// such as the trust's Betterment Trust Checking account ──────────────────────
 const { bankSyncConnector } = require('../server/integrations/aggregator/connectors/bankSyncConnector');
-const { plaidConnector } = require('../server/integrations/aggregator/connectors/plaidConnector');
+const { orangeRailsConnector, encryptPayload } = require('../server/integrations/aggregator/connectors/orangeRailsConnector');
+const { DataBridge } = require('../server/integrations/accounting/dataBridge');
 
 function startBankSyncMock(opts: { planBlocked?: boolean } = {}) {
   const calls: string[] = [];
@@ -586,54 +587,66 @@ function startBankSyncMock(opts: { planBlocked?: boolean } = {}) {
   });
 }
 
-function startPlaidMock() {
+
+const OR_TXN_KEY = Buffer.alloc(32, 7).toString('base64');
+const OR_CRED_KEY = Buffer.alloc(32, 9).toString('base64');
+
+function startOrangeRailsMock(opts: { linked?: boolean } = {}) {
   const bodies: Record<string, any[]> = {};
+  const keys: string[] = [];
+  const linked = opts.linked !== false;
+  const enc = (o: unknown) => encryptPayload(o, OR_TXN_KEY);
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {
       const body = raw ? JSON.parse(raw) : {};
       (bodies[req.url || ''] ||= []).push(body);
+      keys.push(String(req.headers['x-platform-api-key']));
       const json = (code: number, out: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(out)); };
-      if (body.client_id !== 'plaid-client' || body.secret !== 'plaid-secret') {
-        return json(400, { error_type: 'INVALID_INPUT', error_code: 'INVALID_API_KEYS', error_message: 'invalid client_id or secret provided' });
+      if (req.headers['x-platform-api-key'] !== 'or-platform-key') return json(401, { error: 'Invalid platform API key' });
+      if (req.url === '/v1/platforms/provision') {
+        if (body.external_user_id !== 'dlb-family-trust') return json(400, { error: 'external_user_id required' });
+        return json(200, { subaccount_id: 'sub-dlb-1', created: false });
       }
-      if (req.url === '/item/get') {
-        if (body.access_token !== 'access-bett') return json(400, { error_code: 'INVALID_ACCESS_TOKEN', error_message: 'could not find matching access token' });
-        return json(200, { item: { item_id: 'item_bett', institution_id: 'ins_115616', products: ['transactions'] } });
+      if (req.url === '/v1/connections/list') {
+        if (body.subaccount_id !== 'sub-dlb-1') return json(404, { error: 'unknown subaccount' });
+        return json(200, { connections: linked ? [{ id: 'orc-bett', provider_type: 'quiltt', status: 'active', last_sync_at: '2026-09-26T00:00:00Z' }] : [] });
       }
-      if (req.url === '/institutions/get_by_id') return json(200, { institution: { name: 'Betterment' } });
-      if (req.url === '/accounts/balance/get') return json(200, { accounts: [
-        { account_id: 'pl_acc_1', name: 'Checking', official_name: 'Betterment Checking', mask: '3054', type: 'depository', subtype: 'checking', balances: { available: 12400, current: 12500.75, iso_currency_code: 'USD' } },
+      if (req.url === '/v1/quiltt/session') return json(200, { session_token: 'quiltt-session-jwt', connector_id: 'conn-link', expires_at: '2026-09-28T16:00:00Z' });
+      if (req.url === '/v1/quiltt/accounts') return json(200, { accounts: [
+        { id: 'qa_bett', name: 'Betterment Checking', institution_name: 'Betterment', kind: 'CHECKING', mask: '3054', currency: 'USD', state: 'OPEN', balance_current: 12500.75, balance_available: 12400, connection: { id: 'orc-bett', status: 'SYNCED' } },
+        { id: 'qa_other', name: 'Chase Savings', institution_name: 'Chase', kind: 'SAVINGS', mask: '1111', currency: 'USD', state: 'OPEN', balance_current: 5, balance_available: 5, connection: null },
       ] });
-      if (req.url === '/transactions/get') {
-        const offset = body.options.offset || 0;
-        const all = [
-          { transaction_id: 'pltx_1', account_id: 'pl_acc_1', amount: 42.1, date: '2026-09-01', name: 'ACH DEBIT VENDOR', pending: false, iso_currency_code: 'USD', personal_finance_category: { primary: 'TRANSFER_OUT' } },
-          { transaction_id: 'pltx_2', account_id: 'pl_acc_1', amount: -1000, date: '2026-09-02', name: 'ACH CREDIT DISTRIBUTION', pending: true, iso_currency_code: 'USD' },
+      if (req.url === '/v1/connections/sync') {
+        if (body.credentials_key !== OR_CRED_KEY || body.transactions_key !== OR_TXN_KEY) return json(400, { error: 'credentials_key required' });
+        return json(200, { synced: 3, connections: [{ connection_id: 'orc-bett', synced: 3, next_cursor: null }] });
+      }
+      if (req.url === '/v1/transactions/list') {
+        const page1 = [
+          { id: 'row3', connection_id: 'orc-bett', external_id: 'qtx_3', occurred_at: '2026-09-03T00:00:00Z', encrypted_payload: enc({ amount: 250, currency: 'USD', description: 'BOND COUPON PAYMENT SERIES A', entry_type: 'CREDIT', upstream_status: 'POSTED', account_id: 'qa_bett' }) },
+          { id: 'row2', connection_id: 'orc-bett', external_id: 'qtx_2', occurred_at: '2026-09-02T00:00:00Z', encrypted_payload: enc({ amount: 1000, currency: 'USD', description: 'TRUST CONTRIBUTION', entry_type: 'CREDIT', upstream_status: 'PENDING', account_id: 'qa_bett' }) },
         ];
-        return json(200, { transactions: all.slice(offset, offset + 1), total_transactions: all.length });
+        const page2 = [
+          { id: 'row1', connection_id: 'orc-bett', external_id: 'qtx_1', occurred_at: '2026-09-01T00:00:00Z', encrypted_payload: enc({ amount: 42.1, currency: 'USD', description: 'ACH DEBIT VENDOR', entry_type: 'DEBIT', upstream_status: 'POSTED', account_id: 'qa_bett' }) },
+          { id: 'row0', connection_id: 'orc-bett', external_id: 'qtx_0', occurred_at: '2026-07-01T00:00:00Z', encrypted_payload: enc({ amount: 1, currency: 'USD', description: 'OLD', entry_type: 'DEBIT', upstream_status: 'POSTED', account_id: 'qa_bett' }) },
+        ];
+        return json(200, { transactions: !body.before ? page1 : body.before > '2026-08-01' ? page2 : [] });
       }
-      if (req.url === '/link/token/create') return json(200, { link_token: 'link-sandbox-123', expiration: '2026-09-27T17:00:00Z' });
-      if (req.url === '/item/public_token/exchange') {
-        return body.public_token === 'public-ok'
-          ? json(200, { access_token: 'access-bett', item_id: 'item_bett' })
-          : json(400, { error_code: 'INVALID_PUBLIC_TOKEN', error_message: 'bad public token' });
-      }
-      return json(404, { error_code: 'NOT_FOUND', error_message: 'no route' });
+      return json(404, { error: 'no route' });
     });
   });
-  return new Promise<{ baseUrl: string; bodies: Record<string, any[]>; close: () => void }>((resolve) => {
+  return new Promise<{ baseUrl: string; bodies: Record<string, any[]>; keys: string[]; close: () => void }>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
-      resolve({ baseUrl: `http://127.0.0.1:${port}`, bodies, close: () => server.close() });
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, bodies, keys, close: () => server.close() });
     });
   });
 }
 
 describe('banksync connector (Betterment via open-banking feed)', () => {
-  it('is registered alongside plaid', () => {
-    expect(listConnectorTypes()).toEqual(expect.arrayContaining(['banksync', 'plaid']));
+  it('is registered alongside orangerails', () => {
+    expect(listConnectorTypes()).toEqual(expect.arrayContaining(['banksync', 'orangerails']));
   });
 
   it('handshakes: whoami + resolves the Betterment bank by name, read-only capabilities', async () => {
@@ -684,52 +697,83 @@ describe('banksync connector (Betterment via open-banking feed)', () => {
   });
 });
 
-describe('plaid connector (Betterment via Plaid Link)', () => {
-  it('handshakes via /item/get with the institution name and never exposes credentials', async () => {
-    const pl = await startPlaidMock();
-    try {
-      const conn = { id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'access-bett' } };
-      // Point the sandbox host at the mock.
-      const mod = require('../server/integrations/aggregator/connectors/plaidConnector');
-      mod.PLAID_HOSTS.sandbox = pl.baseUrl;
-      const hs = await plaidConnector.handshake(conn, {});
-      expect(hs.externalConnectionId).toBe('item_bett');
-      expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
-      expect(hs.meta.institution).toEqual({ id: 'ins_115616', name: 'Betterment' });
-      expect(JSON.stringify(hs)).not.toContain('plaid-secret');
-      expect(JSON.stringify(hs)).not.toContain('access-bett');
+describe('orangerails connector (Betterment via Orange Rails → Quiltt)', () => {
+  const cfg = (o: any, extra: any = {}) => ({ id: 'o1', config: { baseUrl: o.baseUrl, apiKey: 'or-platform-key', credentialsKey: OR_CRED_KEY, transactionsKey: OR_TXN_KEY, institutionName: 'Betterment', ...extra } });
 
-      await expect(plaidConnector.handshake({ id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'nope' } }, {}))
-        .rejects.toThrow(/INVALID_ACCESS_TOKEN/);
-      await expect(plaidConnector.handshake({ id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'wrong', accessToken: 'access-bett' } }, {}))
-        .rejects.toThrow(/INVALID_API_KEYS/);
-    } finally { pl.close(); }
+  it('handshakes: provisions the trust subaccount, requires a linked Quiltt bank connection, read-only', async () => {
+    const or = await startOrangeRailsMock();
+    try {
+      const hs = await orangeRailsConnector.handshake(cfg(or), {});
+      expect(hs.externalConnectionId).toBe('sub-dlb-1');
+      expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
+      expect(hs.meta.bankConnections).toEqual([{ id: 'orc-bett', status: 'active', lastSyncAt: '2026-09-26T00:00:00Z' }]);
+      expect(or.bodies['/v1/platforms/provision'][0]).toEqual({ external_user_id: 'dlb-family-trust' });
+      expect(JSON.stringify(hs)).not.toContain('or-platform-key');
+      expect(JSON.stringify(hs)).not.toContain(OR_TXN_KEY);
+      expect(orangeRailsConnector.push).toBeUndefined();
+
+      await expect(orangeRailsConnector.handshake({ id: 'o1', config: { baseUrl: or.baseUrl, apiKey: 'wrong', credentialsKey: OR_CRED_KEY, transactionsKey: OR_TXN_KEY } }, {}))
+        .rejects.toThrow(/Invalid platform API key/);
+      await expect(orangeRailsConnector.handshake({ id: 'o1', config: { baseUrl: or.baseUrl, apiKey: 'or-platform-key' } }, {}))
+        .rejects.toThrow(/vault keys missing/);
+    } finally { or.close(); }
   });
 
-  it('pulls balances + paginated transactions (Plaid positive amount = debit) and runs the Link bootstrap', async () => {
-    const pl = await startPlaidMock();
+  it('fails the handshake until the bank is linked in the widget, and reports link status', async () => {
+    const or = await startOrangeRailsMock({ linked: false });
     try {
-      const mod = require('../server/integrations/aggregator/connectors/plaidConnector');
-      mod.PLAID_HOSTS.sandbox = pl.baseUrl;
-      const conn = { id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'access-bett', accountIds: ['pl_acc_1'] } };
-      const accounts = await plaidConnector.pullAccounts(conn, {});
-      expect(accounts[0]).toMatchObject({ externalAccountId: 'pl_acc_1', name: 'Betterment Checking', accountType: 'depository/checking', balanceCurrent: 12500.75, currency: 'USD' });
-      const txns = await plaidConnector.pullTransactions(conn, { since: '2026-08-01' });
-      expect(txns.map((t: any) => [t.externalTxnId, t.direction, t.amount, t.status, t.category])).toEqual([
-        ['pltx_1', 'debit', 42.1, 'posted', 'TRANSFER_OUT'],
-        ['pltx_2', 'credit', 1000, 'pending', null],
-      ]);
-      expect(pl.bodies['/transactions/get']).toHaveLength(2);
-      expect(pl.bodies['/transactions/get'][0].start_date).toBe('2026-08-01');
-      expect(pl.bodies['/transactions/get'][0].options.account_ids).toEqual(['pl_acc_1']);
+      await expect(orangeRailsConnector.handshake(cfg(or), {})).rejects.toThrow(/no linked bank connection.*link Betterment in the Quiltt widget/);
+      const link = await orangeRailsConnector.createLinkToken(cfg(or), {});
+      expect(link).toMatchObject({ linkToken: 'quiltt-session-jwt', connectorId: 'conn-link' });
+      expect(await orangeRailsConnector.linkStatus(cfg(or), {})).toMatchObject({ subaccountId: 'sub-dlb-1', linked: false, connections: [] });
+    } finally { or.close(); }
+  });
 
-      const link = await plaidConnector.createLinkToken(conn, {});
-      expect(link.linkToken).toBe('link-sandbox-123');
-      expect(pl.bodies['/link/token/create'][0].products).toEqual(['transactions']);
-      const ex = await plaidConnector.exchangePublicToken(conn, 'public-ok');
-      expect(ex).toEqual({ accessToken: 'access-bett', itemId: 'item_bett' });
-      await expect(plaidConnector.exchangePublicToken(conn, 'public-bad')).rejects.toThrow(/INVALID_PUBLIC_TOKEN/);
-    } finally { pl.close(); }
+  it('pulls Betterment accounts only, syncs, then lists + decrypts paginated transactions in-process', async () => {
+    const or = await startOrangeRailsMock();
+    try {
+      const conn = { ...cfg(or), external_connection_id: 'sub-dlb-1' };
+      const accounts = await orangeRailsConnector.pullAccounts(conn, {});
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({ externalAccountId: 'qa_bett', name: 'Betterment Checking', accountType: 'checking', mask: '3054', balanceCurrent: 12500.75, balanceAvailable: 12400 });
+
+      const txns = await orangeRailsConnector.pullTransactions(conn, { since: '2026-08-01T00:00:00Z' });
+      expect(txns.map((t: any) => [t.externalTxnId, t.direction, t.amount, t.status, t.description])).toEqual([
+        ['qtx_3', 'credit', 250, 'posted', 'BOND COUPON PAYMENT SERIES A'],
+        ['qtx_2', 'credit', 1000, 'pending', 'TRUST CONTRIBUTION'],
+        ['qtx_1', 'debit', 42.1, 'posted', 'ACH DEBIT VENDOR'],
+      ]);
+      expect(or.bodies['/v1/connections/sync'][0]).toMatchObject({ subaccount_id: 'sub-dlb-1' });
+      expect(or.bodies['/v1/transactions/list']).toHaveLength(2);
+      expect(or.bodies['/v1/transactions/list'][1].before).toBe('2026-09-02T00:00:00Z');
+      // Cleartext never leaves the process: the wire only carries ciphertext.
+      expect(JSON.stringify(or.bodies)).not.toContain('BOND COUPON');
+
+      await expect(orangeRailsConnector.pullTransactions({ ...conn, config: { ...conn.config, transactionsKey: Buffer.alloc(32, 1).toString('base64') } }, {}))
+        .rejects.toThrow();
+    } finally { or.close(); }
+  });
+});
+
+describe('DataBridge.classifyAggregatorTxn keeps trust principal and coupon/interest income apart', () => {
+  const principal = { creditDefault: 'principal' };
+  it('routes coupon and interest credits to 1020 coupon cash + income, other credits to corpus on a principal account', () => {
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'credit', description: 'BOND COUPON PAYMENT SERIES A' }, principal))
+      .toEqual({ classification: 'coupon_income', debit: '1020', credit: '4100' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'credit', description: 'Betterment APY interest' }, principal))
+      .toEqual({ classification: 'interest_income', debit: '1020', credit: '4000' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'credit', description: 'TRUST CONTRIBUTION' }, principal))
+      .toEqual({ classification: 'principal', debit: '1000', credit: '3000' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'credit', description: 'ACH CREDIT' }, {}))
+      .toEqual({ classification: 'fee_income', debit: '1000', credit: '4200' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'credit', description: 'Bond maturity redemption' }, {}))
+      .toEqual({ classification: 'principal', debit: '1000', credit: '3000' });
+  });
+  it('routes debits to fee / distribution / operating expense with cash as the credit side', () => {
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'debit', description: 'Monthly service fee' }, principal)).toMatchObject({ classification: 'fee_expense', debit: '5000', credit: '1000' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'debit', description: 'Beneficiary distribution Q3' }, principal)).toMatchObject({ classification: 'distribution', debit: '2000', credit: '1000' });
+    expect(DataBridge.classifyAggregatorTxn({ direction: 'debit', description: 'ACH DEBIT VENDOR' }, principal)).toMatchObject({ classification: 'operating_expense', debit: '5300', credit: '1000' });
+    expect(DataBridge.classifyAggregatorTxn({ amount: -5, description: 'x' }, {}).classification).toBe('operating_expense');
   });
 });
 
@@ -737,21 +781,22 @@ describe.skipIf(!pgAvailable)('Betterment Trust Checking read path through Banki
   const ids: string[] = [];
   const savedEnv: Record<string, string | undefined> = {};
   let bs: Awaited<ReturnType<typeof startBankSyncMock>>;
-  let pl: Awaited<ReturnType<typeof startPlaidMock>>;
+  let or: Awaited<ReturnType<typeof startOrangeRailsMock>>;
 
   beforeAll(async () => {
-    for (const k of ['AGGREGATOR_DEFAULT_MODE', 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY', 'AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN', 'AGGREGATOR_BETTERMENT_PLAID_CLIENT_SECRET', 'BANKSYNC_API_KEY']) savedEnv[k] = process.env[k];
+    for (const k of ['AGGREGATOR_DEFAULT_MODE', 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY', 'AGGREGATOR_BETTERMENT_ORANGERAILS_API_KEY', 'AGGREGATOR_BETTERMENT_ORANGERAILS_CREDENTIALS_KEY', 'AGGREGATOR_BETTERMENT_ORANGERAILS_TRANSACTIONS_KEY', 'BANKSYNC_API_KEY', 'ORANGERAILS_PLATFORM_API_KEY']) savedEnv[k] = process.env[k];
     delete process.env.AGGREGATOR_DEFAULT_MODE;
     delete process.env.BANKSYNC_API_KEY;
+    delete process.env.ORANGERAILS_PLATFORM_API_KEY;
     bs = await startBankSyncMock();
-    pl = await startPlaidMock();
-    require('../server/integrations/aggregator/connectors/plaidConnector').PLAID_HOSTS.sandbox = pl.baseUrl;
+    or = await startOrangeRailsMock();
     await BankingAggregator.ensureTables();
   });
 
   afterAll(async () => {
-    bs.close(); pl.close();
+    bs.close(); or.close();
     for (const id of ids) {
+      await pool.query(`DELETE FROM trust_journal_entries WHERE reference_type = 'aggregator_txn' AND reference_id IN (SELECT id FROM banking_aggregator_transactions WHERE connection_id = $1)`, [id]).catch(() => {});
       await pool.query('DELETE FROM banking_aggregator_events WHERE connection_id = $1', [id]);
       await pool.query('DELETE FROM banking_aggregator_transactions WHERE connection_id = $1', [id]);
       await pool.query('DELETE FROM banking_aggregator_accounts WHERE connection_id = $1', [id]);
@@ -794,32 +839,47 @@ describe.skipIf(!pgAvailable)('Betterment Trust Checking read path through Banki
     await expect(BankingAggregator.push(id, { type: 'payment', amount: 1, approvalRef: 'A', screeningRef: 'S' })).rejects.toThrow();
   });
 
-  it('plaid: verifies with projected client secret + access token and pulls the same account shape; link bootstrap never persists the token', async () => {
-    const id = `CONN-BETTERMENT-PLAID-T${Date.now()}`; ids.push(id);
-    process.env.AGGREGATOR_BETTERMENT_PLAID_CLIENT_SECRET = 'plaid-secret';
-    process.env.AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN = 'access-bett';
+  it('orangerails: verifies with projected platform + vault keys, pulls the same account shape, redacts keys, and posts principal vs coupon income to the trust GL', async () => {
+    const id = `CONN-BETTERMENT-ORANGERAILS-T${Date.now()}`; ids.push(id);
+    process.env.AGGREGATOR_BETTERMENT_ORANGERAILS_API_KEY = 'or-platform-key';
+    process.env.AGGREGATOR_BETTERMENT_ORANGERAILS_CREDENTIALS_KEY = OR_CRED_KEY;
+    process.env.AGGREGATOR_BETTERMENT_ORANGERAILS_TRANSACTIONS_KEY = OR_TXN_KEY;
     const conn = await BankingAggregator.createConnection({
-      id, name: 'Betterment Plaid', connectorType: 'plaid', direction: 'inbound',
-      config: { mode: 'live', env: 'sandbox', clientId: 'plaid-client', pullKinds: ['accounts', 'transactions'] },
+      id, name: 'Betterment OrangeRails', connectorType: 'orangerails', direction: 'inbound',
+      config: { mode: 'live', baseUrl: or.baseUrl, institutionName: 'Betterment', lookbackDays: 45, pullKinds: ['accounts', 'transactions'], accounting: { creditDefault: 'principal' } },
     });
     expect(conn.handshake_state).toBe('verified');
-    expect(conn.external_connection_id).toBe('item_bett');
-    expect(conn.credentials.has_accessToken).toBe(true);
-    expect(conn.config.accessToken).toBeUndefined();
-    expect(JSON.stringify(conn)).not.toContain('access-bett');
+    expect(conn.external_connection_id).toBe('sub-dlb-1');
+    expect(conn.credentials.has_transactionsKey).toBe(true);
+    expect(conn.config.transactionsKey).toBeUndefined();
+    expect(JSON.stringify(conn)).not.toContain(OR_TXN_KEY);
+    expect(JSON.stringify(conn)).not.toContain('or-platform-key');
 
     const s = await BankingAggregator.pull(id);
-    expect(s).toMatchObject({ accounts: 1, transactions: 2, errors: [] });
+    expect(s).toMatchObject({ accounts: 1, transactions: 3, errors: [] });
+    const row = await pool.query('SELECT config FROM banking_aggregator_connections WHERE id = $1', [id]);
+    expect(JSON.stringify(row.rows[0].config)).not.toContain(OR_TXN_KEY);
 
     const link = await BankingAggregator.createLinkToken(id, {});
-    expect(link.linkToken).toBe('link-sandbox-123');
-    const ex = await BankingAggregator.exchangeLinkToken(id, 'public-ok');
-    expect(ex.accessToken).toBe('access-bett');
-    expect(ex.storeAs).toBe('AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN');
-    const row = await pool.query('SELECT config FROM banking_aggregator_connections WHERE id = $1', [id]);
-    expect(JSON.stringify(row.rows[0].config)).not.toContain('access-bett');
-    const evts = await pool.query(`SELECT payload FROM banking_aggregator_events WHERE connection_id = $1 AND event_type IN ('link_token','link_exchange')`, [id]);
-    expect(evts.rows).toHaveLength(2);
-    expect(JSON.stringify(evts.rows)).not.toContain('access-bett');
+    expect(link.linkToken).toBe('quiltt-session-jwt');
+    expect((await BankingAggregator.linkStatus(id)).linked).toBe(true);
+
+    let je: any = null;
+    try { je = await pool.query(`SELECT 1 FROM trust_journal_entries LIMIT 0`); } catch (e) { je = null; }
+    if (je) {
+      const sync = await DataBridge.syncAggregatorToAccounting();
+      expect(sync.errors.filter((e: any) => String(e.txnId || '').length && ids.some((i) => String(e.txnId).includes(i)))).toEqual([]);
+      const entries = await pool.query(`
+        SELECT je.description, l.account_code, l.debit_amount, l.credit_amount
+        FROM trust_journal_entries je
+        JOIN trust_journal_lines l ON l.entry_id = je.entry_id
+        JOIN banking_aggregator_transactions t ON t.id = je.reference_id
+        WHERE je.reference_type = 'aggregator_txn' AND t.connection_id = $1
+        ORDER BY t.external_txn_id, l.account_code`, [id]);
+      const byDesc = (needle: string) => entries.rows.filter((r: any) => r.description.includes(needle)).map((r: any) => [r.account_code, Number(r.debit_amount), Number(r.credit_amount)]);
+      expect(byDesc('[coupon_income]')).toEqual([['1020', 250, 0], ['4100', 0, 250]]);
+      expect(byDesc('[principal]')).toEqual([['1000', 1000, 0], ['3000', 0, 1000]]);
+      expect(byDesc('[operating_expense]')).toEqual([['1000', 0, 42.1], ['5300', 42.1, 0]]);
+    }
   });
 });

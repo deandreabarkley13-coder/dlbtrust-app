@@ -86,12 +86,18 @@ secret_names = [
   # plan with API access (Standard or above).
   "BANKSYNC_API_KEY",
   # "AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY",
-  # Plaid connection CONN-BETTERMENT-TRUST-CHECKING-PLAID (plaid connector):
-  # client credentials plus the Item access token minted once via
-  # POST /api/aggregator/connections/:id/link-token → Plaid Link → /link-exchange.
-  # "PLAID_CLIENT_ID",
-  # "PLAID_SECRET",
-  # "AGGREGATOR_BETTERMENT_TRUST_CHECKING_PLAID_ACCESS_TOKEN",
+  # Orange Rails connection CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS
+  # (orangerails connector, Apache-2.0 github.com/Orange-The-World/orangerails):
+  # the platform key issued by Orange Rails plus two base64 32-byte keys the
+  # trust generates itself (`openssl rand -base64 32`) — the vault key Orange
+  # Rails requires on every sync and the AES-256-GCM key every transaction is
+  # stored under upstream and decrypted only inside Cloud Run. Bank login
+  # happens in the Quiltt widget (POST /api/aggregator/connections/:id/link-token).
+  # "ORANGERAILS_PLATFORM_API_KEY",
+  # "ORANGERAILS_CREDENTIALS_KEY",
+  # "ORANGERAILS_TRANSACTIONS_KEY",
+  # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY /
+  #  _CREDENTIALS_KEY / _TRANSACTIONS_KEY)
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

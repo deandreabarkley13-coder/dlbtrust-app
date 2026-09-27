@@ -60,6 +60,7 @@ const { getConnector, listConnectorTypes } = require('./connectors');
 const SECRET_CONFIG_KEYS = [
   'apiKey', 'apiSecret', 'bearerToken', 'token', 'password',
   'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret', 'accessToken',
+  'credentialsKey', 'transactionsKey',
 ];
 
 const HANDSHAKE_STATES = ['pending', 'challenged', 'verified', 'failed'];
@@ -81,6 +82,8 @@ const ENV_CREDENTIAL_KEYS = {
   _BEARER_TOKEN: 'bearerToken',
   _CLIENT_SECRET: 'clientSecret',
   _ACCESS_TOKEN: 'accessToken',
+  _CREDENTIALS_KEY: 'credentialsKey',
+  _TRANSACTIONS_KEY: 'transactionsKey',
 };
 
 function defaultMode() {
@@ -482,11 +485,10 @@ class BankingAggregator {
   }
 
   /**
-   * One-time account-linking bootstrap for data aggregators whose access token
-   * is minted interactively (Plaid Link). The connector returns a link token
-   * for the UI, then exchanges the resulting public token. The access token is
-   * returned to the admin caller once and never persisted here; it belongs in
-   * Secret Manager as AGGREGATOR_<CONNECTION>_ACCESS_TOKEN.
+   * One-time account-linking bootstrap for data aggregators whose bank link is
+   * established interactively (Orange Rails → Quiltt Connector widget). The
+   * connector returns a short-lived widget session token; nothing about the
+   * bank login is persisted here.
    */
   static async createLinkToken(id, opts) {
     const conn = await BankingAggregator._getConnectionRaw(id);
@@ -500,22 +502,21 @@ class BankingAggregator {
     return result;
   }
 
-  static async exchangeLinkToken(id, publicToken) {
+  /** Post-widget check: does the provider now hold a linked bank connection? */
+  static async linkStatus(id) {
     const conn = await BankingAggregator._getConnectionRaw(id);
     if (!conn) throw httpError('Connection not found: ' + id, 404);
     const connector = getConnector(conn.connector_type);
-    if (typeof connector.exchangePublicToken !== 'function') {
+    if (typeof connector.linkStatus !== 'function') {
       throw httpError(`Connector "${conn.connector_type}" does not support account linking`, 400);
     }
-    if (!publicToken) throw httpError('publicToken is required', 400);
-    const result = await connector.exchangePublicToken(conn, publicToken);
-    await BankingAggregator._logEvent(id, 'inbound', 'link_exchange', { itemId: result.itemId || null }, 'processed', null);
-    return {
-      itemId: result.itemId || null,
-      accessToken: result.accessToken,
-      storeAs: (BankingAggregator.credentialsEnvPrefix(conn) || 'AGGREGATOR_<CONNECTION>') + '_ACCESS_TOKEN',
-      note: 'Store accessToken in Secret Manager under storeAs, redeploy, then POST /connections/:id/handshake. It is not persisted by the aggregator.',
-    };
+    const result = await connector.linkStatus(conn, { timeoutMs: handshakeTimeoutMs() });
+    await BankingAggregator._logEvent(id, 'inbound', 'link_status', { linked: !!result.linked }, 'processed', null);
+    return Object.assign({
+      next: result.linked
+        ? 'POST /connections/:id/handshake to verify, then pull.'
+        : 'Complete the bank link in the widget (POST /connections/:id/link-token), then re-check.',
+    }, result);
   }
 
   /**
