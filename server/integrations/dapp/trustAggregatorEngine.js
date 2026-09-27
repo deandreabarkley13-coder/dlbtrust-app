@@ -12,7 +12,10 @@
 const pool = require('../bonds/pgPool');
 
 let CashEngine, TrustAccountingEngine, IssuerEngine, VirtualAccountEngine, TrustBankEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine;
+let TreasuryPrimeEngine, StripeTreasuryEngine;
 function loadDeps() {
+  try { ({ TreasuryPrimeEngine } = require('../treasuryprime/treasuryPrimeEngine')); } catch (e) { TreasuryPrimeEngine = null; }
+  try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
   try { ({ IssuerEngine } = require('./issuerEngine')); } catch (e) { IssuerEngine = null; }
@@ -38,8 +41,22 @@ function round2(n) {
 // Source types whose balances are derived from ledgers this process owns, so
 // they can be re-read on demand instead of waiting for an operator to sync.
 const INTERNAL_SOURCE_TYPES = ['cash', 'trust', 'issuer', 'virtual', 'trust_bank', 'wire', 'bank_transfer'];
+// Provider-backed sources read over the network on every refresh (credentials
+// come from the environment, so they auto-connect when configured).
+const LIVE_PROVIDER_SOURCE_TYPES = ['treasury_prime', 'stripe_treasury'];
+const REFRESHABLE_SOURCE_TYPES = INTERNAL_SOURCE_TYPES.concat(LIVE_PROVIDER_SOURCE_TYPES);
+const ALL_SOURCE_TYPES = REFRESHABLE_SOURCE_TYPES.concat(['open_banking', 'external', 'manual']);
+
+function treasuryPrimeConfigured() {
+  return !!(process.env.TREASURY_PRIME_API_KEY_ID && process.env.TREASURY_PRIME_API_SECRET);
+}
+function stripeTreasuryConfigured() {
+  return !!(StripeTreasuryEngine && StripeTreasuryEngine.isConfigured());
+}
 
 const DEFAULT_MAX_AGE_MS = Number(process.env.TRUST_AGGREGATOR_MAX_AGE_MS || 15000);
+// Provider APIs are rate-limited; re-read them less often than local ledgers.
+const PROVIDER_MAX_AGE_MS = Number(process.env.TRUST_AGGREGATOR_PROVIDER_MAX_AGE_MS || 60000);
 
 // Collapses concurrent refreshes (dashboard polling, several trustees at once)
 // onto a single in-flight sync.
@@ -59,7 +76,7 @@ class TrustAggregatorEngine {
       CREATE TABLE IF NOT EXISTS aggregator_connections (
         connection_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        source_type TEXT NOT NULL CHECK (source_type IN ('cash','trust','issuer','virtual','trust_bank','bank_transfer','wire','open_banking','external','manual')),
+        source_type TEXT NOT NULL,
         source_id TEXT,
         credentials_encrypted JSONB DEFAULT '{}',
         refresh_token TEXT,
@@ -103,6 +120,8 @@ class TrustAggregatorEngine {
         created_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE aggregator_connections DROP CONSTRAINT IF EXISTS aggregator_connections_source_type_check`);
+    await pool.query(`ALTER TABLE aggregator_connections ADD CONSTRAINT aggregator_connections_source_type_check CHECK (source_type IN (${ALL_SOURCE_TYPES.map((t) => `'${t}'`).join(',')}))`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_aggregator_balances_conn ON aggregator_balances(connection_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_aggregator_transactions_conn ON aggregator_transactions(connection_id)`);
   }
@@ -174,6 +193,17 @@ class TrustAggregatorEngine {
       } else if (conn.source_type === 'bank_transfer' && BankTransferEngine && BankTransferEngine.listBankTransfers) {
         const transfers = await BankTransferEngine.listBankTransfers({ limit: 100 });
         for (const t of transfers) transactions.push({ connection_id: conn.connection_id, account_id: t.transfer_id, external_tx_id: t.external_tx_id, amount_cents: Number(t.amount_cents || 0) * (t.direction === 'out' ? -1 : 1), currency: t.currency || 'USD', description: t.description, tx_type: t.rail, posted_at: t.updated_at, extra: { direction: t.direction, status: t.status } });
+      } else if (conn.source_type === 'treasury_prime') {
+        if (!TreasuryPrimeEngine || !treasuryPrimeConfigured()) throw new Error('Treasury Prime credentials not configured');
+        const accounts = await TreasuryPrimeEngine.getBalances();
+        for (const a of accounts) balances.push({ connection_id: conn.connection_id, account_id: a.id, account_name: a.name || `Treasury Prime ${a.accountType || 'account'}`, account_type: a.accountType || 'bank', source_type: 'treasury_prime', balance_cents: toCents(a.availableBalance != null ? a.availableBalance : a.currentBalance), currency: a.currency || 'USD', extra: { account_number: a.accountNumber, current_balance: a.currentBalance } });
+      } else if (conn.source_type === 'stripe_treasury') {
+        if (!stripeTreasuryConfigured()) throw new Error('Stripe Treasury not configured');
+        const client = StripeTreasuryEngine.getClient();
+        const faId = process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID;
+        const fa = await client.treasury.financialAccounts.retrieve(faId);
+        const cash = (fa && fa.balance && fa.balance.cash && fa.balance.cash.usd) || 0;
+        balances.push({ connection_id: conn.connection_id, account_id: fa.id, account_name: 'Stripe Treasury financial account', account_type: 'financial_account', source_type: 'stripe_treasury', balance_cents: Number(cash), currency: 'USD', extra: { status: fa.status, inbound_pending: fa.balance && fa.balance.inbound_pending && fa.balance.inbound_pending.usd, outbound_pending: fa.balance && fa.balance.outbound_pending && fa.balance.outbound_pending.usd } });
       } else if (conn.source_type === 'external') {
         const stub = conn.credentials_encrypted || {};
         if (stub.balance_cents != null) {
@@ -231,11 +261,13 @@ class TrustAggregatorEngine {
       let conns = [];
       try { conns = await this.listConnections({}); } catch (e) { errors.push({ connectionId: null, error: e.message }); }
       const cutoff = Date.now() - Math.max(0, Number(maxAgeMs) || 0);
+      const providerCutoff = Date.now() - Math.max(Number(maxAgeMs) || 0, PROVIDER_MAX_AGE_MS);
       const synced = [];
       for (const conn of conns) {
-        if (!INTERNAL_SOURCE_TYPES.includes(conn.source_type)) continue;
+        if (!REFRESHABLE_SOURCE_TYPES.includes(conn.source_type)) continue;
         const lastSync = conn.last_sync_at ? new Date(conn.last_sync_at).getTime() : 0;
-        if (!force && lastSync > cutoff) continue;
+        const isProvider = LIVE_PROVIDER_SOURCE_TYPES.includes(conn.source_type);
+        if (!force && lastSync > (isProvider ? providerCutoff : cutoff)) continue;
         try {
           await this.sync(conn.connection_id);
           synced.push(conn.connection_id);
@@ -312,12 +344,25 @@ class TrustAggregatorEngine {
     const agg = await this.aggregateBalances();
     const connections = await this.listConnections({});
     const freshness = await this.getFreshness();
+    const now = Date.now();
+    const sources = connections.map((c) => ({
+      connection_id: c.connection_id,
+      name: c.name,
+      source_type: c.source_type,
+      status: c.status,
+      error: c.error_message || null,
+      last_sync_at: c.last_sync_at ? new Date(c.last_sync_at).toISOString() : null,
+      age_seconds: c.last_sync_at ? Math.max(0, Math.round((now - new Date(c.last_sync_at).getTime()) / 1000)) : null,
+      live: REFRESHABLE_SOURCE_TYPES.includes(c.source_type),
+    }));
     return {
       total: agg.total,
       by_source: agg.by_source,
       connections: connections.length,
+      sources,
       balances: agg.balances,
       as_of: freshness.as_of,
+      oldest_synced_at: freshness.oldest_synced_at,
       age_seconds: freshness.age_seconds,
       live: Boolean(live),
       sync_errors: refresh ? refresh.errors : [],
@@ -334,6 +379,8 @@ class TrustAggregatorEngine {
     if (TrustBankEngine) sources.push({ name: 'Trust Bank Accounts', sourceType: 'trust_bank' });
     if (WireOriginationEngine) sources.push({ name: 'Wire Payouts', sourceType: 'wire' });
     if (BankTransferEngine) sources.push({ name: 'Bank Transfers', sourceType: 'bank_transfer' });
+    if (TreasuryPrimeEngine && treasuryPrimeConfigured()) sources.push({ name: 'Treasury Prime Bank Accounts', sourceType: 'treasury_prime' });
+    if (stripeTreasuryConfigured()) sources.push({ name: 'Stripe Treasury', sourceType: 'stripe_treasury' });
 
     const created = [];
     for (const s of sources) {

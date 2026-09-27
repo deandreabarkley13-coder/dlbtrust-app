@@ -36,7 +36,9 @@ router.get('/summary', operatorAuth, async (req, res) => {
       netWorth: 0,
       bySource: {},
       asOf: null,
+      oldestSyncedAt: null,
       ageSeconds: null,
+      sources: [],
       syncErrors: [],
       bondValue: 0,
       pendingApprovals: 0,
@@ -55,7 +57,9 @@ router.get('/summary', operatorAuth, async (req, res) => {
         summary.netWorth = nw.total || 0;
         summary.bySource = nw.by_source || {};
         summary.asOf = nw.as_of || null;
+        summary.oldestSyncedAt = nw.oldest_synced_at || null;
         summary.ageSeconds = nw.age_seconds;
+        summary.sources = nw.sources || [];
         summary.syncErrors = nw.sync_errors || [];
       } catch (e) {
         console.warn('[trust-ops] net worth:', e.message);
