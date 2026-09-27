@@ -104,6 +104,19 @@ router.get('/connections/:id/handshake', requireAdmin, async (req, res) => {
   catch (err) { fail(res, err); }
 });
 
+// ─── Account linking bootstrap (Orange Rails → Quiltt widget) ────────────────
+// POST link-token → open the Quiltt Connector widget with data.linkToken /
+// data.connectorId; GET link-status → whether the bank is now linked upstream.
+router.post('/connections/:id/link-token', requireAdmin, async (req, res) => {
+  try { res.json({ success: true, data: await BankingAggregator.createLinkToken(req.params.id, req.body || {}) }); }
+  catch (err) { fail(res, err); }
+});
+
+router.get('/connections/:id/link-status', requireAdmin, async (req, res) => {
+  try { res.json({ success: true, data: await BankingAggregator.linkStatus(req.params.id) }); }
+  catch (err) { fail(res, err); }
+});
+
 // ─── Inbound: trigger a pull/sync ────────────────────────────────────────────
 // Pull refuses (409) until the handshake is verified when the connector
 // declares one. Accepts the Cloud Scheduler OIDC token as well as the admin token.

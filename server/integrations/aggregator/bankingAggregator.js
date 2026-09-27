@@ -59,7 +59,8 @@ const { getConnector, listConnectorTypes } = require('./connectors');
 // Config keys treated as secret material — never returned by the API, never logged.
 const SECRET_CONFIG_KEYS = [
   'apiKey', 'apiSecret', 'bearerToken', 'token', 'password',
-  'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret',
+  'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret', 'accessToken',
+  'credentialsKey', 'transactionsKey',
 ];
 
 const HANDSHAKE_STATES = ['pending', 'challenged', 'verified', 'failed'];
@@ -80,6 +81,9 @@ const ENV_CREDENTIAL_KEYS = {
   _WEBHOOK_SECRET: 'webhookSecret',
   _BEARER_TOKEN: 'bearerToken',
   _CLIENT_SECRET: 'clientSecret',
+  _ACCESS_TOKEN: 'accessToken',
+  _CREDENTIALS_KEY: 'credentialsKey',
+  _TRANSACTIONS_KEY: 'transactionsKey',
 };
 
 function defaultMode() {
@@ -478,6 +482,41 @@ class BankingAggregator {
     } catch (e) {
       return { state: 'failed', error: e.message };
     }
+  }
+
+  /**
+   * One-time account-linking bootstrap for data aggregators whose bank link is
+   * established interactively (Orange Rails → Quiltt Connector widget). The
+   * connector returns a short-lived widget session token; nothing about the
+   * bank login is persisted here.
+   */
+  static async createLinkToken(id, opts) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw httpError('Connection not found: ' + id, 404);
+    const connector = getConnector(conn.connector_type);
+    if (typeof connector.createLinkToken !== 'function') {
+      throw httpError(`Connector "${conn.connector_type}" does not support account linking`, 400);
+    }
+    const result = await connector.createLinkToken(conn, opts || {});
+    await BankingAggregator._logEvent(id, 'outbound', 'link_token', { env: result.env || null }, 'processed', null);
+    return result;
+  }
+
+  /** Post-widget check: does the provider now hold a linked bank connection? */
+  static async linkStatus(id) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw httpError('Connection not found: ' + id, 404);
+    const connector = getConnector(conn.connector_type);
+    if (typeof connector.linkStatus !== 'function') {
+      throw httpError(`Connector "${conn.connector_type}" does not support account linking`, 400);
+    }
+    const result = await connector.linkStatus(conn, { timeoutMs: handshakeTimeoutMs() });
+    await BankingAggregator._logEvent(id, 'inbound', 'link_status', { linked: !!result.linked }, 'processed', null);
+    return Object.assign({
+      next: result.linked
+        ? 'POST /connections/:id/handshake to verify, then pull.'
+        : 'Complete the bank link in the widget (POST /connections/:id/link-token), then re-check.',
+    }, result);
   }
 
   /**

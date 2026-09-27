@@ -623,10 +623,51 @@ class DataBridge {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Classify a pulled bank transaction into the trust chart of accounts so
+   * principal and coupon/interest income never blend:
+   *   credit  coupon            → Dr 1020 COUPON_CASH / Cr 4100 COUPON_INCOME
+   *   credit  interest/dividend → Dr 1020 COUPON_CASH / Cr 4000 INTEREST_INCOME
+   *   credit  (other)           → Dr 1000 CASH / Cr 3000 TRUST_CORPUS   when connection
+   *                               config.accounting.creditDefault = 'principal'
+   *                               (else legacy Dr 1000 / Cr 4200 FEE_INCOME)
+   *   debit   fee/charge        → Dr 5000 MANAGEMENT_EXPENSE / Cr 1000
+   *   debit   distribution      → Dr 2000 DISTRIBUTIONS_PAYABLE / Cr 1000
+   *   debit   (other)           → Dr 5300 OPERATING_EXPENSE / Cr 1000
+   * Keyword matching runs over the connector's description + category; a
+   * connection may add words via config.accounting.{coupon,interest,principal}Keywords.
+   */
+  static classifyAggregatorTxn(txn, accounting) {
+    var acct = accounting || {};
+    var text = ((txn.description || '') + ' ' + (txn.category || '')).toLowerCase();
+    var has = function (words) { return words.some(function (w) { return w && text.indexOf(String(w).toLowerCase()) >= 0; }); };
+    var isCredit = txn.direction ? txn.direction === 'credit' : parseFloat(txn.amount || 0) >= 0;
+
+    if (isCredit) {
+      if (has(['coupon'].concat(acct.couponKeywords || []))) {
+        return { classification: 'coupon_income', debit: ACCOUNTS.COUPON_CASH, credit: ACCOUNTS.COUPON_INCOME };
+      }
+      if (has(['interest', 'dividend', 'yield', 'apy'].concat(acct.interestKeywords || []))) {
+        return { classification: 'interest_income', debit: ACCOUNTS.COUPON_CASH, credit: ACCOUNTS.INTEREST_INCOME };
+      }
+      if (acct.creditDefault === 'principal' || has(['principal', 'corpus', 'contribution', 'maturity', 'redemption'].concat(acct.principalKeywords || []))) {
+        return { classification: 'principal', debit: ACCOUNTS.CASH, credit: ACCOUNTS.TRUST_CORPUS };
+      }
+      return { classification: 'fee_income', debit: ACCOUNTS.CASH, credit: ACCOUNTS.FEE_INCOME };
+    }
+    if (has(['fee', 'charge', 'service'])) {
+      return { classification: 'fee_expense', debit: ACCOUNTS.MANAGEMENT_EXPENSE, credit: ACCOUNTS.CASH };
+    }
+    if (has(['distribution', 'beneficiary'])) {
+      return { classification: 'distribution', debit: ACCOUNTS.DISTRIBUTIONS_PAYABLE, credit: ACCOUNTS.CASH };
+    }
+    return { classification: 'operating_expense', debit: ACCOUNTS.OPERATING_EXPENSE, credit: ACCOUNTS.CASH };
+  }
+
+  /**
    * Post trust journal entries for external bank transactions pulled by the
    * Banking Aggregator. Runs fully hands-off: any aggregator transaction that
    * does not yet have a posted JE (matched by reference_type/reference_id) is
-   * booked to cash + income/expense, then flows to the Fineract GL via
+   * booked per classifyAggregatorTxn (principal vs coupon/interest income), then flows to the Fineract GL via
    * pushToFineract() on the same sync cycle.
    *
    * Idempotency mirrors syncACHToAccounting: the NOT EXISTS guard on
@@ -643,10 +684,18 @@ class DataBridge {
     var errors = [];
 
     try {
+      await DataBridge._ensureAccount(ACCOUNTS.COUPON_CASH, 'Coupon Income Cash — Beneficiary Support', 'asset', 'cash');
+      await DataBridge._ensureAccount(ACCOUNTS.COUPON_INCOME, 'Coupon Income', 'income');
+      await DataBridge._ensureAccount(ACCOUNTS.INTEREST_INCOME, 'Interest Income', 'income');
+      await DataBridge._ensureAccount(ACCOUNTS.TRUST_CORPUS, 'Trust Corpus', 'equity');
+      await DataBridge._ensureAccount(ACCOUNTS.DISTRIBUTIONS_PAYABLE, 'Distributions Payable', 'liability', 'payable');
+      await DataBridge._ensureAccount(ACCOUNTS.MANAGEMENT_EXPENSE, 'Management Expense', 'expense');
+      await DataBridge._ensureAccount(ACCOUNTS.OPERATING_EXPENSE, 'Operating Expense', 'expense');
+
       var txns = await pool.query(`
         SELECT t.id, t.connection_id, t.external_txn_id, t.external_account_id,
-               t.posted_date, t.amount, t.currency, t.direction, t.description,
-               t.created_at, c.name AS connection_name
+               t.posted_date, t.amount, t.currency, t.direction, t.description, t.category,
+               t.created_at, c.name AS connection_name, c.connector_type, c.config AS connection_config
         FROM banking_aggregator_transactions t
         JOIN banking_aggregator_connections c ON c.id = t.connection_id
         WHERE c.connector_type <> 'internal_rails'
@@ -673,22 +722,19 @@ class DataBridge {
             ? txn.direction === 'credit'
             : parseFloat(txn.amount || 0) >= 0;
 
-          var label = txn.connection_name || txn.connection_id;
-          var description = 'Aggregator ' + (isCredit ? 'credit' : 'debit') + ' — ' + label +
-            (txn.description ? ' (' + txn.description + ')' : '');
+          var cfg = txn.connection_config;
+          if (typeof cfg === 'string') { try { cfg = JSON.parse(cfg); } catch (e) { cfg = {}; } }
+          var cls = DataBridge.classifyAggregatorTxn(txn, (cfg && cfg.accounting) || {});
 
-          var lines;
-          if (isCredit) {
-            lines = [
-              { accountCode: ACCOUNTS.CASH, debitAmount: amount, creditAmount: 0, memo: 'Bank credit ' + txn.external_txn_id },
-              { accountCode: ACCOUNTS.FEE_INCOME, debitAmount: 0, creditAmount: amount, memo: 'Aggregator income received' },
-            ];
-          } else {
-            lines = [
-              { accountCode: ACCOUNTS.PAYMENT_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'Bank debit ' + txn.external_txn_id },
-              { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Cash paid out (aggregator)' },
-            ];
-          }
+          var label = txn.connection_name || txn.connection_id;
+          var description = 'Aggregator ' + (isCredit ? 'credit' : 'debit') + ' [' + cls.classification + '] — ' + label +
+            (txn.description ? ' (' + txn.description + ')' : '');
+          var ref = (txn.connector_type || 'aggregator') + ':' + txn.external_account_id + ':' + txn.external_txn_id;
+
+          var lines = [
+            { accountCode: cls.debit, debitAmount: amount, creditAmount: 0, memo: (isCredit ? 'Bank credit ' : cls.classification + ' ') + ref },
+            { accountCode: cls.credit, debitAmount: 0, creditAmount: amount, memo: (isCredit ? cls.classification + ' ' : 'Bank debit ') + ref },
+          ];
 
           await TrustAccountingEngine.postJournalEntry({
             entryDate: txn.posted_date || txn.created_at,
