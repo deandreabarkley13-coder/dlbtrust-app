@@ -51,6 +51,9 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
         const id = params[params.length - 1];
         if (deposits[id]) deposits[id].status = params[0];
       }
+      if (t.startsWith("UPDATE lili_direct_deposits SET status='returned'")) {
+        deposits[params[0]].status = 'returned'; deposits[params[0]].error_message = params[1];
+      }
       if (t.startsWith("UPDATE lili_direct_deposits SET status='reconciled'")) {
         deposits[params[1]].status = 'reconciled'; deposits[params[1]].lili_transaction_id = params[0];
       }
@@ -184,6 +187,22 @@ describe('Lili direct deposit — unified ACH credit workflow', () => {
     expect(settle).toHaveBeenCalledWith('ACH-77', expect.objectContaining({ liliTransactionId: 'T-2' }));
     const completed = sql.find(s => s.text.startsWith("UPDATE lili_payments SET status='completed'"));
     expect(completed!.params[0]).toBe('T-2');
+  });
+
+  it('marks an unconfirmed transmitted deposit returned (admin close-out) and fails the linked lili_payments row; refuses without a reason or when not transmitted', async () => {
+    process.env.ACH_SFTP_URL = 'sftp://odfi.test/inbound';
+    vi.spyOn(ACHEngine, 'transmitBatch').mockResolvedValue({ success: true } as any);
+    const dep = await LiliDirectDepositEngine.createDirectDeposit({ amount: 1, memo: 'test credit', effectiveDate: '2026-09-04', createdBy: 'trustee' });
+    expect(dep.status).toBe('transmitted');
+
+    await expect(LiliDirectDepositEngine.markReturned(dep.deposit_id, {})).rejects.toThrow(/reason is required/);
+    const out = await LiliDirectDepositEngine.markReturned(dep.deposit_id, { reason: 'no bank confirmation in window', actor: 'admin@trust' });
+    expect(out.status).toBe('returned');
+    expect(out.error_message).toBe('returned by admin@trust: no bank confirmation in window');
+    const failed = sql.find(s => s.text.startsWith("UPDATE lili_payments SET status='failed'"));
+    expect(failed!.params[0]).toBe(dep.lili_payment_id);
+
+    await expect(LiliDirectDepositEngine.markReturned(dep.deposit_id, { reason: 'again' })).rejects.toThrow(/Only transmitted/);
   });
 
   it('refuses to create a deposit without a configured Lili destination and reports readiness in the workflow status', async () => {

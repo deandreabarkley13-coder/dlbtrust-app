@@ -513,6 +513,29 @@ class LiliDirectDepositEngine {
     return this.getDirectDeposit(depositId);
   }
 
+  /**
+   * Close out a transmitted deposit that the bank never confirmed (no matching
+   * Lili FUND_TRANSFER within the reconciliation window, or an ODFI return).
+   * Admin-only; the reason is kept on error_message for the audit trail.
+   */
+  static async markReturned(depositId, { reason, actor = 'system' } = {}) {
+    loadDeps();
+    if (!pool) throw new Error('Database not available');
+    if (!reason || !String(reason).trim()) throw new Error('reason is required to mark a deposit returned');
+    const row = await this._row(depositId);
+    if (!row) throw new Error('Direct deposit not found');
+    if (row.status !== 'transmitted') throw new Error(`Only transmitted deposits can be marked returned; status is '${row.status}'`);
+    const msg = `returned by ${actor}: ${String(reason).trim()}`;
+    await pool.query(
+      `UPDATE lili_direct_deposits SET status='returned', error_message=$2, updated_at=NOW() WHERE deposit_id=$1`,
+      [depositId, msg]
+    );
+    if (row.lili_payment_id) {
+      await pool.query(`UPDATE lili_payments SET status='failed', error_message=$2, updated_at=NOW() WHERE payment_id=$1`, [row.lili_payment_id, msg]);
+    }
+    return this.getDirectDeposit(depositId);
+  }
+
   static async getWorkflowStatus() {
     const dest = await this.getDestination();
     delete dest._account;

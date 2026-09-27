@@ -2799,6 +2799,10 @@ router.post('/lili/direct-deposits/:id/cancel', operatorAuth, writeRateLimiter()
   try { res.json({ success: true, data: await LiliDirectDepositEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/lili/direct-deposits/:id/return', adminAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliDirectDepositEngine.markReturned(req.params.id, { reason: req.body.reason, actor: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Lili MCP Engine — machine-to-machine tool calls and Bill Pay
 // ═════════════════════════════════════════════════════════════════════════════
