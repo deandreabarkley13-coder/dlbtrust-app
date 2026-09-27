@@ -910,6 +910,28 @@ Not present anywhere in Northflank (so not copyable): `APIGEE_*`,
 `CLIENT_SECRET`/`REFRESH_TOKEN`/`BUSINESS_USER_ID`, which live in encrypted
 `system_settings` from the dashboard OAuth flow (restored with the database).
 
+Banking Aggregator production state (Cloud Run `dlbtrust-app`, `us-east1`):
+`AGGREGATOR_ENABLED=true`, `AGGREGATOR_DEFAULT_MODE=live`,
+`AGGREGATOR_PULL_INTERVAL_MS=900000`, `AGGREGATOR_HANDSHAKE_TIMEOUT_MS=15000`
+are set on the service; `ORANGERAILS_CREDENTIALS_KEY` and
+`ORANGERAILS_TRANSACTIONS_KEY` exist in Secret Manager with trust-generated
+32-byte values and are projected into the container (the runtime service
+account holds `roles/secretmanager.secretAccessor` on all three
+`ORANGERAILS_*` secrets). `ORANGERAILS_PLATFORM_API_KEY` exists with no
+version yet — add one (`gcloud secrets versions add ... --data-file=-`) and
+`--update-secrets` it onto the service once Orange Rails issues the platform
+key. Both Betterment Trust Checking connections
+(`CONN-BETTERMENT-TRUST-CHECKING` → banksync,
+`CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS` → orangerails, `mode: live`,
+`creditDefault: principal`) are seeded through `POST /api/aggregator/connections`;
+`GET /api/os/readiness/aggregator` reports them as the only blocker (handshake
+`failed`: BankSync plan lacks API access; Orange Rails platform key missing)
+while `GET /api/os/readiness/private-payment-network` is `ready` / `live`.
+Pulled Betterment activity reaches the Private Electronic Payment Network's
+ledger through the same path as every other engine: DataBridge posts it to the
+trust GL (1000 Cash / 3000 Corpus / 4000 / 4100) that `CashEngine` book
+transfers and PPN payouts settle against, and `pushToFineract` mirrors it.
+
 ## Out of scope for this phase
 
 - Cloud Armor / IAP in front of the operator console — recommended, separate
