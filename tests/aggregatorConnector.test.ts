@@ -541,3 +541,285 @@ describe.skipIf(!pgAvailable)('BankingAggregator read/write with handshake + liv
     expect(['live', 'shadow']).toContain(s.default_mode);
   });
 });
+
+// ─── Data-aggregator connectors (BankSync / Plaid) for API-less banks such as
+// the trust's Betterment Trust Checking account ──────────────────────────────
+const { bankSyncConnector } = require('../server/integrations/aggregator/connectors/bankSyncConnector');
+const { plaidConnector } = require('../server/integrations/aggregator/connectors/plaidConnector');
+
+function startBankSyncMock(opts: { planBlocked?: boolean } = {}) {
+  const calls: string[] = [];
+  let lastKey: string | undefined;
+  const server = http.createServer((req, res) => {
+    calls.push(`${req.method} ${req.url}`);
+    lastKey = req.headers['x-api-key'] as string;
+    const json = (code: number, body: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (lastKey !== 'bs-key') return json(401, { message: 'Invalid API key' });
+    if (opts.planBlocked) return json(403, { message: 'API access is not included on this plan. Upgrade to Standard or above at /settings/billing.' });
+    const url = req.url || '';
+    if (url === '/whoami') return json(200, { success: true, data: { workspaceId: 'ws_1', workspaceName: 'DLB Trust' } });
+    if (url === '/banks') return json(200, { success: true, data: [
+      { id: 'bnk_lili', name: 'Lili', provider: 'lili', status: 'connected' },
+      { id: 'bnk_bett', name: 'Betterment Checking', provider: 'betterment', status: 'connected' },
+    ] });
+    if (url === '/banks/bnk_bett/accounts') return json(200, { success: true, data: [
+      { id: 'acc_trust', name: 'Betterment Trust Checking', type: 'depository', subtype: 'checking', currency: 'USD', mask: '3054', balance: { current: 12500.75, available: 12400 } },
+    ] });
+    if (url.startsWith('/banks/bnk_bett/accounts/acc_trust/transactions')) {
+      const u = new URL(url, 'http://x');
+      if (!u.searchParams.get('cursor')) {
+        return json(200, { success: true, data: [
+          { id: 'bstx_1', amount: -42.1, currency: 'USD', description: 'ACH DEBIT VENDOR', date: '2026-09-01', pending: false, category: 'transfer' },
+        ], nextCursor: 'c2' });
+      }
+      return json(200, { success: true, data: [
+        { id: 'bstx_2', amount: 1000, currency: 'USD', description: 'ACH CREDIT DISTRIBUTION', date: '2026-09-02', pending: true },
+      ] });
+    }
+    return json(404, { message: 'not found' });
+  });
+  return new Promise<{ baseUrl: string; calls: string[]; close: () => void }>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, calls, close: () => server.close() });
+    });
+  });
+}
+
+function startPlaidMock() {
+  const bodies: Record<string, any[]> = {};
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      (bodies[req.url || ''] ||= []).push(body);
+      const json = (code: number, out: unknown) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(out)); };
+      if (body.client_id !== 'plaid-client' || body.secret !== 'plaid-secret') {
+        return json(400, { error_type: 'INVALID_INPUT', error_code: 'INVALID_API_KEYS', error_message: 'invalid client_id or secret provided' });
+      }
+      if (req.url === '/item/get') {
+        if (body.access_token !== 'access-bett') return json(400, { error_code: 'INVALID_ACCESS_TOKEN', error_message: 'could not find matching access token' });
+        return json(200, { item: { item_id: 'item_bett', institution_id: 'ins_115616', products: ['transactions'] } });
+      }
+      if (req.url === '/institutions/get_by_id') return json(200, { institution: { name: 'Betterment' } });
+      if (req.url === '/accounts/balance/get') return json(200, { accounts: [
+        { account_id: 'pl_acc_1', name: 'Checking', official_name: 'Betterment Checking', mask: '3054', type: 'depository', subtype: 'checking', balances: { available: 12400, current: 12500.75, iso_currency_code: 'USD' } },
+      ] });
+      if (req.url === '/transactions/get') {
+        const offset = body.options.offset || 0;
+        const all = [
+          { transaction_id: 'pltx_1', account_id: 'pl_acc_1', amount: 42.1, date: '2026-09-01', name: 'ACH DEBIT VENDOR', pending: false, iso_currency_code: 'USD', personal_finance_category: { primary: 'TRANSFER_OUT' } },
+          { transaction_id: 'pltx_2', account_id: 'pl_acc_1', amount: -1000, date: '2026-09-02', name: 'ACH CREDIT DISTRIBUTION', pending: true, iso_currency_code: 'USD' },
+        ];
+        return json(200, { transactions: all.slice(offset, offset + 1), total_transactions: all.length });
+      }
+      if (req.url === '/link/token/create') return json(200, { link_token: 'link-sandbox-123', expiration: '2026-09-27T17:00:00Z' });
+      if (req.url === '/item/public_token/exchange') {
+        return body.public_token === 'public-ok'
+          ? json(200, { access_token: 'access-bett', item_id: 'item_bett' })
+          : json(400, { error_code: 'INVALID_PUBLIC_TOKEN', error_message: 'bad public token' });
+      }
+      return json(404, { error_code: 'NOT_FOUND', error_message: 'no route' });
+    });
+  });
+  return new Promise<{ baseUrl: string; bodies: Record<string, any[]>; close: () => void }>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({ baseUrl: `http://127.0.0.1:${port}`, bodies, close: () => server.close() });
+    });
+  });
+}
+
+describe('banksync connector (Betterment via open-banking feed)', () => {
+  it('is registered alongside plaid', () => {
+    expect(listConnectorTypes()).toEqual(expect.arrayContaining(['banksync', 'plaid']));
+  });
+
+  it('handshakes: whoami + resolves the Betterment bank by name, read-only capabilities', async () => {
+    const bs = await startBankSyncMock();
+    try {
+      const conn = { id: 'c1', config: { baseUrl: bs.baseUrl, apiKey: 'bs-key', bankName: 'Betterment' } };
+      const hs = await bankSyncConnector.handshake(conn, {});
+      expect(hs.externalConnectionId).toBe('bnk_bett');
+      expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
+      expect(hs.meta.bank.name).toBe('Betterment Checking');
+      expect(hs.meta.workspace).toBe('DLB Trust');
+      expect(bankSyncConnector.push).toBeUndefined();
+    } finally { bs.close(); }
+  });
+
+  it('fails the handshake with the provider message when the plan blocks API access', async () => {
+    const bs = await startBankSyncMock({ planBlocked: true });
+    try {
+      await expect(bankSyncConnector.handshake({ id: 'c1', config: { baseUrl: bs.baseUrl, apiKey: 'bs-key', bankName: 'Betterment' } }, {}))
+        .rejects.toThrow(/API access is not included on this plan/);
+    } finally { bs.close(); }
+  });
+
+  it('fails the handshake when Betterment is not linked, listing what is', async () => {
+    const bs = await startBankSyncMock();
+    try {
+      await expect(bankSyncConnector.handshake({ id: 'c1', config: { baseUrl: bs.baseUrl, apiKey: 'bs-key', bankName: 'Chase' } }, {}))
+        .rejects.toThrow(/no linked bank matching "Chase" \(linked: Lili, Betterment Checking\)/);
+    } finally { bs.close(); }
+  });
+
+  it('pulls normalized accounts and paginated transactions with direction from sign/pending', async () => {
+    const bs = await startBankSyncMock();
+    try {
+      const conn = { id: 'c1', handshake_state: 'verified', external_connection_id: 'bnk_bett', config: { baseUrl: bs.baseUrl, apiKey: 'bs-key', bankName: 'Betterment' } };
+      const accounts = await bankSyncConnector.pullAccounts(conn, {});
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({ externalAccountId: 'acc_trust', accountType: 'depository/checking', mask: '3054', balanceCurrent: 12500.75, balanceAvailable: 12400 });
+      const txns = await bankSyncConnector.pullTransactions(conn, { since: '2026-08-01T00:00:00Z' });
+      expect(txns.map((t: any) => [t.externalTxnId, t.direction, t.amount, t.status])).toEqual([
+        ['bstx_1', 'debit', 42.1, 'posted'],
+        ['bstx_2', 'credit', 1000, 'pending'],
+      ]);
+      expect(bs.calls.some((c) => c.includes('from=2026-08-01'))).toBe(true);
+      expect(bs.calls.some((c) => c.includes('cursor=c2'))).toBe(true);
+      expect(bs.calls.some((c) => c.startsWith('GET /banks') && c === 'GET /banks')).toBe(false);
+    } finally { bs.close(); }
+  });
+});
+
+describe('plaid connector (Betterment via Plaid Link)', () => {
+  it('handshakes via /item/get with the institution name and never exposes credentials', async () => {
+    const pl = await startPlaidMock();
+    try {
+      const conn = { id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'access-bett' } };
+      // Point the sandbox host at the mock.
+      const mod = require('../server/integrations/aggregator/connectors/plaidConnector');
+      mod.PLAID_HOSTS.sandbox = pl.baseUrl;
+      const hs = await plaidConnector.handshake(conn, {});
+      expect(hs.externalConnectionId).toBe('item_bett');
+      expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
+      expect(hs.meta.institution).toEqual({ id: 'ins_115616', name: 'Betterment' });
+      expect(JSON.stringify(hs)).not.toContain('plaid-secret');
+      expect(JSON.stringify(hs)).not.toContain('access-bett');
+
+      await expect(plaidConnector.handshake({ id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'nope' } }, {}))
+        .rejects.toThrow(/INVALID_ACCESS_TOKEN/);
+      await expect(plaidConnector.handshake({ id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'wrong', accessToken: 'access-bett' } }, {}))
+        .rejects.toThrow(/INVALID_API_KEYS/);
+    } finally { pl.close(); }
+  });
+
+  it('pulls balances + paginated transactions (Plaid positive amount = debit) and runs the Link bootstrap', async () => {
+    const pl = await startPlaidMock();
+    try {
+      const mod = require('../server/integrations/aggregator/connectors/plaidConnector');
+      mod.PLAID_HOSTS.sandbox = pl.baseUrl;
+      const conn = { id: 'p1', config: { env: 'sandbox', clientId: 'plaid-client', clientSecret: 'plaid-secret', accessToken: 'access-bett', accountIds: ['pl_acc_1'] } };
+      const accounts = await plaidConnector.pullAccounts(conn, {});
+      expect(accounts[0]).toMatchObject({ externalAccountId: 'pl_acc_1', name: 'Betterment Checking', accountType: 'depository/checking', balanceCurrent: 12500.75, currency: 'USD' });
+      const txns = await plaidConnector.pullTransactions(conn, { since: '2026-08-01' });
+      expect(txns.map((t: any) => [t.externalTxnId, t.direction, t.amount, t.status, t.category])).toEqual([
+        ['pltx_1', 'debit', 42.1, 'posted', 'TRANSFER_OUT'],
+        ['pltx_2', 'credit', 1000, 'pending', null],
+      ]);
+      expect(pl.bodies['/transactions/get']).toHaveLength(2);
+      expect(pl.bodies['/transactions/get'][0].start_date).toBe('2026-08-01');
+      expect(pl.bodies['/transactions/get'][0].options.account_ids).toEqual(['pl_acc_1']);
+
+      const link = await plaidConnector.createLinkToken(conn, {});
+      expect(link.linkToken).toBe('link-sandbox-123');
+      expect(pl.bodies['/link/token/create'][0].products).toEqual(['transactions']);
+      const ex = await plaidConnector.exchangePublicToken(conn, 'public-ok');
+      expect(ex).toEqual({ accessToken: 'access-bett', itemId: 'item_bett' });
+      await expect(plaidConnector.exchangePublicToken(conn, 'public-bad')).rejects.toThrow(/INVALID_PUBLIC_TOKEN/);
+    } finally { pl.close(); }
+  });
+});
+
+describe.skipIf(!pgAvailable)('Betterment Trust Checking read path through BankingAggregator (local Postgres)', () => {
+  const ids: string[] = [];
+  const savedEnv: Record<string, string | undefined> = {};
+  let bs: Awaited<ReturnType<typeof startBankSyncMock>>;
+  let pl: Awaited<ReturnType<typeof startPlaidMock>>;
+
+  beforeAll(async () => {
+    for (const k of ['AGGREGATOR_DEFAULT_MODE', 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY', 'AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN', 'AGGREGATOR_BETTERMENT_PLAID_CLIENT_SECRET', 'BANKSYNC_API_KEY']) savedEnv[k] = process.env[k];
+    delete process.env.AGGREGATOR_DEFAULT_MODE;
+    delete process.env.BANKSYNC_API_KEY;
+    bs = await startBankSyncMock();
+    pl = await startPlaidMock();
+    require('../server/integrations/aggregator/connectors/plaidConnector').PLAID_HOSTS.sandbox = pl.baseUrl;
+    await BankingAggregator.ensureTables();
+  });
+
+  afterAll(async () => {
+    bs.close(); pl.close();
+    for (const id of ids) {
+      await pool.query('DELETE FROM banking_aggregator_events WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_transactions WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_accounts WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_connections WHERE id = $1', [id]);
+    }
+    for (const [k, v] of Object.entries(savedEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  it('banksync: handshake fails closed without a key, verifies with the Secret-Manager-projected key, then pulls accounts + transactions idempotently', async () => {
+    const id = `CONN-BETTERMENT-TRUST-CHECKING-T${Date.now()}`; ids.push(id);
+    const conn = await BankingAggregator.createConnection({
+      id, name: 'Betterment Trust Checking', connectorType: 'banksync', direction: 'inbound',
+      config: { mode: 'live', bankName: 'Betterment', baseUrl: bs.baseUrl, pullKinds: ['accounts', 'transactions'], credentialsEnvPrefix: 'AGGREGATOR_BETTERMENT_TRUST_CHECKING' },
+    });
+    expect(conn.handshake_state).toBe('failed');
+    expect(conn.mode).toBe('live');
+    await expect(BankingAggregator.pull(id)).rejects.toMatchObject({ status: 409 });
+    expect(bs.calls.filter((c) => c.includes('/accounts'))).toHaveLength(0);
+
+    process.env.AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY = 'bs-key';
+    const hs = await BankingAggregator.handshake(id);
+    expect(hs.handshake_state).toBe('verified');
+    expect(hs.external_connection_id).toBe('bnk_bett');
+    expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
+    const view = await BankingAggregator.getConnection(id);
+    expect(view.credentials.has_apiKey).toBe(true);
+    expect(JSON.stringify(view)).not.toContain('bs-key');
+
+    const s1 = await BankingAggregator.pull(id);
+    expect(s1).toMatchObject({ accounts: 1, transactions: 2, errors: [] });
+    const s2 = await BankingAggregator.pull(id);
+    expect(s2).toMatchObject({ accounts: 1, transactions: 2, errors: [] });
+    const acct = await pool.query('SELECT * FROM banking_aggregator_accounts WHERE connection_id = $1', [id]);
+    expect(acct.rows).toHaveLength(1);
+    expect(Number(acct.rows[0].balance_current)).toBe(12500.75);
+    const txns = await pool.query('SELECT external_txn_id, direction, amount FROM banking_aggregator_transactions WHERE connection_id = $1 ORDER BY external_txn_id', [id]);
+    expect(txns.rows.map((r: any) => [r.external_txn_id, r.direction, Number(r.amount)])).toEqual([['bstx_1', 'debit', 42.1], ['bstx_2', 'credit', 1000]]);
+
+    // Read-only feed: a live push is refused before any gate because the connector cannot push.
+    await expect(BankingAggregator.push(id, { type: 'payment', amount: 1, approvalRef: 'A', screeningRef: 'S' })).rejects.toThrow();
+  });
+
+  it('plaid: verifies with projected client secret + access token and pulls the same account shape; link bootstrap never persists the token', async () => {
+    const id = `CONN-BETTERMENT-PLAID-T${Date.now()}`; ids.push(id);
+    process.env.AGGREGATOR_BETTERMENT_PLAID_CLIENT_SECRET = 'plaid-secret';
+    process.env.AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN = 'access-bett';
+    const conn = await BankingAggregator.createConnection({
+      id, name: 'Betterment Plaid', connectorType: 'plaid', direction: 'inbound',
+      config: { mode: 'live', env: 'sandbox', clientId: 'plaid-client', pullKinds: ['accounts', 'transactions'] },
+    });
+    expect(conn.handshake_state).toBe('verified');
+    expect(conn.external_connection_id).toBe('item_bett');
+    expect(conn.credentials.has_accessToken).toBe(true);
+    expect(conn.config.accessToken).toBeUndefined();
+    expect(JSON.stringify(conn)).not.toContain('access-bett');
+
+    const s = await BankingAggregator.pull(id);
+    expect(s).toMatchObject({ accounts: 1, transactions: 2, errors: [] });
+
+    const link = await BankingAggregator.createLinkToken(id, {});
+    expect(link.linkToken).toBe('link-sandbox-123');
+    const ex = await BankingAggregator.exchangeLinkToken(id, 'public-ok');
+    expect(ex.accessToken).toBe('access-bett');
+    expect(ex.storeAs).toBe('AGGREGATOR_BETTERMENT_PLAID_ACCESS_TOKEN');
+    const row = await pool.query('SELECT config FROM banking_aggregator_connections WHERE id = $1', [id]);
+    expect(JSON.stringify(row.rows[0].config)).not.toContain('access-bett');
+    const evts = await pool.query(`SELECT payload FROM banking_aggregator_events WHERE connection_id = $1 AND event_type IN ('link_token','link_exchange')`, [id]);
+    expect(evts.rows).toHaveLength(2);
+    expect(JSON.stringify(evts.rows)).not.toContain('access-bett');
+  });
+});

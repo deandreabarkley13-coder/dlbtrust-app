@@ -80,6 +80,18 @@ secret_names = [
   "ADMIN_SECRET_TOKEN",
   # "AGGREGATOR_<CONNECTION>_API_KEY",
   # "AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET",
+  # Betterment Trust Checking (read-only; Betterment has no API of its own).
+  # BankSync connection CONN-BETTERMENT-TRUST-CHECKING (banksync connector):
+  # the workspace key, or a connection-scoped copy of it. Requires a BankSync
+  # plan with API access (Standard or above).
+  "BANKSYNC_API_KEY",
+  # "AGGREGATOR_BETTERMENT_TRUST_CHECKING_API_KEY",
+  # Plaid connection CONN-BETTERMENT-TRUST-CHECKING-PLAID (plaid connector):
+  # client credentials plus the Item access token minted once via
+  # POST /api/aggregator/connections/:id/link-token → Plaid Link → /link-exchange.
+  # "PLAID_CLIENT_ID",
+  # "PLAID_SECRET",
+  # "AGGREGATOR_BETTERMENT_TRUST_CHECKING_PLAID_ACCESS_TOKEN",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",
