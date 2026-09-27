@@ -231,6 +231,38 @@ resource "google_cloud_run_v2_service" "app" {
       condition     = !local.payment_gateway_gates_relaxed
       error_message = "PAYMENT_GATEWAY_LIVE=true requires PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF, PAYMENT_GATEWAY_REQUIRE_SCREENING_REF and PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST to stay \"true\": every real-value distribution or disbursement must carry a maker/checker approvalRef, a compliance screeningRef and a two-trustee-approved dapp_distribution_requests row."
     }
+
+    # Enterprise Network OS: ENTERPRISE_NETWORK_LIVE=true needs the callback
+    # secret declared (secrets.tf enterprise_network_secret_names) and the
+    # approvalRef / screeningRef gates left on.
+    precondition {
+      condition     = length(local.missing_enterprise_network_secrets) == 0
+      error_message = "ENTERPRISE_NETWORK_LIVE=true but secret_names lacks ${join(", ", local.missing_enterprise_network_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/enterprise-network reports the same blockers at runtime."
+    }
+
+    precondition {
+      condition     = !local.enterprise_network_gates_relaxed
+      error_message = "ENTERPRISE_NETWORK_LIVE=true requires ENTERPRISE_NETWORK_REQUIRE_APPROVAL_REF and ENTERPRISE_NETWORK_REQUIRE_SCREENING_REF to stay \"true\": every live registry change needs a checker approvalRef and every participant a compliance screeningRef."
+    }
+
+    # Private Electronic Payment Network: PRIVATE_PAYMENT_NETWORK_LIVE=true needs
+    # its secrets declared (secrets.tf private_payment_network_secret_names),
+    # the payment-processor and enterprise-network engines live underneath it,
+    # and the approvalRef / screeningRef / participant gates left on.
+    precondition {
+      condition     = length(local.missing_private_payment_network_secrets) == 0
+      error_message = "PRIVATE_PAYMENT_NETWORK_LIVE=true but secret_names lacks ${join(", ", local.missing_private_payment_network_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/private-payment-network reports the same blockers at runtime."
+    }
+
+    precondition {
+      condition     = !local.private_payment_network_without_dependencies
+      error_message = "PRIVATE_PAYMENT_NETWORK_LIVE=true requires PAYMENT_PROCESSOR_LIVE=true and ENTERPRISE_NETWORK_LIVE=true: payouts dispatch through the payment-processor engine and are admitted only for active enterprise-network participants within an active exposure limit."
+    }
+
+    precondition {
+      condition     = !local.private_payment_network_gates_relaxed
+      error_message = "PRIVATE_PAYMENT_NETWORK_LIVE=true requires PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF, PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF and PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT to stay \"true\": every real-value network transaction must carry a checker approvalRef and compliance screeningRef, and every payout an enterprise-network participant."
+    }
   }
 }
 

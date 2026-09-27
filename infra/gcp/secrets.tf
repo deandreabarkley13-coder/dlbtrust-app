@@ -124,6 +124,47 @@ locals {
     lookup(var.runtime_environment, "PAYMENT_GATEWAY_REQUIRE_SCREENING_REF", "true") == "false" ||
     lookup(var.runtime_environment, "PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST", "true") != "true"
   )
+
+  # Enterprise Network OS (enterpriseNetworkOsEngine.js): participant registry,
+  # routing policy and exposure limits. ENTERPRISE_NETWORK_LIVE=true makes an
+  # approved change an active registry entry, so the screening / partner
+  # callback HMAC secret must exist and the approval / screening gates must
+  # stay on.
+  enterprise_network_secret_names = [
+    "ENTERPRISE_NETWORK_WEBHOOK_SECRET",
+  ]
+  enterprise_network_live = lookup(var.runtime_environment, "ENTERPRISE_NETWORK_LIVE", "false") == "true"
+  missing_enterprise_network_secrets = [
+    for s in local.enterprise_network_secret_names : s
+    if local.enterprise_network_live && !contains(local.runtime_secret_names, s)
+  ]
+  enterprise_network_gates_relaxed = local.enterprise_network_live && (
+    lookup(var.runtime_environment, "ENTERPRISE_NETWORK_REQUIRE_APPROVAL_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "ENTERPRISE_NETWORK_REQUIRE_SCREENING_REF", "true") == "false"
+  )
+
+  # Private Electronic Payment Network (privatePaymentNetworkOsEngine.js):
+  # PRIVATE_PAYMENT_NETWORK_LIVE=true lets an approved transaction post to the
+  # trust ledger or reach paymentGatewayServerEngine, so the processor callback
+  # HMAC secret, the payment-data encryption key and the Stripe payments key
+  # must exist, the processor and enterprise-network engines must be live
+  # underneath it and the approval / screening / participant gates must stay on.
+  private_payment_network_secret_names = [
+    "PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET",
+    "PAYMENT_DATA_ENCRYPTION_KEY",
+    "STRIPE_PAYMENTS_SECRET_KEY",
+  ]
+  private_payment_network_live = lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_LIVE", "false") == "true"
+  missing_private_payment_network_secrets = [
+    for s in local.private_payment_network_secret_names : s
+    if local.private_payment_network_live && !contains(local.runtime_secret_names, s)
+  ]
+  private_payment_network_without_dependencies = local.private_payment_network_live && (!local.payment_processor_live || !local.enterprise_network_live)
+  private_payment_network_gates_relaxed = local.private_payment_network_live && (
+    lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF", "true") == "false" ||
+    lookup(var.runtime_environment, "PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT", "true") == "false"
+  )
 }
 
 # Enforced as a hard precondition on google_cloud_run_v2_service.app in

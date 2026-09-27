@@ -9167,6 +9167,100 @@ class PaymentGatewayPlatformEngine extends BaseOSEngine {
   }
 }
 
+// ─── Enterprise Network OS Engine ─────────────────────────────────────────────
+// Trust-network control plane: participant onboarding, routing policy and
+// per-participant exposure limits via submit (maker) → approve (distinct
+// checker, approvalRef + screeningRef for live changes, self-loopback refused).
+// Never moves money.
+
+class EnterpriseNetworkPlatformEngine extends BaseOSEngine {
+  static get engineName() { return 'enterprise-network'; }
+  static get platformEngine() { return 'enterprise-network'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const N = tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine;
+    if (N && pool) await N.ensureTables();
+  }
+
+  static async status() {
+    const N = tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine;
+    if (!N) return { engine: 'enterprise-network', healthy: false, mode: 'shadow', integrations: { enterpriseNetworkOs: false }, timestamp: new Date().toISOString() };
+    const s = await N.status();
+    return { ...s, integrations: { ...s.integrations, enterpriseNetworkOs: true } };
+  }
+
+  static async _process(action, payload = {}) {
+    const N = tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine;
+    if (!N) return { mode: 'shadow', note: 'EnterpriseNetworkOsEngine not available' };
+    switch (action) {
+      case 'pipeline': return await N.pipeline();
+      case 'list': return await N.listIntents(payload);
+      case 'participants': return await N.participants(payload);
+      case 'participant': return await N.participant(payload);
+      case 'policies': return await N.policies(payload);
+      case 'resolveRoute': return await N.resolveRoute(payload);
+      case 'exposure': return await N.exposure(payload);
+      case 'submit': return await N.submit(payload);
+      case 'approve': return await N.approve(payload);
+      case 'cancel': return await N.cancel(payload);
+      case 'reconcile': return await N.reconcile(payload);
+      case 'webhook': return await N.webhook(payload);
+      case 'readiness': return await this.readiness();
+      case 'status':
+        if (payload.intentId) return await N.intentStatus(payload);
+        return await this.status();
+      default:
+        throw Object.assign(new Error(`Unknown enterprise-network action: ${action}. Network changes must go through submit → approve`), { status: 400 });
+    }
+  }
+}
+
+// ─── Private Payment Network OS Engine ────────────────────────────────────────
+// Clears / settles trust ledger accounts (CashEngine) to approved payout
+// instruments of enterprise-network participants: submit (maker) → approve
+// (distinct checker, approvalRef + screeningRef for real value, exposure limit,
+// self-loopback refused) → CashEngine.transfer or PaymentGatewayServerEngine.
+
+class PrivatePaymentNetworkPlatformEngine extends BaseOSEngine {
+  static get engineName() { return 'private-payment-network'; }
+  static get platformEngine() { return 'private-payment-network'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const N = tryRequire('./privatePaymentNetworkOsEngine')?.PrivatePaymentNetworkOsEngine;
+    if (N && pool) await N.ensureTables();
+  }
+
+  static async status() {
+    const N = tryRequire('./privatePaymentNetworkOsEngine')?.PrivatePaymentNetworkOsEngine;
+    if (!N) return { engine: 'private-payment-network', healthy: false, mode: 'shadow', integrations: { privatePaymentNetworkOs: false }, timestamp: new Date().toISOString() };
+    const s = await N.status();
+    return { ...s, integrations: { ...s.integrations, privatePaymentNetworkOs: true } };
+  }
+
+  static async _process(action, payload = {}) {
+    const N = tryRequire('./privatePaymentNetworkOsEngine')?.PrivatePaymentNetworkOsEngine;
+    if (!N) return { mode: 'shadow', note: 'PrivatePaymentNetworkOsEngine not available' };
+    switch (action) {
+      case 'processors': return await N.processors();
+      case 'pipeline': return await N.pipeline();
+      case 'list': return await N.listTransactions(payload);
+      case 'submit': return await N.submit(payload);
+      case 'approve': return await N.approve(payload);
+      case 'cancel': return await N.cancel(payload);
+      case 'reconcile': return await N.reconcile(payload);
+      case 'webhook': return await N.webhook(payload);
+      case 'readiness': return await this.readiness();
+      case 'status':
+        if (payload.transactionId || payload.gatewayTxId) return await N.transactionStatus(payload);
+        return await this.status();
+      default:
+        throw Object.assign(new Error(`Unknown private-payment-network action: ${action}. Network transactions must go through submit → approve`), { status: 400 });
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -9211,6 +9305,8 @@ const ENGINES = {
   'funding-os': FundingOsPlatformEngine,
   'payment-processor': PaymentProcessorPlatformEngine,
   'payment-gateway': PaymentGatewayPlatformEngine,
+  'enterprise-network': EnterpriseNetworkPlatformEngine,
+  'private-payment-network': PrivatePaymentNetworkPlatformEngine,
 };
 
 async function ensureAll() {
@@ -9236,6 +9332,8 @@ module.exports = {
   FundingOsPlatformEngine,
   PaymentProcessorPlatformEngine,
   PaymentGatewayPlatformEngine,
+  EnterpriseNetworkPlatformEngine,
+  PrivatePaymentNetworkPlatformEngine,
   ClearingEngine,
   SettlementEngine,
   ComplianceEngine,

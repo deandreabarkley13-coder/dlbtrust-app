@@ -14,6 +14,9 @@
  *   liquidity        Liquidity OS            LiquidityOsEngine: cash coverage of debt service, reserve tier
  *   funding-os       Funding OS              FundingOsEngine: real-value sources, funding requests → ledger
  *   payment-processor Payment Processor OS   PaymentProcessorOsEngine: gated processor/gateway/hub submissions
+ *   payment-gateway  Payment Gateway OS      PaymentGatewayOsEngine: trust distributions / disbursements
+ *   enterprise-network Enterprise Network OS EnterpriseNetworkOsEngine: participants, routing policy, exposure limits
+ *   private-payment-network Private Payment Network  PrivatePaymentNetworkOsEngine: ledger ↔ payout-instrument clearing
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -26,7 +29,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -40,6 +43,8 @@ const ENGINE_TITLES = {
   'funding-os': 'Funding OS Engine',
   'payment-processor': 'Payment Processor OS Engine',
   'payment-gateway': 'Payment Gateway OS Engine (distributions & disbursements)',
+  'enterprise-network': 'Enterprise Network OS Engine (participants, routing, exposure limits)',
+  'private-payment-network': 'Private Electronic Payment Network (ledger clearing & settlement)',
 };
 
 const TABLES = {
@@ -54,6 +59,8 @@ const TABLES = {
   'funding-os': ['funding_requests', 'cash_accounts', 'cash_movements'],
   'payment-processor': ['payment_processor_transactions', 'payment_gateway_transactions', 'payment_intents', 'payment_approvals', 'payment_processor_submissions', 'os_events'],
   'payment-gateway': ['payment_gateway_intents', 'payment_gateway_transactions', 'payment_methods', 'dapp_distribution_requests', 'os_events'],
+  'enterprise-network': ['enterprise_network_intents', 'enterprise_network_participants', 'enterprise_network_routing_policies', 'enterprise_network_exposure_limits', 'os_events'],
+  'private-payment-network': ['private_payment_network_transactions', 'cash_accounts', 'cash_movements', 'payment_methods', 'payment_gateway_transactions', 'enterprise_network_participants', 'enterprise_network_exposure_limits', 'os_events'],
 };
 
 function tryRequire(mod) {
@@ -304,6 +311,8 @@ const REPORTERS = {
   'funding-os': fundingOsReadiness,
   'payment-processor': paymentProcessorReadiness,
   'payment-gateway': paymentGatewayReadiness,
+  'enterprise-network': enterpriseNetworkReadiness,
+  'private-payment-network': privatePaymentNetworkReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -557,6 +566,96 @@ async function paymentGatewayReadiness(ctx) {
     },
     routes: ['/api/os/payment-gateway/{status,readiness,list,process}', '/api/os/payment-gateway/webhook', '/api/os/readiness/payment-gateway', '/api/os/canonical-money/process action=pipeline (payment_gateway stage)'],
     secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PAYMENT_GATEWAY_WEBHOOK_SECRET', 'STRIPE_PAYMENTS_SECRET_KEY (live)', 'plus the payment-processor secrets of every real-value processor the gateway disburses over'],
+    tables,
+    blockers,
+  };
+}
+
+async function enterpriseNetworkReadiness(ctx) {
+  const N = tryRequire('./enterpriseNetworkOsEngine')?.EnterpriseNetworkOsEngine;
+  const pipeline = N ? await settle(() => N.pipeline()) : { ok: false, error: 'EnterpriseNetworkOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES['enterprise-network']);
+  const cfg = N ? N.getConfig() : {};
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!N) blockers.push('enterprise network: EnterpriseNetworkOsEngine unavailable');
+  else {
+    if (!N._processorOs()) blockers.push('enterprise network modules not loadable: paymentProcessorOs (self-loopback checks)');
+    if (!cfg.live) blockers.push('ENTERPRISE_NETWORK_LIVE is not true (runtime_environment in infra/gcp/variables.tf); network changes are recorded in shadow mode');
+    if (!cfg.requireApproval) blockers.push('ENTERPRISE_NETWORK_REQUIRE_APPROVAL_REF=false disables the approvalRef gate');
+    if (!cfg.requireScreening) blockers.push('ENTERPRISE_NETWORK_REQUIRE_SCREENING_REF=false disables the participant screeningRef gate');
+    if (!cfg.webhookSecret) blockers.push('ENTERPRISE_NETWORK_WEBHOOK_SECRET not set (screening callbacks to /api/os/enterprise-network/webhook cannot be verified)');
+  }
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  return {
+    provider: 'enterprise-network registry (no money movement)',
+    mode: cfg.live ? 'live' : 'shadow',
+    liveFlags: {
+      ENTERPRISE_NETWORK_LIVE: Boolean(cfg.live),
+      REQUIRE_APPROVAL_REF: cfg.requireApproval !== false,
+      REQUIRE_SCREENING_REF: cfg.requireScreening !== false,
+      WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
+    },
+    modules: { pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error } },
+    routes: ['/api/os/enterprise-network/{status,readiness,list,process}', '/api/os/enterprise-network/webhook', '/api/os/readiness/enterprise-network'],
+    secrets: ['ENTERPRISE_NETWORK_WEBHOOK_SECRET'],
+    tables,
+    blockers,
+  };
+}
+
+async function privatePaymentNetworkReadiness(ctx) {
+  const N = tryRequire('./privatePaymentNetworkOsEngine')?.PrivatePaymentNetworkOsEngine;
+  const inventory = N ? await settle(() => N.processors()) : { ok: false, error: 'PrivatePaymentNetworkOsEngine unavailable' };
+  const pipeline = N ? await settle(() => N.pipeline()) : { ok: false, error: 'PrivatePaymentNetworkOsEngine unavailable' };
+  const tables = await tablesPresent(TABLES['private-payment-network']);
+  const env = process.env;
+  const cfg = inventory.ok ? inventory.value.config : (N ? N.getConfig() : {});
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!inventory.ok) blockers.push(`private payment network: ${inventory.error}`);
+  else {
+    const modules = { gateway: Boolean(N._gateway()), paymentProcessorOs: Boolean(N._processorOs()), enterpriseNetwork: Boolean(N._network()), cashLedger: Boolean(N._ledger()) };
+    const notLoadable = Object.entries(modules).filter(([, ok]) => !ok).map(([k]) => k);
+    if (notLoadable.length) blockers.push(`private payment network modules not loadable: ${notLoadable.join(', ')}`);
+    if (!cfg.live) blockers.push('PRIVATE_PAYMENT_NETWORK_LIVE is not true (runtime_environment in infra/gcp/variables.tf); network transactions are recorded in shadow mode');
+    if (!cfg.processorLive) blockers.push('PAYMENT_PROCESSOR_LIVE is not true (payouts dispatch through the payment-processor engine)');
+    if (!cfg.networkLive) blockers.push('ENTERPRISE_NETWORK_LIVE is not true (payout participants and exposure limits are shadow-only)');
+    const external = inventory.value.sources.filter((s) => s.kind === 'payout');
+    if (!external.some((s) => s.realValueCapable)) {
+      const reasons = external.filter((s) => !s.realValueCapable).map((s) => `${s.id}: ${s.reason}`);
+      blockers.push(`no real-value payout processor${reasons.length ? `: ${reasons.join('; ')}` : ''}`);
+    }
+    if (!cfg.requireApproval) blockers.push('PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF=false disables the approvalRef gate');
+    if (!cfg.requireScreening) blockers.push('PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF=false disables the screeningRef gate');
+    if (!cfg.requireParticipant) blockers.push('PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT=false allows payouts outside the enterprise-network registry');
+    if (!cfg.webhookSecret) blockers.push('PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET not set (processor callbacks to /api/os/private-payment-network/webhook cannot be verified)');
+  }
+  if (!env.PAYMENT_DATA_ENCRYPTION_KEY) blockers.push('PAYMENT_DATA_ENCRYPTION_KEY not set (payout instruments are stored encrypted)');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const realValue = inventory.ok && inventory.value.anyRealValueCapable;
+  return {
+    provider: realValue ? inventory.value.realValueCapable.join('+') : 'shadow (no real-value network processor)',
+    mode: cfg.live && realValue ? 'live' : 'shadow',
+    liveFlags: {
+      PRIVATE_PAYMENT_NETWORK_LIVE: Boolean(cfg.live),
+      PAYMENT_PROCESSOR_LIVE: Boolean(cfg.processorLive),
+      ENTERPRISE_NETWORK_LIVE: Boolean(cfg.networkLive),
+      REQUIRE_APPROVAL_REF: cfg.requireApproval !== false,
+      REQUIRE_SCREENING_REF: cfg.requireScreening !== false,
+      REQUIRE_PARTICIPANT: cfg.requireParticipant !== false,
+      MAX_TRANSFER_CENTS: cfg.maxTransferCents || null,
+      WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
+      REAL_VALUE_PROCESSORS: inventory.ok ? inventory.value.realValueCapable : [],
+    },
+    modules: {
+      processors: inventory.ok ? inventory.value.sources : { error: inventory.error },
+      pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
+    },
+    routes: ['/api/os/private-payment-network/{status,readiness,list,process}', '/api/os/private-payment-network/webhook', '/api/os/readiness/private-payment-network'],
+    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET', 'plus the payment-processor secrets of every real-value processor the network pays out over'],
     tables,
     blockers,
   };

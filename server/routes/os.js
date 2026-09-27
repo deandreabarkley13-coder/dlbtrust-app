@@ -9,7 +9,7 @@
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
  * ptc-treasury, settlement-endpoint, moov-paygate, apisix, apigee, nickel, canonical-money,
  * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os,
- * live-value-runbook, and live-money.
+ * live-value-runbook, live-money, enterprise-network, and private-payment-network.
  */
 
 const express = require('express');
@@ -58,6 +58,8 @@ const {
   FundingOsPlatformEngine,
   PaymentProcessorPlatformEngine,
   PaymentGatewayPlatformEngine,
+  EnterpriseNetworkPlatformEngine,
+  PrivatePaymentNetworkPlatformEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
 
@@ -82,6 +84,12 @@ const APPROVAL_GATED_ACTIONS = {
   // Disbursements leave through PaymentGatewayOsEngine submit → approve only; the
   // raw PaymentGatewayServerEngine operations are never reachable as OS actions.
   'payment-gateway': new Set(['sale', 'authorize', 'capture', 'refund', 'void', 'processPayment', 'process-payment', 'createSession', 'clearPayment', 'clearAndSettle', 'sendPayment', 'execute', 'dispatch', 'payout', 'disburse']),
+  // Registry changes apply only through EnterpriseNetworkOsEngine submit → approve;
+  // the engine never moves money, so money-movement actions are refused outright.
+  'enterprise-network': new Set(['onboard', 'onboardParticipant', 'activate', 'activateParticipant', 'reinstate', 'setRoutingPolicy', 'setExposureLimit', 'apply', '_apply', 'admit', 'execute', 'dispatch', 'sale', 'payout', 'transfer', 'sendPayment', 'disburse']),
+  // Network clearing / settlement runs only through PrivatePaymentNetworkOsEngine
+  // submit → approve; ledger transfers and gateway sales are never OS actions.
+  'private-payment-network': new Set(['sale', 'authorize', 'capture', 'refund', 'void', 'processPayment', 'process-payment', 'payout', 'disburse', 'transfer', 'bookTransfer', 'clear', 'settle', 'clearPayment', 'clearAndSettle', 'sendPayment', 'execute', 'dispatch', '_dispatch']),
 };
 
 const ENGINES = {
@@ -128,6 +136,8 @@ const ENGINES = {
   'funding-os': FundingOsPlatformEngine,
   'payment-processor': PaymentProcessorPlatformEngine,
   'payment-gateway': PaymentGatewayPlatformEngine,
+  'enterprise-network': EnterpriseNetworkPlatformEngine,
+  'private-payment-network': PrivatePaymentNetworkPlatformEngine,
 };
 
 function sendError(res, err) {
@@ -245,6 +255,30 @@ router.post('/payment-gateway/webhook', writeRateLimiter(), async (req, res) => 
     const signature = req.get('x-gateway-signature') || req.get('x-signature') || payload.signature;
     const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
     const data = await PaymentGatewayPlatformEngine.process({ action: 'webhook', rawBody, signature, payload });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Public enterprise-network screening / partner callback (HMAC-SHA256 over the raw
+// body with ENTERPRISE_NETWORK_WEBHOOK_SECRET, verified by EnterpriseNetworkOsEngine).
+router.post('/enterprise-network/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const signature = req.get('x-network-signature') || req.get('x-signature') || payload.signature;
+    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+    const data = await EnterpriseNetworkPlatformEngine.process({ action: 'webhook', rawBody, signature, payload });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Public private-payment-network processor callback (HMAC-SHA256 over the raw body
+// with PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET, verified by PrivatePaymentNetworkOsEngine).
+router.post('/private-payment-network/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const signature = req.get('x-network-signature') || req.get('x-signature') || payload.signature;
+    const rawBody = req.rawBody ? req.rawBody.toString('utf8') : JSON.stringify(payload);
+    const data = await PrivatePaymentNetworkPlatformEngine.process({ action: 'webhook', rawBody, signature, payload });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

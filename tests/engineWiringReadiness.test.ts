@@ -36,6 +36,10 @@ const GCP_ENV: Record<string, string> = {
   PAYMENT_GATEWAY_LIVE: 'true',
   PAYMENT_GATEWAY_WEBHOOK_SECRET: 'whsec-test',
   PAYMENT_SERVER_SERVICE_TOKEN: 'svc-token',
+  ENTERPRISE_NETWORK_LIVE: 'true',
+  ENTERPRISE_NETWORK_WEBHOOK_SECRET: 'whsec-network',
+  PRIVATE_PAYMENT_NETWORK_LIVE: 'true',
+  PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET: 'whsec-ppn',
 };
 
 const ENV_KEYS = [...Object.keys(GCP_ENV), 'DAPP_RPC_URL', 'DAPP_USDC_ADDRESS'];
@@ -97,8 +101,8 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the eleven capabilities in the OS route map', () => {
-    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway']) {
+  it('registers every engine behind the thirteen capabilities in the OS route map', () => {
+    for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
     }
@@ -115,6 +119,8 @@ describe('platform engine registry', () => {
     expect(OS.FundingOsPlatformEngine.platformEngine).toBe('funding-os');
     expect(OS.PaymentProcessorPlatformEngine.platformEngine).toBe('payment-processor');
     expect(OS.PaymentGatewayPlatformEngine.platformEngine).toBe('payment-gateway');
+    expect(OS.EnterpriseNetworkPlatformEngine.platformEngine).toBe('enterprise-network');
+    expect(OS.PrivatePaymentNetworkPlatformEngine.platformEngine).toBe('private-payment-network');
   });
 
   it('exposes readiness through the OS router and the finops cross-chain router', () => {
@@ -130,7 +136,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all eleven engines ready and healthy with the GCP config in place', async () => {
+  it('reports all thirteen engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -140,7 +146,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-gateway', 'payment-processor', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-gateway', 'payment-processor', 'private-payment-network', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -149,8 +155,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(11);
-    expect(report.total).toBe(11);
+    expect(report.readyCount).toBe(13);
+    expect(report.total).toBe(13);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -172,6 +178,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines['payment-gateway'].mode).toBe('live');
     expect(report.engines['payment-gateway'].provider).toBe('payment_hub');
     expect(report.engines['payment-gateway'].liveFlags.PAYMENT_GATEWAY_LIVE).toBe(true);
+    expect(report.engines['enterprise-network'].mode).toBe('live');
+    expect(report.engines['private-payment-network'].mode).toBe('live');
   });
 
   it('payment-processor engine is the tenth blocker until PAYMENT_PROCESSOR_LIVE and a real-value processor exist', async () => {
@@ -185,9 +193,11 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     }));
     const report = await EngineWiringReadiness.readiness();
     expect(report.ready).toBe(false);
-    expect(report.readyCount).toBe(9);
-    expect(report.total).toBe(11);
+    expect(report.readyCount).toBe(10);
+    expect(report.total).toBe(13);
     expect(report.engines['payment-gateway'].ready).toBe(false);
+    expect(report.engines['private-payment-network'].ready).toBe(false);
+    expect(report.engines['private-payment-network'].blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);
     expect(report.engines['payment-gateway'].blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);
     const pp = report.engines['payment-processor'];
     expect(pp.ready).toBe(false);
