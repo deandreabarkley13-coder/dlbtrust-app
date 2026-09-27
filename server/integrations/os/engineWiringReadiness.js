@@ -648,6 +648,7 @@ async function privatePaymentNetworkReadiness(ctx) {
       REQUIRE_PARTICIPANT: cfg.requireParticipant !== false,
       MAX_TRANSFER_CENTS: cfg.maxTransferCents || null,
       WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
+      MFT_FILE_DROP_LIVE: Boolean(cfg.mftLive),
       REAL_VALUE_PROCESSORS: inventory.ok ? inventory.value.realValueCapable : [],
     },
     modules: {
@@ -655,7 +656,7 @@ async function privatePaymentNetworkReadiness(ctx) {
       pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
     },
     routes: ['/api/os/private-payment-network/{status,readiness,list,process}', '/api/os/private-payment-network/webhook', '/api/os/readiness/private-payment-network'],
-    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET', 'plus the payment-processor secrets of every real-value processor the network pays out over'],
+    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET', 'MFTGATEWAY_API_TOKEN_ID + MFTGATEWAY_API_TOKEN_SECRET for the mft_as2 file drop', 'plus the payment-processor secrets of every real-value processor the network pays out over'],
     tables,
     blockers,
   };

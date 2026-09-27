@@ -28,7 +28,9 @@
 # private_payment_network_secret_names) is REQUIRED when
 # runtime_environment.PRIVATE_PAYMENT_NETWORK_LIVE=true, which also requires
 # PAYMENT_PROCESSOR_LIVE=true, ENTERPRISE_NETWORK_LIVE=true and the
-# PRIVATE_PAYMENT_NETWORK_REQUIRE_* gates on.
+# PRIVATE_PAYMENT_NETWORK_REQUIRE_* gates on. Its mft_as2 file drop
+# (runtime_environment.PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true) also requires
+# MFTGATEWAY_API_TOKEN_ID and MFTGATEWAY_API_TOKEN_SECRET.
 
 project_id = "dlb-treasury-management"
 

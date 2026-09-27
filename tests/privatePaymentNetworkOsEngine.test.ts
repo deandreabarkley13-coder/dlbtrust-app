@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 
 process.env.DAPP_RPC_URL = process.env.DAPP_RPC_URL || 'http://127.0.0.1:8545';
 process.env.DAPP_USDC_ADDRESS = process.env.DAPP_USDC_ADDRESS || '0x2222222222222222222222222222222222222222';
+process.env.NACHA_ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || '091017138';
 
 const pool = require('../server/integrations/bonds/pgPool');
 const { PrivatePaymentNetworkOsEngine } = require('../server/integrations/os/privatePaymentNetworkOsEngine');
@@ -16,6 +17,9 @@ const { PaymentGatewayServerEngine } = require('../server/integrations/payments/
 const { CashEngine } = require('../server/integrations/cash/cashEngine');
 const OS = require('../server/integrations/os/osEngine');
 const osRouter = require('../server/routes/os');
+const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
+const { OpenAchFileRelay } = require('../server/integrations/openach/openachFileRelay');
+const PaymentCrypto = require('../server/integrations/paymentHub/paymentCrypto');
 
 const ENV_KEYS = [
   'GCP_PROJECT', 'GOOGLE_CLOUD_PROJECT', 'DATABASE_URL', 'APP_URL', 'DEPLOY_URL', 'DOMAIN',
@@ -23,6 +27,8 @@ const ENV_KEYS = [
   'PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT', 'PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR', 'PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS',
   'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET', 'ENTERPRISE_NETWORK_LIVE', 'ENTERPRISE_NETWORK_WEBHOOK_SECRET',
   'PAYMENT_PROCESSOR_LIVE', 'PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF', 'PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF', 'PAYMENT_DATA_ENCRYPTION_KEY',
+  'PRIVATE_PAYMENT_NETWORK_MFT_LIVE', 'MFTGATEWAY_API_TOKEN_ID', 'MFTGATEWAY_API_TOKEN_SECRET', 'MFTGATEWAY_STATION_AS2_ID', 'MFTGATEWAY_PARTNER_AS2_ID',
+  'EDI_820_SENDER_ID', 'EDI_820_RECEIVER_ID', 'AS2_LOCAL_AS2_ID', 'OPENACH_ACH_FILES_BUCKET',
 ];
 const saved: Record<string, string | undefined> = {};
 
@@ -415,5 +421,146 @@ describe('private-payment-network readiness on dlb-treasury-management', () => {
     expect(r.mode).toBe('live');
     expect(r.liveFlags).toMatchObject({ PRIVATE_PAYMENT_NETWORK_LIVE: true, PAYMENT_PROCESSOR_LIVE: true, ENTERPRISE_NETWORK_LIVE: true, REQUIRE_APPROVAL_REF: true, REQUIRE_SCREENING_REF: true, REQUIRE_PARTICIPANT: true });
     expect(r.liveFlags.REAL_VALUE_PROCESSORS).toEqual(['internal_ledger', 'payment_hub']);
+  });
+});
+
+describe('private-payment-network MFT Gateway / AS2 station file drop (mft_as2)', () => {
+  const as2Meta = { methodType: 'ach', as2: { stationAs2Id: 'DLBTRUST-AS2', partnerAs2Id: 'SUNRISE-AS2', partnerSource: 'participant' } };
+  const mftRow = (overrides: Record<string, any> = {}) => txRow({ processor: 'mft_as2', metadata: as2Meta, ...overrides });
+
+  function mftLive() {
+    networkLive();
+    process.env.PRIVATE_PAYMENT_NETWORK_MFT_LIVE = 'true';
+    process.env.MFTGATEWAY_API_TOKEN_ID = 'tok-id';
+    process.env.MFTGATEWAY_API_TOKEN_SECRET = 'tok-secret';
+    process.env.MFTGATEWAY_STATION_AS2_ID = 'DLBTRUST-AS2';
+    process.env.OPENACH_ACH_FILES_BUCKET = 'dlb-treasury-management-openach-ach-files';
+  }
+
+  function tokenizedAch() {
+    const encrypted_payload = PaymentCrypto.encrypt(JSON.stringify({ accountNumber: '000123456789', routingNumber: '121145307' }));
+    return vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod({ processor: 'generic', encrypted_payload, billing_details: { name: 'Acme Vendor LLC' } }));
+  }
+
+  it('lists mft_as2 as a shadow payout processor until PRIVATE_PAYMENT_NETWORK_MFT_LIVE and the MFT Gateway token pair are set', async () => {
+    networkLive();
+    let inv = await PrivatePaymentNetworkOsEngine.processors();
+    let mft = inv.sources.find((s: any) => s.id === 'mft_as2');
+    expect(mft).toMatchObject({ kind: 'payout', mode: 'shadow', realValueCapable: false, stationAs2Id: 'DLBTRUST-AS2' });
+    expect(mft.reason).toMatch(/PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false/);
+    process.env.PRIVATE_PAYMENT_NETWORK_MFT_LIVE = 'true';
+    inv = await PrivatePaymentNetworkOsEngine.processors();
+    expect(inv.sources.find((s: any) => s.id === 'mft_as2').reason).toMatch(/MFTGATEWAY_API_TOKEN_ID not configured/);
+    mftLive();
+    inv = await PrivatePaymentNetworkOsEngine.processors();
+    mft = inv.sources.find((s: any) => s.id === 'mft_as2');
+    expect(mft).toMatchObject({ mode: 'live', realValueCapable: true, reason: null, configured: true });
+    expect(inv.realValueCapable).toContain('mft_as2');
+  });
+
+  it('submits an ACH payout routed to the participant AS2 partner and refuses non-ACH instruments and our own station', async () => {
+    const query = stubCloudSql();
+    stubLedger();
+    vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamShadow());
+    const getMethod = vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod());
+    vi.spyOn(EnterpriseNetworkOsEngine, 'resolveRoute').mockResolvedValue({ policyId: 'ENR-9', processor: 'mft_as2', rail: 'ach' });
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({ participant: { participantId: 'ENP-1', endpoint: { partnerAs2Id: 'SUNRISE-AS2' } }, exposure: {} });
+    const base = { type: 'payout', sourceAccountId: 'CA-TRUST', methodId: 'PM-ACH-1', participantId: 'ENP-1', amountCents: 250000, requestedBy: 'maker@dlbtrust.com' };
+    const tx = await PrivatePaymentNetworkOsEngine.submit(base);
+    expect(tx).toMatchObject({ processor: 'mft_as2', routePolicyId: 'ENR-9', realValue: false, status: 'submitted' });
+    expect(tx.metadata.as2).toEqual({ stationAs2Id: 'DLBTRUST-AS2', partnerAs2Id: 'SUNRISE-AS2', partnerSource: 'participant' });
+
+    await expect(PrivatePaymentNetworkOsEngine.submit({ ...base, destination: { partnerAs2Id: 'dlbtrust-as2' } })).rejects.toMatchObject({ status: 409, message: /own AS2 station/ });
+    await expect(PrivatePaymentNetworkOsEngine.submit({ ...base, destination: { partnerAs2Id: 'DLBTRUST-DIRECT' } })).rejects.toMatchObject({ status: 409, message: /self-loopback partner refused/ });
+    getMethod.mockResolvedValueOnce(achMethod({ type: 'card' }));
+    await expect(PrivatePaymentNetworkOsEngine.submit({ ...base, processor: 'mft_as2' })).rejects.toMatchObject({ status: 409, message: /NACHA credits only/ });
+    await expect(PrivatePaymentNetworkOsEngine.submit({ ...base, destination: { secCode: 'WEB' } })).rejects.toMatchObject({ status: 400, message: /secCode/ });
+    expect(query.mock.calls.filter(([sql]: any[]) => /INSERT INTO private_payment_network_transactions/i.test(String(sql)))).toHaveLength(1);
+  });
+
+  it('records a shadow approval and builds no file while PRIVATE_PAYMENT_NETWORK_MFT_LIVE is off', async () => {
+    const rows = { 'PPN-1': mftRow() };
+    stubCloudSql(rows);
+    networkLive();
+    const submit = vi.spyOn(MftGatewayClient, 'submit');
+    const archive = vi.spyOn(OpenAchFileRelay, 'archive');
+    const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(out).toMatchObject({ status: 'shadow', dispatched: false, realValue: false });
+    expect(out.note).toMatch(/PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false/);
+    expect(submit).not.toHaveBeenCalled();
+    expect(archive).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stored partner that is our own station at approve, and a real-value approval with no AS2 partner', async () => {
+    const rows = { 'PPN-1': mftRow({ metadata: { methodType: 'ach', as2: { partnerAs2Id: 'DLBTRUST-AS2' } } }), 'PPN-2': mftRow({ transaction_id: 'PPN-2', metadata: { methodType: 'ach', as2: { partnerAs2Id: null } } }) };
+    stubCloudSql(rows);
+    mftLive();
+    stubLedger();
+    tokenizedAch();
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({ participant: { participantId: 'ENP-1', endpoint: {} } });
+    const submit = vi.spyOn(MftGatewayClient, 'submit');
+    await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' })).rejects.toMatchObject({ status: 409, message: /own AS2 station/ });
+    await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-2', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' })).rejects.toMatchObject({ status: 409, message: /no AS2 partner/ });
+    await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-2', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1' })).rejects.toMatchObject({ status: 409, message: /screeningRef/ });
+    expect(submit).not.toHaveBeenCalled();
+    expect(rows['PPN-1'].status).toBe('submitted');
+    expect(rows['PPN-2'].status).toBe('submitted');
+  });
+
+  it('drops an approved real-value payout as a NACHA credit through the AS2 station and keeps the account number out of the record', async () => {
+    const rows = { 'PPN-1': mftRow() };
+    stubCloudSql(rows);
+    mftLive();
+    stubLedger();
+    tokenizedAch();
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({ participant: { participantId: 'ENP-1', endpoint: { partnerAs2Id: 'SUNRISE-AS2' } } });
+    const archive = vi.spyOn(OpenAchFileRelay, 'archive').mockResolvedValue('gs://dlb-treasury-management-openach-ach-files/private-network/outbound/PPN-1.ach');
+    const submit = vi.spyOn(MftGatewayClient, 'submit').mockResolvedValue({ success: true, transport: 'mftgateway', as2_from: 'DLBTRUST-AS2', as2_to: 'SUNRISE-AS2', message_id: 'MSG-1', status_code: 202, response_body: 'queued', link: null, transmitted_at: '2026-09-27T15:00:00.000Z' });
+    const sale = vi.spyOn(PaymentGatewayServerEngine, 'sale');
+
+    const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(out).toMatchObject({ status: 'cleared', dispatched: true, route: 'MftGatewayClient.submit', processorTxId: 'MSG-1', realValue: true });
+    expect(sale).not.toHaveBeenCalled();
+    expect(archive).toHaveBeenCalledWith('private-network/outbound/PPN-1.ach', expect.any(Buffer));
+    expect(submit).toHaveBeenCalledTimes(1);
+    const [payload, filename, opts] = submit.mock.calls[0] as any[];
+    expect(filename).toBe('PPN-1.ach');
+    expect(opts).toMatchObject({ stationAs2Id: 'DLBTRUST-AS2', partnerAs2Id: 'SUNRISE-AS2', contentType: 'text/plain' });
+    const lines = payload.toString('utf8').split('\r\n').filter(Boolean);
+    expect(lines.every((l: string) => l.length === 94)).toBe(true);
+    expect(lines[0].slice(3, 13)).toBe(' 091017138');
+    const batch = lines.find((l: string) => l[0] === '5');
+    expect(batch.slice(1, 4)).toBe('220');
+    expect(batch.slice(50, 53)).toBe('CCD');
+    const entry = lines.find((l: string) => l[0] === '6');
+    expect(entry.slice(1, 3)).toBe('22');
+    expect(entry.slice(3, 12)).toBe('121145307');
+    expect(entry.slice(12, 29).trim()).toBe('000123456789');
+    expect(Number(entry.slice(29, 39))).toBe(250000);
+    expect(entry.slice(54, 76).trim()).toBe('ACME VENDOR LLC');
+    expect(rows['PPN-1'].result).toMatchObject({ transport: 'mftgateway', as2To: 'SUNRISE-AS2', messageId: 'MSG-1', filename: 'PPN-1.ach', entries: 1 });
+    expect(JSON.stringify(rows['PPN-1'].result)).not.toContain('000123456789');
+  });
+
+  it('marks the file drop failed when MFT Gateway rejects the AS2 submission', async () => {
+    const rows = { 'PPN-1': mftRow() };
+    stubCloudSql(rows);
+    mftLive();
+    stubLedger();
+    tokenizedAch();
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({ participant: { participantId: 'ENP-1', endpoint: { partnerAs2Id: 'SUNRISE-AS2' } } });
+    vi.spyOn(OpenAchFileRelay, 'archive').mockResolvedValue('gs://bucket/private-network/outbound/PPN-1.ach');
+    vi.spyOn(MftGatewayClient, 'submit').mockResolvedValue({ success: false, status_code: 404, response_body: 'Partner not found' });
+    await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' })).rejects.toMatchObject({ status: 502, message: /MFT Gateway 404: Partner not found/ });
+    expect(rows['PPN-1'].status).toBe('failed');
+  });
+
+  it('reconciles a cleared file drop by its AS2 message id without touching the gateway', async () => {
+    const rows = { 'PPN-1': mftRow({ status: 'cleared', processor_tx_id: 'MSG-1', real_value: true }) };
+    stubCloudSql(rows);
+    const gw = vi.spyOn(PaymentGatewayServerEngine, 'reconcileWebhook');
+    const out = await PrivatePaymentNetworkOsEngine.reconcile({ processorTxId: 'MSG-1', status: 'settled' });
+    expect(out).toMatchObject({ transactionId: 'PPN-1', previousStatus: 'cleared', status: 'settled', reconciliation: { transport: 'mftgateway', messageId: 'MSG-1' } });
+    expect(gw).not.toHaveBeenCalled();
   });
 });

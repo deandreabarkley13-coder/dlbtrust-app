@@ -202,6 +202,14 @@ describe('enterprise-network maker/checker flow', () => {
     await expect(EnterpriseNetworkOsEngine.approve({ intentId: 'ENI-1', approvedBy: 'checker@dlbtrust.com' })).rejects.toMatchObject({ status: 409, message: /self-loopback partner refused: partner DLBTRUST-DIRECT/ });
   });
 
+  it('refuses a participant whose AS2 partner is our own MFT Gateway station', async () => {
+    stubCloudSql();
+    await expect(EnterpriseNetworkOsEngine.submit({ kind: 'onboard_participant', participant: { name: 'Loop Bank', type: 'bank', endpoint: { partnerAs2Id: 'DLBTRUST-AS2' } }, requestedBy: 'maker@dlbtrust.com' }))
+      .rejects.toMatchObject({ status: 409, message: /own AS2 station/ });
+    const ok = await EnterpriseNetworkOsEngine.submit({ kind: 'onboard_participant', participant: { name: 'Sunrise Banks', type: 'bank', endpoint: { partnerAs2Id: 'SUNRISE-AS2' } }, requestedBy: 'maker@dlbtrust.com' });
+    expect(ok.status).toBe('submitted');
+  });
+
   it('records shadow registry entries while ENTERPRISE_NETWORK_LIVE is off and never moves money', async () => {
     const { state } = stubCloudSql();
     const money = noMoneyMovement();

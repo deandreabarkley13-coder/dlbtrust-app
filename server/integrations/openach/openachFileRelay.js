@@ -117,6 +117,22 @@ class OpenAchFileRelay {
     return dest;
   }
 
+  /** Writes a file into the bucket outside the relay prefix (never picked up for delivery). */
+  static async archive(name, payload) {
+    const cfg = this.getConfig();
+    if (!cfg.bucket) throw new Error('OPENACH_ACH_FILES_BUCKET not configured');
+    const object = String(name || '').replace(/^\/+/, '');
+    if (!object) throw new Error('object name required');
+    if ([cfg.prefix, cfg.sentPrefix, cfg.failedPrefix].some((p) => p && object.startsWith(p))) {
+      throw new Error(`refusing to archive into relay folder ${object}`);
+    }
+    const token = await this._token();
+    const res = await google.googleFetch('POST', `https://storage.googleapis.com/upload/storage/v1/b/${enc(cfg.bucket)}/o?uploadType=media&name=${enc(object)}`,
+      token, payload, { headers: { 'Content-Type': 'text/plain' } });
+    if (!res.ok) throw new Error(`GCS upload failed (${res.statusCode})`);
+    return `gs://${cfg.bucket}/${object}`;
+  }
+
   static async _journal(row) {
     if (!pool) return;
     try {
