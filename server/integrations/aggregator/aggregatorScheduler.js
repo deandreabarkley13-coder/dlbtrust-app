@@ -11,8 +11,13 @@
  *      pushes them onward to Fineract (DataBridge.syncAggregatorToAccounting +
  *      pushToFineract), so two systems keep exchanging financial data hands-off.
  *
+ * Cadence: AGGREGATOR_PULL_INTERVAL_MS (Cloud Run runtime_environment), falling
+ * back to the legacy AGGREGATOR_SYNC_INTERVAL_MS, then 15 minutes.
+ *
  * Safety:
- *   - Disabled by setting AGGREGATOR_AUTO_SYNC=false.
+ *   - Disabled by setting AGGREGATOR_ENABLED=false or AGGREGATOR_AUTO_SYNC=false.
+ *   - Connections whose connector requires a handshake are skipped until
+ *     handshake_state = 'verified' (BankingAggregator.pull refuses them).
  *   - Overlapping runs are prevented with an in-flight guard.
  *   - Individual connection failures are logged and never abort the batch.
  *   - Pushing money out is NOT automated here; only inbound pulls + GL posting
@@ -26,13 +31,17 @@ let _interval = null;
 let _running = false;
 
 function isEnabled() {
+  if (String(process.env.AGGREGATOR_ENABLED || 'true').toLowerCase() === 'false') return false;
   return String(process.env.AGGREGATOR_AUTO_SYNC || 'true').toLowerCase() !== 'false';
 }
 
 function resolveInterval(intervalMs) {
   if (intervalMs && Number(intervalMs) > 0) return Number(intervalMs);
-  const fromEnv = Number(process.env.AGGREGATOR_SYNC_INTERVAL_MS);
-  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : DEFAULT_INTERVAL_MS;
+  for (const key of ['AGGREGATOR_PULL_INTERVAL_MS', 'AGGREGATOR_SYNC_INTERVAL_MS']) {
+    const fromEnv = Number(process.env[key]);
+    if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  }
+  return DEFAULT_INTERVAL_MS;
 }
 
 /**
@@ -98,7 +107,7 @@ async function runOnce() {
  */
 function start(intervalMs) {
   if (!isEnabled()) {
-    console.log('[aggregator-scheduler] disabled (AGGREGATOR_AUTO_SYNC=false)');
+    console.log('[aggregator-scheduler] disabled (AGGREGATOR_ENABLED/AGGREGATOR_AUTO_SYNC=false)');
     return;
   }
   if (_interval) return; // already started
@@ -124,4 +133,4 @@ function stop() {
   if (_interval) { clearInterval(_interval); _interval = null; }
 }
 
-module.exports = { start, stop, runOnce };
+module.exports = { start, stop, runOnce, isEnabled, resolveInterval };

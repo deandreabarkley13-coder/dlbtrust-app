@@ -7,11 +7,22 @@
  * Inbound  (PULL): GET accounts/transactions/statements after syncing.
  * Outbound (PUSH): POST payments/financial data to a provider.
  * Webhooks (PUSH-in): provider-initiated events at /webhooks/:id (public, signed).
+ * Handshake: POST/GET /connections/:id/handshake (register with provider,
+ *            negotiate pull/push/webhook capabilities).
+ *
+ * Connection responses carry the handshake lifecycle fields:
+ *   handshake_state        pending | challenged | verified | failed
+ *   handshake_at           timestamp of the last state change
+ *   external_connection_id provider-side id returned by the handshake
+ *   capabilities           { pull, push, webhook } negotiated during the handshake
+ *   mode                   live | shadow (effective outbound mode)
+ * Secrets in config are never returned (see credentials.has_* flags).
  */
 
 const express = require('express');
 const router = express.Router();
 const { BankingAggregator } = require('../integrations/aggregator/bankingAggregator');
+const { verifySchedulerToken } = require('../integrations/aggregator/schedulerAuth');
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 // Admin token via x-admin-token header or adminToken query param.
@@ -21,8 +32,23 @@ const requireAdmin = (req, res, next) => {
   return res.status(401).json({ success: false, error: 'Authentication required (x-admin-token).' });
 };
 
+// Cloud Scheduler pull jobs (infra/gcp/aggregator_cron.tf) authenticate with a
+// Google-signed OIDC token instead of the admin secret.
+const requireAdminOrScheduler = async (req, res, next) => {
+  const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) return next();
+  const auth = req.headers.authorization || '';
+  if (/^Bearer\s+/i.test(auth)) {
+    try {
+      const claims = await verifySchedulerToken(auth.replace(/^Bearer\s+/i, '').trim());
+      if (claims) { req.schedulerPrincipal = claims.email; return next(); }
+    } catch (e) { /* fall through to 401 */ }
+  }
+  return res.status(401).json({ success: false, error: 'Authentication required (x-admin-token or scheduler OIDC token).' });
+};
+
 function fail(res, err) {
-  const code = /not found/i.test(err.message) ? 404 : /required|must be|unknown|does not support|inactive|only/i.test(err.message) ? 400 : 500;
+  const code = err.status || (/not found/i.test(err.message) ? 404 : /required|must be|unknown|does not support|inactive|only/i.test(err.message) ? 400 : 500);
   return res.status(code).json({ success: false, error: err.message });
 }
 
@@ -63,8 +89,25 @@ router.delete('/connections/:id', requireAdmin, async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// ─── Handshake: register with the provider / negotiate capabilities ──────────
+// POST initiates or retries; GET returns state + negotiated capabilities.
+router.post('/connections/:id/handshake', requireAdmin, async (req, res) => {
+  try {
+    const hs = await BankingAggregator.handshake(req.params.id);
+    const ok = hs.handshake_state === 'verified';
+    res.status(ok ? 200 : 502).json({ success: ok, data: hs });
+  } catch (err) { fail(res, err); }
+});
+
+router.get('/connections/:id/handshake', requireAdmin, async (req, res) => {
+  try { res.json({ success: true, data: await BankingAggregator.getHandshake(req.params.id) }); }
+  catch (err) { fail(res, err); }
+});
+
 // ─── Inbound: trigger a pull/sync ────────────────────────────────────────────
-router.post('/connections/:id/pull', requireAdmin, async (req, res) => {
+// Pull refuses (409) until the handshake is verified when the connector
+// declares one. Accepts the Cloud Scheduler OIDC token as well as the admin token.
+router.post('/connections/:id/pull', requireAdminOrScheduler, async (req, res) => {
   try {
     const summary = await BankingAggregator.pull(req.params.id, req.body || {});
     res.json({ success: summary.errors.length === 0, data: summary });
@@ -72,6 +115,9 @@ router.post('/connections/:id/pull', requireAdmin, async (req, res) => {
 });
 
 // ─── Outbound: push payment / financial data ─────────────────────────────────
+// Fail-closed: live-mode connections require body.approvalRef (maker/checker)
+// and body.screeningRef (PaymentComplianceGate) or the push is refused with
+// 409. Shadow-mode connections journal the event and never call the provider.
 router.post('/connections/:id/push', requireAdmin, async (req, res) => {
   try {
     const result = await BankingAggregator.push(req.params.id, req.body || {});

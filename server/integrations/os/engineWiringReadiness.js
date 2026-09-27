@@ -29,7 +29,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -45,6 +45,7 @@ const ENGINE_TITLES = {
   'payment-gateway': 'Payment Gateway OS Engine (distributions & disbursements)',
   'enterprise-network': 'Enterprise Network OS Engine (participants, routing, exposure limits)',
   'private-payment-network': 'Private Electronic Payment Network (ledger clearing & settlement)',
+  aggregator: 'Banking Aggregator (provider connections, handshake, pull/push)',
 };
 
 const TABLES = {
@@ -61,6 +62,7 @@ const TABLES = {
   'payment-gateway': ['payment_gateway_intents', 'payment_gateway_transactions', 'payment_methods', 'dapp_distribution_requests', 'os_events'],
   'enterprise-network': ['enterprise_network_intents', 'enterprise_network_participants', 'enterprise_network_routing_policies', 'enterprise_network_exposure_limits', 'os_events'],
   'private-payment-network': ['private_payment_network_transactions', 'cash_accounts', 'cash_movements', 'payment_methods', 'payment_gateway_transactions', 'enterprise_network_participants', 'enterprise_network_exposure_limits', 'os_events'],
+  aggregator: ['banking_aggregator_connections', 'banking_aggregator_accounts', 'banking_aggregator_transactions', 'banking_aggregator_statements', 'banking_aggregator_events', 'trust_journal_entries'],
 };
 
 function tryRequire(mod) {
@@ -313,6 +315,7 @@ const REPORTERS = {
   'payment-gateway': paymentGatewayReadiness,
   'enterprise-network': enterpriseNetworkReadiness,
   'private-payment-network': privatePaymentNetworkReadiness,
+  aggregator: aggregatorReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -657,6 +660,63 @@ async function privatePaymentNetworkReadiness(ctx) {
     },
     routes: ['/api/os/private-payment-network/{status,readiness,list,process}', '/api/os/private-payment-network/webhook', '/api/os/readiness/private-payment-network'],
     secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET', 'MFTGATEWAY_API_TOKEN_ID + MFTGATEWAY_API_TOKEN_SECRET for the mft_as2 file drop', 'plus the payment-processor secrets of every real-value processor the network pays out over'],
+    tables,
+    blockers,
+  };
+}
+
+async function aggregatorReadiness(ctx) {
+  const A = tryRequire('../aggregator/bankingAggregator')?.BankingAggregator;
+  const scheduler = tryRequire('../aggregator/aggregatorScheduler');
+  const tables = await tablesPresent(TABLES.aggregator);
+  const env = process.env;
+  const enabled = String(env.AGGREGATOR_ENABLED || 'true').toLowerCase() !== 'false';
+  const defaultMode = String(env.AGGREGATOR_DEFAULT_MODE || 'shadow').toLowerCase() === 'live' ? 'live' : 'shadow';
+  const status = A && tables.banking_aggregator_connections ? await settle(() => A.status()) : { ok: false, error: A ? 'banking_aggregator_connections table missing' : 'BankingAggregator unavailable' };
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!A) blockers.push('BankingAggregator module not loadable');
+  if (!enabled) blockers.push('AGGREGATOR_ENABLED=false (runtime_environment in infra/gcp/variables.tf); scheduler and pulls are off');
+  if (!scheduler) blockers.push('aggregatorScheduler module not loadable');
+  else if (!scheduler.isEnabled()) blockers.push('aggregator scheduler disabled (AGGREGATOR_ENABLED / AGGREGATOR_AUTO_SYNC)');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  let hs = null;
+  if (status.ok) {
+    hs = status.value.handshake;
+    if (status.value.connections === 0) blockers.push('no banking_aggregator_connections configured (POST /api/aggregator/connections)');
+    else if (hs && hs.handshake_required > 0 && hs.verified < hs.handshake_required) {
+      blockers.push(`${hs.handshake_required - hs.verified} connection(s) awaiting handshake verification (pending ${hs.by_state.pending}, challenged ${hs.by_state.challenged}, failed ${hs.by_state.failed})`);
+    }
+  } else {
+    blockers.push(`aggregator status: ${status.error}`);
+  }
+  if (defaultMode === 'live' && !env.ADMIN_SECRET_TOKEN) blockers.push('ADMIN_SECRET_TOKEN not set (aggregator routes are admin-gated)');
+  return {
+    provider: status.ok ? status.value.connectors_available.join('+') : null,
+    mode: defaultMode,
+    liveFlags: {
+      AGGREGATOR_ENABLED: enabled,
+      AGGREGATOR_DEFAULT_MODE: defaultMode,
+      AGGREGATOR_PULL_INTERVAL_MS: scheduler ? scheduler.resolveInterval() : null,
+      AGGREGATOR_HANDSHAKE_TIMEOUT_MS: hs ? hs.timeout_ms : Number(env.AGGREGATOR_HANDSHAKE_TIMEOUT_MS) || 15000,
+      REQUIRE_APPROVAL_REF: true,
+      REQUIRE_SCREENING_REF: true,
+      SCHEDULER_OIDC: Boolean(env.AGGREGATOR_SCHEDULER_SERVICE_ACCOUNT && env.AGGREGATOR_SCHEDULER_AUDIENCE),
+    },
+    modules: {
+      connections: status.ok ? status.value.connections : null,
+      connectionsActive: status.ok ? status.value.connections_active : null,
+      verifiedHandshakes: hs ? hs.verified : null,
+      handshake: hs,
+      accounts: status.ok ? status.value.accounts : null,
+      transactions: status.ok ? status.value.transactions : null,
+      events: status.ok ? status.value.events : null,
+      accountingSync: 'DataBridge.syncAggregatorToAccounting (aggregatorScheduler.runOnce + DataBridge.runFullSync)',
+    },
+    jobs: ['aggregator-auto-sync (leader-elected in-process, AGGREGATOR_PULL_INTERVAL_MS; sole poller, no Cloud Scheduler job)'],
+    routes: ['/api/aggregator/{status,connections}', '/api/aggregator/connections/:id/{handshake,pull,push}', '/api/aggregator/webhooks/:id', '/api/os/readiness/aggregator'],
+    secrets: ['ADMIN_SECRET_TOKEN', 'AGGREGATOR_<CONNECTION>_API_KEY / AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET per connection (Secret Manager; loaded into connection config)'],
     tables,
     blockers,
   };

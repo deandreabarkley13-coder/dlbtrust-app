@@ -221,3 +221,323 @@ describe('secret redaction', () => {
     expect(redacted.credentials.has_clientSecret).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Handshake + fail-closed push + read/write against a mock provider.
+//  The BankingAggregator cases talk to the local Postgres the shared pool
+//  points at (default fineract_tenants); they are skipped when it is not
+//  reachable so the connector-level cases still run everywhere.
+// ─────────────────────────────────────────────────────────────────────────────
+import crypto from 'crypto';
+import { vi } from 'vitest';
+const pool = require('../server/integrations/bonds/pgPool');
+const { handshakeSigningString } = require('../server/integrations/aggregator/connectors/genericRestConnector');
+
+type HandshakeMode = 'ok' | 'tampered' | 'unsigned' | 'http500';
+
+function startHandshakeProvider() {
+  const secret = 'whsec-test-123';
+  let mode: HandshakeMode = 'ok';
+  let handshakes = 0;
+  let pushes: any[] = [];
+  let pulls = 0;
+  let lastApiKey: string | undefined;
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      lastApiKey = req.headers['x-api-key'] as string;
+      if (req.url === '/connections/register' && req.method === 'POST') {
+        handshakes++;
+        if (mode === 'http500') { res.writeHead(500); res.end('boom'); return; }
+        const challenge = JSON.parse(body);
+        const caps = { pull: true, push: true, webhook: false };
+        const ext = 'EXT-' + challenge.connection_id;
+        let signature = crypto.createHmac('sha256', secret)
+          .update(handshakeSigningString(challenge.nonce, ext, caps)).digest('hex');
+        if (mode === 'tampered') signature = signature.replace(/^./, (c) => (c === 'a' ? 'b' : 'a'));
+        const reply: any = { external_connection_id: ext, nonce: challenge.nonce, capabilities: caps, provider: 'mock' };
+        if (mode !== 'unsigned') reply.signature = signature;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(reply));
+        return;
+      }
+      if (req.url === '/accounts' && req.method === 'GET') {
+        pulls++;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([{ id: 'A-1', name: 'Operating', type: 'checking', currency: 'USD', mask: '1234', balanceCurrent: 100.25, balanceAvailable: 90 }]));
+        return;
+      }
+      if (req.url === '/transactions' && req.method === 'GET') {
+        pulls++;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify([
+          { id: 'T-1', account_id: 'A-1', amount: 50, direction: 'credit', posted_date: '2026-09-01', description: 'Wire in' },
+          { id: 'T-2', account_id: 'A-1', amount: 7.5, direction: 'debit', posted_date: '2026-09-02', description: 'Fee' },
+        ]));
+        return;
+      }
+      if (req.url === '/statements' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('[]');
+        return;
+      }
+      if (req.url === '/payments' && req.method === 'POST') {
+        pushes.push(JSON.parse(body));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ id: 'PAY-' + pushes.length, status: 'accepted' }));
+        return;
+      }
+      res.writeHead(404); res.end();
+    });
+  });
+
+  return new Promise<{
+    baseUrl: string; secret: string; close: () => void;
+    setMode: (m: HandshakeMode) => void;
+    counts: () => { handshakes: number; pushes: number; pulls: number };
+    pushes: () => any[]; lastApiKey: () => string | undefined;
+  }>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        baseUrl: `http://127.0.0.1:${port}`, secret, close: () => server.close(),
+        setMode: (m) => { mode = m; },
+        counts: () => ({ handshakes, pushes: pushes.length, pulls }),
+        pushes: () => pushes, lastApiKey: () => lastApiKey,
+      });
+    });
+  });
+}
+
+describe('generic_rest handshake (connector level)', () => {
+  let provider: Awaited<ReturnType<typeof startHandshakeProvider>>;
+  beforeAll(async () => { provider = await startHandshakeProvider(); });
+  afterAll(() => provider.close());
+
+  const conn = () => ({
+    id: 'conn-hs-1', name: 'HS', direction: 'both',
+    config: { baseUrl: provider.baseUrl, allowPrivateNetwork: true, webhookSecret: provider.secret },
+  });
+
+  it('verifies an HMAC-signed registration reply and returns capabilities', async () => {
+    provider.setMode('ok');
+    const r = await genericRestConnector.handshake(conn(), { timeoutMs: 5000 });
+    expect(r.externalConnectionId).toBe('EXT-conn-hs-1');
+    expect(r.capabilities).toEqual({ pull: true, push: true, webhook: false });
+    expect(r.meta.secretSource).toBe('webhookSecret');
+  });
+
+  it('rejects a tampered signature', async () => {
+    provider.setMode('tampered');
+    await expect(genericRestConnector.handshake(conn(), {})).rejects.toThrow(/signature verification failed/);
+  });
+
+  it('rejects an unsigned reply and a provider failure', async () => {
+    provider.setMode('unsigned');
+    await expect(genericRestConnector.handshake(conn(), {})).rejects.toThrow(/unsigned/);
+    provider.setMode('http500');
+    await expect(genericRestConnector.handshake(conn(), {})).rejects.toThrow();
+  });
+
+  it('refuses to handshake without a verification secret', async () => {
+    await expect(genericRestConnector.handshake({ id: 'x', config: { baseUrl: provider.baseUrl } }, {}))
+      .rejects.toThrow(/webhookSecret or config.apiSecret/);
+  });
+});
+
+let pgAvailable = false;
+try {
+  await pool.query('SELECT 1');
+  pgAvailable = true;
+} catch (e) {
+  pgAvailable = false;
+}
+
+describe.skipIf(!pgAvailable)('BankingAggregator read/write with handshake + live/shadow gates (local Postgres)', () => {
+  let provider: Awaited<ReturnType<typeof startHandshakeProvider>>;
+  const ids: string[] = [];
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(async () => {
+    for (const k of ['AGGREGATOR_DEFAULT_MODE', 'AGGREGATOR_HANDSHAKE_TIMEOUT_MS', 'AGGREGATOR_HS_LIVE_API_KEY']) savedEnv[k] = process.env[k];
+    delete process.env.AGGREGATOR_DEFAULT_MODE;
+    process.env.AGGREGATOR_HANDSHAKE_TIMEOUT_MS = '5000';
+    provider = await startHandshakeProvider();
+    await BankingAggregator.ensureTables();
+  });
+
+  afterAll(async () => {
+    provider.close();
+    for (const id of ids) {
+      await pool.query('DELETE FROM banking_aggregator_events WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_transactions WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_accounts WHERE connection_id = $1', [id]);
+      await pool.query('DELETE FROM banking_aggregator_connections WHERE id = $1', [id]);
+    }
+    for (const [k, v] of Object.entries(savedEnv)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  });
+
+  const uid = (p: string) => { const id = `${p}-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`; ids.push(id); return id; };
+  const baseConfig = () => ({ baseUrl: provider.baseUrl, allowPrivateNetwork: true, webhookSecret: provider.secret });
+
+  it('migrates the handshake columns + constraint onto the connections table', async () => {
+    const cols = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'banking_aggregator_connections'
+          AND column_name IN ('handshake_state','handshake_at','handshake_meta','external_connection_id')`);
+    expect(cols.rows.map((r: any) => r.column_name).sort())
+      .toEqual(['external_connection_id', 'handshake_at', 'handshake_meta', 'handshake_state']);
+    await expect(pool.query(
+      `INSERT INTO banking_aggregator_connections (id, name, connector_type, direction, config, handshake_state)
+       VALUES ($1,'bad','generic_rest','both','{}'::jsonb,'bogus')`, [uid('CONN-BAD')]))
+      .rejects.toThrow(/handshake_state_check/);
+  });
+
+  it('auto-handshakes on create, persists external id + capabilities, and redacts secrets', async () => {
+    provider.setMode('ok');
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-HS'), name: 'HS Provider', connectorType: 'generic_rest', direction: 'both', config: baseConfig(),
+    });
+    expect(conn.handshake_state).toBe('verified');
+    expect(conn.external_connection_id).toBe('EXT-' + conn.id);
+    expect(conn.capabilities).toEqual({ pull: true, push: true, webhook: false });
+    expect(conn.mode).toBe('shadow');
+    expect(conn.config.webhookSecret).toBeUndefined();
+    expect(conn.credentials.has_webhookSecret).toBe(true);
+    expect(JSON.stringify(conn)).not.toContain(provider.secret);
+
+    const hs = await BankingAggregator.getHandshake(conn.id);
+    expect(hs.handshake_state).toBe('verified');
+    expect(JSON.stringify(hs)).not.toContain(provider.secret);
+  });
+
+  it('marks the connection failed on a tampered handshake and refuses pull/push until verified; retry recovers', async () => {
+    provider.setMode('tampered');
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-TAMPER'), name: 'Tampered', connectorType: 'generic_rest', direction: 'both', config: baseConfig(),
+    });
+    expect(conn.handshake_state).toBe('failed');
+    expect(conn.external_connection_id).toBeNull();
+
+    await expect(BankingAggregator.pull(conn.id, { kinds: ['accounts'] })).rejects.toThrow(/handshake_state is failed/);
+    await expect(BankingAggregator.push(conn.id, { type: 'payment', amount: 1 })).rejects.toThrow(/handshake_state is failed/);
+    const before = provider.counts();
+    expect(before.pulls).toBe(0);
+    expect(before.pushes).toBe(0);
+
+    provider.setMode('ok');
+    const retried = await BankingAggregator.handshake(conn.id);
+    expect(retried.handshake_state).toBe('verified');
+    expect(retried.external_connection_id).toBe('EXT-' + conn.id);
+  });
+
+  it('re-handshakes when config changes on update (and not on non-config updates)', async () => {
+    provider.setMode('ok');
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-UPD'), name: 'Upd', connectorType: 'generic_rest', direction: 'both', config: baseConfig(),
+    });
+    const n0 = provider.counts().handshakes;
+    await BankingAggregator.updateConnection(conn.id, { name: 'Upd renamed' });
+    expect(provider.counts().handshakes).toBe(n0);
+    await BankingAggregator.updateConnection(conn.id, { config: Object.assign(baseConfig(), { pullKinds: ['accounts'] }) });
+    expect(provider.counts().handshakes).toBe(n0 + 1);
+  });
+
+  it('READ: pulls accounts + transactions from the provider into aggregator tables', async () => {
+    provider.setMode('ok');
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-READ'), name: 'Reader', connectorType: 'generic_rest', direction: 'inbound', config: baseConfig(),
+    });
+    const summary = await BankingAggregator.pull(conn.id, { kinds: ['accounts', 'transactions'] });
+    expect(summary.errors).toEqual([]);
+    expect(summary.accounts).toBe(1);
+    expect(summary.transactions).toBe(2);
+
+    const accts = await pool.query('SELECT * FROM banking_aggregator_accounts WHERE connection_id = $1', [conn.id]);
+    expect(accts.rows).toHaveLength(1);
+    expect(Number(accts.rows[0].balance_current)).toBe(100.25);
+    const txns = await pool.query('SELECT external_txn_id, amount, direction FROM banking_aggregator_transactions WHERE connection_id = $1 ORDER BY external_txn_id', [conn.id]);
+    expect(txns.rows.map((r: any) => [r.external_txn_id, Number(r.amount), r.direction]))
+      .toEqual([['T-1', 50, 'credit'], ['T-2', 7.5, 'debit']]);
+
+    // idempotent re-pull
+    const again = await BankingAggregator.pull(conn.id, { kinds: ['transactions'] });
+    expect(again.transactions).toBe(2);
+    const count = await pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_transactions WHERE connection_id = $1', [conn.id]);
+    expect(count.rows[0].n).toBe(2);
+    const evt = await pool.query(`SELECT status FROM banking_aggregator_events WHERE connection_id = $1 AND event_type = 'pull'`, [conn.id]);
+    expect(evt.rows.length).toBeGreaterThanOrEqual(2);
+    expect(evt.rows.every((r: any) => r.status === 'processed')).toBe(true);
+  });
+
+  it('WRITE (shadow): journals the redacted event and never calls the provider', async () => {
+    provider.setMode('ok');
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-SHADOW'), name: 'Shadow', connectorType: 'generic_rest', direction: 'outbound', config: baseConfig(),
+    });
+    const pushSpy = vi.spyOn(genericRestConnector, 'push');
+    const before = provider.counts().pushes;
+    const r = await BankingAggregator.push(conn.id, { type: 'payment', amount: 25, apiKey: 'leak-me', password: 'pw' });
+    expect(r.shadow).toBe(true);
+    expect(r.mode).toBe('shadow');
+    expect(r.eventId).toMatch(/^EVT-/);
+    expect(pushSpy).not.toHaveBeenCalled();
+    expect(provider.counts().pushes).toBe(before);
+    pushSpy.mockRestore();
+
+    const evt = await pool.query('SELECT payload, status FROM banking_aggregator_events WHERE id = $1', [r.eventId]);
+    expect(evt.rows[0].status).toBe('processed');
+    expect(evt.rows[0].payload.mode).toBe('shadow');
+    expect(evt.rows[0].payload.payload.amount).toBe(25);
+    expect(evt.rows[0].payload.payload.apiKey).toBeUndefined();
+    expect(evt.rows[0].payload.payload.password).toBeUndefined();
+  });
+
+  it('WRITE (live): refuses without approvalRef / screeningRef (409, provider untouched) and transmits with both', async () => {
+    provider.setMode('ok');
+    process.env.AGGREGATOR_HS_LIVE_API_KEY = 'sm-projected-key'; // Secret Manager → env → connection config
+    const conn = await BankingAggregator.createConnection({
+      id: uid('CONN-LIVE'), name: 'HS Live', connectorType: 'generic_rest', direction: 'outbound',
+      config: Object.assign(baseConfig(), { mode: 'live' }),
+    });
+    expect(conn.mode).toBe('live');
+    expect(conn.credentials.env_prefix).toBe('AGGREGATOR_HS_LIVE');
+    expect(conn.credentials.has_apiKey).toBe(true);
+    expect(conn.config.apiKey).toBeUndefined();
+    const stored = await pool.query('SELECT config FROM banking_aggregator_connections WHERE id = $1', [conn.id]);
+    expect(stored.rows[0].config.apiKey).toBeUndefined(); // never persisted
+
+    const before = provider.counts().pushes;
+    await expect(BankingAggregator.push(conn.id, { type: 'payment', amount: 10, screeningRef: 'SCR-1' }))
+      .rejects.toMatchObject({ status: 409, message: expect.stringMatching(/approvalRef/) });
+    await expect(BankingAggregator.push(conn.id, { type: 'payment', amount: 10, approvalRef: 'APR-1' }))
+      .rejects.toMatchObject({ status: 409, message: expect.stringMatching(/screeningRef/) });
+    expect(provider.counts().pushes).toBe(before);
+
+    const r = await BankingAggregator.push(conn.id, { type: 'payment', amount: 10, approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(r.mode).toBe('live');
+    expect(r.shadow).toBe(false);
+    expect(r.providerRef).toBe('PAY-1');
+    expect(provider.counts().pushes).toBe(before + 1);
+    expect(provider.pushes()[0].amount).toBe(10);
+    expect(provider.lastApiKey()).toBe('sm-projected-key');
+
+    const evt = await pool.query(`SELECT status, provider_ref, payload FROM banking_aggregator_events WHERE connection_id = $1 AND event_type = 'payment' ORDER BY created_at DESC LIMIT 1`, [conn.id]);
+    expect(evt.rows[0].status).toBe('sent');
+    expect(evt.rows[0].provider_ref).toBe('PAY-1');
+    expect(evt.rows[0].payload.approvalRef).toBe('APR-1');
+    expect(evt.rows[0].payload.screeningRef).toBe('SCR-1');
+    const row = await pool.query('SELECT last_push_at FROM banking_aggregator_connections WHERE id = $1', [conn.id]);
+    expect(row.rows[0].last_push_at).not.toBeNull();
+  });
+
+  it('status() reports a handshake summary', async () => {
+    const s = await BankingAggregator.status();
+    expect(s.handshake).toBeDefined();
+    expect(s.handshake.by_state.verified).toBeGreaterThanOrEqual(1);
+    expect(s.handshake.by_mode.live).toBeGreaterThanOrEqual(1);
+    expect(['live', 'shadow']).toContain(s.default_mode);
+  });
+});

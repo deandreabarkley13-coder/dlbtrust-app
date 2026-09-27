@@ -134,7 +134,43 @@ const DEFAULT_ENDPOINTS = {
   transactions: '/transactions',
   statements: '/statements',
   push: '/payments',
+  handshake: '/connections/register',
 };
+
+const HANDSHAKE_CAPABILITIES = ['pull', 'push', 'webhook'];
+
+/**
+ * Canonical string a provider must HMAC-SHA256 (hex) with the shared secret
+ * when answering a handshake challenge:
+ *   `${nonce}.${external_connection_id}.${granted capabilities sorted, csv}`
+ * Binding the nonce defeats replay; binding the id and capabilities defeats
+ * tampering with the negotiated result in transit.
+ */
+function handshakeSigningString(nonce, externalConnectionId, capabilities) {
+  const caps = HANDSHAKE_CAPABILITIES.filter((c) => capabilities[c]).sort().join(',');
+  return `${nonce}.${externalConnectionId}.${caps}`;
+}
+
+function normalizeHandshakeCapabilities(raw) {
+  const out = { pull: false, push: false, webhook: false };
+  if (Array.isArray(raw)) {
+    for (const c of raw) if (c in out) out[c] = true;
+  } else if (raw && typeof raw === 'object') {
+    for (const k of HANDSHAKE_CAPABILITIES) out[k] = raw[k] === true || raw[k] === 'true';
+  }
+  return out;
+}
+
+function hmacEquals(secret, data, provided) {
+  const expected = crypto.createHmac('sha256', secret).update(data).digest('hex');
+  try {
+    const a = Buffer.from(String(provided).replace(/^sha256=/, '').toLowerCase());
+    const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
 
 function getPath(obj, dotted) {
   if (!dotted) return undefined;
@@ -147,8 +183,24 @@ function toNumber(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+// Credentials may live under config.auth (stored JSON) or be projected onto
+// the top-level config from Secret Manager env vars (AGGREGATOR_<CONN>_API_KEY,
+// _BEARER_TOKEN, _CLIENT_SECRET) — see BankingAggregator._withEnvCredentials.
+function resolveAuth(config) {
+  const cfg = config || {};
+  const auth = Object.assign({}, cfg.auth || {});
+  if (!auth.apiKey && cfg.apiKey) auth.apiKey = cfg.apiKey;
+  if (!auth.bearerToken && cfg.bearerToken) auth.bearerToken = cfg.bearerToken;
+  if (!auth.clientSecret && cfg.clientSecret) auth.clientSecret = cfg.clientSecret;
+  if (!auth.type || auth.type === 'none') {
+    if (auth.bearerToken) auth.type = 'bearer';
+    else if (auth.apiKey) auth.type = 'api_key';
+  }
+  return auth;
+}
+
 function applyAuth(headers, config, body) {
-  const auth = (config && config.auth) || {};
+  const auth = resolveAuth(config);
   const type = auth.type || 'none';
   if (type === 'bearer' && auth.bearerToken) {
     headers['Authorization'] = 'Bearer ' + auth.bearerToken;
@@ -229,7 +281,7 @@ async function formPost(urlStr, config, form, headers) {
 // connection. Fully automatic: no human intervention is required once the
 // clientId/clientSecret/tokenUrl are configured on the connection.
 async function getAccessToken(conn, config) {
-  const auth = (config && config.auth) || {};
+  const auth = resolveAuth(config);
   if (!auth.tokenUrl || !auth.clientId || !auth.clientSecret) {
     throw new Error('oauth2_client_credentials requires auth.tokenUrl, auth.clientId and auth.clientSecret');
   }
@@ -268,7 +320,8 @@ function clearTokenCache(connectionId) {
   }
 }
 
-async function request(method, urlStr, config, bodyObj, conn) {
+async function request(method, urlStr, config, bodyObj, conn, reqOpts) {
+  const timeoutMs = reqOpts && Number(reqOpts.timeoutMs) > 0 ? Number(reqOpts.timeoutMs) : 30000;
   const parsed = new URL(urlStr);
   const vetted = await resolveAllowed(parsed, config);
   // Resolve an OAuth2 bearer token up front (auto-fetched/cached) so the
@@ -297,7 +350,7 @@ async function request(method, urlStr, config, bodyObj, conn) {
       path: parsed.pathname + (parsed.search || ''),
       method,
       headers,
-      timeout: 30000,
+      timeout: timeoutMs,
       rejectUnauthorized: true,
       // Present a client certificate when the provider requires mutual TLS
       ...buildMtlsOptions(config),
@@ -319,7 +372,7 @@ async function request(method, urlStr, config, bodyObj, conn) {
         let json = null;
         try { json = data ? JSON.parse(data) : null; } catch (e) { json = null; }
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          resolve({ statusCode: res.statusCode, json, raw: data });
+          resolve({ statusCode: res.statusCode, json, raw: data, headers: res.headers });
         } else {
           reject(new Error(`HTTP ${res.statusCode} from ${method} ${urlStr}: ${data.substring(0, 300)}`));
         }
@@ -448,6 +501,74 @@ const genericRestConnector = {
     return { ok: true, providerRef, response: json };
   },
 
+  /**
+   * Connection handshake: POST a challenge to the provider's registration
+   * endpoint (config.endpoints.handshake, default /connections/register) and
+   * verify the HMAC-SHA256 reply against config.webhookSecret (preferred) or
+   * config.apiSecret.
+   *
+   * Challenge body:
+   *   { type:'handshake', connection_id, nonce, timestamp, callback_url,
+   *     requested_capabilities:[pull,push,webhook] }
+   * Expected reply (2xx):
+   *   { external_connection_id|connection_id|id, nonce,
+   *     capabilities: {pull,push,webhook} | [..],
+   *     signature }   — or the signature in the X-Signature header
+   * where signature = hex(HMAC-SHA256(secret, `${nonce}.${external_connection_id}.${caps}`)).
+   */
+  async handshake(conn, opts) {
+    const config = conn.config || {};
+    const secret = config.webhookSecret || config.apiSecret;
+    if (!secret) {
+      throw new Error('Handshake requires config.webhookSecret or config.apiSecret to verify the provider response');
+    }
+    const url = endpointUrl(config, 'handshake');
+    const nonce = crypto.randomBytes(32).toString('hex');
+    const requested = HANDSHAKE_CAPABILITIES.filter((c) => {
+      if (c === 'pull') return conn.direction !== 'outbound';
+      if (c === 'push') return conn.direction !== 'inbound';
+      return true;
+    });
+    const callbackBase = config.webhookUrl || (process.env.APP_URL
+      ? new URL('/api/aggregator/webhooks/' + encodeURIComponent(conn.id), process.env.APP_URL).toString()
+      : null);
+    const challenge = {
+      type: 'handshake',
+      connection_id: conn.id,
+      nonce,
+      timestamp: new Date().toISOString(),
+      callback_url: callbackBase,
+      requested_capabilities: requested,
+    };
+
+    const { json, headers } = await request('POST', url, config, challenge, conn,
+      { timeoutMs: opts && opts.timeoutMs });
+    if (!json || typeof json !== 'object') throw new Error('Handshake response was not a JSON object');
+
+    const externalConnectionId = json.external_connection_id || json.connection_id || json.id;
+    if (!externalConnectionId) throw new Error('Handshake response missing external_connection_id');
+    if (json.nonce !== undefined && json.nonce !== nonce) throw new Error('Handshake response nonce mismatch');
+
+    const capabilities = normalizeHandshakeCapabilities(json.capabilities);
+    const headerName = (config.handshakeSignatureHeader || config.webhookSignatureHeader || 'x-signature').toLowerCase();
+    const signature = json.signature || (headers && headers[headerName]);
+    if (!signature) throw new Error('Handshake response is unsigned');
+    if (!hmacEquals(secret, handshakeSigningString(nonce, String(externalConnectionId), capabilities), signature)) {
+      throw new Error('Handshake response signature verification failed');
+    }
+
+    return {
+      externalConnectionId: String(externalConnectionId),
+      capabilities,
+      meta: {
+        endpoint: url,
+        secretSource: config.webhookSecret ? 'webhookSecret' : 'apiSecret',
+        requestedCapabilities: requested,
+        provider: json.provider || null,
+      },
+    };
+  },
+
   verifyWebhook(conn, headers, rawBody) {
     const config = conn.config || {};
     // Secure default: reject unsigned webhooks unless a secret is configured.
@@ -477,6 +598,7 @@ module.exports = {
   // duplicating it.
   request,
   endpointUrl,
+  handshakeSigningString,
   extractList,
   mapRecord,
   toNumber,

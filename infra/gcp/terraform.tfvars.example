@@ -31,6 +31,16 @@
 # PRIVATE_PAYMENT_NETWORK_REQUIRE_* gates on. Its mft_as2 file drop
 # (runtime_environment.PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true) also requires
 # MFTGATEWAY_API_TOKEN_ID and MFTGATEWAY_API_TOKEN_SECRET.
+#
+# The Banking Aggregator block is REQUIRED when
+# runtime_environment.AGGREGATOR_DEFAULT_MODE=live (the production default):
+# ADMIN_SECRET_TOKEN plus at least one per-connection credential named
+# AGGREGATOR_<CONNECTION>_API_KEY / AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET
+# (also *_API_SECRET, *_BEARER_TOKEN, *_CLIENT_SECRET), where <CONNECTION> is
+# the connection name upper-cased with non-alphanumerics as '_' (or
+# config.credentialsEnvPrefix). bankingAggregator.js projects them onto the
+# connection's apiKey / webhookSecret / apiSecret / bearerToken / clientSecret
+# at load time (secrets.tf missing_aggregator_secrets, cloudrun.tf precondition).
 
 project_id = "dlb-treasury-management"
 
@@ -63,6 +73,13 @@ secret_names = [
   # Private Payment Network live plan (PRIVATE_PAYMENT_NETWORK_LIVE=true): HMAC-
   # SHA256 key for processor callbacks to /api/os/private-payment-network/webhook.
   "PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET",
+  # Banking Aggregator live plan (AGGREGATOR_DEFAULT_MODE=live): admin token for
+  # /api/aggregator/* and one credential set per provider connection. Rename
+  # <CONNECTION> to the connection name (e.g. a connection "Lili Ops" reads
+  # AGGREGATOR_LILI_OPS_API_KEY / AGGREGATOR_LILI_OPS_WEBHOOK_SECRET).
+  "ADMIN_SECRET_TOKEN",
+  # "AGGREGATOR_<CONNECTION>_API_KEY",
+  # "AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",

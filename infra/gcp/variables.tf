@@ -242,6 +242,25 @@ variable "runtime_environment" {
     # MFTGATEWAY_PARTNER_AS2_ID). Shadow until this is "true"; also needs
     # PRIVATE_PAYMENT_NETWORK_LIVE=true and MFTGATEWAY_API_TOKEN_ID/SECRET.
     PRIVATE_PAYMENT_NETWORK_MFT_LIVE = "false"
+    # Banking Aggregator (server/integrations/aggregator): provider-agnostic
+    # pull (accounts/transactions/statements -> trust GL via DataBridge) and
+    # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected
+    # in-process aggregatorScheduler (pull + GL posting every
+    # AGGREGATOR_PULL_INTERVAL_MS); AGGREGATOR_DEFAULT_MODE is the outbound mode
+    # for connections that do not set config.mode. live = a push reaches the
+    # provider only with a checker approvalRef + PaymentComplianceGate
+    # screeningRef (fail-closed, same rule as BankSettlementEngine.clearAndSettle);
+    # shadow = journal to banking_aggregator_events only. A live plan needs
+    # ADMIN_SECRET_TOKEN and at least one AGGREGATOR_<CONNECTION>_API_KEY /
+    # AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET in secret_names (cloudrun.tf
+    # precondition, secrets.tf missing_aggregator_secrets). Connections whose
+    # connector declares a handshake (generic_rest) refuse pull/push until
+    # POST /api/aggregator/connections/:id/handshake verifies them within
+    # AGGREGATOR_HANDSHAKE_TIMEOUT_MS. GET /api/os/readiness/aggregator lists blockers.
+    AGGREGATOR_ENABLED              = "true"
+    AGGREGATOR_DEFAULT_MODE         = "live"
+    AGGREGATOR_PULL_INTERVAL_MS     = "900000"
+    AGGREGATOR_HANDSHAKE_TIMEOUT_MS = "15000"
 
     # Payer of the trust's fixed-income P&I (custodian/issuer) billed via Stripe ACH debit.
     INCOME_OBLIGOR_NAME             = "DEANDREA LAVAR BARKLEY TRUST COMPANY"

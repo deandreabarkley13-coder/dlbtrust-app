@@ -263,6 +263,19 @@ resource "google_cloud_run_v2_service" "app" {
       condition     = !local.private_payment_network_gates_relaxed
       error_message = "PRIVATE_PAYMENT_NETWORK_LIVE=true requires PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF, PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF and PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT to stay \"true\": every real-value network transaction must carry a checker approvalRef and compliance screeningRef, and every payout an enterprise-network participant."
     }
+
+    # Banking Aggregator: AGGREGATOR_DEFAULT_MODE=live needs the admin token and
+    # per-connection credentials declared (secrets.tf missing_aggregator_secrets).
+    # The approvalRef + screeningRef gate on a live push is not configurable.
+    precondition {
+      condition     = local.aggregator_mode_valid
+      error_message = "AGGREGATOR_DEFAULT_MODE must be \"live\" or \"shadow\" (bankingAggregator.js falls back to shadow for anything else, silently disabling provider pushes)."
+    }
+
+    precondition {
+      condition     = length(local.missing_aggregator_secrets) == 0
+      error_message = "AGGREGATOR_DEFAULT_MODE=live but secret_names lacks ${join(", ", local.missing_aggregator_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/aggregator reports the same blockers at runtime."
+    }
   }
 }
 
