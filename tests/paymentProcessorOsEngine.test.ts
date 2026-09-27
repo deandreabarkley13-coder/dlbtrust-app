@@ -9,6 +9,7 @@ process.env.DAPP_USDC_ADDRESS = process.env.DAPP_USDC_ADDRESS || '0x222222222222
 const pool = require('../server/integrations/bonds/pgPool');
 const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentProcessorOsEngine');
 const { EngineWiringReadiness } = require('../server/integrations/os/engineWiringReadiness');
+const { BankingAggregator } = require('../server/integrations/aggregator/bankingAggregator');
 const { PaymentProcessorServerEngine } = require('../server/integrations/payments/paymentProcessorServerEngine');
 const { BankSettlementEngine } = require('../server/integrations/payments/bankSettlementEngine');
 const { ApiGatewayClearingEngine } = require('../server/integrations/dapp/apiGatewayClearingEngine');
@@ -21,6 +22,7 @@ const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngi
 
 const ENV_KEYS = [
   'GCP_PROJECT', 'GOOGLE_CLOUD_PROJECT', 'DATABASE_URL', 'APP_URL', 'DEPLOY_URL', 'DOMAIN',
+  'AGGREGATOR_ENABLED', 'AGGREGATOR_DEFAULT_MODE', 'ADMIN_SECRET_TOKEN',
   'PAYMENT_PROCESSOR_LIVE', 'PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF', 'PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF',
   'PAYMENT_PROCESSOR_DEFAULT', 'PAYMENT_GATEWAY_LIVE', 'PAYMENT_GATEWAY_WEBHOOK_SECRET', 'STRIPE_SECRET_KEY', 'STRIPE_PAYMENTS_SECRET_KEY', 'STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID',
   'PAYMENT_HUB_LIVE', 'LILI_CLEARING_LIVE', 'CLEARING_API_ENDPOINT', 'CLEARING_API_KEY',
@@ -36,6 +38,7 @@ function stubOtherEnginesReady() {
     API_GATEWAY_PROVIDER: 'lili', LILI_CLEARING_LIVE: 'true', PAYMENT_HUB_MODE: 'phee', PAYMENT_HUB_LIVE: 'true',
     PAYMENT_DATA_ENCRYPTION_KEY: 'ab'.repeat(32), CROSS_CHAIN_ENABLED: 'true', CROSS_CHAIN_SHADOW: 'true',
     ENTERPRISE_NETWORK_LIVE: 'true', ENTERPRISE_NETWORK_WEBHOOK_SECRET: 'whsec_network', PRIVATE_PAYMENT_NETWORK_LIVE: 'true', PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET: 'whsec_ppn',
+    AGGREGATOR_ENABLED: 'true', AGGREGATOR_DEFAULT_MODE: 'live', ADMIN_SECRET_TOKEN: 'admin-tok',
   });
   vi.spyOn(ApiGatewayClearingEngine, 'readiness').mockResolvedValue({ provider: 'lili', mode: 'live', ready: true, blockers: [], storage: { ledger: { connected: true }, gcpProject: 'dlb-treasury-management' } });
   vi.spyOn(paymentHubConfig, 'readiness').mockReturnValue({ ready: true, canTransmit: true, issues: [], warnings: [], config: { mode: 'phee', live: true, accountingOwner: 'dlbtrust', approvalThreshold: 2, baseUrlConfigured: true } });
@@ -46,6 +49,10 @@ function stubOtherEnginesReady() {
   vi.spyOn(DebtOsEngine, 'placementCompliance').mockResolvedValue({ compliant: true, placement: 'private', publicOffer: false, holders: 2, externalHolders: 0, unverifiedHolders: 0, issues: [] });
   vi.spyOn(DebtOsEngine, 'schedule').mockResolvedValue({ horizonDays: 90, events: [], totals: { coupon: 250000, principal: 0, total: 250000 } });
   vi.spyOn(LiquidityOsEngine, 'coverage').mockResolvedValue({ adequate: true, issues: [], cash: { liquid: 2000000, reserve: 1000000 }, horizons: { '30d': { covered: true }, '90d': { covered: true }, '365d': { covered: true } }, reserve: { balance: 1000000, annualCoupon: 1000000, coverage: 1, target: 1 }, payout: { realValueCapable: true, sources: ['bank_odfi'] } });
+  vi.spyOn(BankingAggregator, 'status').mockResolvedValue({
+    connectors_available: ['generic_rest', 'internal_rails'], connections: 1, connections_active: 1, accounts: 1, transactions: 1, events: 1, default_mode: 'live',
+    handshake: { handshake_required: 1, verified: 1, by_state: { pending: 0, challenged: 0, verified: 1, failed: 0 }, by_mode: { live: 1, shadow: 0 }, timeout_ms: 15000 },
+  });
 }
 const saved: Record<string, string | undefined> = {};
 
@@ -127,7 +134,7 @@ describe('payment-processor OS engine registration and routing', () => {
     expect(OS.PaymentProcessorPlatformEngine.platformEngine).toBe('payment-processor');
     expect(OS.PaymentProcessorPlatformEngine.engineName).toBe('payment-processor');
     expect(EngineWiringReadiness.ENGINE_KEYS).toContain('payment-processor');
-    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(13);
+    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(14);
     expect(EngineWiringReadiness.ENGINE_TITLES['payment-processor']).toBe('Payment Processor OS Engine');
     const paths = osRouter.stack.filter((l: any) => l.route).map((l: any) => l.route.path);
     expect(paths).toEqual(expect.arrayContaining(['/:engine/status', '/:engine/readiness', '/:engine/list', '/:engine/process', '/readiness/:platformEngine']));
@@ -379,8 +386,8 @@ describe('payment-processor readiness on dlb-treasury-management', () => {
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, all);
     expect(all.statusCode).toBe(503);
     expect(all.body.data.ready).toBe(false);
-    expect(all.body.data.total).toBe(13);
-    expect(all.body.data.readyCount).toBe(10);
+    expect(all.body.data.total).toBe(14);
+    expect(all.body.data.readyCount).toBe(11);
     expect(all.body.data.engines['payment-processor'].ready).toBe(false);
 
     const one = responseStub();
@@ -397,7 +404,7 @@ describe('payment-processor readiness on dlb-treasury-management', () => {
     const ok = responseStub();
     await routeHandler('get', '/readiness')({ params: {}, query: {} }, ok);
     expect(ok.statusCode).toBe(200);
-    expect(ok.body.data.readyCount).toBe(13);
+    expect(ok.body.data.readyCount).toBe(14);
   });
 });
 

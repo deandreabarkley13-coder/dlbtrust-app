@@ -28,6 +28,25 @@ CREATE TABLE IF NOT EXISTS banking_aggregator_connections (
   updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Connection handshake lifecycle (pending -> challenged -> verified | failed).
+-- Connectors that declare handshake() refuse pull/push until 'verified'.
+-- handshake_meta holds the negotiated capabilities {pull,push,webhook}, the
+-- challenge/verify timestamps and the last error; external_connection_id is
+-- the provider's identifier for this registration.
+ALTER TABLE banking_aggregator_connections
+  ADD COLUMN IF NOT EXISTS handshake_state        TEXT NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS handshake_at           TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS handshake_meta         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS external_connection_id TEXT;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'banking_aggregator_connections_handshake_state_check') THEN
+    ALTER TABLE banking_aggregator_connections
+      ADD CONSTRAINT banking_aggregator_connections_handshake_state_check
+      CHECK (handshake_state IN ('pending','challenged','verified','failed'));
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS banking_aggregator_accounts (
   id                  TEXT PRIMARY KEY,
   connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
@@ -90,3 +109,4 @@ CREATE TABLE IF NOT EXISTS banking_aggregator_events (
 CREATE INDEX IF NOT EXISTS idx_banking_agg_txn_conn ON banking_aggregator_transactions (connection_id, posted_date DESC);
 CREATE INDEX IF NOT EXISTS idx_banking_agg_acct_conn ON banking_aggregator_accounts (connection_id);
 CREATE INDEX IF NOT EXISTS idx_banking_agg_events_conn ON banking_aggregator_events (connection_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_banking_agg_conn_handshake ON banking_aggregator_connections (handshake_state);

@@ -139,7 +139,7 @@ describe('private-payment-network OS engine registration and routing', () => {
     expect(OS.engines['private-payment-network']).toBe(OS.PrivatePaymentNetworkPlatformEngine);
     expect(OS.PrivatePaymentNetworkPlatformEngine.platformEngine).toBe('private-payment-network');
     expect(EngineWiringReadiness.ENGINE_KEYS).toEqual(expect.arrayContaining(['enterprise-network', 'private-payment-network']));
-    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(13);
+    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(14);
     expect(EngineWiringReadiness.ENGINE_TITLES['private-payment-network']).toMatch(/Private Electronic Payment Network/);
     expect(PrivatePaymentNetworkOsEngine.TABLES[0]).toBe('private_payment_network_transactions');
     expect(EngineWiringReadiness.TABLES['private-payment-network']).toEqual(PrivatePaymentNetworkOsEngine.TABLES);

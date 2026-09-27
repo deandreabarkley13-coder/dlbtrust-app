@@ -10,6 +10,14 @@
  *   push(conn, payload)           → { ok, providerRef, ... }  (outbound)
  *   verifyWebhook(conn, headers, rawBody) → boolean           (inbound event)
  *   handleWebhook(conn, event, aggregator)                    (inbound event)
+ *   handshake(conn, { timeoutMs })                            (optional, lifecycle)
+ *       → { externalConnectionId, capabilities: {pull,push,webhook}, meta? }
+ *       Registers the connection with the provider and verifies the signed
+ *       reply. Throw on any failure (bad signature, provider error, timeout).
+ *       Declaring this method makes the handshake REQUIRED: the engine refuses
+ *       pull/push for the connection until handshake_state = 'verified', and
+ *       runs the handshake automatically on create/update unless the
+ *       connection config sets autoHandshake: false.
  *
  * To add a new provider, implement a connector and register it below (or call
  * registerConnector at startup). No changes to the engine or routes are needed.

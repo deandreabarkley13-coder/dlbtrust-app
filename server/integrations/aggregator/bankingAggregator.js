@@ -27,6 +27,24 @@
  *   banking_aggregator_statements    — normalized statement/document references
  *   banking_aggregator_events        — inbound webhook + outbound push audit log
  *
+ * HANDSHAKE (connection lifecycle)
+ *   Connectors may declare `handshake(conn, opts)`. For those connectors a
+ *   connection moves pending → challenged → verified|failed: the connector
+ *   posts a challenge to the provider's registration endpoint, verifies the
+ *   HMAC-signed reply, and returns the provider's external_connection_id plus
+ *   the negotiated capabilities (pull/push/webhook). pull/push refuse until
+ *   handshake_state = 'verified'. The handshake runs automatically on
+ *   createConnection / updateConnection (config change) unless
+ *   config.autoHandshake === false, and can be (re)run via handshake(id).
+ *
+ * OUTBOUND MODE (fail-closed)
+ *   Every connection has a mode — config.mode, else AGGREGATOR_DEFAULT_MODE,
+ *   else 'shadow'. In shadow mode push() records the intent in
+ *   banking_aggregator_events and never calls the provider. In live mode a
+ *   push must carry approvalRef (maker/checker record) and screeningRef
+ *   (PaymentComplianceGate screening id) — the same rule as
+ *   BankSettlementEngine.clearAndSettle — or it is refused with 409.
+ *
  * SECURITY
  *   Connection config may contain secrets (tokens, keys, webhook secrets,
  *   private-key passphrases). Secrets are persisted but NEVER returned by the
@@ -43,6 +61,31 @@ const SECRET_CONFIG_KEYS = [
   'apiKey', 'apiSecret', 'bearerToken', 'token', 'password',
   'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret',
 ];
+
+const HANDSHAKE_STATES = ['pending', 'challenged', 'verified', 'failed'];
+const MODES = ['live', 'shadow'];
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 15000;
+
+function httpError(message, status) { return Object.assign(new Error(message), { status }); }
+
+function handshakeTimeoutMs() {
+  const n = Number(process.env.AGGREGATOR_HANDSHAKE_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_HANDSHAKE_TIMEOUT_MS;
+}
+
+/** env suffix -> connection config key, resolved by _withEnvCredentials. */
+const ENV_CREDENTIAL_KEYS = {
+  _API_KEY: 'apiKey',
+  _API_SECRET: 'apiSecret',
+  _WEBHOOK_SECRET: 'webhookSecret',
+  _BEARER_TOKEN: 'bearerToken',
+  _CLIENT_SECRET: 'clientSecret',
+};
+
+function defaultMode() {
+  const m = String(process.env.AGGREGATOR_DEFAULT_MODE || 'shadow').toLowerCase();
+  return MODES.includes(m) ? m : 'shadow';
+}
 
 let tablesReady = false;
 let tablesReadyPromise = null;
@@ -181,6 +224,23 @@ class BankingAggregator {
     `);
 
     await client.query(`
+      ALTER TABLE banking_aggregator_connections
+        ADD COLUMN IF NOT EXISTS handshake_state TEXT NOT NULL DEFAULT 'pending',
+        ADD COLUMN IF NOT EXISTS handshake_at TIMESTAMPTZ,
+        ADD COLUMN IF NOT EXISTS handshake_meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+        ADD COLUMN IF NOT EXISTS external_connection_id TEXT
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'banking_aggregator_connections_handshake_state_check') THEN
+          ALTER TABLE banking_aggregator_connections
+            ADD CONSTRAINT banking_aggregator_connections_handshake_state_check
+            CHECK (handshake_state IN ('pending','challenged','verified','failed'));
+        END IF;
+      END $$
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS banking_aggregator_accounts (
         id                  TEXT PRIMARY KEY,
         connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
@@ -270,15 +330,12 @@ class BankingAggregator {
     const result = await pool.query(
       'SELECT * FROM banking_aggregator_connections ORDER BY created_at DESC'
     );
-    return result.rows.map(BankingAggregator._redactConnection);
+    return result.rows.map((r) => BankingAggregator._redactConnection(BankingAggregator._withEnvCredentials(r)));
   }
 
   static async getConnection(id) {
-    await BankingAggregator.ensureTables();
-    const result = await pool.query(
-      'SELECT * FROM banking_aggregator_connections WHERE id = $1', [id]
-    );
-    return result.rows[0] ? BankingAggregator._redactConnection(result.rows[0]) : null;
+    const row = await BankingAggregator._getConnectionRaw(id);
+    return row ? BankingAggregator._redactConnection(row) : null;
   }
 
   /** Internal: full (unredacted) row for connector use — never returned by the API. */
@@ -287,7 +344,37 @@ class BankingAggregator {
     const result = await pool.query(
       'SELECT * FROM banking_aggregator_connections WHERE id = $1', [id]
     );
-    return result.rows[0] || null;
+    return result.rows[0] ? BankingAggregator._withEnvCredentials(result.rows[0]) : null;
+  }
+
+  /**
+   * Secret Manager -> Cloud Run env name prefix for a connection:
+   * config.credentialsEnvPrefix, else AGGREGATOR_<NAME> (name upper-cased,
+   * non-alphanumerics collapsed to '_').
+   */
+  static credentialsEnvPrefix(conn) {
+    const explicit = conn && conn.config && conn.config.credentialsEnvPrefix;
+    if (explicit) return String(explicit).replace(/[^A-Za-z0-9_]/g, '_').toUpperCase();
+    const slug = String((conn && conn.name) || '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return slug ? 'AGGREGATOR_' + slug : null;
+  }
+
+  /**
+   * Project per-connection credentials from the environment onto the config
+   * (config values win). Only the in-memory row is touched; the stored config
+   * never receives the values, so the API cannot echo them back.
+   */
+  static _withEnvCredentials(row) {
+    if (!row) return row;
+    const prefix = BankingAggregator.credentialsEnvPrefix(row);
+    if (!prefix) return row;
+    const config = Object.assign({}, row.config && typeof row.config === 'object' ? row.config : {});
+    let touched = false;
+    for (const [suffix, key] of Object.entries(ENV_CREDENTIAL_KEYS)) {
+      const v = process.env[prefix + suffix];
+      if (v && (config[key] == null || config[key] === '')) { config[key] = v; touched = true; }
+    }
+    return touched ? Object.assign({}, row, { config }) : row;
   }
 
   static async createConnection(opts) {
@@ -308,11 +395,16 @@ class BankingAggregator {
     const id = opts.id || 'CONN-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
     const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
 
+    if (config.mode !== undefined && !MODES.includes(config.mode)) {
+      throw new Error('config.mode must be live or shadow');
+    }
+
     await pool.query(
       `INSERT INTO banking_aggregator_connections (id, name, connector_type, direction, config, active)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
       [id, name, connectorType, direction, JSON.stringify(config), opts.active !== false]
     );
+    await BankingAggregator._autoHandshake(id);
     return BankingAggregator.getConnection(id);
   }
 
@@ -332,10 +424,21 @@ class BankingAggregator {
       sets.push(`direction = $${idx++}`); params.push(opts.direction);
     }
     if (opts.active !== undefined) { sets.push(`active = $${idx++}`); params.push(opts.active === true || opts.active === 'true'); }
+    let configChanged = false;
     if (opts.config !== undefined && typeof opts.config === 'object') {
       // Merge: new config keys overwrite existing; preserves secrets not re-sent.
       const merged = Object.assign({}, existing.config || {}, opts.config);
+      if (merged.mode !== undefined && !MODES.includes(merged.mode)) {
+        throw new Error('config.mode must be live or shadow');
+      }
+      configChanged = JSON.stringify(merged) !== JSON.stringify(existing.config || {});
       sets.push(`config = $${idx++}::jsonb`); params.push(JSON.stringify(merged));
+      if (configChanged) {
+        // Credentials/endpoints may have changed: the previous verification no
+        // longer proves anything, so the connection must re-handshake.
+        sets.push(`handshake_state = 'pending'`, `handshake_at = NULL`, `external_connection_id = NULL`,
+          `handshake_meta = '{}'::jsonb`);
+      }
     }
 
     if (sets.length === 0) return BankingAggregator.getConnection(id);
@@ -345,7 +448,154 @@ class BankingAggregator {
       `UPDATE banking_aggregator_connections SET ${sets.join(', ')} WHERE id = $${idx}`,
       params
     );
+    if (configChanged) await BankingAggregator._autoHandshake(id);
     return BankingAggregator.getConnection(id);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  HANDSHAKE — connection registration / capability negotiation
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static _connectorHasHandshake(connector) {
+    return Boolean(connector) && typeof connector.handshake === 'function';
+  }
+
+  static _modeOf(conn) {
+    const m = conn && conn.config && conn.config.mode;
+    return MODES.includes(m) ? m : defaultMode();
+  }
+
+  /** Run the handshake automatically unless the connection opts out. Never throws. */
+  static async _autoHandshake(id) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) return null;
+    let connector;
+    try { connector = getConnector(conn.connector_type); } catch (e) { return null; }
+    if (!BankingAggregator._connectorHasHandshake(connector)) return null;
+    if (conn.config && conn.config.autoHandshake === false) return null;
+    try {
+      return await BankingAggregator.handshake(id);
+    } catch (e) {
+      return { state: 'failed', error: e.message };
+    }
+  }
+
+  /**
+   * Initiate (or retry) the handshake for a connection. Transitions
+   * pending|failed|verified → challenged → verified|failed. Returns the
+   * handshake view (see getHandshake).
+   */
+  static async handshake(id) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw httpError('Connection not found: ' + id, 404);
+    const connector = getConnector(conn.connector_type);
+    if (!BankingAggregator._connectorHasHandshake(connector)) {
+      throw httpError(`Connector "${conn.connector_type}" does not support a handshake`, 400);
+    }
+
+    const startedAt = new Date().toISOString();
+    await pool.query(
+      `UPDATE banking_aggregator_connections
+          SET handshake_state = 'challenged', handshake_at = NOW(),
+              handshake_meta = handshake_meta || $2::jsonb, updated_at = NOW()
+        WHERE id = $1`,
+      [id, JSON.stringify({ challengedAt: startedAt })]
+    );
+
+    const timeoutMs = handshakeTimeoutMs();
+    let timer;
+    let result;
+    try {
+      result = await Promise.race([
+        connector.handshake(conn, { timeoutMs }),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`Handshake timed out after ${timeoutMs}ms`)), timeoutMs);
+          if (timer.unref) timer.unref();
+        }),
+      ]);
+      if (!result || !result.externalConnectionId) {
+        throw new Error('Connector handshake returned no externalConnectionId');
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      const meta = { challengedAt: startedAt, failedAt: new Date().toISOString(), error: err.message };
+      await pool.query(
+        `UPDATE banking_aggregator_connections
+            SET handshake_state = 'failed', handshake_at = NOW(), external_connection_id = NULL,
+                handshake_meta = $2::jsonb, updated_at = NOW()
+          WHERE id = $1`,
+        [id, JSON.stringify(meta)]
+      );
+      await BankingAggregator._logEvent(id, 'outbound', 'handshake', { state: 'failed' }, 'failed', err.message);
+      return BankingAggregator.getHandshake(id);
+    }
+    clearTimeout(timer);
+
+    const capabilities = BankingAggregator._normalizeCapabilities(result.capabilities);
+    const meta = Object.assign({}, result.meta || {}, {
+      challengedAt: startedAt,
+      verifiedAt: new Date().toISOString(),
+      capabilities,
+      connector: conn.connector_type,
+    });
+    await pool.query(
+      `UPDATE banking_aggregator_connections
+          SET handshake_state = 'verified', handshake_at = NOW(), external_connection_id = $2,
+              handshake_meta = $3::jsonb, updated_at = NOW()
+        WHERE id = $1`,
+      [id, String(result.externalConnectionId), JSON.stringify(meta)]
+    );
+    await BankingAggregator._logEvent(id, 'outbound', 'handshake',
+      { state: 'verified', capabilities }, 'processed', null, String(result.externalConnectionId));
+    return BankingAggregator.getHandshake(id);
+  }
+
+  /** Handshake state + negotiated capabilities for a connection (no secrets). */
+  static async getHandshake(id) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw httpError('Connection not found: ' + id, 404);
+    let supported = false;
+    try { supported = BankingAggregator._connectorHasHandshake(getConnector(conn.connector_type)); } catch (e) { supported = false; }
+    const meta = conn.handshake_meta && typeof conn.handshake_meta === 'object' ? conn.handshake_meta : {};
+    return {
+      connection_id: conn.id,
+      connector_type: conn.connector_type,
+      handshake_supported: supported,
+      handshake_required: supported,
+      handshake_state: conn.handshake_state || 'pending',
+      handshake_at: conn.handshake_at || null,
+      external_connection_id: conn.external_connection_id || null,
+      capabilities: meta.capabilities || null,
+      mode: BankingAggregator._modeOf(conn),
+      error: meta.error || null,
+      meta,
+    };
+  }
+
+  static _normalizeCapabilities(caps) {
+    const out = { pull: false, push: false, webhook: false };
+    if (Array.isArray(caps)) {
+      for (const c of caps) if (c in out) out[c] = true;
+    } else if (caps && typeof caps === 'object') {
+      for (const k of Object.keys(out)) out[k] = caps[k] === true || caps[k] === 'true';
+    }
+    return out;
+  }
+
+  /**
+   * Fail-closed gate applied before any data exchange: a connector that
+   * declares a handshake must have a verified connection, and the negotiated
+   * capability for the requested operation must be present.
+   */
+  static _assertHandshake(conn, connector, capability) {
+    if (!BankingAggregator._connectorHasHandshake(connector)) return;
+    if (conn.handshake_state !== 'verified') {
+      throw httpError(`Connection ${conn.id} handshake_state is ${conn.handshake_state || 'pending'}; ${capability} refused until the handshake is verified (POST /api/aggregator/connections/${conn.id}/handshake)`, 409);
+    }
+    const caps = conn.handshake_meta && conn.handshake_meta.capabilities;
+    if (caps && caps[capability] === false) {
+      throw httpError(`Connection ${conn.id} did not negotiate the ${capability} capability during its handshake`, 409);
+    }
   }
 
   static async deleteConnection(id) {
@@ -372,6 +622,7 @@ class BankingAggregator {
     if (conn.direction === 'outbound') throw new Error('Connection is outbound-only: ' + id);
 
     const connector = getConnector(conn.connector_type);
+    BankingAggregator._assertHandshake(conn, connector, 'pull');
     // Precedence: explicit opts.kinds > per-connection config.pullKinds > all.
     // config.pullKinds lets a connection opt out of data kinds its provider does
     // not serve (e.g. MX has no statements endpoint) so scheduled syncs are not
@@ -470,8 +721,15 @@ class BankingAggregator {
 
   /**
    * Push a payload outbound through the connection's connector.
+   *
+   * Fail-closed, mirroring BankSettlementEngine.clearAndSettle: in live mode
+   * the payload must carry approvalRef (maker/checker record) and screeningRef
+   * (PaymentComplianceGate screening id) or the push is refused with 409. In
+   * shadow mode (the default) the event is journaled and the provider is never
+   * called.
+   *
    * @param {string} id connection id
-   * @param {Object} payload { type, ...data }
+   * @param {Object} payload { type, approvalRef, screeningRef, ...data }
    */
   static async push(id, payload) {
     const conn = await BankingAggregator._getConnectionRaw(id);
@@ -483,21 +741,49 @@ class BankingAggregator {
     if (typeof connector.push !== 'function') {
       throw new Error(`Connector "${conn.connector_type}" does not support outbound push`);
     }
+    BankingAggregator._assertHandshake(conn, connector, 'push');
+
+    const body = payload || {};
+    const eventType = body.type || 'push';
+    const mode = BankingAggregator._modeOf(conn);
+    const approvalRef = body.approvalRef || null;
+    const screeningRef = body.screeningRef || null;
+
+    if (mode === 'shadow') {
+      const eventId = await BankingAggregator._logEvent(id, 'outbound', eventType,
+        { type: eventType, mode: 'shadow', approvalRef, screeningRef, payload: BankingAggregator._redactPayload(body) },
+        'processed', null);
+      return { ok: true, mode: 'shadow', shadow: true, eventId, providerRef: null,
+        note: 'shadow mode: recorded in banking_aggregator_events, provider not called (set config.mode=live to transmit)' };
+    }
+
+    if (!approvalRef) throw httpError('approvalRef (maker/checker record) is required for a live aggregator push', 409);
+    if (!screeningRef) throw httpError('screeningRef (compliance screening id) is required for a live aggregator push', 409);
 
     let result;
     try {
-      result = await connector.push(conn, payload || {});
+      result = await connector.push(conn, body);
     } catch (err) {
-      await BankingAggregator._logEvent(id, 'outbound', (payload && payload.type) || 'push',
-        { type: payload && payload.type }, 'failed', err.message);
+      await BankingAggregator._logEvent(id, 'outbound', eventType,
+        { type: eventType, mode: 'live', approvalRef, screeningRef }, 'failed', err.message);
       throw err;
     }
 
     await pool.query('UPDATE banking_aggregator_connections SET last_push_at = NOW() WHERE id = $1', [id]);
-    await BankingAggregator._logEvent(id, 'outbound', (payload && payload.type) || 'push',
-      { type: payload && payload.type, providerRef: result && result.providerRef },
+    await BankingAggregator._logEvent(id, 'outbound', eventType,
+      { type: eventType, mode: 'live', approvalRef, screeningRef, providerRef: result && result.providerRef },
       'sent', null, result && result.providerRef);
-    return result;
+    return Object.assign({ mode: 'live', shadow: false }, result);
+  }
+
+  /** Strip secret-looking keys from a push payload before journaling it. */
+  static _redactPayload(body) {
+    const out = {};
+    for (const [k, v] of Object.entries(body || {})) {
+      if (SECRET_CONFIG_KEYS.includes(k)) continue;
+      out[k] = v;
+    }
+    return out;
   }
 
   /**
@@ -511,6 +797,7 @@ class BankingAggregator {
     if (typeof connector.pullFileStatus !== 'function') {
       throw new Error(`Connector "${conn.connector_type}" does not support file status`);
     }
+    BankingAggregator._assertHandshake(conn, connector, 'pull');
     const result = await connector.pullFileStatus(conn, opts || {});
     await BankingAggregator._logEvent(id, 'inbound', 'file_status',
       { submissionId: opts && opts.submissionId, status: result && result.status }, 'processed', null);
@@ -529,6 +816,7 @@ class BankingAggregator {
     if (typeof connector.pullReturns !== 'function') {
       throw new Error(`Connector "${conn.connector_type}" does not support returns`);
     }
+    BankingAggregator._assertHandshake(conn, connector, 'pull');
     let returns;
     try {
       returns = await connector.pullReturns(conn, opts || {});
@@ -633,11 +921,12 @@ class BankingAggregator {
 
   static async status() {
     await BankingAggregator.ensureTables();
-    const [conns, accts, txns, evts] = await Promise.all([
+    const [conns, accts, txns, evts, hs] = await Promise.all([
       pool.query('SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE active)::int AS active FROM banking_aggregator_connections'),
       pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_accounts'),
       pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_transactions'),
       pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_events'),
+      pool.query(`SELECT id, connector_type, handshake_state, config->>'mode' AS mode FROM banking_aggregator_connections`),
     ]);
     return {
       connectors_available: listConnectorTypes(),
@@ -646,6 +935,30 @@ class BankingAggregator {
       accounts: accts.rows[0].n,
       transactions: txns.rows[0].n,
       events: evts.rows[0].n,
+      default_mode: defaultMode(),
+      handshake: BankingAggregator._handshakeSummary(hs.rows),
+    };
+  }
+
+  /** Aggregate handshake / mode counts over connection rows. */
+  static _handshakeSummary(rows) {
+    const byState = { pending: 0, challenged: 0, verified: 0, failed: 0 };
+    const byMode = { live: 0, shadow: 0 };
+    let required = 0;
+    for (const r of rows) {
+      let supported = false;
+      try { supported = BankingAggregator._connectorHasHandshake(getConnector(r.connector_type)); } catch (e) { supported = false; }
+      if (supported) required++;
+      const st = HANDSHAKE_STATES.includes(r.handshake_state) ? r.handshake_state : 'pending';
+      byState[st]++;
+      byMode[MODES.includes(r.mode) ? r.mode : defaultMode()]++;
+    }
+    return {
+      handshake_required: required,
+      verified: byState.verified,
+      by_state: byState,
+      by_mode: byMode,
+      timeout_ms: handshakeTimeoutMs(),
     };
   }
 
@@ -693,8 +1006,13 @@ class BankingAggregator {
       connector_type: row.connector_type,
       direction: row.direction,
       active: row.active,
+      mode: BankingAggregator._modeOf(row),
       config: safeConfig,
-      credentials: flags,
+      credentials: Object.assign(flags, { env_prefix: BankingAggregator.credentialsEnvPrefix(row) }),
+      handshake_state: row.handshake_state || 'pending',
+      handshake_at: row.handshake_at || null,
+      external_connection_id: row.external_connection_id || null,
+      capabilities: (row.handshake_meta && row.handshake_meta.capabilities) || null,
       last_pull_at: row.last_pull_at,
       last_push_at: row.last_push_at,
       created_at: row.created_at,
@@ -703,4 +1021,4 @@ class BankingAggregator {
   }
 }
 
-module.exports = { BankingAggregator, SECRET_CONFIG_KEYS };
+module.exports = { BankingAggregator, SECRET_CONFIG_KEYS, HANDSHAKE_STATES, MODES, ENV_CREDENTIAL_KEYS };

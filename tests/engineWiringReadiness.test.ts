@@ -17,6 +17,7 @@ const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
 const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngine');
 const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentProcessorOsEngine');
+const { BankingAggregator } = require('../server/integrations/aggregator/bankingAggregator');
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -40,6 +41,11 @@ const GCP_ENV: Record<string, string> = {
   ENTERPRISE_NETWORK_WEBHOOK_SECRET: 'whsec-network',
   PRIVATE_PAYMENT_NETWORK_LIVE: 'true',
   PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET: 'whsec-ppn',
+  AGGREGATOR_ENABLED: 'true',
+  AGGREGATOR_DEFAULT_MODE: 'live',
+  AGGREGATOR_PULL_INTERVAL_MS: '900000',
+  AGGREGATOR_HANDSHAKE_TIMEOUT_MS: '15000',
+  ADMIN_SECRET_TOKEN: 'admin-token-test',
 };
 
 const ENV_KEYS = [...Object.keys(GCP_ENV), 'DAPP_RPC_URL', 'DAPP_USDC_ADDRESS'];
@@ -86,6 +92,11 @@ function stubProviders() {
     sources: [{ id: 'payment_hub', liveFlag: 'PAYMENT_HUB_LIVE', mode: 'live', configured: true, realValueCapable: true, reason: null }],
     realValueCapable: ['payment_hub'], anyRealValueCapable: true,
   }));
+  vi.spyOn(BankingAggregator, 'status').mockResolvedValue({
+    connectors_available: ['generic_rest', 'internal_rails'],
+    connections: 2, connections_active: 2, accounts: 3, transactions: 40, events: 12, default_mode: 'live',
+    handshake: { handshake_required: 1, verified: 1, by_state: { pending: 0, challenged: 0, verified: 1, failed: 0 }, by_mode: { live: 2, shadow: 0 }, timeout_ms: 15000 },
+  });
 }
 
 beforeEach(() => {
@@ -101,7 +112,7 @@ afterEach(() => {
 });
 
 describe('platform engine registry', () => {
-  it('registers every engine behind the thirteen capabilities in the OS route map', () => {
+  it('registers every engine behind the fourteen capabilities in the OS route map', () => {
     for (const key of ['payment', 'clearing', 'settlement', 'apigee', 'apisix', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network']) {
       expect(OS.engines[key], key).toBeDefined();
       expect(typeof OS.engines[key].readiness).toBe('function');
@@ -136,7 +147,7 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all thirteen engines ready and healthy with the GCP config in place', async () => {
+  it('reports all fourteen engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     const report = await EngineWiringReadiness.readiness();
@@ -146,7 +157,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-gateway', 'payment-processor', 'private-payment-network', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(['aggregator', 'clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-gateway', 'payment-processor', 'private-payment-network', 'reconciliation']);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -155,8 +166,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(13);
-    expect(report.total).toBe(13);
+    expect(report.readyCount).toBe(14);
+    expect(report.total).toBe(14);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -180,6 +191,30 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines['payment-gateway'].liveFlags.PAYMENT_GATEWAY_LIVE).toBe(true);
     expect(report.engines['enterprise-network'].mode).toBe('live');
     expect(report.engines['private-payment-network'].mode).toBe('live');
+    expect(report.engines.aggregator.mode).toBe('live');
+    expect(report.engines.aggregator.modules.connections).toBe(2);
+    expect(report.engines.aggregator.modules.verifiedHandshakes).toBe(1);
+    expect(report.engines.aggregator.liveFlags.AGGREGATOR_PULL_INTERVAL_MS).toBe(900000);
+    expect(report.engines.aggregator.liveFlags.REQUIRE_APPROVAL_REF).toBe(true);
+  });
+
+  it('aggregator engine blocks on unverified handshakes, missing tables and AGGREGATOR_ENABLED=false', async () => {
+    stubCloudSql(['banking_aggregator_events']);
+    stubProviders();
+    (BankingAggregator.status as any).mockResolvedValue({
+      connectors_available: ['generic_rest', 'internal_rails'],
+      connections: 3, connections_active: 3, accounts: 0, transactions: 0, events: 0, default_mode: 'shadow',
+      handshake: { handshake_required: 2, verified: 0, by_state: { pending: 1, challenged: 0, verified: 0, failed: 1 }, by_mode: { live: 0, shadow: 3 }, timeout_ms: 15000 },
+    });
+    process.env.AGGREGATOR_ENABLED = 'false';
+    process.env.AGGREGATOR_DEFAULT_MODE = 'shadow';
+    const agg = await EngineWiringReadiness.engineReadiness('aggregator');
+    expect(agg.ready).toBe(false);
+    expect(agg.mode).toBe('shadow');
+    expect(agg.tables.banking_aggregator_events).toBe(false);
+    expect(agg.blockers).toContain('Cloud SQL tables missing: banking_aggregator_events');
+    expect(agg.blockers.some((b: string) => b.startsWith('AGGREGATOR_ENABLED=false'))).toBe(true);
+    expect(agg.blockers.some((b: string) => /2 connection\(s\) awaiting handshake verification/.test(b))).toBe(true);
   });
 
   it('payment-processor engine is the tenth blocker until PAYMENT_PROCESSOR_LIVE and a real-value processor exist', async () => {
@@ -193,8 +228,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     }));
     const report = await EngineWiringReadiness.readiness();
     expect(report.ready).toBe(false);
-    expect(report.readyCount).toBe(10);
-    expect(report.total).toBe(13);
+    expect(report.readyCount).toBe(11);
+    expect(report.total).toBe(14);
     expect(report.engines['payment-gateway'].ready).toBe(false);
     expect(report.engines['private-payment-network'].ready).toBe(false);
     expect(report.engines['private-payment-network'].blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);
