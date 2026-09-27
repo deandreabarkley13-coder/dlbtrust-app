@@ -883,3 +883,236 @@ describe.skipIf(!pgAvailable)('Betterment Trust Checking read path through Banki
     }
   });
 });
+
+// ─── SimpleFIN (Alderfi's read-only feed) + Alderfi MCP surface ──────────────
+const { simpleFinConnector, claimSetupToken, normalizeTransaction } = require('../server/integrations/aggregator/connectors/simpleFinConnector');
+const alderfiMcp = require('../server/integrations/aggregator/alderfiMcp');
+
+const SF_DEMO = {
+  errors: ['Connection to Chase may need attention'],
+  accounts: [
+    { id: 'bett-chk', name: 'Betterment Checking', currency: 'USD', balance: '12500.75', 'available-balance': '12400.00', 'balance-date': 1790553600,
+      org: { domain: 'betterment.com', name: 'Betterment', 'sfin-url': 'https://beta-bridge.simplefin.org/simplefin', id: 'CON-BETT' },
+      transactions: [
+        { id: 't1', posted: 1790496000, amount: '-42.10', description: 'ACH DEBIT VENDOR', mcc: '5812' },
+        { id: 't2', posted: 1790409600, amount: '1000.00', description: 'TRUST CONTRIBUTION' },
+        { id: 't3', posted: 0, transacted_at: 1790500000, amount: '250.00', description: 'BOND COUPON PAYMENT', pending: true },
+        { id: 't4', posted: 1790300000, amount: '-0.00', description: 'Zero-dollar auth' },
+      ] },
+    { id: 'chase-sav', name: 'Chase Savings', currency: 'USD', balance: '5', 'available-balance': '5', 'balance-date': 1790553600,
+      org: { domain: 'chase.com', name: 'Chase', 'sfin-url': 'https://beta-bridge.simplefin.org/simplefin', id: 'CON-CHASE' }, transactions: [] },
+  ],
+};
+
+function startSimpleFinMock(opts: { revoked?: boolean } = {}) {
+  const calls: { url: string; auth: string; method: string }[] = [];
+  const server = http.createServer((req, res) => {
+    calls.push({ url: req.url || '', auth: String(req.headers.authorization || ''), method: req.method || '' });
+    if (req.url === '/claim/abc' && req.method === 'POST') { res.writeHead(200); return res.end(`http://demo:secretpw@127.0.0.1:${(server.address() as AddressInfo).port}/simplefin`); }
+    if (req.headers.authorization !== 'Basic ' + Buffer.from('demo:secretpw').toString('base64')) { res.writeHead(403); return res.end('Forbidden'); }
+    if (opts.revoked) { res.writeHead(403); return res.end('Access URL disabled'); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(SF_DEMO));
+  });
+  return new Promise<{ accessUrl: string; claimToken: string; calls: typeof calls; close: () => void }>((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address() as AddressInfo;
+      resolve({
+        accessUrl: `http://demo:secretpw@127.0.0.1:${port}/simplefin`,
+        claimToken: Buffer.from(`http://127.0.0.1:${port}/claim/abc`).toString('base64'),
+        calls, close: () => server.close(),
+      });
+    });
+  });
+}
+
+describe('simplefin connector (Betterment via SimpleFIN Bridge, read-only)', () => {
+  it('is registered and has no push (outbound stays on the Private Electronic Payment Network)', () => {
+    expect(listConnectorTypes()).toContain('simplefin');
+    expect(simpleFinConnector.push).toBeUndefined();
+  });
+
+  it('rejects missing / malformed / non-https / credential-less Access URLs without echoing them', async () => {
+    const saved = process.env.SIMPLEFIN_ACCESS_URL; delete process.env.SIMPLEFIN_ACCESS_URL;
+    try {
+      await expect(simpleFinConnector.handshake({ id: 's', config: {} }, {})).rejects.toThrow(/Access URL missing/);
+      await expect(simpleFinConnector.handshake({ id: 's', config: { accessUrl: 'not a url' } }, {})).rejects.toThrow(/not a valid URL/);
+      await expect(simpleFinConnector.handshake({ id: 's', config: { accessUrl: 'http://u:p@bridge.example.com/simplefin' } }, {})).rejects.toThrow(/must use https/);
+      await expect(simpleFinConnector.handshake({ id: 's', config: { accessUrl: 'https://bridge.example.com/simplefin' } }, {})).rejects.toThrow(/Basic-Auth credentials/);
+      await expect(simpleFinConnector.handshake({ id: 's', config: { accessUrl: 'https://u:topsecret@bridge.example.com/simplefin' } }, { timeoutMs: 200 })).rejects.not.toThrow(/topsecret/);
+    } finally { if (saved) process.env.SIMPLEFIN_ACCESS_URL = saved; }
+  });
+
+  it('claims a one-time Setup Token (base64 claim URL, POST) and returns the Access URL', async () => {
+    const sf = await startSimpleFinMock();
+    try {
+      expect(await claimSetupToken(sf.claimToken)).toBe(sf.accessUrl);
+      expect(sf.calls[0]).toMatchObject({ url: '/claim/abc', method: 'POST' });
+      await expect(claimSetupToken('%%%not-base64-url')).rejects.toThrow(/not a base64-encoded claim URL/);
+    } finally { sf.close(); }
+  });
+
+  it('handshakes with Basic auth from the Access URL, resolves Betterment by orgName, read-only capabilities', async () => {
+    const sf = await startSimpleFinMock();
+    try {
+      const hs = await simpleFinConnector.handshake({ id: 's1', config: { accessUrl: sf.accessUrl, orgName: 'Betterment' } }, {});
+      expect(hs.externalConnectionId).toBe('CON-BETT');
+      expect(hs.capabilities).toEqual({ pull: true, push: false, webhook: false });
+      expect(hs.meta.institution).toMatchObject({ id: 'CON-BETT', name: 'Betterment' });
+      expect(hs.meta.accounts.map((a: any) => a.id)).toEqual(['bett-chk']);
+      expect(hs.meta.bridgeErrors).toEqual(['Connection to Chase may need attention']);
+      expect(JSON.stringify(hs)).not.toMatch(/secretpw/);
+      expect(sf.calls[0].auth).toBe('Basic ' + Buffer.from('demo:secretpw').toString('base64'));
+      expect(sf.calls[0].url).toMatch(/^\/simplefin\/accounts\?.*balances-only=1/);
+    } finally { sf.close(); }
+  });
+
+  it('fails the handshake when the institution is not linked or the Access URL was revoked', async () => {
+    const sf = await startSimpleFinMock();
+    try {
+      await expect(simpleFinConnector.handshake({ id: 's1', config: { accessUrl: sf.accessUrl, orgName: 'Fidelity' } }, {}))
+        .rejects.toThrow(/no linked institution matching "Fidelity" \(linked: Betterment, Chase\)/);
+    } finally { sf.close(); }
+    const revoked = await startSimpleFinMock({ revoked: true });
+    try {
+      await expect(simpleFinConnector.handshake({ id: 's1', config: { accessUrl: revoked.accessUrl, orgName: 'Betterment' } }, {}))
+        .rejects.toThrow(/HTTP 403.*disabled or revoked/);
+    } finally { revoked.close(); }
+  });
+
+  it('pulls only the Betterment accounts/transactions, signed amount → direction, 90-day window with overlap', async () => {
+    const sf = await startSimpleFinMock();
+    try {
+      const conn = { id: 's1', handshake_state: 'verified', external_connection_id: 'CON-BETT', config: { accessUrl: sf.accessUrl, orgName: 'Betterment' } };
+      const accounts = await simpleFinConnector.pullAccounts(conn, {});
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({ externalAccountId: 'bett-chk', name: 'Betterment Checking', balanceCurrent: 12500.75, balanceAvailable: 12400, currency: 'USD' });
+      const txns = await simpleFinConnector.pullTransactions(conn, { since: '2026-09-01T00:00:00Z' });
+      expect(txns.map((t: any) => [t.externalTxnId, t.externalAccountId, t.direction, t.amount, t.status])).toEqual([
+        ['t1', 'bett-chk', 'debit', 42.1, 'posted'],
+        ['t2', 'bett-chk', 'credit', 1000, 'posted'],
+        ['t3', 'bett-chk', 'credit', 250, 'pending'],
+        ['t4', 'bett-chk', 'debit', 0, 'posted'],
+      ]);
+      const last = sf.calls[sf.calls.length - 1].url;
+      const start = Number(new URL('http://x' + last).searchParams.get('start-date'));
+      expect(start).toBe(Math.floor((Date.parse('2026-09-01T00:00:00Z') - 5 * 86400000) / 1000));
+      expect(last).toMatch(/pending=1/);
+      // 90-day cap when since is ancient
+      await simpleFinConnector.pullTransactions(conn, { since: '2020-01-01T00:00:00Z' });
+      const capped = Number(new URL('http://x' + sf.calls[sf.calls.length - 1].url).searchParams.get('start-date'));
+      expect(Date.now() / 1000 - capped).toBeLessThanOrEqual(90 * 86400 + 60);
+      // accountIds filter
+      const none = await simpleFinConnector.pullAccounts({ ...conn, config: { ...conn.config, accountIds: ['nope'] } }, {});
+      expect(none).toEqual([]);
+    } finally { sf.close(); }
+  });
+
+  it('normalizeTransaction: MCC → category, payee/memo fallback', () => {
+    const t = normalizeTransaction({ id: 'x', posted: 1790496000, amount: '-5', payee: 'Shop', memo: 'SHOP', mcc: '5411' }, 'acct');
+    expect(t).toMatchObject({ externalTxnId: 'x', externalAccountId: 'acct', direction: 'debit', amount: 5, description: 'Shop', category: 'mcc:5411', postedDate: '2026-09-27' });
+  });
+
+  it('BankingAggregator redacts accessUrl/setupToken and projects AGGREGATOR_*_ACCESS_URL from env', () => {
+    const red = BankingAggregator._redactConnection({ id: 'x', config: { accessUrl: 'https://u:p@bridge/simplefin', setupToken: 'abc', orgName: 'Betterment' } });
+    expect(JSON.stringify(red)).not.toMatch(/u:p@|abc/);
+    expect(red.config).toEqual({ orgName: 'Betterment' });
+    expect(red.credentials).toMatchObject({ has_accessUrl: true, has_setupToken: true });
+    process.env.AGGREGATOR_SF_TEST_ACCESS_URL = 'https://u:p@bridge/simplefin';
+    try {
+      const cfg = BankingAggregator._withEnvCredentials({ id: 'SF-TEST', name: 'SF Test', config: { orgName: 'Betterment' } }).config;
+      expect(cfg.accessUrl).toBe('https://u:p@bridge/simplefin');
+    } finally { delete process.env.AGGREGATOR_SF_TEST_ACCESS_URL; }
+  });
+});
+
+describe('Alderfi MCP surface (JSON-RPC 2.0, read-only over the existing aggregator + trust GL)', () => {
+  const rpc = (method: string, params?: unknown, id: number | string = 1) => alderfiMcp.handleMessage({ jsonrpc: '2.0', id, method, params });
+
+  it('initialize / ping / tools-list follow the MCP shape and expose only read tools', async () => {
+    const init = await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test' } });
+    expect(init.result).toMatchObject({ protocolVersion: '2025-06-18', serverInfo: { name: 'alderfi-dlbtrust' }, capabilities: { tools: {} } });
+    expect((await rpc('ping')).result).toEqual({});
+    const tools = (await rpc('tools/list')).result.tools;
+    expect(tools.map((t: any) => t.name)).toEqual(['list_accounts', 'list_transactions', 'list_connections', 'trust_balance_summary', 'list_journal_entries', 'aggregator_status']);
+    for (const t of tools) {
+      expect(t.inputSchema.type).toBe('object');
+      expect(t.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+    }
+    expect(JSON.stringify(tools)).toMatch(/principal.*coupon_income.*interest_income/);
+  });
+
+  it('returns JSON-RPC errors for invalid requests, unknown methods and unknown tools; notifications yield no reply', async () => {
+    expect((await alderfiMcp.handleMessage({ id: 1, method: 'ping' })).error.code).toBe(-32600);
+    expect((await alderfiMcp.handleMessage(null)).error.code).toBe(-32600);
+    expect((await rpc('resources/list')).error).toMatchObject({ code: -32601 });
+    expect((await rpc('tools/call', { name: 'transfer_funds', arguments: {} })).error).toMatchObject({ code: -32602, message: expect.stringMatching(/Unknown tool/) });
+    expect((await rpc('tools/call', { name: 'list_transactions', arguments: { limit: 'x' } })).result).toMatchObject({ isError: true });
+    expect(await alderfiMcp.handleMessage({ jsonrpc: '2.0', method: 'notifications/initialized' })).toBeNull();
+    expect(await alderfiMcp.handleMessage({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } })).toBeNull();
+  });
+
+  it('maps aggregator rows to Alderfi accounts/transactions with signed amounts + trust GL classification', () => {
+    const acct = alderfiMcp.toAlderfiAccount({ connection_id: 'C1', external_account_id: 'a1', name: 'Betterment Checking', account_type: 'depository', currency: 'USD', balance_current: '12500.75', balance_available: '12400', mask: '3054', raw: {} }, { name: 'Betterment Trust Checking', connector_type: 'simplefin' });
+    expect(acct).toMatchObject({ id: 'C1:a1', institution: 'Betterment Trust Checking', connector: 'simplefin', balance: 12500.75, available_balance: 12400, mask: '3054' });
+    const accounting = { creditDefault: 'principal' };
+    const debit = alderfiMcp.toAlderfiTransaction({ connection_id: 'C1', external_txn_id: 't1', external_account_id: 'a1', posted_date: '2026-09-01', amount: '42.10', direction: 'debit', description: 'Management fee', status: 'posted', currency: 'USD' }, accounting);
+    expect(debit).toMatchObject({ amount: -42.1, trust_classification: 'fee_expense', gl: { debit: '5000', credit: '1000' } });
+    const coupon = alderfiMcp.toAlderfiTransaction({ connection_id: 'C1', external_txn_id: 't2', external_account_id: 'a1', posted_date: '2026-09-02', amount: '250', direction: 'credit', description: 'BOND COUPON PAYMENT', status: 'posted' }, accounting);
+    expect(coupon).toMatchObject({ amount: 250, trust_classification: 'coupon_income', gl: { debit: '1020', credit: '4100' } });
+    const principal = alderfiMcp.toAlderfiTransaction({ connection_id: 'C1', external_txn_id: 't3', external_account_id: 'a1', posted_date: '2026-09-03', amount: '1000', direction: 'credit', description: 'TRUST CONTRIBUTION', status: 'pending' }, accounting);
+    expect(principal).toMatchObject({ amount: 1000, pending: true, trust_classification: 'principal', gl: { debit: '1000', credit: '3000' } });
+  });
+
+  it('stdio transport: newline-delimited JSON-RPC, parse errors reported, notifications silent', async () => {
+    const { PassThrough } = await import('stream');
+    const input = new PassThrough(); const output = new PassThrough();
+    let out = ''; output.on('data', (c) => { out += c; });
+    const done = alderfiMcp.serveStdio(input, output);
+    input.write(JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'ping' }) + '\n{bad json\n');
+    input.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+    input.end();
+    await done;
+    await new Promise((r) => setTimeout(r, 20));
+    const lines = out.trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines.find((l) => l.id === 7).result).toEqual({});
+    expect(lines.find((l) => l.id === null).error.code).toBe(-32700);
+  });
+});
+
+describe.skipIf(!pgAvailable)('SimpleFIN → BankingAggregator → DataBridge → Alderfi MCP (local Postgres)', () => {
+  const ID = 'CONN-SF-TEST';
+  let sf: Awaited<ReturnType<typeof startSimpleFinMock>>;
+  beforeAll(async () => {
+    delete process.env.AGGREGATOR_DEFAULT_MODE;
+    sf = await startSimpleFinMock();
+    await BankingAggregator.ensureTables();
+    await pool.query('DELETE FROM banking_aggregator_transactions WHERE connection_id = $1', [ID]);
+    await pool.query('DELETE FROM banking_aggregator_accounts WHERE connection_id = $1', [ID]);
+    await pool.query('DELETE FROM banking_aggregator_connections WHERE id = $1', [ID]);
+  });
+  afterAll(() => sf?.close());
+
+  it('creates + auto-handshakes the connection via env-projected Access URL, pulls, and MCP lists it without leaking the secret', async () => {
+    process.env.AGGREGATOR_SF_TEST_ACCESS_URL = sf.accessUrl;
+    try {
+      const conn = await BankingAggregator.createConnection({ id: ID, name: 'SF Test', connectorType: 'simplefin', direction: 'inbound', config: { orgName: 'Betterment', mode: 'live', accounting: { creditDefault: 'principal' } } });
+      expect(conn.handshake_state).toBe('verified');
+      expect(conn.external_connection_id).toBe('CON-BETT');
+      expect(JSON.stringify(conn)).not.toMatch(/secretpw/);
+      const pulled = await BankingAggregator.pull(ID, { kinds: ['accounts', 'transactions'] });
+      expect(pulled.accounts).toBe(1);
+      expect(pulled.transactions).toBe(4);
+      const accounts = (await alderfiMcp.handleMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_accounts', arguments: { connection_id: ID } } })).result.structuredContent.accounts;
+      expect(accounts).toHaveLength(1);
+      expect(accounts[0]).toMatchObject({ id: `${ID}:bett-chk`, connector: 'simplefin', balance: 12500.75 });
+      const txns = (await alderfiMcp.handleMessage({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'list_transactions', arguments: { connection_id: ID, classification: 'coupon_income' } } })).result.structuredContent.transactions;
+      expect(txns.map((t: any) => [t.id, t.amount, t.gl.credit])).toEqual([[`${ID}:t3`, 250, '4100']]);
+      const conns = (await alderfiMcp.handleMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_connections', arguments: {} } })).result;
+      expect(JSON.stringify(conns)).not.toMatch(/secretpw/);
+      expect(conns.structuredContent.connections.find((c: any) => c.id === ID)).toMatchObject({ connector: 'simplefin', handshake_state: 'verified', capabilities: { pull: true, push: false, webhook: false } });
+      await expect(BankingAggregator.push(ID, { amount: 1 })).rejects.toThrow(/does not support push|only|inbound/);
+    } finally { delete process.env.AGGREGATOR_SF_TEST_ACCESS_URL; }
+  });
+});

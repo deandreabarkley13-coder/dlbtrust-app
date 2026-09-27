@@ -23,6 +23,7 @@ const express = require('express');
 const router = express.Router();
 const { BankingAggregator } = require('../integrations/aggregator/bankingAggregator');
 const { verifySchedulerToken } = require('../integrations/aggregator/schedulerAuth');
+const alderfiMcp = require('../integrations/aggregator/alderfiMcp');
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 // Admin token via x-admin-token header or adminToken query param.
@@ -56,6 +57,25 @@ function fail(res, err) {
 router.get('/status', requireAdmin, async (req, res) => {
   try { res.json({ success: true, data: await BankingAggregator.status() }); }
   catch (err) { fail(res, err); }
+});
+
+// ─── Alderfi MCP (read-only) ─────────────────────────────────────────────────
+// One JSON-RPC 2.0 message per POST (initialize, tools/list, tools/call ...);
+// notifications answer 202 with no body. Same tools as
+// server/scripts/alderfiMcpServer.js over stdio.
+router.post('/mcp', requireAdmin, async (req, res) => {
+  try {
+    const out = await alderfiMcp.handleMessage(req.body);
+    if (out === null) return res.status(202).end();
+    return res.json(out);
+  } catch (err) { fail(res, err); }
+});
+
+router.get('/mcp', requireAdmin, (req, res) => {
+  res.json({ success: true, data: {
+    server: alderfiMcp.SERVER_INFO, protocolVersion: alderfiMcp.PROTOCOL_VERSION, transport: 'http-json-rpc',
+    tools: alderfiMcp.TOOLS.map((t) => t.name), readOnly: true,
+  } });
 });
 
 // ─── Connections CRUD ────────────────────────────────────────────────────────

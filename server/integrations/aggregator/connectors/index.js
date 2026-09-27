@@ -27,6 +27,7 @@ const { genericRestConnector } = require('./genericRestConnector');
 const { internalRailsConnector } = require('./internalRailsConnector');
 const { bankSyncConnector } = require('./bankSyncConnector');
 const { orangeRailsConnector } = require('./orangeRailsConnector');
+const { simpleFinConnector } = require('./simpleFinConnector');
 
 const REGISTRY = new Map();
 
@@ -50,5 +51,6 @@ registerConnector(genericRestConnector);
 registerConnector(internalRailsConnector);
 registerConnector(bankSyncConnector);
 registerConnector(orangeRailsConnector);
+registerConnector(simpleFinConnector);
 
 module.exports = { registerConnector, getConnector, listConnectorTypes };
