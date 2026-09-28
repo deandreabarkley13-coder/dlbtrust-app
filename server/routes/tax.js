@@ -10,6 +10,7 @@
 const express = require('express');
 const router = express.Router();
 const { TaxEngine } = require('../integrations/tax/taxEngine');
+const { TaxOsEngine, REPORT_TYPES } = require('../integrations/os/taxOsEngine');
 
 // ─── Dashboard ──────────────────────────────────────────────────────────────
 
@@ -154,6 +155,48 @@ router.get('/income/:year', async (req, res) => {
   try {
     const result = await TaxEngine.aggregateIncome(parseInt(req.params.year, 10));
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── Tax OS reports and exports (reports only — nothing is filed) ─────────────
+
+router.get('/reports/:reportType', async (req, res) => {
+  try {
+    if (!REPORT_TYPES.includes(req.params.reportType)) return res.status(400).json({ success: false, error: `reportType must be one of ${REPORT_TYPES.join(', ')}` });
+    const data = await TaxOsEngine.report({ reportType: req.params.reportType, returnId: req.query.returnId || null, taxYear: req.query.taxYear ? parseInt(req.query.taxYear, 10) : null, k1Id: req.query.k1Id || null });
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/reports/:reportType/export', async (req, res) => {
+  try {
+    if (!REPORT_TYPES.includes(req.params.reportType)) return res.status(400).json({ success: false, error: `reportType must be one of ${REPORT_TYPES.join(', ')}` });
+    const format = String(req.query.format || 'json').toLowerCase();
+    const x = await TaxOsEngine.exportReport({
+      reportType: req.params.reportType,
+      format,
+      returnId: req.query.returnId || null,
+      taxYear: req.query.taxYear ? parseInt(req.query.taxYear, 10) : null,
+      k1Id: req.query.k1Id || null,
+      actor: req.user?.email || req.user?.username || req.user?.userId || null,
+    });
+    res.setHeader('Content-Type', x.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${x.filename}"`);
+    res.setHeader('X-Export-Id', x.exportId);
+    res.setHeader('X-Content-SHA256', x.sha256);
+    res.send(x.body);
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/exports', async (req, res) => {
+  try {
+    res.json({ success: true, data: await TaxOsEngine.list({ limit: req.query.limit }) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

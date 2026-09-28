@@ -379,6 +379,55 @@ variable "runtime_environment" {
     EGRESS_HTTPS_ONLY    = "true"
     EGRESS_ALLOWED_HOSTS = "api.ipify.org,beta-bridge.simplefin.org,simplefin.org,api.orangerails.com"
     EGRESS_ECHO_URL      = "https://api.ipify.org?format=json"
+    # IDP / OCR OS (server/integrations/os/idpOcrOsEngine): Document AI intake
+    # of distribution / disbursement / request / vendor-payout documents. Bytes
+    # go to the private IDP_OCR_BUCKET (never Cloud SQL); extracted fields are
+    # redacted (SSN/EIN/account -> last 4). Text-only extraction (no processor)
+    # caps at 0.5 confidence and always needs trustee review. Stays shadow until
+    # IDP_OCR_PROCESSOR (projects/<n>/locations/<loc>/processors/<id>) and
+    # IDP_OCR_BUCKET exist and IDP_OCR_LIVE=true. Moves no money.
+    IDP_OCR_ENABLED                   = "true"
+    IDP_OCR_LIVE                      = "false"
+    IDP_OCR_PROCESSOR                 = ""
+    IDP_OCR_BUCKET                    = ""
+    IDP_OCR_MIN_CONFIDENCE            = "0.85"
+    IDP_OCR_REQUIRE_DISTINCT_APPROVER = "true"
+    # Tax OS (server/integrations/os/taxOsEngine): Form 1041 + Schedule K-1
+    # reports from TaxEngine + trust journal + Fineract principal / interest
+    # income accounts; JSON / CSV / PDF exports (GET /api/tax/reports/:type/export).
+    # Reports only: no e-file, no IRS transmission. TAX_OS_EXPORT_BUCKET is an
+    # optional private archive.
+    TAX_OS_ENABLED        = "true"
+    TAX_OS_LIVE           = "true"
+    TAX_OS_DECLARED_STATE = "OH"
+    TAX_OS_EXPORT_BUCKET  = ""
+    # Private Entity OS (server/integrations/os/privateEntityOsEngine):
+    # trustee-declared Ohio ORC 1111-1112 private family trust company profile
+    # (single-family multigenerational, unlicensed/unregulated as declared,
+    # non-depository, income-support only, PPN settlement). Two distinct
+    # trustee attestations + platform audit (IAP enforced, family list, no
+    # public invoker, PPN family-only, no Stripe/on-chain, no asset sales).
+    # The software records the declaration; it does not establish legal status.
+    PRIVATE_ENTITY_ENABLED = "true"
+    PRIVATE_ENTITY_LIVE    = "true"
+    # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
+    # backend-to-backend agent for the private Electronic Payment Networks.
+    # Each network is registered with a credential_ref = the NAME of a Secret
+    # Manager-backed env var (add it to secret_names; the value is read at call
+    # time for HMAC only, never persisted, logged or returned). Handshake =
+    # HMAC challenge/verify (registrar + distinct verifier). USA-only: ABA
+    # routing on both legs, USD, converted to the network's format (nacha,
+    # iso20022_pain001, iso20022_pacs008, fednow, rtp, bai2), HMAC-signed POST
+    # <base_url>/clear through Egress OS, then idempotent post to Fineract
+    # (withdraw debtor savings, deposit creditor savings). Handshake and
+    # conversion never move money; submit needs approvalRef + screeningRef.
+    CLEARING_AGENT_ENABLED                   = "true"
+    CLEARING_AGENT_LIVE                      = "false"
+    CLEARING_AGENT_ID                        = "DLB-TRUST-CLEARING-AGENT"
+    CLEARING_AGENT_POST_TO_FINERACT          = "true"
+    CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER = "true"
+    CLEARING_AGENT_REQUIRE_APPROVAL          = "true"
+    CLEARING_AGENT_TIMEOUT_MS                = "15000"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

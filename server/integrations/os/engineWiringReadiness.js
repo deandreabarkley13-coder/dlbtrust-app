@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -75,6 +75,10 @@ const ENGINE_TITLES = {
   'open-bank-rest-api': 'Open Bank REST API OS (OBP-style REST surface over Fineract core banking + Open Banking Tracker directory; bank file-drop registration onto AS2Partners / MFT)',
   'private-access': 'Private Access (family-only, non-public: Cloud Run behind IAP, no allUsers invoker, family identity allow-list, Cloud VPN for trusted sites; PPN family-only mode with Stripe/card rails excluded)',
   egress: 'Egress OS (single outbound door: Serverless VPC connector -> Cloud NAT static IP; destination allow/deny-list, retired rails denied, audited + fail-closed authorize, NAT IP probe)',
+  'idp-ocr': 'IDP / OCR OS (Document AI intake of distribution, disbursement, request and vendor-payout documents; classification, redaction, confidence gate, trustee review -> distinct approver -> link to maker-checker request; moves no money)',
+  'tax-os': 'Tax OS (Form 1041 + Schedule K-1 reports from the trust journal and Fineract principal / interest-income accounts; JSON / CSV / PDF exports; reports only, no e-file)',
+  'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
+  'clearing-agent': 'Clearing Agent OS (backend-to-backend agent for the private Electronic Payment Networks: Secret-Manager-referenced credentials, HMAC challenge/verify handshake by two trustees, USA-only conversion to NACHA / ISO 20022 pain.001 + pacs.008 / FedNow + RTP / BAI2, HMAC-signed clear over Egress OS, idempotent post to Fineract core banking)',
 };
 
 const TABLES = {
@@ -112,6 +116,10 @@ const TABLES = {
   'open-bank-rest-api': ['open_bank_providers', 'open_bank_file_drops', 'open_bank_events', 'as2_partners', 'h2h_discovery_sources'],
   egress: ['egress_events', 'egress_probes'],
   'private-access': [],
+  'idp-ocr': ['idp_documents', 'idp_events'],
+  'tax-os': ['tax_returns_1041', 'k1_schedules', 'trust_config', 'tax_payments', 'tax_report_exports', 'trust_journal_lines', 'fineract_trust_accounts', 'crm_contacts'],
+  'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
+  'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'egress_events'],
 };
 
 function tryRequire(mod) {
@@ -385,6 +393,10 @@ const REPORTERS = {
   'open-bank-rest-api': openBankRestApiReadiness,
   egress: egressReadiness,
   'private-access': privateAccessReadiness,
+  'idp-ocr': idpOcrReadiness,
+  'tax-os': taxOsReadiness,
+  'private-entity': privateEntityReadiness,
+  'clearing-agent': clearingAgentReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1551,6 +1563,123 @@ async function egressReadiness(ctx, env = process.env) {
     modules: s ? { path: s.path, audit: s.audit, last24h: s.last24h, lastProbe: s.lastProbe } : { error: r.error },
     routes: ['/api/os/egress/{status,readiness,list,process}', '/api/os/readiness/egress'],
     secrets: ['none — policy is host names only; EGRESS_STATIC_IP is the public NAT address from terraform output egress_ip'],
+    tables,
+    blockers,
+  };
+}
+
+async function idpOcrReadiness(ctx, env = process.env) {
+  const Idp = tryRequire('./idpOcrOsEngine')?.IdpOcrOsEngine;
+  const tables = await tablesPresent(TABLES['idp-ocr']);
+  const blockers = baseBlockers(ctx, tables, Idp, 'IdpOcrOsEngine');
+  const r = Idp && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Idp.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`idp-ocr: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'google document-ai (IDP_OCR_PROCESSOR) + private GCS bucket (IDP_OCR_BUCKET); egress via Egress OS',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      IDP_OCR_ENABLED: String(env.IDP_OCR_ENABLED || 'true').toLowerCase() !== 'false',
+      IDP_OCR_LIVE: isTrue(env.IDP_OCR_LIVE),
+      IDP_OCR_PROCESSOR: Boolean(env.IDP_OCR_PROCESSOR),
+      IDP_OCR_BUCKET: Boolean(env.IDP_OCR_BUCKET),
+      IDP_OCR_MIN_CONFIDENCE: s ? s.policy.minConfidence : null,
+      IDP_OCR_REQUIRE_DISTINCT_APPROVER: s ? s.policy.requireDistinctApprover : true,
+      MOVES_MONEY: false,
+    },
+    modules: s ? { provider: s.provider, storage: s.storage, policy: s.policy, documents: s.documents } : { error: r.error },
+    routes: ['/api/os/idp-ocr/{status,readiness,list,process}', '/api/os/readiness/idp-ocr'],
+    secrets: ['none — Document AI and GCS use the Cloud Run runtime identity (roles/documentai.apiUser, roles/storage.objectCreator on IDP_OCR_BUCKET); document bytes never enter Cloud SQL, identifiers are redacted to last-4'],
+    tables,
+    blockers,
+  };
+}
+
+async function taxOsReadiness(ctx, env = process.env) {
+  const Tax = tryRequire('./taxOsEngine')?.TaxOsEngine;
+  const tables = await tablesPresent(TABLES['tax-os']);
+  const blockers = baseBlockers(ctx, tables, Tax, 'TaxOsEngine');
+  const r = Tax && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Tax.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`tax-os: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'tax-os (TaxEngine Form 1041 / K-1 arithmetic; trust journal GL 3000 / 4000 / 4100 / 2000; Fineract account structure) — reports only',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      TAX_OS_ENABLED: String(env.TAX_OS_ENABLED || 'true').toLowerCase() !== 'false',
+      TAX_OS_LIVE: isTrue(env.TAX_OS_LIVE),
+      TAX_OS_FILING_MODE: 'reports_only',
+      TAX_OS_EXPORT_BUCKET: Boolean(env.TAX_OS_EXPORT_BUCKET),
+      TAX_OS_DECLARED_STATE: String(env.TAX_OS_DECLARED_STATE || 'OH'),
+      EFILE: false,
+      MOVES_MONEY: false,
+    },
+    modules: s ? { entity: s.entity, returns: s.returns, beneficiaries: s.beneficiaries, fineractAccounts: s.fineractAccounts, exports: s.exports, storage: s.storage, formats: s.formats, reportTypes: s.reportTypes } : { error: r.error },
+    routes: ['/api/tax/reports/{form_1041,schedule_k1,principal_income,package}/export', '/api/os/tax-os/{status,readiness,list,process}', '/api/os/readiness/tax-os'],
+    secrets: ['none — EIN lives in trust_config; exports archive with the runtime identity when TAX_OS_EXPORT_BUCKET is set'],
+    tables,
+    blockers,
+  };
+}
+
+async function privateEntityReadiness(ctx, env = process.env) {
+  const Pe = tryRequire('./privateEntityOsEngine')?.PrivateEntityOsEngine;
+  const tables = await tablesPresent(TABLES['private-entity']);
+  const blockers = baseBlockers(ctx, tables, Pe, 'PrivateEntityOsEngine');
+  const r = Pe && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Pe.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`private-entity: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'private-entity (trustee-declared profile, two-trustee attestation, platform audit against the declaration)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      PRIVATE_ENTITY_ENABLED: String(env.PRIVATE_ENTITY_ENABLED || 'true').toLowerCase() !== 'false',
+      PRIVATE_ENTITY_LIVE: isTrue(env.PRIVATE_ENTITY_LIVE),
+      ENTITY_TYPE: 'family_trust_company',
+      JURISDICTION: 'US-OH',
+      STATUTE_REFERENCE: 'ORC 1111-1112 (declared)',
+      FAMILY_SCOPE: 'single_family_multigenerational',
+      PUBLIC_ONBOARDING: isTrue(env.PUBLIC_ONBOARDING_ENABLED),
+      DEPOSIT_TAKING: isTrue(env.DEPOSIT_TAKING_ENABLED),
+      ASSET_SALES: false,
+      SETTLEMENT_RAIL: 'private-payment-network',
+    },
+    modules: s ? { entity: s.entity, profile: s.profile, requiredAttestations: s.requiredAttestations, audit: s.audit, tax: s.tax, legalStatus: s.legalStatus } : { error: r.error },
+    routes: ['/api/os/private-entity/{status,readiness,list,process}', '/api/os/readiness/private-entity'],
+    secrets: ['none'],
+    tables,
+    blockers,
+  };
+}
+
+async function clearingAgentReadiness(ctx, env = process.env) {
+  const Ca = tryRequire('./clearingAgentOsEngine')?.ClearingAgentOsEngine;
+  const tables = await tablesPresent(TABLES['clearing-agent']);
+  const blockers = baseBlockers(ctx, tables, Ca, 'ClearingAgentOsEngine');
+  const r = Ca && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Ca.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`clearing-agent: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'clearing-agent (HMAC challenge/verify handshake, secret refs only, USA-only bank-format conversion, clear -> post to Fineract)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      CLEARING_AGENT_ENABLED: String(env.CLEARING_AGENT_ENABLED || 'true').toLowerCase() !== 'false',
+      CLEARING_AGENT_LIVE: isTrue(env.CLEARING_AGENT_LIVE),
+      CLEARING_AGENT_POST_TO_FINERACT: String(env.CLEARING_AGENT_POST_TO_FINERACT || 'true').toLowerCase() !== 'false',
+      CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER: String(env.CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER || 'true').toLowerCase() !== 'false',
+      CLEARING_AGENT_REQUIRE_APPROVAL: String(env.CLEARING_AGENT_REQUIRE_APPROVAL || 'true').toLowerCase() !== 'false',
+      PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY: isTrue(env.PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY),
+      FINERACT_URL: Boolean(env.FINERACT_URL),
+      COUNTRY: 'US',
+      CURRENCY: 'USD',
+    },
+    modules: s ? { networks: s.networks, formats: s.formats, instructions: s.instructions, coreBanking: s.coreBanking, policy: s.policy } : { error: r.error },
+    routes: ['/api/os/clearing-agent/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/clearing-agent'],
+    secrets: ['per-network credential_ref (Secret Manager env reference; value never persisted or returned)', 'FINERACT_USERNAME', 'FINERACT_PASSWORD'],
     tables,
     blockers,
   };
