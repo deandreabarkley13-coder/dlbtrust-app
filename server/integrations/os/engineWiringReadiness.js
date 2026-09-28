@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -73,6 +73,8 @@ const ENGINE_TITLES = {
   'back-office': 'Backend OS (Back Office engine: treasury summary, bank reconciliation, batches; distribution execution via PPN only — dapp/on-chain executor retired)',
   'h2h-discovery': 'H2H Discovery OS (web data scraping of bank host-to-host onboarding docs: AS2 ID, client ID, base URL, SFTP host, MDN, cert fingerprint; trustee confirm -> second-trustee apply)',
   'open-bank-rest-api': 'Open Bank REST API OS (OBP-style REST surface over Fineract core banking + Open Banking Tracker directory; bank file-drop registration onto AS2Partners / MFT)',
+  'private-access': 'Private Access (family-only, non-public: Cloud Run behind IAP, no allUsers invoker, family identity allow-list, Cloud VPN for trusted sites; PPN family-only mode with Stripe/card rails excluded)',
+  egress: 'Egress OS (single outbound door: Serverless VPC connector -> Cloud NAT static IP; destination allow/deny-list, retired rails denied, audited + fail-closed authorize, NAT IP probe)',
 };
 
 const TABLES = {
@@ -108,6 +110,8 @@ const TABLES = {
   'back-office': ['back_office_batches', 'back_office_tasks', 'os_events', 'cash_accounts', 'trust_journal_entries'],
   'h2h-discovery': ['h2h_discovery_sources', 'h2h_discovery_candidates', 'h2h_discovery_events', 'as2_partners'],
   'open-bank-rest-api': ['open_bank_providers', 'open_bank_file_drops', 'open_bank_events', 'as2_partners', 'h2h_discovery_sources'],
+  egress: ['egress_events', 'egress_probes'],
+  'private-access': [],
 };
 
 function tryRequire(mod) {
@@ -379,6 +383,8 @@ const REPORTERS = {
   'back-office': backOfficeReadiness,
   'h2h-discovery': h2hDiscoveryReadiness,
   'open-bank-rest-api': openBankRestApiReadiness,
+  egress: egressReadiness,
+  'private-access': privateAccessReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -689,7 +695,12 @@ async function privatePaymentNetworkReadiness(ctx) {
     if (!cfg.processorLive) blockers.push('PAYMENT_PROCESSOR_LIVE is not true (payouts dispatch through the payment-processor engine)');
     if (!cfg.networkLive) blockers.push('ENTERPRISE_NETWORK_LIVE is not true (payout participants and exposure limits are shadow-only)');
     const external = inventory.value.sources.filter((s) => s.kind === 'payout');
-    if (!external.some((s) => s.realValueCapable)) {
+    const ledger = inventory.value.sources.find((s) => s.kind === 'book_transfer');
+    if (cfg.familyOnly) {
+      if (!ledger || !ledger.realValueCapable) blockers.push(`family-only network: internal_ledger book transfer not real-value capable: ${ledger ? ledger.reason : 'missing'}`);
+      const leak = external.filter((s) => s.realValueCapable && cfg.excludedProcessors.some((x) => s.id === x || s.id.startsWith(`${x}_`)));
+      if (leak.length) blockers.push(`excluded processors still real-value capable: ${leak.map((s) => s.id).join(', ')}`);
+    } else if (!external.some((s) => s.realValueCapable)) {
       const reasons = external.filter((s) => !s.realValueCapable).map((s) => `${s.id}: ${s.reason}`);
       blockers.push(`no real-value payout processor${reasons.length ? `: ${reasons.join('; ')}` : ''}`);
     }
@@ -717,6 +728,9 @@ async function privatePaymentNetworkReadiness(ctx) {
       MAX_TRANSFER_CENTS: cfg.maxTransferCents || null,
       WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
       MFT_FILE_DROP_LIVE: Boolean(cfg.mftLive),
+      FAMILY_ONLY: Boolean(cfg.familyOnly),
+      FAMILY_PARTICIPANT_TYPES: cfg.familyParticipantTypes || [],
+      EXCLUDED_PROCESSORS: cfg.excludedProcessors || [],
       CORE_BANKING_FUNDING_SOURCE: cfg.coreBanking ? (cfg.coreBanking.required ? cfg.coreBanking.system : 'disabled') : null,
       CANONICAL_FUNDING_LIVE: Boolean(cfg.coreBanking?.live),
       CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: cfg.coreBanking?.defaultSavingsAccountId || null,
@@ -1456,6 +1470,87 @@ async function h2hDiscoveryReadiness(ctx, env = process.env) {
     modules: s ? { sources: s.sources, candidates: s.candidates, appliedBanks: s.appliedBanks, fields: s.fields, policy: s.policy } : { error: r.error },
     routes: ['/api/os/h2h-discovery/{status,readiness,list,process}', '/api/os/readiness/h2h-discovery'],
     secrets: ['none — scraped credentials are refused; partner secrets stay in Secret Manager and are referenced by name'],
+    tables,
+    blockers,
+  };
+}
+
+async function privateAccessReadiness(ctx, env = process.env) {
+  const Guard = tryRequire('../auth/privateAccessGuard');
+  const Ppn = tryRequire('./privatePaymentNetworkOsEngine')?.PrivatePaymentNetworkOsEngine;
+  const blockers = [];
+  if (!Guard) blockers.push('privateAccessGuard not loadable');
+  const g = Guard ? Guard.status(env) : null;
+  const ppnCfg = Ppn ? Ppn.getConfig(env) : null;
+  const ingress = String(env.PRIVATE_ACCESS_INGRESS || '').trim() || null;
+  const iapEnabled = isTrue(env.PRIVATE_ACCESS_IAP_ENABLED);
+  const publicInvoker = isTrue(env.PRIVATE_ACCESS_PUBLIC_INVOKER);
+  const vpn = {
+    configured: isTrue(env.PRIVATE_ACCESS_VPN_ENABLED),
+    gateway: String(env.PRIVATE_ACCESS_VPN_GATEWAY || '').trim() || null,
+    tunnels: Number(env.PRIVATE_ACCESS_VPN_TUNNELS) || 0,
+  };
+  if (g) {
+    if (g.mode !== 'enforce') blockers.push(`PRIVATE_ACCESS_MODE=${g.mode} (requests without a family IAP assertion are ${g.mode === 'off' ? 'not checked' : 'audited, not refused'})`);
+    if (!g.iapAudienceConfigured) blockers.push('PRIVATE_ACCESS_IAP_AUDIENCE not set (/projects/<number>/locations/<region>/services/<service>)');
+    if (!g.familyEmails && !g.familyDomains) blockers.push('PRIVATE_ACCESS_FAMILY_EMAILS empty: no family identity is allow-listed');
+    const business = g.exemptPaths.filter((p) => !/^\/api\/health/.test(p));
+    if (business.length) blockers.push(`PRIVATE_ACCESS_EXEMPT_PATHS exposes non-health routes: ${business.join(', ')}`);
+  }
+  if (!iapEnabled) blockers.push('PRIVATE_ACCESS_IAP_ENABLED not true (Terraform: iap_enabled on google_cloud_run_v2_service.app)');
+  if (publicInvoker) blockers.push('PRIVATE_ACCESS_PUBLIC_INVOKER=true: allUsers still holds roles/run.invoker on the service');
+  if (ingress && ingress !== 'INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER' && ingress !== 'INGRESS_TRAFFIC_ALL') blockers.push(`unexpected ingress ${ingress}`);
+  if (!ppnCfg) blockers.push('PrivatePaymentNetworkOsEngine not loadable');
+  else if (!ppnCfg.familyOnly) blockers.push('PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY not true (payouts may reach non-family participants)');
+  else if (!ppnCfg.excludedProcessors.some((p) => /^stripe/.test(p))) blockers.push('PRIVATE_PAYMENT_NETWORK_EXCLUDED_PROCESSORS does not exclude stripe');
+  if (!ctx.gcp.projectMatches) blockers.push(`GCP_PROJECT is ${ctx.gcp.project || 'unset'}, expected ${EXPECTED_PROJECT}`);
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  const live = blockers.length === 0;
+  return {
+    provider: 'cloud-run + identity-aware-proxy (family identities) + cloud-vpn (trusted sites)',
+    mode: live ? 'live' : 'shadow',
+    liveFlags: {
+      PRIVATE_ACCESS_MODE: g ? g.mode : null,
+      PRIVATE_ACCESS_IAP_ENABLED: iapEnabled,
+      PRIVATE_ACCESS_IAP_AUDIENCE: Boolean(g && g.iapAudienceConfigured),
+      PRIVATE_ACCESS_PUBLIC_INVOKER: publicInvoker,
+      PRIVATE_ACCESS_INGRESS: ingress,
+      PRIVATE_ACCESS_FAMILY_EMAILS: g ? g.familyEmails : 0,
+      PRIVATE_ACCESS_FAMILY_DOMAINS: g ? g.familyDomains : 0,
+      PRIVATE_ACCESS_VPN_ENABLED: vpn.configured,
+      PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY: Boolean(ppnCfg && ppnCfg.familyOnly),
+      PRIVATE_PAYMENT_NETWORK_EXCLUDED_PROCESSORS: ppnCfg ? ppnCfg.excludedProcessors : [],
+    },
+    modules: { guard: g, vpn, ppn: ppnCfg ? { familyOnly: ppnCfg.familyOnly, familyParticipantTypes: ppnCfg.familyParticipantTypes, excludedProcessors: ppnCfg.excludedProcessors } : null },
+    routes: ['every route (guard mounted before routers in server-3002.js; /api/health/* exempt)', '/api/os/readiness/private-access'],
+    secrets: ['none — IAP signs assertions with Google-held keys; VPN shared secrets live in Secret Manager (Terraform var vpn_shared_secret_secret_id), never in the app'],
+    tables: {},
+    blockers,
+  };
+}
+
+async function egressReadiness(ctx, env = process.env) {
+  const Egress = tryRequire('./egressOsEngine')?.EgressOsEngine;
+  const tables = await tablesPresent(TABLES.egress);
+  const blockers = baseBlockers(ctx, tables, Egress, 'EgressOsEngine');
+  const r = Egress && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Egress.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`egress: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'egress (Serverless VPC connector -> Cloud NAT static IP; host allow/deny policy)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      EGRESS_OS_ENABLED: String(env.EGRESS_OS_ENABLED || 'true').toLowerCase() !== 'false',
+      EGRESS_ENFORCE: String(env.EGRESS_ENFORCE || 'false').toLowerCase() === 'true',
+      EGRESS_STATIC_IP: Boolean(env.EGRESS_STATIC_IP),
+      EGRESS_VPC_CONNECTOR: Boolean(env.EGRESS_VPC_CONNECTOR),
+      EGRESS_ALLOWED_HOSTS: s ? s.allowedHosts.length : 0,
+      EGRESS_DENIED_HOSTS: s ? s.deniedHosts.length : 0,
+    },
+    modules: s ? { path: s.path, audit: s.audit, last24h: s.last24h, lastProbe: s.lastProbe } : { error: r.error },
+    routes: ['/api/os/egress/{status,readiness,list,process}', '/api/os/readiness/egress'],
+    secrets: ['none — policy is host names only; EGRESS_STATIC_IP is the public NAT address from terraform output egress_ip'],
     tables,
     blockers,
   };

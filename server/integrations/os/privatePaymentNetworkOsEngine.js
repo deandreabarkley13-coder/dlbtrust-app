@@ -77,6 +77,9 @@ const STATUSES = ['submitted', 'approved', 'shadow', 'cleared', 'settled', 'retu
 const TYPES = ['book_transfer', 'payout'];
 const LEDGER_PROCESSOR = 'internal_ledger';
 const MFT_PROCESSOR = 'mft_as2';
+// Stripe and third-party card/wallet rails are not part of the family network.
+const DEFAULT_EXCLUDED_PROCESSORS = 'stripe_treasury,stripe,pdcflow,skrill';
+const DEFAULT_FAMILY_TYPES = 'trustee,beneficiary,family';
 const MFT_ARCHIVE_PREFIX = 'private-network/outbound/';
 const SEC_CODES = ['CCD', 'PPD'];
 const METHOD_RAILS = { ach: 'ach', card: 'card', wallet: 'wallet', crypto: 'crypto' };
@@ -190,6 +193,9 @@ class PrivatePaymentNetworkOsEngine {
       requireScreening: env.PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF !== 'false',
       requireParticipant: env.PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT !== 'false',
       defaultProcessor: env.PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR || null,
+      familyOnly: isTrue(env.PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY),
+      familyParticipantTypes: String(env.PRIVATE_PAYMENT_NETWORK_FAMILY_PARTICIPANT_TYPES || DEFAULT_FAMILY_TYPES).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+      excludedProcessors: String(env.PRIVATE_PAYMENT_NETWORK_EXCLUDED_PROCESSORS || DEFAULT_EXCLUDED_PROCESSORS).split(',').map((s) => s.trim()).filter(Boolean),
       processorLive: isTrue(env.PAYMENT_PROCESSOR_LIVE),
       networkLive: isTrue(env.ENTERPRISE_NETWORK_LIVE),
       mftLive: isTrue(env.PRIVATE_PAYMENT_NETWORK_MFT_LIVE),
@@ -374,15 +380,18 @@ class PrivatePaymentNetworkOsEngine {
       : !pool ? 'ledger database unavailable'
         : !this._ledger() ? 'CashEngine unavailable'
           : null;
-    const external = (upstream.ok ? upstream.value.sources : []).map((up) => ({
-      id: up.id,
-      kind: 'payout',
-      mode: up.mode || 'unset',
-      configured: Boolean(up.configured),
-      realValueCapable: !gate && Boolean(up.realValueCapable),
-      reason: !gate && up.realValueCapable ? null : (gate || up.reason || `${up.id} is not real-value capable`),
-      route: 'PaymentGatewayServerEngine.sale → PaymentProcessorServerEngine.processPayment',
-    }));
+    const external = (upstream.ok ? upstream.value.sources : []).map((up) => {
+      const excluded = this.excludedReason(up.id, cfg);
+      return {
+        id: up.id,
+        kind: 'payout',
+        mode: excluded ? 'excluded' : (up.mode || 'unset'),
+        configured: Boolean(up.configured),
+        realValueCapable: !gate && !excluded && Boolean(up.realValueCapable),
+        reason: excluded || (!gate && up.realValueCapable ? null : (gate || up.reason || `${up.id} is not real-value capable`)),
+        route: 'PaymentGatewayServerEngine.sale → PaymentProcessorServerEngine.processPayment',
+      };
+    });
     const ledger = {
       id: LEDGER_PROCESSOR,
       kind: 'book_transfer',
@@ -420,7 +429,23 @@ class PrivatePaymentNetworkOsEngine {
       reason: coreBankingGate,
       route: 'cash_accounts.linked_fineract_account_id → FineractClient.getAccountBalance / withdrawSavings (redeposit on return)',
     };
-    return { config: cfg, gate, ledgerGate, mftGate, coreBankingGate, fundingSource, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
+    return { config: cfg, gate, ledgerGate, mftGate, coreBankingGate, fundingSource, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0, familyOnly: cfg.familyOnly, excludedProcessors: cfg.excludedProcessors };
+  }
+
+  /** Processors the network refuses outright (retired Stripe and third-party card/wallet rails). */
+  static excludedReason(processor, cfg = this.getConfig()) {
+    const p = String(processor || '');
+    return cfg.excludedProcessors.some((x) => x === p || p.startsWith(`${x}_`)) ? `${p} is excluded from the Private Electronic Payment Network (PRIVATE_PAYMENT_NETWORK_EXCLUDED_PROCESSORS)` : null;
+  }
+
+  /** In family-only mode a payout may reach only a trustee / beneficiary participant of the trust. */
+  static familyReason(participant, cfg = this.getConfig()) {
+    if (!cfg.familyOnly) return null;
+    if (!participant) return 'family-only network: payout needs a family participant (trustee / beneficiary)';
+    const type = String(participant.participantType || participant.type || '').toLowerCase();
+    const flagged = participant.metadata && participant.metadata.family === true;
+    if (cfg.familyParticipantTypes.includes(type) || flagged) return null;
+    return `family-only network: participant ${participant.participantId || participant.id} is ${type || 'untyped'}, not one of ${cfg.familyParticipantTypes.join('/')} (or metadata.family=true)`;
   }
 
   static async isRealValue(processor, inventory) {
@@ -514,6 +539,8 @@ class PrivatePaymentNetworkOsEngine {
       chosen = String(processor || route?.processor || (method.processor && method.processor !== 'generic' ? method.processor : '') || cfg.defaultProcessor || Gateway._processorFromMethod(method)).trim();
       if (!chosen) throw httpError('processor required');
       if (chosen === LEDGER_PROCESSOR) throw httpError(`${LEDGER_PROCESSOR} cannot carry an external payout`, 409);
+      const excluded = this.excludedReason(chosen, cfg);
+      if (excluded) throw httpError(excluded, 409);
       routePolicyId = route && !processor ? route.policyId : null;
       const loop = this.loopbackReason(destination, chosen);
       if (loop) throw httpError(`self-loopback partner refused: ${loop}`, 409);
@@ -524,6 +551,10 @@ class PrivatePaymentNetworkOsEngine {
     }
     const realValue = await this.isRealValue(chosen);
     const admission = type === 'payout' ? await this._admitParticipant(participantId, cents, false) : null;
+    if (type === 'payout') {
+      const fam = this.familyReason(admission?.participant, cfg);
+      if (fam) throw httpError(fam, 409);
+    }
     const as2 = chosen === MFT_PROCESSOR ? this._as2Route(destination, admission?.participant) : null;
 
     const id = newId();
@@ -907,6 +938,9 @@ class PrivatePaymentNetworkOsEngine {
       mftGate: inventory.mftGate,
       realValueCapable: inventory.anyRealValueCapable,
       realValueProcessors: inventory.realValueCapable,
+      familyOnly: inventory.familyOnly,
+      familyParticipantTypes: inventory.config.familyParticipantTypes,
+      excludedProcessors: inventory.excludedProcessors,
       processors: inventory.sources,
       types: TYPES,
       integrations: {

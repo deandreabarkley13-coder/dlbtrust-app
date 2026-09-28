@@ -75,6 +75,74 @@ variable "deploy_mifos" {
   default     = true
 }
 
+variable "family_accessors" {
+  description = "IAM principals (user:/domain:) allowed through IAP to dlbtrust-app. The user: emails / domain: names are also the app's PRIVATE_ACCESS_FAMILY_EMAILS / _DOMAINS allow-list."
+  type        = list(string)
+  default     = ["user:deandreabarkley13@gmail.com"]
+
+  validation {
+    condition     = length(var.family_accessors) > 0 && alltrue([for p in var.family_accessors : startswith(p, "user:") || startswith(p, "domain:")])
+    error_message = "family_accessors must be non-empty and contain only user: or domain: principals (never allUsers / allAuthenticatedUsers)."
+  }
+}
+
+variable "scheduler_accessors" {
+  description = "Service-account principals (Cloud Scheduler OIDC callers) allowed through IAP to dlbtrust-app."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for p in var.scheduler_accessors : startswith(p, "serviceAccount:")])
+    error_message = "scheduler_accessors must contain only serviceAccount: principals."
+  }
+}
+
+variable "private_access_ingress" {
+  description = "Cloud Run ingress for dlbtrust-app. IAP fronts the run.app URL directly; INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER additionally requires a load balancer / VPN path."
+  type        = string
+  default     = "INGRESS_TRAFFIC_ALL"
+
+  validation {
+    condition     = contains(["INGRESS_TRAFFIC_ALL", "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"], var.private_access_ingress)
+    error_message = "private_access_ingress must be INGRESS_TRAFFIC_ALL or INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER."
+  }
+}
+
+# Cloud VPN to a trusted family site (private_access.tf). Off until
+# vpn_peer_ip is set; the IKE pre-shared key lives in Secret Manager.
+variable "vpn_peer_ip" {
+  description = "Public IP of the family site's VPN device. Empty = no VPN."
+  type        = string
+  default     = ""
+}
+
+variable "vpn_shared_secret_secret_id" {
+  description = "Secret Manager secret id holding the IKE pre-shared key."
+  type        = string
+  default     = "VPN_FAMILY_SHARED_SECRET"
+}
+
+variable "vpn_cloud_asn" {
+  type    = number
+  default = 64514
+}
+
+variable "vpn_peer_asn" {
+  type    = number
+  default = 65001
+}
+
+variable "vpn_bgp_ip_range" {
+  description = "Cloud Router BGP interface address (link-local /30)."
+  type        = string
+  default     = "169.254.0.1/30"
+}
+
+variable "vpn_peer_bgp_ip" {
+  type    = string
+  default = "169.254.0.2"
+}
+
 variable "mifos_operators" {
   description = "IAM principals allowed through IAP to the Mifos X web app."
   type        = list(string)
@@ -236,6 +304,19 @@ variable "runtime_environment" {
     PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT   = "true"
     PRIVATE_PAYMENT_NETWORK_DEFAULT_PROCESSOR     = ""
     PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS    = ""
+    # Family-only network: payouts reach only trustee/beneficiary participants
+    # of the trust; Stripe and third-party card/wallet processors are refused
+    # (409) and reported non-real-value. Book transfers between the Fineract
+    # sub-accounts (internal_ledger) are the intended distribution path.
+    PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY              = "true"
+    PRIVATE_PAYMENT_NETWORK_FAMILY_PARTICIPANT_TYPES = "trustee,beneficiary,family"
+    PRIVATE_PAYMENT_NETWORK_EXCLUDED_PROCESSORS      = "stripe_treasury,stripe,pdcflow,skrill"
+    # Private access guard (server/integrations/auth/privateAccessGuard.js):
+    # every request must carry an IAP assertion for a family identity or the
+    # scheduler's OIDC token; only /api/health is exempt. IAP audience and the
+    # family list are stamped from cloudrun.tf (var.family_accessors).
+    PRIVATE_ACCESS_MODE         = "enforce"
+    PRIVATE_ACCESS_EXEMPT_PATHS = "/api/health"
     # mft_as2 payout processor: approved payouts become a single-entry NACHA
     # credit file submitted from the MFTGATEWAY_STATION_AS2_ID station to the
     # participant's AS2 partner (endpoint.partnerAs2Id, else
@@ -272,20 +353,32 @@ variable "runtime_environment" {
     # base URL / SFTP host / MDN / cert fingerprint. HTTPS only, hosts must be
     # allow-listed here (comma-separated; subdomains match), scraped credentials
     # are refused, candidates need trustee confirm + a second trustee to apply.
-    H2H_DISCOVERY_ENABLED                 = "true"
-    H2H_DISCOVERY_ALLOWED_HOSTS           = "developer.betterment.com,betterment.com,sunrisebanks.com,developer.hsbc.com,developer.jpmorgan.com,developer.citi.com,developer.wellsfargo.com,developer.usbank.com,openbankingtracker.com,raw.githubusercontent.com"
+    H2H_DISCOVERY_ENABLED                  = "true"
+    H2H_DISCOVERY_ALLOWED_HOSTS            = "developer.betterment.com,betterment.com,sunrisebanks.com,developer.hsbc.com,developer.jpmorgan.com,developer.citi.com,developer.wellsfargo.com,developer.usbank.com,openbankingtracker.com,raw.githubusercontent.com"
     H2H_DISCOVERY_REQUIRE_DISTINCT_APPLIER = "true"
     # Open Bank REST API OS (server/integrations/os/openBankRestApiOsEngine):
     # /api/open-bank/v1 over Fineract core banking + Open Banking Tracker
     # directory (public dataset not-a-bank/open-banking-tracker-data). File-drop
     # registrations project onto AS2Partners / MFT channels; live only when a
     # drop is verified by a second trustee.
-    OPEN_BANK_API_ENABLED           = "true"
-    OPEN_BANK_ID                    = "dlb-trust-company"
-    OPEN_BANK_NAME                  = "DeAndrea LaVar Barkley Trust Company"
-    OPEN_BANK_PUBLIC_BASE_URL       = "https://dlbtrust-app-514695212719.us-east1.run.app"
-    OPEN_BANKING_TRACKER_BASE_URL   = "https://raw.githubusercontent.com/not-a-bank/open-banking-tracker-data/master/data/account-providers"
-    OPEN_BANKING_TRACKER_INDEX_URL  = "https://api.github.com/repos/not-a-bank/open-banking-tracker-data/contents/data/account-providers"
+    OPEN_BANK_API_ENABLED          = "true"
+    OPEN_BANK_ID                   = "dlb-trust-company"
+    OPEN_BANK_NAME                 = "DeAndrea LaVar Barkley Trust Company"
+    OPEN_BANK_PUBLIC_BASE_URL      = "https://dlbtrust-app-514695212719.us-east1.run.app"
+    OPEN_BANKING_TRACKER_BASE_URL  = "https://raw.githubusercontent.com/not-a-bank/open-banking-tracker-data/master/data/account-providers"
+    OPEN_BANKING_TRACKER_INDEX_URL = "https://api.github.com/repos/not-a-bank/open-banking-tracker-data/contents/data/account-providers"
+    # Egress OS (server/integrations/os/egressOsEngine): destination policy for
+    # the single NAT egress door. Allowed hosts are these plus every host the
+    # other engines are configured with (FINERACT_URL, OPENACH_BASE_URL,
+    # PAYMENT_HUB_BASE_URL, H2H_DISCOVERY_ALLOWED_HOSTS, Tracker, Google APIs).
+    # Retired rails (Stripe, thirdweb, Spritz, chain RPCs) are denied in code.
+    # EGRESS_ENFORCE=true makes authorize() fail closed; EGRESS_STATIC_IP /
+    # EGRESS_VPC_CONNECTOR / EGRESS_NAT_NAME are stamped from cloudrun.tf.
+    EGRESS_OS_ENABLED    = "true"
+    EGRESS_ENFORCE       = "true"
+    EGRESS_HTTPS_ONLY    = "true"
+    EGRESS_ALLOWED_HOSTS = "api.ipify.org,beta-bridge.simplefin.org,simplefin.org,api.orangerails.com"
+    EGRESS_ECHO_URL      = "https://api.ipify.org?format=json"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

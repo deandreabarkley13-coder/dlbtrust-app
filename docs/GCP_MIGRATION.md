@@ -1016,8 +1016,60 @@ ledger through the same path as every other engine: DataBridge posts it to the
 trust GL (1000 Cash / 3000 Corpus / 4000 / 4100) that `CashEngine` book
 transfers and PPN payouts settle against, and `pushToFineract` mirrors it.
 
+## Private family-only access (IAP + VPN) and Egress OS
+
+The platform is a private family trust-company operating system, not a public
+site. `dlbtrust-app` has **no `allUsers` invoker**: `infra/gcp/cloudrun.tf`
+sets `iap_enabled = true` and grants `roles/run.invoker` only to the IAP
+service agent. Humans reach it through Identity-Aware Proxy as one of the
+principals in `var.family_accessors` (`roles/iap.httpsResourceAccessor`,
+`infra/gcp/private_access.tf`); platform callers (deploy workflow, Cloud
+Scheduler) are the service accounts in `local.platform_accessors`.
+
+```
+family device -> [Cloud VPN, optional] -> IAP (family Google identity)
+              -> Cloud Run dlbtrust-app -> privateAccessGuard (re-verifies the
+                 x-goog-iap-jwt-assertion: ES256, iss https://cloud.google.com/iap,
+                 aud /projects/<number>/locations/<region>/services/dlbtrust-app)
+              -> PPN family-only (book transfers between the Fineract sub-accounts)
+              -> Fineract savings account-of-record checks
+```
+
+- `server/integrations/auth/privateAccessGuard.js` is mounted before every
+  router in `server-3002.js`. `PRIVATE_ACCESS_MODE=enforce` (Terraform
+  runtime) refuses anything that is not a family IAP identity, a platform
+  service account asserted by IAP, or the scheduler OIDC token; only
+  `/api/health/*` is exempt. `audit` mode records refusals without blocking.
+- The PPN runs family-only (`PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY=true`):
+  payouts may reach only `trustee` / `beneficiary` / `family` participants and
+  Stripe, PDCflow and Skrill processors are refused (409) and reported as
+  non-real-value. `internal_ledger` book transfers between the Fineract
+  principal / interest-income / trustee / beneficiary accounts are the
+  distribution path. External bank settlement remains a separate capability
+  (the trust company is non-depository).
+- `GET /api/os/readiness/private-access` fails closed until IAP is enabled,
+  the allow-list is non-empty, the guard enforces, family-only is on and no
+  non-health path is exempt. `private-access` and `egress` are in the same
+  engine registry as every other engine.
+- **Cloud VPN** (`private_access.tf`) is created only when `vpn_peer_ip` is
+  set; the IKE pre-shared key is read from Secret Manager
+  (`vpn_shared_secret_secret_id`, default `VPN_FAMILY_SHARED_SECRET`) and
+  never written to tfvars. Peer ASN / BGP addresses are variables with
+  documented defaults, not guesses.
+- **Egress OS** (`server/integrations/os/egressOsEngine.js`): the single
+  outbound door. Cloud Run egress is `ALL_TRAFFIC` through the Serverless VPC
+  connector and Cloud NAT static IP (`backends.tf`); `EGRESS_STATIC_IP`,
+  `EGRESS_VPC_CONNECTOR`, `EGRESS_NAT_NAME` are stamped from Terraform.
+  `authorize(url)` refuses (403, `EGRESS_REFUSED`) hosts outside
+  `EGRESS_ALLOWED_HOSTS` + the hosts derived from engine config, and always
+  refuses retired rails (Stripe, thirdweb, Spritz, chain RPCs). `process
+  {action:"probe"}` records the observed NAT IP; readiness blocks on a
+  mismatch. H2H discovery scans call `authorize()` before fetching.
+- Deploy smoke check (`gcp-deploy.yml`) now asserts an anonymous request is
+  refused at the edge (302/401/403) and calls readiness with the deployer's
+  identity token.
+
 ## Out of scope for this phase
 
-- Cloud Armor / IAP in front of the operator console — recommended, separate
-  PR.
+- Cloud Armor in front of IAP — recommended, separate PR.
 - Fineract-side GL export to BigQuery.

@@ -41,8 +41,9 @@ const { WealthBackOfficeEngine } = require('../server/integrations/os/wealthBack
 const { BackOfficeEngine } = require('../server/integrations/os/osEngine');
 const { H2hDiscoveryOsEngine } = require('../server/integrations/os/h2hDiscoveryOsEngine');
 const { OpenBankRestApiOsEngine } = require('../server/integrations/os/openBankRestApiOsEngine');
+const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
 const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
@@ -86,6 +87,13 @@ const GCP_ENV: Record<string, string> = {
   MFT_SFTP_HOST: 'sftp.odfi.example',
   FIXED_INCOME_RAIL: 'bank',
   PRIVATE_PAYMENT_NETWORK_CORE_BANKING: 'true',
+  PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY: 'true',
+  PRIVATE_ACCESS_MODE: 'enforce',
+  PRIVATE_ACCESS_IAP_AUDIENCE: '/projects/514695212719/locations/us-east1/services/dlbtrust-app',
+  PRIVATE_ACCESS_FAMILY_EMAILS: 'deandreabarkley13@gmail.com',
+  PRIVATE_ACCESS_IAP_ENABLED: 'true',
+  PRIVATE_ACCESS_PUBLIC_INVOKER: 'false',
+  PRIVATE_ACCESS_INGRESS: 'INGRESS_TRAFFIC_ALL',
 };
 
 const RECEIPTED_BOND = { positionId: 'POS-1', assetClass: 'fixed_income', instrumentRef: 'bond:1', instrumentName: 'DLB Trust Income Bond', quantity: 1, valuationCents: 9852462751, controlStatus: 'receipted', lastReceiptId: 'RCPT-1', verifiedExternally: false };
@@ -129,6 +137,7 @@ function stubFiatComponents() {
   vi.spyOn(TreasuryOdfiBank, 'status').mockReturnValue({ role: 'odfi', enabled: true, ready: true, bank: 'betterment', bankName: 'Betterment Checking', accountLast4: '3054', channels: [{ channel: 'mft_as2', ready: true }], issues: [] });
   vi.spyOn(MftOsEngine, 'status').mockResolvedValue({ channels: [{ channelId: 'default', transport: 'sftp', status: 'active', readiness: { ready: true, transport: 'sftp', blockers: [] } }], files: {}, inFlightCents: 0, policy: { requireApproval: true } });
   vi.spyOn(H2hDiscoveryOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { allowedHosts: ['examplebank.com'], sources: { total: 1 }, candidates: { confirmed: 3, applied: 3 }, appliedBanks: ['examplebank'], fields: [], policy: { requireDistinctApplier: true } } });
+  vi.spyOn(EgressOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { allowedHosts: ['api.ipify.org'], deniedHosts: ['api.stripe.com'], path: { staticIp: '34.1.2.3', vpcConnector: 'dlbtrust-run', nat: 'dlbtrust-egress' }, audit: { hosts: [], deniedButConfigured: [] }, last24h: { allowed: 0, refused: 0 }, lastProbe: { matched: true } } });
   vi.spyOn(OpenBankRestApiOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { bank: { id: 'dlb-trust-company' }, apiVersion: 'v1', tracker: { base: 'https://raw.githubusercontent.com/x' }, providers: { total: 1 }, fileDrops: { total: 1, verified: 1 }, policy: {} } });
 }
 
