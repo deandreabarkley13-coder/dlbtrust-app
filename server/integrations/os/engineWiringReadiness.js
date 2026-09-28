@@ -119,7 +119,7 @@ const TABLES = {
   'idp-ocr': ['idp_documents', 'idp_events'],
   'tax-os': ['tax_returns_1041', 'k1_schedules', 'trust_config', 'tax_payments', 'tax_report_exports', 'trust_journal_lines', 'fineract_trust_accounts', 'crm_contacts'],
   'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
-  'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'egress_events'],
+  'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
 };
 
 function tryRequire(mod) {
@@ -1673,13 +1673,15 @@ async function clearingAgentReadiness(ctx, env = process.env) {
       CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER: String(env.CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER || 'true').toLowerCase() !== 'false',
       CLEARING_AGENT_REQUIRE_APPROVAL: String(env.CLEARING_AGENT_REQUIRE_APPROVAL || 'true').toLowerCase() !== 'false',
       PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY: isTrue(env.PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY),
+      PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL: Boolean(env.PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL),
+      PRIVATE_PAYMENT_NETWORK_AGENT_SECRET: Boolean(env.PRIVATE_PAYMENT_NETWORK_AGENT_SECRET),
       FINERACT_URL: Boolean(env.FINERACT_URL),
       COUNTRY: 'US',
       CURRENCY: 'USD',
     },
-    modules: s ? { networks: s.networks, formats: s.formats, instructions: s.instructions, coreBanking: s.coreBanking, policy: s.policy } : { error: r.error },
-    routes: ['/api/os/clearing-agent/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/clearing-agent'],
-    secrets: ['per-network credential_ref (Secret Manager env reference; value never persisted or returned)', 'FINERACT_USERNAME', 'FINERACT_PASSWORD'],
+    modules: s ? { networks: s.networks, formats: s.formats, instructions: s.instructions, coreBanking: s.coreBanking, policy: s.policy, networkEndpoint: s.networkEndpoint } : { error: r.error },
+    routes: ['/api/os/clearing-agent/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/clearing-agent', '/api/os/private-payment-network/agent/{handshake,clear}'],
+    secrets: ['per-network credential_ref (Secret Manager env reference; value never persisted or returned)', 'PRIVATE_PAYMENT_NETWORK_AGENT_SECRET', 'FINERACT_USERNAME', 'FINERACT_PASSWORD'],
     tables,
     blockers,
   };

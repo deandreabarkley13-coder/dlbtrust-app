@@ -172,9 +172,19 @@ locals {
     "FINERACT_USERNAME",
     "FINERACT_PASSWORD",
   ]
+  # CLEARING_AGENT_LIVE=true lets the Clearing Agent OS clear converted
+  # instructions against the family PPN participant endpoint, which admits the
+  # agent only with the shared HMAC credential (never persisted or returned).
+  clearing_agent_live = lookup(var.runtime_environment, "CLEARING_AGENT_LIVE", "false") == "true"
+  clearing_agent_secret_names = [
+    "PRIVATE_PAYMENT_NETWORK_AGENT_SECRET",
+  ]
   missing_private_payment_network_secrets = concat([
     for s in local.private_payment_network_secret_names : s
     if local.private_payment_network_live && !contains(local.runtime_secret_names, s)
+    ], [
+    for s in local.clearing_agent_secret_names : s
+    if local.clearing_agent_live && !contains(local.runtime_secret_names, s)
     ], [
     for s in local.private_payment_network_mft_secret_names : s
     if local.private_payment_network_mft_live && !contains(local.runtime_secret_names, s)
