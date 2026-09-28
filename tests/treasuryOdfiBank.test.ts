@@ -42,7 +42,9 @@ describe('TreasuryOdfiBank', () => {
     expect(e.ACH_ODFI_NAME).toBe('BETTERMENT');
     expect(e.ACH_ORIGINATOR_NAME).toBe('DEANDREA LAVAR BARKLEY TRUST COMPANY');
     expect(e.ACH_COMPANY_NAME.length).toBeLessThanOrEqual(16);
-    expect(e.CLEARING_FUNDING_OPERATING_ACCOUNT).toBe(ACCOUNT);
+    expect(e.CLEARING_FUNDING_SETTLEMENT_ACCOUNT).toBe(ACCOUNT);
+    expect(e.CLEARING_FUNDING_SETTLEMENT_ROUTING).toBe(ROUTING);
+    expect(e.CLEARING_FUNDING_OPERATING_ACCOUNT).toBeUndefined();
     expect(e.LILI_ODFI_ROUTING).toBe(ROUTING);
     expect(e.LILI_ODFI_ACCOUNT).toBe(ACCOUNT);
     expect(e.EDI_820_ODFI_ACCOUNT).toBe(ACCOUNT);
