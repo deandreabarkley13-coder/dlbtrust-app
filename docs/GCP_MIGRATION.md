@@ -1069,6 +1069,45 @@ family device -> [Cloud VPN, optional] -> IAP (family Google identity)
   refused at the edge (302/401/403) and calls readiness with the deployer's
   identity token.
 
+## Enterprise ODFI OS (agentic originator operating system)
+
+`server/integrations/os/enterpriseOdfiOsEngine.js`, engine key
+`enterprise-odfi`, routes `/api/os/enterprise-odfi/{status,readiness,health,
+list,get/:id,process}` and `/api/os/readiness/enterprise-odfi`.
+
+What it is: the trust company's originator-side OS for its sponsor ODFI /
+instant-payment relationship. What it is not: a bank. An ODFI is a Fed-member
+depository institution; this software originates instructions to one and
+settles nothing itself.
+
+```text
+profile (trustee A) -> countersign (trustee B)
+originate {purposeClass, items[approvalRef+screeningRef+instruction]} (trustee A)
+  -> planner: Vertex AI Gemini advisory (purpose/amount/urgency only leave the
+     box) -> deterministic validator (US, USD, verified network per rail,
+     instant/same-day limits, exposure headroom) -> batch 'planned'
+release (trustee B, distinct) -> per item: clearing-agent submit (verified
+  network, HMAC, Egress OS) -> post (Fineract withdraw / family deposit)
+exception {Rxx|Cxx} -> return re-deposits the debtor Fineract account; NOC recorded
+reconcile -> outstanding / posted / returned vs exposure limit
+```
+
+- Rails: `family_book` (PPN-FAMILY, Fineract book transfer), `rtp`, `fednow`,
+  `ach_same_day`, `ach_standard` — each mapped to Clearing Agent network kinds;
+  an item with no verified network for its rail blocks release (`replan` after
+  a sponsor network verifies).
+- Item instructions are stored AES-256-GCM under `PAYMENT_DATA_ENCRYPTION_KEY`;
+  responses carry last-4 only. Events are redacted.
+- Live only when `ENTERPRISE_ODFI_LIVE=true`, the profile is countersigned,
+  the Clearing Agent is live and at least one verified EXTERNAL network
+  (`ach_operator` / `rtp_participant` / `fednow_participant`) exists. Until a
+  sponsor ODFI is onboarded the engine reports `shadow` with that blocker and
+  only family book transfers can route.
+- Vertex AI: `ENTERPRISE_ODFI_AI_ENABLED=true`, project/location/model in
+  `runtime_environment`; the runtime service account needs
+  `roles/aiplatform.user`; Egress OS derives `<location>-aiplatform.googleapis.com`.
+  If Vertex is unavailable the planner falls back to rules and says so.
+
 ## Out of scope for this phase
 
 - Cloud Armor in front of IAP — recommended, separate PR.

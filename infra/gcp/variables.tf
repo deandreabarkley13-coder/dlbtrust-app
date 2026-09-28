@@ -438,6 +438,34 @@ variable "runtime_environment" {
     CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER = "true"
     CLEARING_AGENT_REQUIRE_APPROVAL          = "true"
     CLEARING_AGENT_TIMEOUT_MS                = "15000"
+    # Enterprise ODFI OS (server/integrations/os/enterpriseOdfiOsEngine): the
+    # trust company's ORIGINATOR-side operating system for its sponsor ODFI /
+    # instant-payment relationship (the software is not a bank and settles
+    # nothing itself). Maker/checker originator profile (declare + countersign
+    # by distinct trustees), approved+screened distribution / disbursement /
+    # vendor-payout / trustee-expense batches, agentic rail planner (Vertex AI
+    # Gemini in ENTERPRISE_ODFI_AI_LOCATION when ENTERPRISE_ODFI_AI_ENABLED;
+    # only purpose/amount/urgency leave the box, never names or account
+    # numbers) re-validated by deterministic rules, release by a DISTINCT
+    # trustee through the Clearing Agent (verified network, HMAC, Egress OS,
+    # Fineract post), returns/NOC with Fineract re-deposit, exposure
+    # reconciliation. Item instructions are AES-256-GCM encrypted under
+    # PAYMENT_DATA_ENCRYPTION_KEY. Reports live only once a verified EXTERNAL
+    # sponsor network (ach_operator / rtp_participant / fednow_participant) is
+    # registered with the Clearing Agent; until then batches plan only.
+    ENTERPRISE_ODFI_ENABLED                   = "true"
+    ENTERPRISE_ODFI_LIVE                      = "true"
+    ENTERPRISE_ODFI_ORIGINATOR_ID             = "DLB-TRUST-ORIGINATOR"
+    ENTERPRISE_ODFI_REQUIRE_DISTINCT_RELEASER = "true"
+    ENTERPRISE_ODFI_EXPOSURE_LIMIT_CENTS      = "25000000"
+    ENTERPRISE_ODFI_SAME_DAY_LIMIT_CENTS      = "100000000"
+    ENTERPRISE_ODFI_INSTANT_LIMIT_CENTS       = "100000000"
+    ENTERPRISE_ODFI_MAX_BATCH_ITEMS           = "200"
+    ENTERPRISE_ODFI_AI_ENABLED                = "true"
+    ENTERPRISE_ODFI_AI_PROJECT                = "dlb-treasury-management"
+    ENTERPRISE_ODFI_AI_LOCATION               = "us-east1"
+    ENTERPRISE_ODFI_AI_MODEL                  = "gemini-2.0-flash"
+    ENTERPRISE_ODFI_AI_TIMEOUT_MS             = "20000"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

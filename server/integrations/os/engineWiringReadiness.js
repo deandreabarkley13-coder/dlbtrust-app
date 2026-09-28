@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -78,6 +78,7 @@ const ENGINE_TITLES = {
   'idp-ocr': 'IDP / OCR OS (Document AI intake of distribution, disbursement, request and vendor-payout documents; classification, redaction, confidence gate, trustee review -> distinct approver -> link to maker-checker request; moves no money)',
   'tax-os': 'Tax OS (Form 1041 + Schedule K-1 reports from the trust journal and Fineract principal / interest-income accounts; JSON / CSV / PDF exports; reports only, no e-file)',
   'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
+  'enterprise-odfi': 'Enterprise ODFI OS (agentic originator operating system for trust administration: maker/checker originator profile, approved+screened distribution / disbursement / vendor-payout / trustee-expense batches, Vertex AI advisory rail planner with deterministic validator, distinct-trustee release through the Clearing Agent to a verified sponsor ODFI network, returns/NOC handling with Fineract re-deposit, exposure reconciliation; the software is not a bank)',
   'clearing-agent': 'Clearing Agent OS (backend-to-backend agent for the private Electronic Payment Networks: Secret-Manager-referenced credentials, HMAC challenge/verify handshake by two trustees, USA-only conversion to NACHA / ISO 20022 pain.001 + pacs.008 / FedNow + RTP / BAI2, HMAC-signed clear over Egress OS, idempotent post to Fineract core banking)',
 };
 
@@ -120,6 +121,7 @@ const TABLES = {
   'tax-os': ['tax_returns_1041', 'k1_schedules', 'trust_config', 'tax_payments', 'tax_report_exports', 'trust_journal_lines', 'fineract_trust_accounts', 'crm_contacts'],
   'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
   'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
+  'enterprise-odfi': ['enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items', 'enterprise_odfi_events', 'clearing_agent_networks', 'clearing_agent_instructions'],
 };
 
 function tryRequire(mod) {
@@ -397,6 +399,7 @@ const REPORTERS = {
   'tax-os': taxOsReadiness,
   'private-entity': privateEntityReadiness,
   'clearing-agent': clearingAgentReadiness,
+  'enterprise-odfi': enterpriseOdfiReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1682,6 +1685,36 @@ async function clearingAgentReadiness(ctx, env = process.env) {
     modules: s ? { networks: s.networks, formats: s.formats, instructions: s.instructions, coreBanking: s.coreBanking, policy: s.policy, networkEndpoint: s.networkEndpoint } : { error: r.error },
     routes: ['/api/os/clearing-agent/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/clearing-agent', '/api/os/private-payment-network/agent/{handshake,clear}'],
     secrets: ['per-network credential_ref (Secret Manager env reference; value never persisted or returned)', 'PRIVATE_PAYMENT_NETWORK_AGENT_SECRET', 'FINERACT_USERNAME', 'FINERACT_PASSWORD'],
+    tables,
+    blockers,
+  };
+}
+
+async function enterpriseOdfiReadiness(ctx, env = process.env) {
+  const Eo = tryRequire('./enterpriseOdfiOsEngine')?.EnterpriseOdfiOsEngine;
+  const tables = await tablesPresent(TABLES['enterprise-odfi']);
+  const blockers = baseBlockers(ctx, tables, Eo, 'EnterpriseOdfiOsEngine');
+  const r = Eo && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Eo.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`enterprise-odfi: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'enterprise-odfi (originator OS: maker/checker profile, agentic advisory planner + deterministic validator, distinct-trustee release via clearing-agent, returns/NOC, exposure reconciliation)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      ENTERPRISE_ODFI_ENABLED: String(env.ENTERPRISE_ODFI_ENABLED || 'true').toLowerCase() !== 'false',
+      ENTERPRISE_ODFI_LIVE: isTrue(env.ENTERPRISE_ODFI_LIVE),
+      ENTERPRISE_ODFI_REQUIRE_DISTINCT_RELEASER: String(env.ENTERPRISE_ODFI_REQUIRE_DISTINCT_RELEASER || 'true').toLowerCase() !== 'false',
+      ENTERPRISE_ODFI_AI_ENABLED: isTrue(env.ENTERPRISE_ODFI_AI_ENABLED),
+      ENTERPRISE_ODFI_AI_PROJECT: Boolean(env.ENTERPRISE_ODFI_AI_PROJECT || env.GOOGLE_CLOUD_PROJECT),
+      PAYMENT_DATA_ENCRYPTION_KEY: Boolean(env.PAYMENT_DATA_ENCRYPTION_KEY),
+      CLEARING_AGENT_LIVE: isTrue(env.CLEARING_AGENT_LIVE),
+      COUNTRY: 'US',
+      CURRENCY: 'USD',
+    },
+    modules: s ? { profile: s.profile, rails: s.rails, planner: s.planner, exposure: s.exposure, storage: s.storage, policy: s.policy } : { error: r.error },
+    routes: ['/api/os/enterprise-odfi/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/enterprise-odfi'],
+    secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'ENTERPRISE_ODFI_SERVICE_ACCOUNT_KEY (optional; runtime SA identity used on Cloud Run)', 'per-network credential_ref via clearing-agent'],
     tables,
     blockers,
   };

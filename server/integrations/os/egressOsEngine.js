@@ -69,6 +69,7 @@ function derivedHosts(env = process.env) {
     if (h) out.add(h);
   }
   for (const h of list(env.H2H_DISCOVERY_ALLOWED_HOSTS)) out.add(h);
+  if (String(env.ENTERPRISE_ODFI_AI_ENABLED || '').toLowerCase() === 'true') out.add(`${env.ENTERPRISE_ODFI_AI_LOCATION || 'us-east1'}-aiplatform.googleapis.com`);
   // Google APIs the runtime itself needs (Secret Manager, Cloud SQL connector, GCS, metadata).
   for (const h of ['secretmanager.googleapis.com', 'sqladmin.googleapis.com', 'storage.googleapis.com', 'oauth2.googleapis.com', 'www.googleapis.com', 'metadata.google.internal', 'run.googleapis.com', 'logging.googleapis.com']) out.add(h);
   return [...out];

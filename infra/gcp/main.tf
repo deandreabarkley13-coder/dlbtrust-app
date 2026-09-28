@@ -14,6 +14,7 @@ locals {
     "monitoring.googleapis.com",
     "iap.googleapis.com",
     "cloudscheduler.googleapis.com",
+    "aiplatform.googleapis.com",
   ]
 }
 
@@ -56,6 +57,13 @@ resource "google_project_iam_member" "runtime_sql_client" {
 resource "google_project_iam_member" "runtime_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.runtime.email}"
+}
+
+# Enterprise ODFI OS advisory planner (Vertex AI Gemini generateContent).
+resource "google_project_iam_member" "runtime_aiplatform_user" {
+  project = var.project_id
+  role    = "roles/aiplatform.user"
   member  = "serviceAccount:${google_service_account.runtime.email}"
 }
 

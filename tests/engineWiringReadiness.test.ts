@@ -46,8 +46,9 @@ const { IdpOcrOsEngine } = require('../server/integrations/os/idpOcrOsEngine');
 const { TaxOsEngine } = require('../server/integrations/os/taxOsEngine');
 const { PrivateEntityOsEngine } = require('../server/integrations/os/privateEntityOsEngine');
 const { ClearingAgentOsEngine } = require('../server/integrations/os/clearingAgentOsEngine');
+const { EnterpriseOdfiOsEngine } = require('../server/integrations/os/enterpriseOdfiOsEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent'].sort();
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi'].sort();
 const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
@@ -146,6 +147,7 @@ function stubFiatComponents() {
   vi.spyOn(TaxOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { entity: {}, returns: [], beneficiaries: 1, fineractAccounts: {}, exports: [], storage: {}, formats: [], reportTypes: [] } });
   vi.spyOn(PrivateEntityOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { entity: {}, profile: {}, requiredAttestations: 2, audit: { failing: [] }, tax: {}, legalStatus: 'declared' } });
   vi.spyOn(ClearingAgentOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { networks: { total: 1, verified: 1 }, formats: [], instructions: {}, policy: {} } });
+  vi.spyOn(EnterpriseOdfiOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { profile: { countersigned: true }, rails: { external: [{ networkId: 'SPONSOR-ODFI', kind: 'ach_operator' }] }, planner: { provider: 'rules' }, exposure: {}, storage: {}, policy: { isBank: false } } });
   vi.spyOn(OpenBankRestApiOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { bank: { id: 'dlb-trust-company' }, apiVersion: 'v1', tracker: { base: 'https://raw.githubusercontent.com/x' }, providers: { total: 1 }, fileDrops: { total: 1, verified: 1 }, policy: {} } });
 }
 
