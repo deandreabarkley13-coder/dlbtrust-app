@@ -28,6 +28,7 @@ const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
 const pool = require('../bonds/pgPool');
+const { EgressOsEngine } = require('./egressOsEngine');
 
 const FIELDS = {
   as2_id: { label: 'AS2 ID', patterns: [/AS2[\s-]*(?:ID|identifier|name)\s*[:=]\s*["']?([A-Za-z0-9_.\-]{3,64})/gi] },
@@ -290,6 +291,7 @@ const H2hDiscoveryOsEngine = {
     for (const src of res.rows) {
       let fetched;
       try {
+        await EgressOsEngine.authorize(src.url, { caller: 'h2h-discovery', actor });
         fetched = await this._fetch(src.url, cfg);
       } catch (e) {
         await pool.query('UPDATE h2h_discovery_sources SET last_scan_at = NOW(), last_scan_status = $2, last_scan_error = $3 WHERE source_id = $1', [src.source_id, 'error', e.message]);

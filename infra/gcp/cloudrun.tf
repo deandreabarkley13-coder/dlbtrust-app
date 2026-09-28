@@ -106,6 +106,25 @@ resource "google_cloud_run_v2_service" "app" {
         value = var.project_id
       }
 
+      # Egress OS (server/integrations/os/egressOsEngine.js): the one outbound
+      # door. All egress leaves via the VPC connector and Cloud NAT on this
+      # static address (backends.tf); the engine probes it and refuses
+      # destinations outside EGRESS_ALLOWED_HOSTS / on the retired-rail deny list.
+      env {
+        name  = "EGRESS_STATIC_IP"
+        value = google_compute_address.egress.address
+      }
+
+      env {
+        name  = "EGRESS_VPC_CONNECTOR"
+        value = google_vpc_access_connector.run.name
+      }
+
+      env {
+        name  = "EGRESS_NAT_NAME"
+        value = google_compute_router_nat.egress.name
+      }
+
       dynamic "env" {
         for_each = merge(
           { PAYMENT_HUB_LIVE = var.payment_hub_live ? "true" : "false" },

@@ -140,10 +140,11 @@ const ENGINES = {
   'private-payment-network': PrivatePaymentNetworkPlatformEngine,
   'h2h-discovery': require('../integrations/os/h2hDiscoveryOsEngine').H2hDiscoveryOsEngine,
   'open-bank-rest-api': require('../integrations/os/openBankRestApiOsEngine').OpenBankRestApiOsEngine,
+  egress: require('../integrations/os/egressOsEngine').EgressOsEngine,
 };
 
 // Engines whose actions are attributed to the authenticated trustee (maker/checker).
-const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api']);
+const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress']);
 
 function sendError(res, err) {
   const status = err.status || 400;

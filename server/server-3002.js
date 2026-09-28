@@ -497,6 +497,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[h2h-discovery/open-bank] table init:', e.message); }
 
   try {
+    var EgressOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'egressOsEngine')).EgressOsEngine;
+    await EgressOsEngine.ensureTables();
+    console.log('[egress] tables ensured');
+  } catch(e) { console.warn('[egress] table init:', e.message); }
+
+  try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
     await SkrillLinkEngine.ensureTables();
     console.log('[skrill-link] tables ensured');

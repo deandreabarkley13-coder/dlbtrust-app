@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -73,6 +73,7 @@ const ENGINE_TITLES = {
   'back-office': 'Backend OS (Back Office engine: treasury summary, bank reconciliation, batches; distribution execution via PPN only — dapp/on-chain executor retired)',
   'h2h-discovery': 'H2H Discovery OS (web data scraping of bank host-to-host onboarding docs: AS2 ID, client ID, base URL, SFTP host, MDN, cert fingerprint; trustee confirm -> second-trustee apply)',
   'open-bank-rest-api': 'Open Bank REST API OS (OBP-style REST surface over Fineract core banking + Open Banking Tracker directory; bank file-drop registration onto AS2Partners / MFT)',
+  egress: 'Egress OS (single outbound door: Serverless VPC connector -> Cloud NAT static IP; destination allow/deny-list, retired rails denied, audited + fail-closed authorize, NAT IP probe)',
 };
 
 const TABLES = {
@@ -108,6 +109,7 @@ const TABLES = {
   'back-office': ['back_office_batches', 'back_office_tasks', 'os_events', 'cash_accounts', 'trust_journal_entries'],
   'h2h-discovery': ['h2h_discovery_sources', 'h2h_discovery_candidates', 'h2h_discovery_events', 'as2_partners'],
   'open-bank-rest-api': ['open_bank_providers', 'open_bank_file_drops', 'open_bank_events', 'as2_partners', 'h2h_discovery_sources'],
+  egress: ['egress_events', 'egress_probes'],
 };
 
 function tryRequire(mod) {
@@ -379,6 +381,7 @@ const REPORTERS = {
   'back-office': backOfficeReadiness,
   'h2h-discovery': h2hDiscoveryReadiness,
   'open-bank-rest-api': openBankRestApiReadiness,
+  egress: egressReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1456,6 +1459,33 @@ async function h2hDiscoveryReadiness(ctx, env = process.env) {
     modules: s ? { sources: s.sources, candidates: s.candidates, appliedBanks: s.appliedBanks, fields: s.fields, policy: s.policy } : { error: r.error },
     routes: ['/api/os/h2h-discovery/{status,readiness,list,process}', '/api/os/readiness/h2h-discovery'],
     secrets: ['none — scraped credentials are refused; partner secrets stay in Secret Manager and are referenced by name'],
+    tables,
+    blockers,
+  };
+}
+
+async function egressReadiness(ctx, env = process.env) {
+  const Egress = tryRequire('./egressOsEngine')?.EgressOsEngine;
+  const tables = await tablesPresent(TABLES.egress);
+  const blockers = baseBlockers(ctx, tables, Egress, 'EgressOsEngine');
+  const r = Egress && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Egress.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`egress: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'egress (Serverless VPC connector -> Cloud NAT static IP; host allow/deny policy)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      EGRESS_OS_ENABLED: String(env.EGRESS_OS_ENABLED || 'true').toLowerCase() !== 'false',
+      EGRESS_ENFORCE: String(env.EGRESS_ENFORCE || 'false').toLowerCase() === 'true',
+      EGRESS_STATIC_IP: Boolean(env.EGRESS_STATIC_IP),
+      EGRESS_VPC_CONNECTOR: Boolean(env.EGRESS_VPC_CONNECTOR),
+      EGRESS_ALLOWED_HOSTS: s ? s.allowedHosts.length : 0,
+      EGRESS_DENIED_HOSTS: s ? s.deniedHosts.length : 0,
+    },
+    modules: s ? { path: s.path, audit: s.audit, last24h: s.last24h, lastProbe: s.lastProbe } : { error: r.error },
+    routes: ['/api/os/egress/{status,readiness,list,process}', '/api/os/readiness/egress'],
+    secrets: ['none — policy is host names only; EGRESS_STATIC_IP is the public NAT address from terraform output egress_ip'],
     tables,
     blockers,
   };

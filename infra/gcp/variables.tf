@@ -272,20 +272,32 @@ variable "runtime_environment" {
     # base URL / SFTP host / MDN / cert fingerprint. HTTPS only, hosts must be
     # allow-listed here (comma-separated; subdomains match), scraped credentials
     # are refused, candidates need trustee confirm + a second trustee to apply.
-    H2H_DISCOVERY_ENABLED                 = "true"
-    H2H_DISCOVERY_ALLOWED_HOSTS           = "developer.betterment.com,betterment.com,sunrisebanks.com,developer.hsbc.com,developer.jpmorgan.com,developer.citi.com,developer.wellsfargo.com,developer.usbank.com,openbankingtracker.com,raw.githubusercontent.com"
+    H2H_DISCOVERY_ENABLED                  = "true"
+    H2H_DISCOVERY_ALLOWED_HOSTS            = "developer.betterment.com,betterment.com,sunrisebanks.com,developer.hsbc.com,developer.jpmorgan.com,developer.citi.com,developer.wellsfargo.com,developer.usbank.com,openbankingtracker.com,raw.githubusercontent.com"
     H2H_DISCOVERY_REQUIRE_DISTINCT_APPLIER = "true"
     # Open Bank REST API OS (server/integrations/os/openBankRestApiOsEngine):
     # /api/open-bank/v1 over Fineract core banking + Open Banking Tracker
     # directory (public dataset not-a-bank/open-banking-tracker-data). File-drop
     # registrations project onto AS2Partners / MFT channels; live only when a
     # drop is verified by a second trustee.
-    OPEN_BANK_API_ENABLED           = "true"
-    OPEN_BANK_ID                    = "dlb-trust-company"
-    OPEN_BANK_NAME                  = "DeAndrea LaVar Barkley Trust Company"
-    OPEN_BANK_PUBLIC_BASE_URL       = "https://dlbtrust-app-514695212719.us-east1.run.app"
-    OPEN_BANKING_TRACKER_BASE_URL   = "https://raw.githubusercontent.com/not-a-bank/open-banking-tracker-data/master/data/account-providers"
-    OPEN_BANKING_TRACKER_INDEX_URL  = "https://api.github.com/repos/not-a-bank/open-banking-tracker-data/contents/data/account-providers"
+    OPEN_BANK_API_ENABLED          = "true"
+    OPEN_BANK_ID                   = "dlb-trust-company"
+    OPEN_BANK_NAME                 = "DeAndrea LaVar Barkley Trust Company"
+    OPEN_BANK_PUBLIC_BASE_URL      = "https://dlbtrust-app-514695212719.us-east1.run.app"
+    OPEN_BANKING_TRACKER_BASE_URL  = "https://raw.githubusercontent.com/not-a-bank/open-banking-tracker-data/master/data/account-providers"
+    OPEN_BANKING_TRACKER_INDEX_URL = "https://api.github.com/repos/not-a-bank/open-banking-tracker-data/contents/data/account-providers"
+    # Egress OS (server/integrations/os/egressOsEngine): destination policy for
+    # the single NAT egress door. Allowed hosts are these plus every host the
+    # other engines are configured with (FINERACT_URL, OPENACH_BASE_URL,
+    # PAYMENT_HUB_BASE_URL, H2H_DISCOVERY_ALLOWED_HOSTS, Tracker, Google APIs).
+    # Retired rails (Stripe, thirdweb, Spritz, chain RPCs) are denied in code.
+    # EGRESS_ENFORCE=true makes authorize() fail closed; EGRESS_STATIC_IP /
+    # EGRESS_VPC_CONNECTOR / EGRESS_NAT_NAME are stamped from cloudrun.tf.
+    EGRESS_OS_ENABLED    = "true"
+    EGRESS_ENFORCE       = "true"
+    EGRESS_HTTPS_ONLY    = "true"
+    EGRESS_ALLOWED_HOSTS = "api.ipify.org,beta-bridge.simplefin.org,simplefin.org,api.orangerails.com"
+    EGRESS_ECHO_URL      = "https://api.ipify.org?format=json"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected
