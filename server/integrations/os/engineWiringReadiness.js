@@ -24,6 +24,8 @@
  *   payment-hub      Payment Hub EE          paymentHubConfig / PaymentHubEngine (PHEE orchestration)
  *   openach          OpenACH Rail            OpenAchRailEngine + OpenAchFileRelay + TreasuryOdfiBank (ODFI file delivery)
  *   mft              MFT / File Relay        MftOsEngine channels (SFTP / spool) for NACHA / ISO 20022 file drops
+ *   h2h-discovery    H2H Discovery OS        Web data scraping of bank H2H/MFT docs for AS2 ID, client ID, base URL, SFTP host (confirm -> apply)
+ *   open-bank-rest-api Open Bank REST API    OBP-style REST surface + Open Banking Tracker directory; file-drop registration onto AS2Partners / MFT
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -36,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -69,6 +71,8 @@ const ENGINE_TITLES = {
   'clearing-netting': 'Clearing & Netting OS (daily obligations netted into one funded settlement position)',
   'wealth-back-office': 'Wealth Back Office OS (family bank desks; hands credits to Payer OS)',
   'back-office': 'Backend OS (Back Office engine: treasury summary, bank reconciliation, batches; distribution execution via PPN only — dapp/on-chain executor retired)',
+  'h2h-discovery': 'H2H Discovery OS (web data scraping of bank host-to-host onboarding docs: AS2 ID, client ID, base URL, SFTP host, MDN, cert fingerprint; trustee confirm -> second-trustee apply)',
+  'open-bank-rest-api': 'Open Bank REST API OS (OBP-style REST surface over Fineract core banking + Open Banking Tracker directory; bank file-drop registration onto AS2Partners / MFT)',
 };
 
 const TABLES = {
@@ -102,6 +106,8 @@ const TABLES = {
   'clearing-netting': ['clearing_cycles', 'clearing_cycle_legs', 'clearing_cycle_items', 'cash_accounts'],
   'wealth-back-office': ['wealth_credit_pushes', 'payer_disbursements'],
   'back-office': ['back_office_batches', 'back_office_tasks', 'os_events', 'cash_accounts', 'trust_journal_entries'],
+  'h2h-discovery': ['h2h_discovery_sources', 'h2h_discovery_candidates', 'h2h_discovery_events', 'as2_partners'],
+  'open-bank-rest-api': ['open_bank_providers', 'open_bank_file_drops', 'open_bank_events', 'as2_partners', 'h2h_discovery_sources'],
 };
 
 function tryRequire(mod) {
@@ -371,6 +377,8 @@ const REPORTERS = {
   'clearing-netting': clearingNettingReadiness,
   'wealth-back-office': wealthBackOfficeReadiness,
   'back-office': backOfficeReadiness,
+  'h2h-discovery': h2hDiscoveryReadiness,
+  'open-bank-rest-api': openBankRestApiReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1426,6 +1434,54 @@ async function readiness() {
     gcp: { ...ctx.gcp, ledger: ctx.ledger },
     engines,
     generatedAt: new Date().toISOString(),
+  };
+}
+
+async function h2hDiscoveryReadiness(ctx, env = process.env) {
+  const H2h = tryRequire('./h2hDiscoveryOsEngine')?.H2hDiscoveryOsEngine;
+  const tables = await tablesPresent(TABLES['h2h-discovery']);
+  const blockers = baseBlockers(ctx, tables, H2h, 'H2hDiscoveryOsEngine');
+  const r = H2h && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => H2h.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`h2h-discovery: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'h2h-discovery (https scrape, allow-listed hosts)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      H2H_DISCOVERY_ENABLED: String(env.H2H_DISCOVERY_ENABLED || 'true').toLowerCase() !== 'false',
+      H2H_DISCOVERY_ALLOWED_HOSTS: s ? s.allowedHosts.length : 0,
+      H2H_DISCOVERY_REQUIRE_DISTINCT_APPLIER: s ? s.policy.requireDistinctApplier : true,
+    },
+    modules: s ? { sources: s.sources, candidates: s.candidates, appliedBanks: s.appliedBanks, fields: s.fields, policy: s.policy } : { error: r.error },
+    routes: ['/api/os/h2h-discovery/{status,readiness,list,process}', '/api/os/readiness/h2h-discovery'],
+    secrets: ['none — scraped credentials are refused; partner secrets stay in Secret Manager and are referenced by name'],
+    tables,
+    blockers,
+  };
+}
+
+async function openBankRestApiReadiness(ctx, env = process.env) {
+  const OB = tryRequire('./openBankRestApiOsEngine')?.OpenBankRestApiOsEngine;
+  const tables = await tablesPresent(TABLES['open-bank-rest-api']);
+  const blockers = baseBlockers(ctx, tables, OB, 'OpenBankRestApiOsEngine');
+  const r = OB && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => OB.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`open-bank-rest-api: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'open-bank-rest-api + open-banking-tracker',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      OPEN_BANK_API_ENABLED: String(env.OPEN_BANK_API_ENABLED || 'true').toLowerCase() !== 'false',
+      OPEN_BANKING_TRACKER_BASE_URL: Boolean(s && s.tracker.base),
+      OPEN_BANK_PUBLIC_BASE_URL: Boolean(env.OPEN_BANK_PUBLIC_BASE_URL),
+    },
+    modules: s ? { bank: s.bank, apiVersion: s.apiVersion, tracker: s.tracker, providers: s.providers, fileDrops: s.fileDrops, policy: s.policy } : { error: r.error },
+    routes: ['/api/open-bank/v1/{banks,accounts,providers,file-drops}', '/api/os/open-bank-rest-api/{status,readiness,list,process}', '/api/os/readiness/open-bank-rest-api'],
+    secrets: ['none for the directory (public dataset); bank intake credentials stay in Secret Manager, referenced by name on the AS2 partner / MFT channel'],
+    tables,
+    blockers,
   };
 }
 

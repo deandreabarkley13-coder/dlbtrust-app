@@ -667,6 +667,39 @@ The six fiat components registered last (`accounting` = Fineract GL + DataBridge
 `shadow` until `POST /treasury-bank/link` verifies the mandate, and `openach` / `mft`
 stay `shadow` until an ODFI exposes an AS2/SFTP intake (Betterment does not), so
 these two report the file-channel blocker rather than a false live.
+
+Two discovery engines close the "where does the file drop go" gap from the bank's
+public side, and are registered in the same workflow (`h2h-discovery`,
+`open-bank-rest-api`):
+
+- **H2H Discovery OS** (`server/integrations/os/h2hDiscoveryOsEngine.js`,
+  `/api/os/h2h-discovery/{status,readiness,list,process}`) scrapes bank
+  host-to-host / MFT onboarding pages for AS2 ID, client ID, API base URL, AS2 and
+  MDN URLs, SFTP host, certificate fingerprint and routing number. HTTPS only,
+  hosts must be in `H2H_DISCOVERY_ALLOWED_HOSTS`, 2 MB / 15 s caps, credential
+  spans are redacted before anything is stored. Actions: `registerSource` →
+  `scan` (candidates only) → `confirm` (trustee) → `apply` (a *different*
+  trustee; projects identifiers onto `AS2Partners` `H2H-<BANK>` or an MFT SFTP
+  channel — never secrets). Readiness is `shadow` until a bank is
+  confirmed+applied.
+- **Open Bank REST API OS** (`server/integrations/os/openBankRestApiOsEngine.js`,
+  `/api/open-bank/v1/{banks,accounts,providers,file-drops,tracker/index}` and
+  `/api/os/open-bank-rest-api/*`). `accounts` is a read-only OBP-style view over
+  the Fineract trust account structure (account of record, principal, interest
+  income, trustee/beneficiary sub-accounts). `importProvider` pulls a bank's
+  public profile from the Open Banking Tracker dataset
+  (`not-a-bank/open-banking-tracker-data`, `OPEN_BANKING_TRACKER_BASE_URL`),
+  `seedDiscovery` hands its documentation URLs to H2H Discovery as sources, and
+  `registerFileDrop` (`protocol` as2 | rest_api | sftp, or `fromDiscovery:true` to
+  take the H2H-applied values) records the bank intake and projects it onto
+  `AS2Partners` `OB-<BANK>` / an MFT channel; `verifyFileDrop` by a second
+  trustee turns readiness `live`. Betterment's Tracker profile
+  (`account-providers/betterment.json`) lists `developerPortalUrl: null` and no
+  API products — i.e. no published intake — so both engines report that as the
+  blocker rather than inventing an endpoint. (`tracker/index` uses the GitHub
+  contents API, which is rate-limited unauthenticated; `importProvider` by id
+  reads the raw dataset and is not.)
+
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
 `interop`, `credit`, `debt`, `liquidity`, `funding-os`, `payment-processor`, `payment-gateway`, `enterprise-network`, `private-payment-network` map onto the ten reports; other engines get the generic Cloud SQL +

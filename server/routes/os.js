@@ -138,7 +138,12 @@ const ENGINES = {
   'payment-gateway': PaymentGatewayPlatformEngine,
   'enterprise-network': EnterpriseNetworkPlatformEngine,
   'private-payment-network': PrivatePaymentNetworkPlatformEngine,
+  'h2h-discovery': require('../integrations/os/h2hDiscoveryOsEngine').H2hDiscoveryOsEngine,
+  'open-bank-rest-api': require('../integrations/os/openBankRestApiOsEngine').OpenBankRestApiOsEngine,
 };
+
+// Engines whose actions are attributed to the authenticated trustee (maker/checker).
+const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api']);
 
 function sendError(res, err) {
   const status = err.status || 400;
@@ -241,6 +246,9 @@ router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async 
         success: false,
         error: 'Money movement must use the authenticated maker-checker workflow (distribution requests, vendor bills, Payer OS or settlement orders)',
       });
+    }
+    if (ACTOR_STAMPED_ENGINES.has(req.params.engine)) {
+      payload.actor = req.user?.email || req.user?.username || req.user?.userId || req.user?.sub || 'admin';
     }
     const data = await req.osEngine.process(payload);
     res.json({ success: true, data });
