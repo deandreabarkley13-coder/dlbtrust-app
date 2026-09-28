@@ -35,6 +35,24 @@ describe('TrustAccountStructure', () => {
     ]);
   });
 
+  it('only approved, KYC-verified parties are eligible and the same person under one role is a duplicate blocker, never a second account', async () => {
+    const twin = { ...trustee, contact_id: 'CRM-T1-DUP', first_name: 'ADA', last_name: 'TRUSTEE' };
+    stubCrm([trustee, twin, beneficiary]);
+    vi.spyOn(FineractClient, 'findSavingsAccountByExternalId').mockImplementation(async (ext: string) => active(ext.length, ext));
+    const inv = await TrustAccountStructure.inventory({ fresh: true, env });
+    const sql = String((pool.query as any).mock.calls.find((c: any[]) => /FROM crm_contacts/i.test(c[0]))[0]);
+    expect(sql).toMatch(/approval_status = 'approved'/);
+    expect(sql).toMatch(/kyc_status = 'verified'/);
+    expect(inv.trustees.map((t: any) => t.externalId)).toEqual(['trustee:CRM-T1:savings']);
+    expect(inv.duplicates).toEqual([{ role: 'trustee', partyRef: 'CRM-T1-DUP', partyName: 'ADA TRUSTEE', duplicateOf: 'CRM-T1' }]);
+    expect(inv.blockers).toEqual([expect.stringMatching(/duplicate trustee .*CRM-T1-DUP.*duplicates CRM-T1/)]);
+    expect(inv.complete).toBe(false);
+    const create = vi.spyOn(FineractClient, 'createSavingsAccount');
+    const result = await TrustAccountStructure.provision({ dryRun: false, actor: 'admin', env });
+    expect(result.results.map((r: any) => r.externalId)).not.toContain('trustee:CRM-T1-DUP:savings');
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it('inventory resolves by externalId and reports missing / inactive accounts as blockers without touching balances', async () => {
     stubCrm([trustee, beneficiary]);
     const find = vi.spyOn(FineractClient, 'findSavingsAccountByExternalId').mockImplementation(async (ext: string) => {

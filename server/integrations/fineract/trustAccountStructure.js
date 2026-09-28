@@ -104,15 +104,30 @@ class TrustAccountStructure {
       )`);
   }
 
-  /** Active CRM trustees and beneficiaries, each one Fineract client + one savings sub-account. */
+  /**
+   * CRM trustees and beneficiaries eligible for a sub-account: active, trustee-approved,
+   * KYC verified, AML clear. The same person recorded twice under one role is a duplicate:
+   * the oldest contact is provisioned, the rest are reported as blockers, never provisioned.
+   */
   static async parties() {
     if (!pool) return [];
     const r = await pool.query(
       `SELECT contact_id, contact_type, first_name, last_name, email, fineract_client_id
          FROM crm_contacts
         WHERE contact_type = ANY($1) AND status = 'active'
-        ORDER BY contact_type, last_name, first_name`, [PARTY_ROLES]);
-    return r.rows.map((c) => ({
+          AND approval_status = 'approved' AND kyc_status = 'verified'
+          AND COALESCE(aml_status, 'clear') IN ('clear', 'cleared')
+        ORDER BY contact_type, created_at, contact_id`, [PARTY_ROLES]);
+    const seen = new Map();
+    const duplicates = [];
+    const rows = [];
+    for (const c of r.rows) {
+      const key = `${c.contact_type}|${`${c.first_name || ''} ${c.last_name || ''}`.replace(/\s+/g, ' ').trim().toUpperCase()}`;
+      if (seen.has(key)) { duplicates.push({ ...c, duplicateOf: seen.get(key) }); continue; }
+      seen.set(key, c.contact_id);
+      rows.push(c);
+    }
+    const parties = rows.map((c) => ({
       role: c.contact_type,
       partyRef: c.contact_id,
       partyName: `${c.first_name || ''} ${c.last_name || ''}`.trim(),
@@ -124,6 +139,13 @@ class TrustAccountStructure {
       glCode: GL[c.contact_type].code,
       glName: GL[c.contact_type].name,
     }));
+    parties.duplicates = duplicates.map((c) => ({
+      role: c.contact_type,
+      partyRef: c.contact_id,
+      partyName: `${c.first_name || ''} ${c.last_name || ''}`.trim(),
+      duplicateOf: c.duplicateOf,
+    }));
+    return parties;
   }
 
   /** The declared structure: trust-level accounts plus one sub-account per party. */
@@ -140,8 +162,10 @@ class TrustAccountStructure {
       glName: GL[role].name,
       provisionable: role !== 'account-of-record',
     }));
-    const parties = (await this.parties()).map((p) => ({ ...p, provisionable: true }));
-    return [...trust, ...parties];
+    const parties = await this.parties();
+    const all = [...trust, ...parties.map((p) => ({ ...p, provisionable: true }))];
+    all.duplicates = parties.duplicates || [];
+    return all;
   }
 
   static async _find(entry) {
@@ -177,6 +201,10 @@ class TrustAccountStructure {
     for (const a of accounts) if (a.blocker) blockers.push(a.blocker);
     if (!byRole('trustee').length) blockers.push('no active trustee in crm_contacts: no trustee sub-account to provision');
     if (!byRole('beneficiary').length) blockers.push('no active beneficiary in crm_contacts: no beneficiary sub-account to provision');
+    const duplicates = expected.duplicates || [];
+    for (const d of duplicates) {
+      blockers.push(`duplicate ${d.role} in crm_contacts: ${d.partyRef} (${d.partyName}) duplicates ${d.duplicateOf}; retire one before provisioning`);
+    }
     const value = {
       holder: { externalId: cfg.holderExternalId, name: cfg.holderName },
       accountOfRecord: byRole('account-of-record')[0] || null,
@@ -184,6 +212,7 @@ class TrustAccountStructure {
       interestIncome: byRole('interest-income')[0] || null,
       trustees: byRole('trustee'),
       beneficiaries: byRole('beneficiary'),
+      duplicates,
       counts: {
         expected: accounts.length,
         found: accounts.filter((a) => a.found).length,
@@ -191,7 +220,7 @@ class TrustAccountStructure {
         missing: accounts.filter((a) => !a.found).map((a) => a.externalId),
       },
       gl: GL,
-      complete: accounts.length > 0 && accounts.every((a) => a.active),
+      complete: accounts.length > 0 && accounts.every((a) => a.active) && duplicates.length === 0,
       blockers,
       checkedAt: new Date().toISOString(),
     };
