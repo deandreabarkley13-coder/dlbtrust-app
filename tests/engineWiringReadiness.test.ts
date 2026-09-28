@@ -19,6 +19,7 @@ const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngi
 const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentProcessorOsEngine');
 const { BankingAggregator } = require('../server/integrations/aggregator/bankingAggregator');
 const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+const { TrustAccountStructure } = require('../server/integrations/fineract/trustAccountStructure');
 const { DataBridge } = require('../server/integrations/accounting/dataBridge');
 const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
 const { LiliStripePayoutOriginator } = require('../server/integrations/payments/liliStripePayoutOriginator');
@@ -89,7 +90,17 @@ const RECEIPTED_BOND = { positionId: 'POS-1', assetClass: 'fixed_income', instru
 const CUSTODY_STATEMENT = { accounts: [{ custodyAccountId: 'CUS-ISSUER-FIXED-INCOME', accountName: 'Issuer fixed income', custodyType: 'self', positions: [RECEIPTED_BOND] }, { custodyAccountId: 'CUS-COLLATERAL-PLEDGES', accountName: 'Collateral pledges', custodyType: 'self', positions: [] }] };
 
 function stubTrustEngines() {
-  vi.spyOn(DebtOsEngine, 'recurringCouponConfig').mockResolvedValue({ enabled: true, ledgerAccountId: 'CA-BOND-PROCEEDS', settingKey: 'debt_os_coupon_ledger_account', coreBanking: { system: 'fineract', required: true, configured: true, savingsAccountId: '2', paymentTypeId: 1, blocker: null }, scheduler: 'CouponService.scheduleCouponJob' });
+  vi.spyOn(DebtOsEngine, 'recurringCouponConfig').mockResolvedValue({ enabled: true, ledgerAccountId: 'CA-BOND-PROCEEDS', settingKey: 'debt_os_coupon_ledger_account', coreBanking: { system: 'fineract', required: true, configured: true, savingsAccountId: '4', destination: 'interest-income', glIncomeCode: '4000', paymentTypeId: 1, blocker: null }, scheduler: 'CouponService.scheduleCouponJob' });
+  const acct = (role: string, id: number, externalId: string, glCode: string) => ({ role, externalId, glCode, found: true, active: true, id, accountNo: String(id).padStart(9, '0'), status: 'Active', balance: 0, availableBalance: 0, blocker: null });
+  vi.spyOn(TrustAccountStructure, 'inventory').mockResolvedValue({
+    holder: { externalId: 'holder:dlb-irrevocable-trust', name: 'DeAndrea Lavar Barkley Irrevocable Trust' },
+    accountOfRecord: { ...acct('account-of-record', 2, 'holder:dlb-irrevocable-trust:savings', '1000'), balance: 7709589.04, availableBalance: 7709589.04 },
+    principal: acct('principal', 3, 'holder:dlb-irrevocable-trust:principal', '3000'),
+    interestIncome: acct('interest-income', 4, 'holder:dlb-irrevocable-trust:interest-income', '4000'),
+    trustees: [acct('trustee', 5, 'trustee:CRM-T1:savings', '1030')],
+    beneficiaries: [acct('beneficiary', 6, 'beneficiary:CRM-B1:savings', '1020')],
+    counts: { expected: 5, found: 5, active: 5, missing: [] }, complete: true, blockers: [], checkedAt: '2026-09-27T00:00:00Z',
+  });
   vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ enabled: true, rail: 'bank', ready: true, issues: [], buckets: [{ bucket: 'income_support', glAccountCode: '2000', payees: [{ key: 'beneficiary' }] }] });
   vi.spyOn(CustodyOsEngine, 'status').mockResolvedValue({ requiredSignatures: 2, reserveLinked: true, reserveEngineAvailable: true, pendingReceipts: 0, fixedIncomeFeed: { issuerAccountId: 'CUS-ISSUER-FIXED-INCOME', issuerName: 'Trust', lastSyncedAt: '2026-09-27T00:00:00Z' }, collateralFeed: { accountId: 'CUS-COLLATERAL-PLEDGES', lastSyncedAt: null }, chain: { events: 12, intact: true, breaks: [] }, statement: CUSTODY_STATEMENT });
   vi.spyOn(CustodyOsEngine, 'statement').mockResolvedValue(CUSTODY_STATEMENT);
@@ -279,7 +290,9 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.mft.mode).toBe('live');
     expect(report.engines['fixed-income'].mode).toBe('live');
     expect(report.engines['fixed-income'].liveFlags.ASSET_SALES).toBe(false);
-    expect(report.engines['fixed-income'].modules.couponSettlement.coreBanking.savingsAccountId).toBe('2');
+    expect(report.engines['fixed-income'].modules.couponSettlement.coreBanking).toMatchObject({ savingsAccountId: '4', destination: 'interest-income' });
+    expect(report.engines['fixed-income'].modules.fineractAccounts).toMatchObject({ complete: true, trustees: 1, beneficiaries: 1, principal: { id: 3, glCode: '3000' }, interestIncome: { id: 4, glCode: '4000' } });
+    expect(report.engines.accounting.modules.trustAccountStructure.complete).toBe(true);
     expect(report.engines.custody.mode).toBe('live');
     expect(report.engines.custody.modules.fixedIncome.receipted).toBe(1);
     expect(report.engines.collateral.mode).toBe('live');

@@ -246,6 +246,27 @@ router.post('/resilience/clean-locks', requireAdminForResilience, async (req, re
   }
 });
 
+// ─── Trust account structure (principal, interest income, trustee / beneficiary sub-accounts) ──
+router.get('/trust-accounts', async (req, res) => {
+  try {
+    const { TrustAccountStructure } = require('../integrations/fineract/trustAccountStructure');
+    const inventory = await TrustAccountStructure.inventory({ fresh: String(req.query.fresh) === 'true' });
+    res.json({ success: true, data: inventory });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/trust-accounts/provision', requireAdminForResilience, async (req, res) => {
+  try {
+    const { TrustAccountStructure } = require('../integrations/fineract/trustAccountStructure');
+    const result = await TrustAccountStructure.provision({ dryRun: req.body?.dryRun === true, actor: req.user || 'admin' });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── Fineract / Mifos Payout Bridge ─────────────────────────────────────────
 
 router.get('/payouts', async (req, res) => {

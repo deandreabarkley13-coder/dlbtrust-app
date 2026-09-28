@@ -319,7 +319,7 @@ class DebtOsEngine {
     if (account && pool) {
       const acct = await settle(() => pool.query(`SELECT account_id, status, linked_fineract_account_id FROM cash_accounts WHERE account_id = $1`, [account]));
       const row = acct.ok ? acct.value.rows[0] : null;
-      coreBanking = row ? this._couponCoreBanking(row) : { system: 'fineract', savingsAccountId: null, blocker: `cash account ${account} not found` };
+      coreBanking = row ? this._couponCoreBanking(row, process.env, await this._interestIncomeAccount()) : { system: 'fineract', savingsAccountId: null, blocker: `cash account ${account} not found` };
       if (row && row.status !== 'active') coreBanking.blocker = coreBanking.blocker || `cash account ${account} is ${row.status}`;
     }
     return { enabled: !!account, ledgerAccountId: account || null, settingKey: SETTING_COUPON_LEDGER_ACCOUNT, coreBanking, scheduler: 'CouponService.scheduleCouponJob (startup + 6h), settles each due coupon_per_period into the ledger account and its linked Fineract savings account' };
@@ -344,15 +344,25 @@ class DebtOsEngine {
    * account (or CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID) receives the coupon so the treasury
    * account of record — the PPN funding source — actually carries the income.
    */
-  static _couponCoreBanking(cashAccount, env = process.env) {
+  static async _interestIncomeAccount() {
+    const Structure = tryRequire('../fineract/trustAccountStructure')?.TrustAccountStructure;
+    if (!Structure) return null;
+    const r = await settle(() => Structure.resolveAccountId('interest-income'));
+    return r.ok ? r.value : null;
+  }
+
+  static _couponCoreBanking(cashAccount, env = process.env, interestIncomeAccountId = null) {
     const required = String(env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING || 'true').toLowerCase() !== 'false';
-    const savingsAccountId = String(cashAccount?.linked_fineract_account_id || env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || '').trim() || null;
+    const interestIncome = String(interestIncomeAccountId || '').trim() || null;
+    const fallback = String(cashAccount?.linked_fineract_account_id || env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || '').trim() || null;
+    const savingsAccountId = interestIncome || fallback;
+    const destination = interestIncome ? 'interest-income' : cashAccount?.linked_fineract_account_id ? 'linked-cash-account' : fallback ? 'canonical-account-of-record' : null;
     const configured = Boolean(env.FINERACT_URL) && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(env.FINERACT_URL);
     const paymentTypeId = Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) > 0 ? Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) : 1;
     let blocker = null;
     if (required && !configured) blocker = 'FINERACT_URL not set to the core-banking service';
     else if (required && !savingsAccountId) blocker = `cash account ${cashAccount?.account_id} has no linked_fineract_account_id and CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is unset`;
-    return { system: 'fineract', required, configured, savingsAccountId: required && configured ? savingsAccountId : null, paymentTypeId, blocker };
+    return { system: 'fineract', required, configured, savingsAccountId: required && configured ? savingsAccountId : null, destination: required && configured ? destination : null, glIncomeCode: '4000', paymentTypeId, blocker };
   }
 
   static async settleCouponToLedger({ bondId, toAccountId, amount, couponDate, approvedBy, dryRun = false }) {
@@ -371,8 +381,11 @@ class DebtOsEngine {
     if (!acct.rows[0]) throw new Error(`cash account ${toAccountId} not found or not active`);
     couponDate = couponDate || new Date().toISOString().slice(0, 10);
     const couponPaymentId = `CPN-${bondId}-${couponDate.replace(/-/g, '')}-LEDGER`;
-    const coreBanking = this._couponCoreBanking(acct.rows[0]);
-    const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, coreBanking, basis: coreBanking.savingsAccountId ? 'coupon income credited to the Fineract core-banking savings account of record and the trust ledger; no ACH, no external bank funds' : 'internal ledger settlement of accrued coupon; no ACH, no bank funds' };
+    const coreBanking = this._couponCoreBanking(acct.rows[0], process.env, await this._interestIncomeAccount());
+    const basis = coreBanking.destination === 'interest-income'
+      ? 'coupon income credited to the Fineract interest-income savings account (GL 4000) and the trust ledger; no ACH, no external bank funds'
+      : coreBanking.savingsAccountId ? 'coupon income credited to the Fineract core-banking savings account of record and the trust ledger; no ACH, no external bank funds' : 'internal ledger settlement of accrued coupon; no ACH, no bank funds';
+    const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, coreBanking, basis };
     if (dryRun) return { dryRun: true, ...plan };
     if (coreBanking.blocker) throw new Error(`core-banking coupon deposit blocked: ${coreBanking.blocker}`);
     if (Coupon) await Coupon.ensureTable();
@@ -392,7 +405,7 @@ class DebtOsEngine {
           paymentTypeId: coreBanking.paymentTypeId,
           note: `Coupon ${couponDate} ${reg.bondName} ${couponPaymentId}`,
         });
-        fineract = { system: 'fineract', savingsAccountId: coreBanking.savingsAccountId, depositTransactionId: res?.resourceId != null ? String(res.resourceId) : null, amount: pay, at: new Date().toISOString() };
+        fineract = { system: 'fineract', savingsAccountId: coreBanking.savingsAccountId, destination: coreBanking.destination, depositTransactionId: res?.resourceId != null ? String(res.resourceId) : null, amount: pay, at: new Date().toISOString() };
       }
       const mov = await Cash.deposit({ toAccountId, amountCents: Math.round(pay * 100), referenceId: `BOND-${bondId}`, memo: `Coupon ${couponDate} ${reg.bondName} settled to ledger (${approvedBy || 'system'})${fineract ? ` — Fineract savings ${fineract.savingsAccountId} deposit ${fineract.depositTransactionId}` : ''}`, initiatedBy: approvedBy || 'system' });
       await pool.query(`UPDATE coupon_payments SET status = 'paid', journal_entry_id = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, mov.movement_id]);
