@@ -482,6 +482,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[fineract-payout] table init:', e.message); }
 
   try {
+    var TrustAccountStructure = require(path.join(HD, 'server', 'integrations', 'fineract', 'trustAccountStructure')).TrustAccountStructure;
+    await TrustAccountStructure.ensureTables();
+    console.log('[fineract-trust-accounts] tables ensured');
+  } catch(e) { console.warn('[fineract-trust-accounts] table init:', e.message); }
+
+  try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
     await SkrillLinkEngine.ensureTables();
     console.log('[skrill-link] tables ensured');

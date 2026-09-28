@@ -86,7 +86,7 @@ const TABLES = {
   'enterprise-network': ['enterprise_network_intents', 'enterprise_network_participants', 'enterprise_network_routing_policies', 'enterprise_network_exposure_limits', 'os_events'],
   'private-payment-network': ['private_payment_network_transactions', 'cash_accounts', 'cash_movements', 'payment_methods', 'payment_gateway_transactions', 'enterprise_network_participants', 'enterprise_network_exposure_limits', 'os_events'],
   aggregator: ['banking_aggregator_connections', 'banking_aggregator_accounts', 'banking_aggregator_transactions', 'banking_aggregator_statements', 'banking_aggregator_events', 'trust_journal_entries'],
-  accounting: ['trust_accounts', 'trust_journal_entries', 'fineract_gl_mappings', 'data_bridge_sync_log', 'data_bridge_discrepancies'],
+  accounting: ['trust_accounts', 'trust_journal_entries', 'fineract_gl_mappings', 'data_bridge_sync_log', 'data_bridge_discrepancies', 'fineract_trust_accounts', 'crm_contacts'],
   'stripe-intake': ['stripe_payment_intakes', 'cash_accounts', 'cash_movements', 'lili_direct_deposits'],
   'treasury-funding-bank': ['treasury_funding_bank', 'stripe_payment_intakes', 'cash_accounts'],
   'payment-hub': ['payment_intents', 'payment_approvals', 'payment_events', 'ach_batches'],
@@ -811,6 +811,11 @@ async function accountingReadiness(ctx) {
       if (!savings.some((s) => s.active)) blockers.push('no active Fineract savings account (trust account of record) to fund payouts');
     } else savings = { error: list.error };
   }
+  const Structure = tryRequire('../fineract/trustAccountStructure')?.TrustAccountStructure;
+  const structure = health.ok && Structure ? await settle(() => Structure.inventory()) : { ok: false, error: Structure ? 'skipped' : 'TrustAccountStructure not loadable' };
+  if (structure.ok) {
+    for (const b of structure.value.blockers) blockers.push(`trust account structure: ${b}`);
+  } else if (health.ok) blockers.push(`trust account structure: ${structure.error}`);
   let lastSync = null;
   if (bridge && tables.data_bridge_sync_log) {
     const hist = await settle(() => bridge.DataBridge.getSyncHistory({ limit: 1 }));
@@ -818,7 +823,7 @@ async function accountingReadiness(ctx) {
   }
   const missing = missingTables(tables);
   if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
-  const live = health.ok && ctx.ledger.connected;
+  const live = health.ok && ctx.ledger.connected && structure.ok && structure.value.complete;
   return {
     provider: 'fineract-core-banking+data-bridge',
     mode: live ? 'live' : 'shadow',
@@ -833,6 +838,7 @@ async function accountingReadiness(ctx) {
     modules: {
       fineract: health.ok ? { connected: true, offices: Array.isArray(health.value.offices) ? health.value.offices.length : null } : { error: health.error },
       savingsAccounts: savings,
+      trustAccountStructure: structure.ok ? structure.value : { error: structure.error },
       dataBridge: Boolean(bridge),
       trustAccounting: Boolean(trust),
       lastSync,
@@ -840,7 +846,7 @@ async function accountingReadiness(ctx) {
       classification: 'DataBridge.classifyAggregatorTxn: coupon → 4100, interest → 4000, principal → 3000, distribution → 2000, operating expense → 5300',
     },
     jobs: ['DataBridge.runFullSync (aggregatorScheduler.runOnce)', 'DataBridge.getReconciliationReport (GET /api/accounting/bridge/report)'],
-    routes: ['/api/accounting/*', '/api/accounting/bridge/*', '/api/fineract/*', '/api/os/readiness/accounting'],
+    routes: ['/api/accounting/*', '/api/accounting/bridge/*', '/api/fineract/*', '/api/fineract/trust-accounts', 'POST /api/fineract/trust-accounts/provision (admin)', '/api/os/readiness/accounting'],
     secrets: ['FINERACT_USERNAME', 'FINERACT_PASSWORD'],
     tables,
     blockers,
@@ -1071,7 +1077,18 @@ async function fixedIncomeReadiness(ctx) {
   if (recurring.ok) {
     if (!recurring.value.enabled) blockers.push('recurring coupon settlement disabled: set debt_os_coupon_ledger_account (POST /api/os/debt/recurring-coupon) to the ledger cash account linked to the Fineract savings account of record');
     else if (coreBanking?.blocker) blockers.push(`coupon -> Fineract core banking: ${coreBanking.blocker}`);
+    else if (coreBanking && coreBanking.destination !== 'interest-income') blockers.push(`coupon deposits fall back to the ${coreBanking.destination} (savings ${coreBanking.savingsAccountId}): Fineract interest-income savings account not active (POST /api/fineract/trust-accounts/provision)`);
   } else blockers.push(`recurring coupon config: ${recurring.error}`);
+  const Structure = tryRequire('../fineract/trustAccountStructure')?.TrustAccountStructure;
+  const structure = Structure && env.FINERACT_URL ? await settle(() => Structure.inventory()) : { ok: false, error: 'skipped' };
+  const incomeAccounts = structure.ok ? {
+    principal: structure.value.principal, interestIncome: structure.value.interestIncome, accountOfRecord: structure.value.accountOfRecord,
+    trustees: structure.value.trustees.length, beneficiaries: structure.value.beneficiaries.length, complete: structure.value.complete,
+  } : { error: structure.error };
+  if (structure.ok) {
+    if (!structure.value.principal?.active) blockers.push('Fineract principal (corpus, GL 3000) savings account not active');
+    if (!structure.value.interestIncome?.active) blockers.push('Fineract interest-income (GL 4000) savings account not active');
+  }
   if (!env.FINERACT_URL) blockers.push('FINERACT_URL not set (infra/gcp: dlbtrust-fineract Cloud Run service)');
   if (dist.ok) {
     if (dist.value.rail !== 'bank') blockers.push(`FIXED_INCOME_RAIL=${dist.value.rail}: distributions must use the fiat bank rail (blockchain/policy-contract rail retired)`);
@@ -1096,7 +1113,8 @@ async function fixedIncomeReadiness(ctx) {
       obligations: obligations.ok ? obligations.value.obligations ?? obligations.value.bonds ?? null : { error: obligations.error },
       schedule90d: schedule.ok ? schedule.value : { error: schedule.error },
       couponSettlement: recurring.ok ? recurring.value : { error: recurring.error },
-      fundingChain: 'bond accrual -> coupon_payments -> DebtOsEngine.settleCouponToLedger -> FineractClient.depositSavings(account of record) + cash_accounts -> PPN payouts (withdraw before dispatch)',
+      fundingChain: 'bond accrual -> coupon_payments -> DebtOsEngine.settleCouponToLedger -> FineractClient.depositSavings(interest-income savings account, GL 4000; falls back to the account of record) + cash_accounts -> PPN payouts (withdraw before dispatch)',
+      fineractAccounts: incomeAccounts,
       distribution: dist.ok ? { rail: dist.value.rail, ready: dist.value.ready, issues: dist.value.issues, buckets: (dist.value.buckets || []).map((b) => ({ bucket: b.bucket, glAccountCode: b.glAccountCode, payees: (b.payees || []).length })) } : { error: dist.error },
       accountingSync: 'DataBridge.syncBondsToAccounting (coupon_payments -> Dr 1020 / Cr 4100) + pushToFineract GL',
       warnings: distributionWarnings,

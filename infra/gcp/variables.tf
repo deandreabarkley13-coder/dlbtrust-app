@@ -255,6 +255,18 @@ variable "runtime_environment" {
     CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = ""
     CANONICAL_FUNDING_PAYMENT_TYPE_ID    = "1"
     PRIVATE_PAYMENT_NETWORK_CORE_BANKING = "true"
+    # Fineract trust account structure (server/integrations/fineract/
+    # trustAccountStructure.js): principal (corpus, GL 3000), interest income
+    # (GL 4000; coupon deposits land here), and one savings sub-account per
+    # active CRM trustee / beneficiary, resolved by externalId
+    # (holder:<TRUST_HOLDER_ID>:{principal,interest-income},
+    # trustee:<contact_id>:savings, beneficiary:<contact_id>:savings).
+    # Provisioned with POST /api/fineract/trust-accounts/provision (admin) and
+    # reported in /api/os/readiness/{accounting,fixed-income}. Leave the two
+    # ids empty to resolve by externalId.
+    TRUST_HOLDER_ID                             = "dlb-irrevocable-trust"
+    FINERACT_PRINCIPAL_SAVINGS_ACCOUNT_ID       = ""
+    FINERACT_INTEREST_INCOME_SAVINGS_ACCOUNT_ID = ""
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected
