@@ -146,10 +146,11 @@ const ENGINES = {
   'tax-os': require('../integrations/os/taxOsEngine').TaxOsEngine,
   'private-entity': require('../integrations/os/privateEntityOsEngine').PrivateEntityOsEngine,
   'clearing-agent': require('../integrations/os/clearingAgentOsEngine').ClearingAgentOsEngine,
+  'enterprise-odfi': require('../integrations/os/enterpriseOdfiOsEngine').EnterpriseOdfiOsEngine,
 };
 
 // Engines whose actions are attributed to the authenticated trustee (maker/checker).
-const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent']);
+const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi']);
 
 function sendError(res, err) {
   const status = err.status || 400;

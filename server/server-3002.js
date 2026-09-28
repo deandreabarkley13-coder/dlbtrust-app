@@ -517,8 +517,9 @@ async function initializeDatabase() {
     var ClearingAgentOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentOsEngine')).ClearingAgentOsEngine;
     await ClearingAgentOsEngine.ensureTables();
     await require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentNetworkEndpoint')).ClearingAgentNetworkEndpoint.ensureTables();
-    console.log('[idp-ocr/tax-os/private-entity/clearing-agent] tables ensured');
-  } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent] table init:', e.message); }
+    await require(path.join(HD, 'server', 'integrations', 'os', 'enterpriseOdfiOsEngine')).EnterpriseOdfiOsEngine.ensureTables();
+    console.log('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi] tables ensured');
+  } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi] table init:', e.message); }
 
   try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;

@@ -64,11 +64,12 @@ function newId(prefix) {
 /** Hosts the other engines are configured to talk to, derived from their env. */
 function derivedHosts(env = process.env) {
   const out = new Set();
-  for (const k of ['FINERACT_URL', 'OPENACH_BASE_URL', 'PAYMENT_HUB_BASE_URL', 'MFTGATEWAY_BASE_URL', 'OPEN_BANKING_TRACKER_BASE_URL', 'OPEN_BANKING_TRACKER_INDEX_URL', 'EGRESS_ECHO_URL', 'PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL']) {
+  for (const k of ['FINERACT_URL', 'OPENACH_BASE_URL', 'PAYMENT_HUB_BASE_URL', 'MFTGATEWAY_BASE_URL', 'OPEN_BANKING_TRACKER_BASE_URL', 'OPEN_BANKING_TRACKER_INDEX_URL', 'EGRESS_ECHO_URL', 'PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL', 'TABAPAY_BASE_URL']) {
     const h = hostOf(env[k]);
     if (h) out.add(h);
   }
   for (const h of list(env.H2H_DISCOVERY_ALLOWED_HOSTS)) out.add(h);
+  if (String(env.ENTERPRISE_ODFI_AI_ENABLED || '').toLowerCase() === 'true') out.add(`${env.ENTERPRISE_ODFI_AI_LOCATION || 'us-east1'}-aiplatform.googleapis.com`);
   // Google APIs the runtime itself needs (Secret Manager, Cloud SQL connector, GCS, metadata).
   for (const h of ['secretmanager.googleapis.com', 'sqladmin.googleapis.com', 'storage.googleapis.com', 'oauth2.googleapis.com', 'www.googleapis.com', 'metadata.google.internal', 'run.googleapis.com', 'logging.googleapis.com']) out.add(h);
   return [...out];

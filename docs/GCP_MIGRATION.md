@@ -1069,6 +1069,79 @@ family device -> [Cloud VPN, optional] -> IAP (family Google identity)
   refused at the edge (302/401/403) and calls readiness with the deployer's
   identity token.
 
+## Enterprise ODFI OS (agentic originator operating system)
+
+`server/integrations/os/enterpriseOdfiOsEngine.js`, engine key
+`enterprise-odfi`, routes `/api/os/enterprise-odfi/{status,readiness,health,
+list,get/:id,process}` and `/api/os/readiness/enterprise-odfi`.
+
+What it is: the trust company's originator-side OS for its sponsor ODFI /
+instant-payment relationship. What it is not: a bank. An ODFI is a Fed-member
+depository institution; this software originates instructions to one and
+settles nothing itself.
+
+```text
+profile (trustee A) -> countersign (trustee B)
+originate {purposeClass, items[approvalRef+screeningRef+instruction]} (trustee A)
+  -> planner: Vertex AI Gemini advisory (purpose/amount/urgency only leave the
+     box) -> deterministic validator (US, USD, verified network per rail,
+     instant/same-day limits, exposure headroom) -> batch 'planned'
+release (trustee B, distinct) -> per item: clearing-agent submit (verified
+  network, HMAC, Egress OS) -> post (Fineract withdraw / family deposit)
+exception {Rxx|Cxx} -> return re-deposits the debtor Fineract account; NOC recorded
+reconcile -> outstanding / posted / returned vs exposure limit
+```
+
+- Rails: `family_book` (PPN-FAMILY, Fineract book transfer), `rtp`, `fednow`,
+  `ach_same_day`, `ach_standard` — each mapped to Clearing Agent network kinds;
+  an item with no verified network for its rail blocks release (`replan` after
+  a sponsor network verifies).
+- Item instructions are stored AES-256-GCM under `PAYMENT_DATA_ENCRYPTION_KEY`;
+  responses carry last-4 only. Events are redacted.
+- Live only when `ENTERPRISE_ODFI_LIVE=true`, the profile is countersigned,
+  the Clearing Agent is live and at least one verified EXTERNAL network
+  (`ach_operator` / `rtp_participant` / `fednow_participant`) exists. Until a
+  sponsor ODFI is onboarded the engine reports `shadow` with that blocker and
+  only family book transfers can route.
+- Vertex AI: `ENTERPRISE_ODFI_AI_ENABLED=true`, project/location/model in
+  `runtime_environment`; the runtime service account needs
+  `roles/aiplatform.user`; Egress OS derives `<location>-aiplatform.googleapis.com`.
+  If Vertex is unavailable the planner falls back to rules and says so.
+- Designated roles: `ENTERPRISE_ODFI_MAKERS` (declare profile, originate) and
+  `ENTERPRISE_ODFI_CHECKERS` (countersign, release). Production: maker
+  Malissa Ann Robinson (`malissa.robinson`), checker DeAndrea Lavar Barkley
+  (`deandreabarkley13@gmail.com`). The distinct-actor rule still applies.
+
+### TabaPay sponsor network (Clearing Agent adapter)
+
+`server/integrations/os/clearingAgentTabaPayAdapter.js`. TabaPay is a licensed
+US money-movement processor (ACH next/same-day, RTP, push-to-card) with a
+bearer-authenticated REST API; it is the trust's first external sponsor
+network. It is not open source — a signed TabaPay client agreement yields a
+credentials file with `https://FQDN:PORT`, a 22-character ClientID, a
+settlement AccountID and a bearer key.
+
+1. Put the bearer key in Secret Manager as `TABAPAY_BEARER_TOKEN` and add it to
+   `secret_names`; set `TABAPAY_BASE_URL=https://FQDN:PORT` (Egress OS allows
+   the host from it).
+2. Register (maker): `POST /api/os/clearing-agent/process`
+   `{action:'register', networkId:'TABAPAY', name:'TabaPay', kind:'ach_operator',
+   format:'tabapay_json', baseUrl:TABAPAY_BASE_URL, credentialRef:'TABAPAY_BEARER_TOKEN',
+   capabilities:{adapter:'tabapay', clientId, settlementAccountId}}`.
+3. `challenge` (maker) then `verify` (checker): the handshake is an authenticated
+   `GET /v1/clients/{ClientID}` that must answer `SC 200`; no secret is echoed.
+4. Point the originator profile at it (`sponsorNetworkId:'TABAPAY'`). Enterprise
+   ODFI then routes `rtp` (achOptions `R`), `ach_same_day` (`S`) and
+   `ach_standard` (`N`) items to it as `POST /v1/clients/{ClientID}/transactions`
+   push transactions from the settlement account to the creditor's bank
+   account (`achEntryType` = SEC code, `referenceID` = 15-char digest of the
+   idempotency key). `200 COMPLETED` / `201` pending count as cleared; `207`,
+   `429` and other statuses reject the item. Fineract posting is unchanged
+   (withdraw from the debtor account of record).
+
+Funding: the TabaPay settlement account is pre-funded by the trust from its
+bank (outside the platform); Fineract mirrors each release as a withdrawal.
+
 ## Out of scope for this phase
 
 - Cloud Armor in front of IAP — recommended, separate PR.
