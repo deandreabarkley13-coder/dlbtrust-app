@@ -1,463 +1,204 @@
-# Live value runbook: Smart Router gate + thirdweb treasury funding → server-wallet send
+# Live value runbook (fiat only) — GCP `dlb-treasury-management`
 
-Two independent paths let the trust move real value. Both are shadow by default
-and fail closed until every gate on the path is open.
+How the DEANDREA LAVAR BARKLEY FAMILY TRUST moves real money through the platform,
+what is live in production today, and what each remaining gate needs.
+
+Scope decisions that govern this document:
+
+- **Fiat only.** The blockchain / stablecoin rail (thirdweb server wallet,
+  TrustDistributionPolicy, BondDex / DLBUSD, Spritz off-ramp, Smart Router
+  stablecoin and canonical rails) was retired by the trustee on 2026-09-27. Nothing in
+  this runbook broadcasts an on-chain transaction; `docs/TRUST_TOKEN_RAIL.md`,
+  `docs/USDC_TREASURY_SETUP.md` and the `THIRDWEB_*` / `STABLECOIN_*` / `DAPP_*`
+  variables are historical and must not be re-enabled.
+- **Income support only.** The trust agreement does not permit the sale of corpus or
+  bonds. Value that enters the platform is coupon / interest income received into the
+  trust's deposit account; the bond and fixed-income engines schedule and classify that
+  income, they do not create it.
+- **Ledgers do not hold dollars.** Fineract, the trust cash ledger, OpenACH, Payment
+  Hub EE and the Private Electronic Payment Network record, route and originate.
+  Real value exists only in a funded deposit account, and only a bank acknowledgement
+  or a signed processor webhook proves settlement.
 
 ```
-fiat (trust card/bank)                      authority + book of record: ERP (canonical:1000)
-  → thirdweb Universal Bridge checkout        ── Fineract GL post on settle ────┐
-  → THIRDWEB_SERVER_WALLET_ADDRESS (Base)     DR 1210 crypto / CR 1000 cash     ┘
-  → ThirdwebServerWalletEngine.send()         → beneficiary / vendor wallet
-
-SmartRouterEngine.deliver()  (SMART_ROUTER_LIVE)
-  → fiat        PaymentGatewayServerEngine    PAYMENT_MODE=production | PAYMENT_HUB_LIVE=true
-  → stablecoin  StablecoinGateway             STABLECOIN_MODE=mainnet (+STABLECOIN_ENABLED, THIRDWEB_RAIL_ENABLED)
-  → canonical   CanonicalMoneyEngine          DAPP_PRIVATE_KEY + DAPP_SHADOW=false
-  → funding     FundingEngine                 FUNDING_LIVE=true
+Betterment Trust Checking (nbkc)              read: SimpleFIN aggregator → DataBridge → Fineract GL
+   │  ACH debit (Stripe us_bank_account mandate)   TreasuryFundingBankEngine.pull()      TREASURY_BANK_ENABLED
+   ▼
+Stripe balance  (CA-STRIPE-BALANCE)           signed webhook payment_intent.succeeded → treasury ledger + GL
+   │  maker submit → checker approve (approvalRef + screeningRef)
+   ▼
+Private Electronic Payment Network            PRIVATE_PAYMENT_NETWORK_LIVE
+   ├─ book_transfer  trust ledger ↔ trust ledger (CashEngine)                       no bank involved
+   ├─ payout         PaymentGatewayServerEngine → PaymentProcessorServerEngine     PAYMENT_GATEWAY_LIVE + PAYMENT_PROCESSOR_LIVE
+   │                   → Stripe payout to a registered external bank (Lili ****)      LILI_ORIGINATOR=stripe_payout
+   │                   → direct deposit to a beneficiary payout instrument
+   └─ mft_as2        NACHA file → MFT Gateway AS2 → ODFI                             shadow: no ODFI AS2 partner exists
 ```
 
-## 1. Secrets and flags the deployment secret store must hold
+## 1. Where things run
 
-Set these in the Northflank `dlbtrust-runtime` secret group
-(`node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime KEY=value ...`).
-Never commit any of them.
-
-| Variable | Value | Why |
+| Component | GCP resource | Notes |
 | --- | --- | --- |
-| `SMART_ROUTER_LIVE` | `true` | `SmartRouterEngine._isLive()`; `deliver` throws without it |
-| `THIRDWEB_SERVER_WALLET_ENABLED` | `true` | kill switch for the server-wallet rail |
-| `THIRDWEB_SERVER_WALLET_LIVE` | `true` | `send` is a shadow record until set |
-| `THIRDWEB_SHADOW` | `false` | account-abstraction / gas sponsorship leg calls thirdweb |
-| `THIRDWEB_SECRET_KEY` | project secret key | **secret** — authenticates every thirdweb call (`x-secret-key`) |
-| `THIRDWEB_SERVER_WALLET_ADDRESS` | `0x95bb85FdeC42b1517d282e8AD43A789d390aAda2` | pinned `dlbtrust-treasury` server wallet; `canSend` is false without it |
-| `THIRDWEB_SERVER_WALLET_IDENTIFIER` | `dlbtrust-treasury` | identifier the pinned wallet was created from |
-| `THIRDWEB_SERVER_WALLET_CHAIN_ID` | `8453` | Base mainnet (defaults to `DAPP_CHAIN_ID`) |
-| `TREASURY_TOPUP_HOLD_ACCOUNT_ID` | `1000` (or the funded hold account) | fiat for a top-up is drawn from `TREASURY_TOPUP_HOLD_SOURCE_TYPE:this` |
-| `TREASURY_TOPUP_HOLD_SOURCE_TYPE` | `canonical` | the Fineract ERP is the availability authority and book of record (`CanonicalFundingSource.assertAvailable` / `.commit`); `trust` falls back to the local sub-ledger sweep |
-| `TRUST_POLICY_ENFORCED` | `false` | see §5 |
+| API / dashboards | Cloud Run `dlbtrust-app` (us-east1) | env in `infra/gcp/variables.tf` `runtime_environment`, overridden by the git-ignored `terraform.tfvars`; secrets in Secret Manager (`infra/gcp/secrets.tf`), runtime SA `dlbtrust-app-runtime@…` |
+| Database | Cloud SQL Postgres `dlbtrust` | aggregator, ledger, OS engine tables |
+| General ledger | Cloud Run `dlbtrust-fineract` (+ Mifos X UI) | migrated: 2,080 journal entries, 57 GL accounts |
+| ACH file generation | Cloud Run `openach` + job `dlbtrust-openach-nightly` | ODFI branch uses the `Manual` plugin → files land in `gs://dlb-treasury-management-openach-ach-files/export/` |
+| Payment Hub EE | Cloud Run `dlbtrust-phee` (internal ingress) | `PAYMENT_HUB_MODE=phee`; ACH connector needs a verified external ODFI endpoint |
+| Schedulers | Cloud Scheduler → Cloud Run | aggregator pull every 15 min, OpenACH nightly, treasury sweeps |
 
-Smart Router rail gates (all live except canonical, which needs a signer secret):
+The live truth for every flag is `GET /api/os/readiness` (`x-admin-token`), not the
+defaults in `variables.tf`. See `docs/GCP_MIGRATION.md` for the deploy procedure.
 
-| Variable | Value | Rail | Why |
-| --- | --- | --- | --- |
-| `PAYMENT_HUB_LIVE` | `true` | fiat | `_route` marks fiat `live`; `PaymentGatewayServerEngine.sale` still needs the chosen processor's credentials (Stripe / Moov / ACH) to settle |
-| `STABLECOIN_ENABLED` | `true` | stablecoin | `StablecoinGateway.readiness().ready` is false without it, so the rail is never a candidate |
-| `STABLECOIN_MODE` | `mainnet` | stablecoin | gateway accepts `disabled\|shadow\|testnet\|mainnet`; the router treats `mainnet` (or legacy `live`) as live |
-| `STABLECOIN_NETWORK` | `thirdweb` | stablecoin | settle through the pinned thirdweb server wallet instead of Stellar |
-| `THIRDWEB_RAIL_ENABLED` | `true` | stablecoin | required for `STABLECOIN_NETWORK=thirdweb` |
-| `FUNDING_LIVE` | `true` | funding | `FundingEngine.executePlan` runs instead of returning a shadow plan |
-| `DAPP_SHADOW` | `false` | canonical | already false; **`DAPP_PRIVATE_KEY`** (secret) must also be set or the canonical rail is never a candidate |
+## 2. Bank accounts of record
 
-Optional guard rails worth setting before the first live send:
-`THIRDWEB_SERVER_WALLET_ALLOWED_RECIPIENTS` (comma-separated allowlist),
-`THIRDWEB_SERVER_WALLET_MAX_QUANTITY` (smallest units), `TREASURY_TOPUP_MAX_USD`,
-`THIRDWEB_SERVER_WALLET_MIN_GAS_WEI`.
+### 2a. Betterment Trust Checking — the funded account
 
-### 1a. Production state (Northflank `dlbtrust-app`)
+- **Read (live):** Banking Aggregator connection
+  `CONN-BETTERMENT-TRUST-CHECKING-SIMPLEFIN` (connector `simplefin`, secret
+  `SIMPLEFIN_ACCESS_URL`, handshake `verified`, capabilities `pull:true push:false`).
+  `DataBridge.classifyAggregatorTxn` posts every transaction to Fineract:
+  coupon credits → DR 1020 / CR 4100 Coupon Income; interest → CR 4000; other credits →
+  CR 3000 Trust Corpus; fees → DR 5000; distributions → DR 2000; other debits → DR 5300.
+  The Alderfi-compatible MCP surface (`POST /api/aggregator/mcp`) is read-only.
+- **Write:** Betterment publishes no ACH-origination API and no NACHA / SFTP / AS2 file
+  intake. `server/integrations/ach/treasuryOdfiBank.js` (`ACH_ODFI_BANK=betterment`)
+  stamps the trust's routing/account onto originated files but `status()` fails closed
+  with "no ready file-delivery channel" because there is nowhere to deliver them.
+  **Do not treat Betterment as an executing ODFI.**
+- **The only bidirectional path** is `server/integrations/payments/treasuryFundingBankEngine.js`
+  (§4). Betterment is saved in Stripe as a `us_bank_account` PaymentMethod under an ACH
+  debit mandate; the platform pulls funds from Betterment into the Stripe balance and
+  pays out from there. Currently `TREASURY_BANK_ENABLED=false` in production.
+- BILL.com is separately linked to the same account (`systemSettings.js` partner
+  `bill-cash`, `server/integrations/bill/billClient.js`); BILL debits appear in the feed
+  and post to 5300 Operating Expense.
 
-Everything above is applied. Notes that differ from the defaults in this document:
+### 2b. Stripe — the disbursing balance
 
-- The pinned wallet in production is `DLBT-FTC` at
-  `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` on Base (`8453`), not the
-  `dlbtrust-treasury` example wallet.
-- `TREASURY_TOPUP_HOLD_SOURCE_TYPE=canonical`, `TREASURY_TOPUP_HOLD_ACCOUNT_ID=1000`
-  (Fineract GL `1000` Trust Cash & Equivalents). The ERP is the authority:
-  `GET /api/dapp/canonical-source/position` must show `fundingEligible: true` and
-  drift `0`, and a settled top-up is booked into Fineract (the top-up record
-  carries `bookOfRecord: "fineract"`, `journalEntryId`, `fineractTransactionId`,
-  `bookedAt`). `trust:1000` is no longer the book of record for top-ups.
-- `TRUST_POLICY_ENFORCED=true` in production (a `TRUST_POLICY_ADDRESS` is set),
-  so direct `server-wallet/send` is refused with `409 TRUST_POLICY_ENFORCED` even
-  though readiness reports `canSend: true` — value must go through the
-  TrustDistributionPolicy maker/checker path (§5). Set it to `false` only if the
-  trustee explicitly wants direct sends.
-- The service also carries **service-level** runtime environment variables that
-  take precedence over the `dlbtrust-runtime` secret group. `STABLECOIN_MODE` and
-  `STABLECOIN_NETWORK` had to be changed there as well
-  (`POST /v1/projects/dlbtrust/services/dlbtrust-app/runtime-environment`, merged,
-  never a partial body); if a group change does not show up in
-  `/api/os/smart-router/status` after a restart, check the service-level env.
-- Secret-group changes are not picked up until the service restarts
-  (`POST /v1/projects/dlbtrust/services/dlbtrust-app/restart`).
-- Treasury wallet balance is still 0 ETH / 0 USDC: the first top-up plus Base ETH
-  for gas is the remaining prerequisite before any outbound send.
-- `SPRITZ_PAYOUT_WALLET` / `SPRITZ_PAYOUT_WALLET_PROVIDER` were also pinned at the
-  service level (to the old Coinbase wallet) and had to be changed there as well
-  as in the group; both now point at `DLBT-FTC` / `thirdweb`, and
-  `SPRITZ_BILLPAY_LIVE=true` is set in both places. `GET /spritz/wallet` reports
-  `signer.type: thirdweb`.
-- The Spritz Bill Pay engine in `treasury_wallet` funding mode signs through
-  `ThirdwebServerWalletEngine.sendTransactions` (Spritz approve + payment
-  calldata), which is not subject to the `TRUST_POLICY_ENFORCED` direct-send
-  refusal. `scripts/spritz-pipeline.cjs settle` still releases through the
-  policy contract first, so that path needs the policy funded.
+- Live account. Intake enabled: `STRIPE_INTAKE_ENABLED=true`,
+  `STRIPE_INTAKE_PAYMENT_METHODS=card,us_bank_account`. Settled PaymentIntents are
+  posted to `CA-STRIPE-BALANCE` by the signed webhook
+  (`POST /api/payment-server/v1/stripe/webhook`, `STRIPE_WEBHOOK_SECRET`).
+- Payout destination: the Lili business account is registered as the Stripe external
+  bank account (`STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID`, `LILI_ORIGINATOR=stripe_payout`,
+  `LILI_STRIPE_PAYOUT_METHOD=standard`).
+- No Stripe Treasury financial account exists; Treasury OutboundPayments are not a rail.
 
-`SMART_ROUTER_LIVE=true` on its own only changes `status.mode` to `live`; `deliver`
-still refuses every rail whose own gate is closed (`Rail <rail> is not live or not
-available`). With the table above applied, `route` reports `canExecute: true` for
-fiat, stablecoin and funding; canonical stays closed until `DAPP_PRIVATE_KEY` exists.
+### 2c. Lili (Sunrise Banks N.A.)
 
-## 1b. One automated entry point: `trust:runbook`
+- Receives Stripe payouts. Lili's MCP OAuth cannot complete for this account (Lili's
+  login returns no MCP session token → `error=server_error`); enabling it is a Lili
+  support request. Until then `POST /api/finops/lili/direct-deposits/reconcile` cannot
+  run, and transmitted-but-unconfirmed deposits are closed out with
+  `POST /api/finops/lili/direct-deposits/:id/return` and an audit reason — never marked
+  reconciled without bank data.
 
-`server/integrations/os/liveValueRunbookOsEngine.js` (`LiveValueRunbookOsEngine`,
-OS engine `live-value-runbook`) orchestrates §2–§4 over the engines that own each
-stage — thirdweb treasury funding, FundingEngine (gas), Collateral OS, the Spritz
-treasury leg, thirdweb settlement, and the trust control plane — without
-reimplementing any of them.
+## 3. Readiness (nothing moves)
 
 ```sh
-npm run trust:runbook                                   # readiness + pipeline, read-only
-npm run trust:runbook -- --plan --amount 250 --role beneficiary --purpose medical
-npm run trust:runbook -- --execute --amount 250         # shadow: records what would run, moves nothing
-npm run trust:runbook -- --execute --amount 250 --live  # broadcasts only if every relevant *_LIVE gate is set
-npm run trust:runbook -- --strict [--json]              # exit 2 on any blocking gate (deploy gate)
+BASE=https://dlbtrust-app-514695212719.us-east1.run.app
+H="x-admin-token: $ADMIN_SECRET_TOKEN"
+curl -s -H "$H" $BASE/api/os/readiness | jq '.ready, .engines[] | select(.ready==false) | {engine,blockers}'
+curl -s -H "$H" $BASE/api/os/readiness/aggregator
+curl -s -H "$H" $BASE/api/os/private-payment-network/readiness
+curl -s -H "$H" $BASE/api/os/payment-processor/readiness
+curl -s -H "Authorization: Bearer $PAYMENT_SERVER_SERVICE_TOKEN" $BASE/api/payment-server/v1/treasury-bank
+curl -s -H "Authorization: Bearer $PAYMENT_SERVER_SERVICE_TOKEN" $BASE/api/payment-server/v1/stripe-intakes/readiness
 ```
 
-- `readiness` lists every gate as `{ key, label, ok, detail, blocking }` (same shape
-  as the Spritz pipeline stages the dashboards render): thirdweb API, pinned server
-  wallet, `THIRDWEB_SERVER_WALLET_LIVE`, `THIRDWEB_SHADOW`, `THIRDWEB_GAS_SPONSORSHIP_LIVE`,
-  `CANONICAL_FUNDING_LIVE`, `SMART_ROUTER_LIVE`, `TRUST_POLICY_ENFORCED`/`TRUST_POLICY_LIVE`,
-  the Spritz `signer.type`, Collateral OS, treasury ETH/USDC and ERP `fundingEligible`.
-- `plan` orders the steps for an amount — pre-flight (`evaluateDistribution`), §4a
-  top-up, §4b book, gas, §4c collateral draw + checker approval, §4e governed
-  settlement (`CollateralOsEngine.settle` → checker → `executeSettlement`), reconcile —
-  and marks each `canExecute` or blocked with the exact reason.
-- `execute` runs the executable steps in order and STOPS at the first human step
-  (the §4a hosted checkout link, a checker approval) or closed gate with an
-  actionable message. It is shadow unless `--live` is passed AND the live gates are
-  open; settlement always goes through the policy contract and Spritz leg, never a
-  raw server-wallet send.
-- Re-running resumes rather than duplicates: while the treasury lacks the USDC the
-  §4a-alt `selfFund` swap is planned first; an open §4a top-up is `syncTopUp`'d after it
-  (stops only while the checkout is still pending; a settled one is booked; a pending
-  one is skipped once the treasury has self-funded), the
-  newest in-flight `LVR-` draw for the same amount (or `--reference LVR-…`) is picked
-  up in its recorded state (`proposed` → reconcile, `funded` → settle, `settling` →
-  release), and `release` calls `CollateralOsEngine.executeSettlement` once the
-  on-chain distribution is approved and past its release delay — before that it
-  stays a human step.
-- `TRUST_POLICY_LIVE=true` is required for a live run regardless of
-  `TRUST_POLICY_ENFORCED`: with the policy engine shadowed, `settle()` would leave a
-  draw `settling` with no executable distribution.
+`overall ready: true` means every engine is wired and its configuration is coherent. It
+does **not** mean money has moved: the liquidity reserve
+(`MOV-1790548206543-IL2GNN`, CA-OPERATING → CA-RESERVE, $985,246.28) is a ledger sweep
+with no bank funds behind it.
 
-Over HTTP: `POST /api/os/live-value-runbook/process` with
-`{ action: 'readiness' | 'plan' | 'execute' | 'pipeline', amountUsd, role, purpose, live }`.
+Locally: `npm run lint && npm run typecheck && npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts`.
 
-## 2. Readiness (nothing moves)
+## 4. Funding the platform from Betterment (Stripe ACH debit)
 
-```sh
-npm run trust:treasury-funding        # node server/scripts/thirdwebTreasuryFundingWire.js
-npm run trust:server-wallet           # node server/scripts/thirdwebServerWalletWire.js
-```
+Gates (all in `infra/gcp/variables.tf` / Secret Manager, applied with Terraform or
+`gcloud run services update`):
 
-Expected: funding readiness `canTopUp: true, ready: true, issues: []`; server-wallet
-readiness `canSend: true, ready: true` and `using pinned THIRDWEB_SERVER_WALLET_ADDRESS`.
-Both scripts print the treasury balances (ETH and USDC on Base).
+| Variable / secret | Required value | Why |
+| --- | --- | --- |
+| `TREASURY_BANK_ENABLED` | `true` | `TreasuryFundingBankEngine` refuses `link/verify/pull` otherwise |
+| `TREASURY_BANK_ID` / `TREASURY_BANK_NAME` | `betterment` / `Betterment Checking` | account identity on ledger postings |
+| `TREASURY_BANK_ACCOUNT_HOLDER` | `DEANDREA LAVAR BARKLEY TRUST COMPANY` | mandate holder name |
+| `TREASURY_BANK_REGISTER_SETTLEMENT` | `true` | also registers Betterment as a payout destination |
+| `BETTERMENT_ROUTING_NUMBER`, `BETTERMENT_ACCOUNT_NUMBER` | Secret Manager versions | never in env or docs |
+| `STRIPE_PAYMENTS_SECRET_KEY` | live-mode key | creates the PaymentMethod, mandate and PaymentIntents |
+| `STRIPE_WEBHOOK_SECRET` | live endpoint secret | funds are recognised only from the signed webhook |
 
-Over HTTP: `GET /api/dapp/thirdweb/server-wallet/readiness` and
-`GET /api/os/smart-router/status` (`x-admin-token`).
+Procedure (service token `Authorization: Bearer $PAYMENT_SERVER_SERVICE_TOKEN`):
 
-## 3. Shadow proof (server running, no live secret)
+1. `POST /api/payment-server/v1/treasury-bank/link` — Stripe creates the
+   `us_bank_account` PaymentMethod and ACH mandate. Response says whether instant
+   verification succeeded or micro-deposits were sent (1–2 business days; they appear in
+   the SimpleFIN feed and post to the GL automatically).
+2. `POST /api/payment-server/v1/treasury-bank/verify { amounts | descriptorCode }` when
+   micro-deposits were used. `GET /treasury-bank` must then show `verified: true`.
+3. `POST /api/payment-server/v1/treasury-bank/pull { amountCents, reference, purpose,
+   description }` (`purpose` defaults to `trust_income`) — originates a
+   real ACH debit of Betterment. The intake is `processing` until Stripe's
+   `payment_intent.succeeded` webhook arrives (~4 business days); only then is
+   `CA-STRIPE-BALANCE` credited and Fineract posted (DR cash / CR 3000 or 4100 per
+   classification). A `payment_failed` webhook (NSF, R-codes) closes the intake with no
+   posting.
+4. `GET /api/payment-server/v1/stripe-intakes/:id` to follow it.
 
-```sh
-SMART_ROUTER_LIVE=false THIRDWEB_SERVER_WALLET_LIVE=false THIRDWEB_SHADOW=true \
-  node server/server-3002.js &
-node server/scripts/osEngineSmokeTest.js       # smart-router: status/health/route/deliver/receipt/confirm/get
-node server/scripts/valueWorkflowSmokeTest.js  # OTP → smart wallet → SIWE → ramp quote → propose/approve/execute → anchor → reconcile
-```
+Nothing in this section is executed automatically; every pull is an operator action
+subject to the amount limits in `TREASURY_BANK_*` and the maker/checker record.
 
-`deliver` returns `mode: "shadow"` with the full routing plan and a
-`smart_router_payments` row in status `shadow`; `confirm` and `get` read it back.
+## 5. Distributing income (Private Electronic Payment Network)
 
-## 4. Moving real value (operator commands)
+Gates:
 
-Prerequisites the trustee must supply: the secrets in §1, a canonical source that
-covers the amount (`GET /api/dapp/canonical-source/position` — the top-up is
-refused with `INSUFFICIENT_CANONICAL_FUNDS` otherwise), and enough ETH on
-`0x95bb85FdeC42b1517d282e8AD43A789d390aAda2` for gas (an ERC-20 send with
-`THIRDWEB_SERVER_WALLET_FUNDING_PREFLIGHT=true` is refused if the wallet cannot
-cover gas).
+| Variable | Value | Effect |
+| --- | --- | --- |
+| `PRIVATE_PAYMENT_NETWORK_LIVE` | `true` | otherwise approvals are recorded in shadow and no ledger posting or provider call happens |
+| `PAYMENT_GATEWAY_LIVE`, `PAYMENT_PROCESSOR_LIVE` | `true` | payouts dispatch through the gateway and processor engines |
+| `ENTERPRISE_NETWORK_LIVE` | `true` | participant registry / exposure limits are enforced (it never moves money itself) |
+| `PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF`, `..._REQUIRE_SCREENING_REF`, `..._REQUIRE_PARTICIPANT` | `true` | **must never be relaxed in a live plan** |
+| `PAYMENT_PROCESSOR_DEFAULT` | `lili` | Stripe payout to the registered Lili external account |
+| `PAYMENT_GATEWAY_WEBHOOK_SECRET`, `PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY` | Secret Manager | webhook HMAC + instrument encryption |
+| `PRIVATE_PAYMENT_NETWORK_MFT_LIVE` | `false` | keep shadow until an ODFI AS2 partner exists (§6) |
 
-### 4a. Fund the treasury wallet (fiat → USDC on Base)
+Procedure (`POST /api/os/private-payment-network/process`, `x-admin-token`):
 
-```sh
-node server/scripts/thirdwebTreasuryFundingWire.js \
-  --amount 1000 --currency USD \
-  --source-type canonical --source-account 1000
-```
+1. Maker: `{ action: 'submit', type: 'book_transfer' | 'payout', sourceAccountId,
+   destinationAccountId | participantId + methodId, amountCents, memo, makerId }`.
+   Purpose drives the GL: `distribution` → DR 2000 Distributions Payable / CR 1000;
+   `operating_expense` → DR 5300 / CR 1000.
+2. Compliance screening produces `screeningRef`; the maker/checker record produces
+   `approvalRef` (`PAYMENT_APPROVAL_THRESHOLD=2`).
+3. Checker (distinct from maker): `{ action: 'approve', transactionId, checkerId,
+   approvalRef, screeningRef }`. A book transfer settles on the trust ledger
+   immediately; a payout is `cleared` and dispatched via the gateway/processor.
+4. Settlement: processor webhook (`POST /api/os/private-payment-network/webhook`,
+   HMAC-SHA256) or `{ action: 'reconcile', transactionId, processorTxId, status }` moves
+   it to `settled` or `returned`; only `settled` posts the GL.
+5. `{ action: 'pipeline' }` lists open transactions and exposure per participant.
 
-The script quotes the fiat amount, asserts availability against the ERP, creates a hosted
-thirdweb checkout and prints `checkout: https://...` plus the top-up id
-(`TWTOP-...`). A trustee completes the checkout link with the trust's card or bank
-account; tokens are delivered to the server wallet when the bridge settles.
+Real value leaves only when the source ledger account is backed by actual funds in the
+Stripe balance (§4 or card / ACH intakes). Approving a payout against an unfunded
+ledger balance produces the same result as the three 2026-09 Lili test deposits:
+transmitted, never confirmed, closed out as `returned`.
 
-#### 4a-alt. Fund the treasury wallet with no fiat checkout (on-chain USDC)
+## 6. Rails that remain shadow, and what closes them
 
-Both variants go through `TreasuryDepositEngine` (`POST /api/dapp/treasury-deposits`,
-needs `TREASURY_DEPOSIT_CRYPTO_ACCOUNT_CODE=1210`,
-`TREASURY_DEPOSIT_CONTRA_ACCOUNT_CODE=1000`). A deposit is declared first so the
-arrival is attributed against the wallet's baseline, and it is booked
-(`DR 1210 / CR 1000`) exactly once, only after the USDC is verified on chain.
+| Rail | State | Closes with |
+| --- | --- | --- |
+| `mft_as2` NACHA file drop (PPN / OpenACH `OpenAchFileRelay`) | shadow; files accumulate in the OpenACH export bucket | an ODFI or sponsor bank that accepts AS2/SFTP intake for the trust: set `MFTGATEWAY_PARTNER_AS2_ID` (or `ACH_SFTP_URL` + creds), then `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true` |
+| Payment Hub EE ACH connector | health ok, origination queued | System Settings production partner (`bank_endpoint`, auth, webhook secret) pointing at a real ODFI API |
+| Lili reconciliation via MCP | blocked | Lili enables MCP for the trust's business login, then `POST /api/finops/lili/mcp/oauth/start` |
+| Betterment origination by file/API | not possible | n/a — use §4 |
 
-**Preferred — internal 1:1 swap (no external wallet, no human send).** The USDC is
-produced from a ledger source: DLBUSD is minted 1:1 from the source-of-funds account,
-swapped on the DEX for USDC, and delivered to the treasury wallet by the operator.
-`npm run trust:runbook` runs this as the `selfFund` step (§4a-alt) before falling back
-to the hosted checkout; by hand:
+## 7. Operating rules
 
-1. Declare: `POST /api/dapp/treasury-deposits { amount }` (asset defaults to the
-   settlement token) → `depositAddress` `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89`,
-   `chainId` `8453`, exact `amount`/`symbol`.
-2. Fund: `POST /api/dapp/treasury-deposits/:id/fund { sourceType?, sourceAccountId? }`
-   (adminAuth; defaults to `TREASURY_TOPUP_HOLD_SOURCE_TYPE` /
-   `TREASURY_TOPUP_HOLD_ACCOUNT_ID`). This calls
-   `StablecoinDexEngine.depositAndSwap({ targetAsset: 'USDC', recipient: depositAddress })`
-   for the outstanding amount, then runs the deposit `sync` so the credit is verified and
-   booked in the same call. The response is `funded: true` only with a live `txHash`
-   and a `credited` deposit; otherwise it is `funded: false` with a `code`
-   (`STABLECOIN_DEX_NOT_LIVE`, `SWAP_NOT_LIVE`, `AWAITING_CHAIN`, `ALREADY_CREDITED`)
-   and nothing is claimed or double-booked. Check `GET /api/dapp/treasury-deposits/fund/readiness`
-   first.
-3. `GET /api/dapp/treasury-funding/balances` and `npm run trust:runbook` →
-   `treasuryUsdc` ok.
-
-Prerequisites: `STABLECOIN_DEX_ENABLED=true` and **not** shadow
-(`STABLECOIN_DEX_SHADOW=false`, or `DAPP_SHADOW=false`), `DAPP_PRIVATE_KEY` (the
-operator hot wallet pays mint + swap gas, so it needs Base ETH), `DAPP_CHAIN_ID=8453`
-matching the treasury chain, `DAPP_USDC_ADDRESS`, a DLBUSD token (auto-provisioned on
-first use — see step 3 below — and preferably pinned as `DAPP_DLBUSD_ADDRESS`), and a
-funded DLBUSD/USDC pool or a DLBUSD/WETH pool plus a WETH→USDC route
-(`BOND_DEX_ADDRESS` / DexSwapEngine router). The source account must cover the amount:
-the mint debits it (`SourceOfFundsAdapter._fundSourceToTreasury`) and is rolled back if
-the mint fails.
-
-**Go-live checklist (`npm run trust:dex-rail`).** The dedicated wire
-`server/scripts/stablecoinDexRailWire.js` operates this rail and is fail-closed: with
-`--deploy-dlbusd`, `--create-pool` or `--fund` it refuses to move value unless
-`StablecoinDexEngine.readiness().ready` is true in `live` mode and
-`TreasuryDepositEngine.fundReadiness().canFund` is true, printing every blocking issue
-from `fundReadiness().issues`. Live gates and keys live only in the `dlbtrust-runtime`
-secret group — never in committed files.
-
-1. Runtime env (secret group): `STABLECOIN_DEX_ENABLED=true`,
-   `STABLECOIN_DEX_SHADOW=false`, `DAPP_PRIVATE_KEY` (operator hot wallet),
-   `DAPP_RPC_URL` (Base), `DAPP_CHAIN_ID=8453`, `DAPP_USDC_ADDRESS=0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`,
-   `DAPP_DLBUSD_ADDRESS` (after step 3), `BOND_DEX_ADDRESS` (after step 4), plus
-   `TREASURY_TOPUP_HOLD_SOURCE_TYPE` / `TREASURY_TOPUP_HOLD_ACCOUNT_ID` for the default
-   source (or pass `--source-type/--source-account` per call).
-2. Operator gas: the `DAPP_PRIVATE_KEY` wallet needs Base ETH — it pays the DLBUSD
-   deploy, mint, pool deploy, approvals and swap. Check with
-   `npm run trust:runbook` (`treasuryEth` / gas tank) or the wallet on Basescan.
-
-   **Cold start (0 ETH, 0 USDC operator).** The DEX rail signs plain EOA txs (no
-   paymaster), so it cannot bootstrap its own gas; `FundingEngine.executePlan` never
-   runs `stablecoin_dex` first on a cold operator. Use the Skrill path:
-
-   ```
-   Skrill wallet (funded from the platform source ledger — NOT a bank push)
-     -> MANUAL operator withdrawal to the Coinbase-linked bank account
-     -> Coinbase USD balance
-     -> CoinbaseTreasuryBridge delivers native Base ETH (gas) + seed USDC on-chain
-     -> operator 0x3e53028cf69949f3B961ce786Baf2D4D75166562
-   ```
-
-   ```sh
-   # verify Skrill + Coinbase config first (key names only, never values)
-   curl -s -H "x-admin-token: $ADMIN_SECRET_TOKEN" "$BASE/api/finops/skrill-links/readiness?amount=100"
-   node server/scripts/bootstrapOperatorGas.js skrill 100 treasury TREASURY_HOT
-   ```
-
-   The bootstrap verifies `SKRILL_MERCHANT_EMAIL` / `SKRILL_API_PASSWORD` (status
-   `needs_config` naming the missing keys otherwise), stages the Coinbase transfer via
-   `CoinbaseTreasuryBridge.stageFromSource` (source ledger reserve → Coinbase USD
-   receivable), and prints the manual withdrawal instructions
-   (`awaiting_skrill_withdrawal`). Facts that shape the path:
-   - Email + API password are Skrill *Automated Payments* (send-to-email) credentials
-     only. There is **no** Skrill bank-withdrawal API behind them, so the
-     Skrill → bank leg is a **manual** operator step in the Skrill dashboard.
-   - Coinbase cannot receive funds from a Skrill email — bank/ACH only.
-   - Sending Skrill money to your own merchant email is a no-op self-transfer.
-   - Quick Checkout (`pay.skrill.com`) is pay-in only; it cannot move money out.
-   - Full automation of the withdrawal leg requires Paysafe Wallet SaaS server REST
-     API credentials, not just email + password.
-
-   Once the USD settles in Coinbase, `CoinbaseTreasuryBridge` buys and sends ETH and
-   USDC to the operator; then `--deploy-dlbusd`, `--create-pool --seed-usdc N` and
-   `--fund` below can run. All live gates stay fail-closed and no secret values are
-   logged.
-3. Deploy DLBUSD once, pin forever. A missing `DAPP_DLBUSD_ADDRESS` no longer blocks
-   the rail: `fundReadiness()` reports `dlbusdSource: auto-provision` and
-   `StablecoinDexEngine.ensureDLBUSDAddress()` resolves the token (env → pool token →
-   `BondTokenizationEngine` DB → deploy via `BondTokenizationEngine.createToken`,
-   6 decimals) on the first `--deploy-dlbusd`/`--create-pool`/`--fund`, or `fund()`
-   call. Do it explicitly so the address is printed:
-   ```sh
-   npm run trust:dex-rail -- --deploy-dlbusd
-   ```
-   Then set the printed address as `DAPP_DLBUSD_ADDRESS` in the `dlbtrust-runtime`
-   secret group and restart. The pin is still preferred: the runtime cache is
-   per replica, so without it a second replica could resolve/deploy a different
-   token. In shadow mode the step deploys nothing and returns a `shadow-dlbusd-*`
-   placeholder.
-4. Seed the pool: the BondDex artifacts are committed at
-   `artifacts/contracts_BondDex_sol_BondDex.{abi,bin}` (override with
-   `BOND_DEX_ABI_PATH` / `BOND_DEX_BYTECODE_PATH`). The operator must hold the seed
-   USDC; the seed DLBUSD is minted to it (treasury backing, no source debit).
-   ```sh
-   npm run trust:dex-rail -- --readiness
-   npm run trust:dex-rail -- --create-pool --target USDC --seed-dlbusd 100 --seed-usdc 100
-   ```
-   Set the printed `poolAddress` as `BOND_DEX_ADDRESS` and restart the service.
-5. Funded source ledger: the `--fund` amount is debited from
-   `sourceType:sourceAccountId` (`trust:1000` seeds at $0.00 — fund it or use
-   `cash:CA-BOND-PROCEEDS`), and rolled back if the mint fails.
-6. Fund the treasury:
-   ```sh
-   npm run trust:dex-rail -- --fund --amount 250 --source-type trust --source-account 1000
-   ```
-   prints the declared deposit id then `funded` / `code` / `txHash`; exit code is 0 only
-   when `funded: true`. Verify with `GET /api/dapp/treasury-funding/balances`.
-
-**Last resort — external send.** When the trust already holds USDC off-platform and the
-swap rail is closed:
-
-1. Declare as above.
-2. Send exactly that USDC on Base (`0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`) to
-   `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` from the trust's external wallet.
-3. Credit: `POST /api/dapp/treasury-deposits/:id/sync` (or `/treasury-deposits/sync`
-   for every open deposit).
-
-The same flow with the native asset (`tokenAddress: null`) deposits Base ETH for gas,
-if the trustee prefers holding ETH over sponsorship (§4-gas below).
-
-#### 4-gas. No native ETH: EIP-4337 gas sponsorship
-
-Set in the `dlbtrust-runtime` group **and** the service-level runtime env:
-`THIRDWEB_GAS_SPONSORSHIP_LIVE=true`, `THIRDWEB_SHADOW=false`, `THIRDWEB_SECRET_KEY`,
-`THIRDWEB_VERIFIER_SECRET` (same value as the thirdweb dashboard's server verifier for
-`POST /api/dapp/thirdweb/sponsorship/verify`), `THIRDWEB_POLICY_ALLOWED_SENDERS=<treasury
-wallet>`, `THIRDWEB_POLICY_CHAIN_IDS=8453`, optionally `THIRDWEB_POLICY_ALLOWED_TARGETS`
-(Base USDC, policy / Spritz contracts). Fund the thirdweb project's gas credits, then
-restart the service. The runbook's `gasSponsorship` stage is ok only when the
-verifier would actually admit the treasury (`ThirdwebSponsorshipPolicy.describe()`:
-`enforcing`, `verifierSecretConfigured`, treasury in `allowedSenders`, chain
-allowlisted); `treasuryEth` then passes through its "or sponsored" branch and the
-`gas` step is skipped. With sponsorship off the gas step stays fail-closed.
-
-### 4b. Book the settled top-up
-
-```sh
-node server/scripts/thirdwebTreasuryFundingWire.js --sync TWTOP-<id>
-```
-
-Polls thirdweb; on `COMPLETED` the journal entry `DR 1210 / CR 1000` is posted
-once through `CanonicalFundingSource.commit` — the local trust journal *and* the
-Fineract GL (`booked: true`, `bookOfRecord: "fineract"`, `journalEntryId`,
-`fineractTransactionId`). Re-running is idempotent (a booked record never
-commits again). `PENDING` means the checkout has not settled yet — run again
-later. If `CANONICAL_FUNDING_LIVE` is off the commit is shadow and the record
-stays `booked: false` so the next sync retries. With `--source-type trust` the
-fiat is instead swept from the sub-ledger hold account (`bookOfRecord: "trust_ledger"`).
-
-### 4c. Send value out of the server wallet
-
-```sh
-node server/scripts/thirdwebServerWalletWire.js --live \
-  --send <recipient 0x…> <quantity in smallest units> \
-  --token 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 \
-  --usd <amount USD> --role trustee --purpose lifestyle --wait
-```
-
-* `quantity` is in smallest units: USDC has 6 decimals, so `250 USDC` = `250000000`;
-  omit `--token` to send native ETH (18 decimals, wei).
-* `--usd` is cross-checked against the thirdweb price oracle and must agree within
-  `THIRDWEB_PRICE_TOLERANCE_PCT` (5%) or the send fails with `PRICE_MISMATCH`.
-* `--role` is `beneficiary` ($100,000 per-transaction limit) or `trustee` ($500,000).
-* `--purpose` is one of `lifestyle|medical|travel|home|education` (required for a send).
-* `--wait` polls the thirdweb transaction to a terminal status and exits non-zero
-  unless it is `CONFIRMED`.
-
-Without `--live` (and with `THIRDWEB_SERVER_WALLET_LIVE` unset) the same command
-records a shadow transfer and broadcasts nothing — run it that way first.
-
-The HTTP equivalent is `POST /api/dapp/thirdweb/server-wallet/send`
-(`adminAuth`) with `{ to, quantity, tokenAddress, amountUsd, requesterRole, purpose }`.
-
-### 4d. Smart Router (once a rail's own gate is open)
-
-```sh
-curl -X POST localhost:3002/api/os/smart-router/process -H "x-admin-token: $ADMIN_SECRET_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"action":"route","amount":100,"currency":"USDC","destination":{"address":"0x…"},"preferred":"stablecoin"}'
-# review candidates[].live / canExecute, then action:"deliver" with the same payload, then action:"confirm" with the paymentId
-```
-
-### 4e. Fiat out through the thirdweb wallet (Spritz payouts)
-
-Set `SPRITZ_PAYOUT_WALLET` to the pinned `THIRDWEB_SERVER_WALLET_ADDRESS`
-(`SPRITZ_PAYOUT_WALLET_PROVIDER=thirdweb` is informational). The payout signer
-then reports `type: thirdweb` in `GET /spritz/wallet` / treasury readiness, and
-`executePayout` (treasury payout) and bill-pay both sign the Spritz approve +
-payment calldata through the thirdweb API and book the GL entry once each
-transaction is `CONFIRMED` — no Coinbase signing step, no `/confirm` call.
-Requires `THIRDWEB_SERVER_WALLET_LIVE=true` (otherwise
-`409 PAYOUT_SIGNER_NOT_LIVE`), the wallet allow-listed as a beneficiary on the
-policy contract, and USDC + Base ETH in the wallet (otherwise
-`409 PAYOUT_WALLET_UNDERFUNDED`). The governed path is unchanged: the
-distribution is still released via `TrustPolicyEngine.execute` first.
-
-```sh
-node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime \
-  SPRITZ_PAYOUT_WALLET=0x1A904F795a0511C31Ba6347504D08d1bA58E4f89 \
-  SPRITZ_PAYOUT_WALLET_PROVIDER=thirdweb
-# restart the service, then check GET /spritz/wallet -> signer.type === 'thirdweb'
-```
-
-## 5. `TRUST_POLICY_ENFORCED`
-
-Left `false`. With `false`, `ThirdwebServerWalletEngine.send` is allowed to move
-value directly, governed only by the off-chain `DistributionPolicy` (role
-limits, purpose codes, allowlist, quantity ceiling). With `true` **and**
-`TRUST_POLICY_ADDRESS` set, every direct server-wallet transfer is refused with
-`409 TRUST_POLICY_ENFORCED` and value may only leave through the on-chain
-`TrustDistributionPolicy` contract (beneficiary allow-list, maker/checker
-approval, timelock, escrow/clawback, freeze). Flip it to `true` once the policy
-contract (`0x9682bEF7fbA219DB0dF7A52B5b7151484aFceB64` on Base) is funded and
-`TRUST_POLICY_LIVE=true`; until then `true` would block all outbound value.
-
-### 5a. One-click Maker Propose / Checker Approve
-
-Two humans, one button each, in the trust dashboard's **On-Chain Policy** tab
-(`/dapp/trust-dashboard.html`). There is **no auto-approval**: the app never
-approves a proposal on its own, and the two seats sign with different keys.
-
-| Seat | Button | Signs with | Route |
-| --- | --- | --- | --- |
-| Maker (human, maker/admin seat) | **Maker Propose** (pick an approved wallet distribution request) | thirdweb server wallet `0x1A904F795a0511C31Ba6347504D08d1bA58E4f89` | `POST /api/dapp/trust-policy/requests/:id/propose` |
-| Checker (human, checker seat) | **Checker Approve** on a `proposed` row | checker RPC key `TRUST_POLICY_CHECKER_PRIVATE_KEY` → `0x95bb85FdeC42b1517d282e8AD43A789d390aAda2` | `POST /api/dapp/trust-policy/distributions/:id/approve` → `TrustPolicyEngine.approveAsChecker` |
-| Maker / executor | **Execute** on an `approved` row (after the timelock) | server wallet | `POST /api/dapp/trust-policy/distributions/:id/execute` |
-
-Buttons are gated by the signed-in seat: the maker seat sees Maker Propose
-enabled and Checker Approve disabled (tooltip explains), the checker seat the
-reverse. The contract itself still rejects the proposer as checker, so even a
-mis-gated click cannot self-approve.
-
-Checker signer configuration (runtime secret group only):
-
-```sh
-node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime \
-  TRUST_POLICY_CHECKER_PRIVATE_KEY=<checker key for 0x95bb85…, never the server wallet> \
-  TRUST_POLICY_CHECKER_RPC_URL=https://mainnet.base.org \
-  TRUST_POLICY_CHECKER_LIVE=true
-```
-
-`GET /api/dapp/trust-policy/readiness` reports only
-`checkerSignerConfigured: true|false` and `checkerLive`; the key is never
-echoed. If the key is missing the approve route falls back to the server
-wallet (and the contract reverts); if it resolves to the server wallet the
-route returns `409 TRUST_POLICY_CHECKER_IS_MAKER`. With
-`TRUST_POLICY_CHECKER_LIVE=false` (or `TRUST_POLICY_LIVE=false`) the click
-returns a shadow record and submits nothing.
-
-Before any live distribution can settle the treasury still needs USDC plus
-~0.005 Base ETH for gas, and the checker account needs its own gas.
+- Never print secret values; log lengths or last-4 only. Secrets live in Secret Manager
+  and are mounted by `infra/gcp/cloudrun.tf`.
+- Every live payout needs a distinct maker and checker, an `approvalRef` and a
+  `screeningRef`. Shadow mode calls no provider and posts no ledger entry.
+- Do not test a rail with real value without the trustee's explicit source,
+  destination, amount and purpose.
+- When this document and `GET /api/os/readiness` disagree, readiness wins; update this
+  document in the same PR that changes a flag.
