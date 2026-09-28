@@ -28,8 +28,19 @@ const { OpenAchRailEngine } = require('../server/integrations/openach/openachRai
 const { OpenAchFileRelay } = require('../server/integrations/openach/openachFileRelay');
 const { TreasuryOdfiBank } = require('../server/integrations/ach/treasuryOdfiBank');
 const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
+const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fixedIncomeDistributionEngine');
+const { CustodyOsEngine } = require('../server/integrations/custody/custodyOsEngine');
+const { ProofOfAssetOsEngine } = require('../server/integrations/os/proofOfAssetOsEngine');
+const { PayerOsEngine } = require('../server/integrations/os/payerOsEngine');
+const { TpsOsEngine } = require('../server/integrations/os/thirdPartySenderOsEngine');
+const { M2mOsEngine } = require('../server/integrations/os/m2mOsEngine');
+const { ClearingNettingEngine } = require('../server/integrations/os/clearingNettingEngine');
+const { WealthBackOfficeEngine } = require('../server/integrations/os/wealthBackOfficeEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'mft', 'openach', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-payment-network', 'reconciliation', 'stripe-intake', 'treasury-funding-bank'];
+const { BackOfficeEngine } = require('../server/integrations/os/osEngine');
+
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'interop', 'liquidity', 'm2m', 'mft', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
+const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -70,7 +81,27 @@ const GCP_ENV: Record<string, string> = {
   OPENACH_RAIL_ENABLED: 'true',
   ACH_ODFI_BANK: 'betterment',
   MFT_SFTP_HOST: 'sftp.odfi.example',
+  FIXED_INCOME_RAIL: 'bank',
+  PRIVATE_PAYMENT_NETWORK_CORE_BANKING: 'true',
 };
+
+const RECEIPTED_BOND = { positionId: 'POS-1', assetClass: 'fixed_income', instrumentRef: 'bond:1', instrumentName: 'DLB Trust Income Bond', quantity: 1, valuationCents: 9852462751, controlStatus: 'receipted', lastReceiptId: 'RCPT-1', verifiedExternally: false };
+const CUSTODY_STATEMENT = { accounts: [{ custodyAccountId: 'CUS-ISSUER-FIXED-INCOME', accountName: 'Issuer fixed income', custodyType: 'self', positions: [RECEIPTED_BOND] }, { custodyAccountId: 'CUS-COLLATERAL-PLEDGES', accountName: 'Collateral pledges', custodyType: 'self', positions: [] }] };
+
+function stubTrustEngines() {
+  vi.spyOn(DebtOsEngine, 'recurringCouponConfig').mockResolvedValue({ enabled: true, ledgerAccountId: 'CA-BOND-PROCEEDS', settingKey: 'debt_os_coupon_ledger_account', coreBanking: { system: 'fineract', required: true, configured: true, savingsAccountId: '2', paymentTypeId: 1, blocker: null }, scheduler: 'CouponService.scheduleCouponJob' });
+  vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ enabled: true, rail: 'bank', ready: true, issues: [], buckets: [{ bucket: 'income_support', glAccountCode: '2000', payees: [{ key: 'beneficiary' }] }] });
+  vi.spyOn(CustodyOsEngine, 'status').mockResolvedValue({ requiredSignatures: 2, reserveLinked: true, reserveEngineAvailable: true, pendingReceipts: 0, fixedIncomeFeed: { issuerAccountId: 'CUS-ISSUER-FIXED-INCOME', issuerName: 'Trust', lastSyncedAt: '2026-09-27T00:00:00Z' }, collateralFeed: { accountId: 'CUS-COLLATERAL-PLEDGES', lastSyncedAt: null }, chain: { events: 12, intact: true, breaks: [] }, statement: CUSTODY_STATEMENT });
+  vi.spyOn(CustodyOsEngine, 'statement').mockResolvedValue(CUSTODY_STATEMENT);
+  vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ enabled: true, ready: true, issues: [], autoCertify: false, certifier: null, scheduler: { running: false, intervalMinutes: 0 }, latest: { proofId: 'POA-1', verdict: 'proven', certifiedBy: 'trustee' }, counts: [{ verdict: 'proven', count: 1 }], layers: [] });
+  vi.spyOn(PayerOsEngine, 'readiness').mockResolvedValue({ ready: true, blockers: [], warnings: [], originates: [], fundingSource: { sourceKey: 'trust_operating', accountName: 'Trust Operating Account' }, payees: [{ key: 'b1' }], achChannel: { ready: true }, odfi: { routingNumber: '000000000' } });
+  vi.spyOn(TpsOsEngine, 'status').mockResolvedValue({ engine: 'third-party-sender-os', role: {}, enforced: true, readiness: { ready: true, blockers: [] }, agreements: { total: 1, executed: 1 }, originators: { total: 1, approved: 1 }, obligations: { open: 3, overdue: 0 } });
+  vi.spyOn(M2mOsEngine, 'status').mockResolvedValue({ engine: 'm2m-os', identities: { total: 1, active: 1, staged: 0, retired: 0 }, partners: [{ partnerId: 'P1', bankName: 'ODFI', status: 'active', lastHandshakeAt: '2026-09-27T00:00:00Z' }], scheduler: { running: true, intervalMs: 3600000 }, policy: {} });
+  vi.spyOn(ClearingNettingEngine, 'funding').mockResolvedValue({ blockers: [], source: { sourceType: 'trust_operating', eligible: true } });
+  vi.spyOn(ClearingNettingEngine, 'runbook').mockResolvedValue({ actions: [], breaks: [] });
+  vi.spyOn(WealthBackOfficeEngine, 'readiness').mockResolvedValue({ ready: true, canPushCredits: true, desks: [{ desk: 'treasury', readable: true }], warnings: [], blockers: [], schema: { ready: true }, payerOs: { ready: true } });
+  vi.spyOn(BackOfficeEngine, 'status').mockResolvedValue({ engine: 'back-office', healthy: true, mode: 'shadow', live: false, integrations: { trustAccounting: true, cash: true, bond: true, corporateTreasury: true, bankSync: true, distribution: true }, distributionCount: 0 });
+}
 
 function stubFiatComponents() {
   vi.spyOn(FineractClient, 'healthCheck').mockResolvedValue({ connected: true, offices: [{ id: 1 }] });
@@ -185,10 +216,11 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all twenty engines ready and healthy with the GCP config in place', async () => {
+  it('reports every registered engine ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
     stubFiatComponents();
+    stubTrustEngines();
     const report = await EngineWiringReadiness.readiness();
 
     expect(report.project).toBe('dlb-treasury-management');
@@ -205,8 +237,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(20);
-    expect(report.total).toBe(20);
+    expect(report.readyCount).toBe(TOTAL);
+    expect(report.total).toBe(TOTAL);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -245,6 +277,112 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.openach.mode).toBe('live');
     expect(report.engines.openach.liveFlags.ODFI_FILE_CHANNEL_READY).toBe(true);
     expect(report.engines.mft.mode).toBe('live');
+    expect(report.engines['fixed-income'].mode).toBe('live');
+    expect(report.engines['fixed-income'].liveFlags.ASSET_SALES).toBe(false);
+    expect(report.engines['fixed-income'].modules.couponSettlement.coreBanking.savingsAccountId).toBe('2');
+    expect(report.engines.custody.mode).toBe('live');
+    expect(report.engines.custody.modules.fixedIncome.receipted).toBe(1);
+    expect(report.engines.collateral.mode).toBe('live');
+    expect(report.engines.collateral.liveFlags.ON_CHAIN_DRAW_RAIL).toBe('retired');
+    expect(report.engines.collateral.modules.base.receiptedCents).toBe(9852462751);
+    expect(report.engines['proof-of-asset'].mode).toBe('live');
+    expect(report.engines.payer.mode).toBe('live');
+    expect(report.engines['third-party-sender'].mode).toBe('live');
+    expect(report.engines.m2m.mode).toBe('live');
+    expect(report.engines['clearing-netting'].mode).toBe('live');
+    expect(report.engines['wealth-back-office'].mode).toBe('live');
+    expect(report.engines['back-office'].mode).toBe('live');
+    expect(report.engines['back-office'].liveFlags).toMatchObject({ BACK_OFFICE_LIVE: false, DAPP_DISTRIBUTION_EXECUTOR: 'retired', DISTRIBUTION_RAIL: 'private-payment-network', ASSET_SALES: false });
+  });
+
+  it('back-office (Backend OS) refuses the retired dapp distribution executor and reports missing dependencies', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    vi.spyOn(BackOfficeEngine, 'status').mockResolvedValue({ engine: 'back-office', healthy: true, mode: 'live', live: true, integrations: { trustAccounting: true, cash: true, bond: true, bankSync: false, distribution: true }, distributionCount: 2 });
+    process.env.BACK_OFFICE_LIVE = 'true';
+    try {
+      const r = await EngineWiringReadiness.engineReadiness('back-office');
+      expect(r.mode).toBe('shadow');
+      expect(r.blockers).toEqual([
+        'back office dependency bankSync not loadable',
+        'BACK_OFFICE_LIVE=true: the back-office executeDistribution path settles through the dapp/thirdweb rail (retired); distributions go through the Private Payment Network (Fineract withdraw before dispatch)',
+      ]);
+      expect(await BackOfficeEngine.readiness()).toMatchObject({ engine: 'back-office', ready: false });
+    } finally { delete process.env.BACK_OFFICE_LIVE; }
+  });
+
+  it('fixed-income blocks when coupon settlement has no Fineract savings account of record, but keeps downstream distribution issues as warnings', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    vi.spyOn(DebtOsEngine, 'recurringCouponConfig').mockResolvedValue({ enabled: true, ledgerAccountId: 'CA-BOND-PROCEEDS', coreBanking: { system: 'fineract', required: true, configured: true, savingsAccountId: null, paymentTypeId: 1, blocker: 'cash account CA-BOND-PROCEEDS has no linked_fineract_account_id and CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is unset' } });
+    vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ enabled: true, rail: 'bank', ready: false, issues: ['Lili MCP not configured'], buckets: [] });
+    const r = await EngineWiringReadiness.engineReadiness('fixed-income');
+    expect(r.mode).toBe('shadow');
+    expect(r.blockers).toEqual(['coupon -> Fineract core banking: cash account CA-BOND-PROCEEDS has no linked_fineract_account_id and CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is unset']);
+    expect(r.modules.warnings).toEqual(['downstream beneficiary distribution: Lili MCP not configured']);
+  });
+
+  it('fixed-income refuses the retired policy-contract rail and an inactive bond book', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    vi.spyOn(DebtOsEngine, 'obligations').mockResolvedValue({ bonds: [], totals: { activeBonds: 0, principalOutstanding: 0, accruedInterest: 0, annualCoupon: 0 } });
+    vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ enabled: true, rail: 'policy_contract', ready: true, issues: [], buckets: [] });
+    const r = await EngineWiringReadiness.engineReadiness('fixed-income');
+    expect(r.mode).toBe('shadow');
+    expect(r.blockers).toContain('no active bond: no coupon income stream to fund the trust account of record');
+    expect(r.blockers).toContain('FIXED_INCOME_RAIL=policy_contract: distributions must use the fiat bank rail (blockchain/policy-contract rail retired)');
+  });
+
+  it('custody and collateral stay shadow until the fixed-income position carries a dual-signed receipt', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    const pending = { accounts: [{ custodyAccountId: 'CUS-ISSUER-FIXED-INCOME', custodyType: 'self', positions: [{ ...RECEIPTED_BOND, controlStatus: 'pending_receipt' }] }] };
+    vi.spyOn(CustodyOsEngine, 'status').mockResolvedValue({ requiredSignatures: 2, reserveLinked: true, reserveEngineAvailable: true, pendingReceipts: 1, fixedIncomeFeed: { issuerAccountId: 'CUS-ISSUER-FIXED-INCOME', lastSyncedAt: null }, collateralFeed: {}, chain: { events: 3, intact: true, breaks: [] }, statement: pending });
+    vi.spyOn(CustodyOsEngine, 'statement').mockResolvedValue(pending);
+    const custody = await EngineWiringReadiness.engineReadiness('custody');
+    expect(custody.mode).toBe('shadow');
+    expect(custody.blockers).toEqual(['1 safekeeping receipt(s) awaiting the second trustee countersignature (POST /api/finops/custody/receipts/:id/countersign)']);
+    const collateral = await EngineWiringReadiness.engineReadiness('collateral');
+    expect(collateral.mode).toBe('shadow');
+    expect(collateral.blockers).toEqual(['fixed-income custody position not receipted (dual-signed safekeeping receipt required before it counts as collateral)']);
+  });
+
+  it('collateral refuses to re-enable on-chain draws and never treats the bond as saleable', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    process.env.COLLATERAL_DRAWS_LIVE = 'true';
+    try {
+      const r = await EngineWiringReadiness.engineReadiness('collateral');
+      expect(r.mode).toBe('shadow');
+      expect(r.liveFlags.ASSET_SALES).toBe(false);
+      expect(r.blockers).toEqual(['COLLATERAL_DRAWS_LIVE=true: on-chain collateral draws (thirdweb/USDC/Spritz) are retired; the trust is income-support only']);
+    } finally { delete process.env.COLLATERAL_DRAWS_LIVE; }
+  });
+
+  it('proof-of-asset, payer, third-party-sender, m2m, clearing-netting and wealth-back-office surface their own blockers', async () => {
+    stubCloudSql();
+    stubProviders();
+    stubTrustEngines();
+    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ enabled: true, ready: false, issues: ['no portfolio proof yet (POST /api/proof-of-asset/proofs)'], scheduler: {}, latest: null, counts: [], layers: [] });
+    vi.spyOn(PayerOsEngine, 'readiness').mockResolvedValue({ ready: false, blockers: ['ACH credits cannot be originated: no ODFI channel.'], warnings: [], payees: [] });
+    vi.spyOn(TpsOsEngine, 'status').mockResolvedValue({ enforced: false, readiness: { ready: false, blockers: ['no executed ODFI origination agreement'] }, agreements: { total: 0, executed: 0 }, originators: { total: 0, approved: 0 }, obligations: { open: 0, overdue: 0 } });
+    vi.spyOn(M2mOsEngine, 'status').mockResolvedValue({ identities: { total: 0, active: 0 }, partners: [], scheduler: { running: false, intervalMs: 0 }, policy: {} });
+    vi.spyOn(ClearingNettingEngine, 'funding').mockResolvedValue({ blockers: ['The funding registry returned no Trust Operating Account.'], source: null });
+    vi.spyOn(WealthBackOfficeEngine, 'readiness').mockResolvedValue({ ready: false, canPushCredits: false, desks: [], warnings: [], blockers: ['Payer OS readiness could not be read: boom'], schema: {}, payerOs: null });
+    const report = await EngineWiringReadiness.readiness();
+    expect(report.engines['proof-of-asset'].blockers).toContain('no portfolio proof yet (POST /api/proof-of-asset/proofs)');
+    expect(report.engines.payer.blockers).toEqual(['ACH credits cannot be originated: no ODFI channel.']);
+    expect(report.engines['third-party-sender'].blockers).toEqual(['no executed ODFI origination agreement']);
+    expect(report.engines.m2m.blockers).toEqual(['no active machine identity (POST /api/m2m-os/identities)', 'no active bank partner channel: no ODFI/bank has an M2M endpoint registered (Betterment offers none)']);
+    expect(report.engines['clearing-netting'].blockers).toEqual(['The funding registry returned no Trust Operating Account.']);
+    expect(report.engines['wealth-back-office'].blockers).toEqual(['Payer OS readiness could not be read: boom']);
+    for (const k of ['proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office']) expect(report.engines[k].mode, k).toBe('shadow');
+    expect(report.ready).toBe(false);
   });
 
   it('treasury-funding-bank stays shadow with the Stripe mandate blocker until Betterment is linked and verified', async () => {
@@ -306,6 +444,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     stubCloudSql();
     stubProviders();
     stubFiatComponents();
+    stubTrustEngines();
     delete process.env.PAYMENT_PROCESSOR_LIVE;
     (PaymentProcessorOsEngine.processors as any).mockImplementation(async () => ({
       config: PaymentProcessorOsEngine.getConfig(),
@@ -314,8 +453,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     }));
     const report = await EngineWiringReadiness.readiness();
     expect(report.ready).toBe(false);
-    expect(report.readyCount).toBe(17);
-    expect(report.total).toBe(20);
+    expect(report.readyCount).toBe(TOTAL - 3);
+    expect(report.total).toBe(TOTAL);
     expect(report.engines['payment-gateway'].ready).toBe(false);
     expect(report.engines['private-payment-network'].ready).toBe(false);
     expect(report.engines['private-payment-network'].blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 
 const pool = require('../server/integrations/bonds/pgPool');
 const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
@@ -205,5 +205,82 @@ describe('Funding OS (real value → ledger)', () => {
     const q = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ request_id: 'FUND-2', status: 'requested', requested_by: 'alice', amount_cents: '100' }] } as any);
     await expect(FundingOsEngine.approveFunding({ requestId: 'FUND-2', approvedBy: 'alice' })).rejects.toThrow(/maker\/checker/);
     q.mockRestore();
+  });
+});
+
+describe('Debt OS coupon settlement into the Fineract account of record', () => {
+  const { BondEngine } = require('../server/integrations/bonds/bondEngine');
+  const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+  const ENV = ['FINERACT_URL', 'CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID', 'CANONICAL_FUNDING_PAYMENT_TYPE_ID', 'PRIVATE_PAYMENT_NETWORK_CORE_BANKING'];
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => { for (const k of ENV) saved[k] = process.env[k]; process.env.FINERACT_URL = 'https://dlbtrust-fineract.internal/fineract-provider/api/v1'; delete process.env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID; delete process.env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING; });
+  afterEach(() => { for (const k of ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+
+  function stubLedger(account: any, updates: any[] = []) {
+    vi.spyOn(DebtOsEngine, 'holderRegister').mockResolvedValue({ bondId: 1, bondName: 'DLB-PRB', holders: [{}], totals: { accruedInterest: 250000 } } as any);
+    vi.spyOn(pool, 'query').mockImplementation(async (text: string, params: any[] = []) => {
+      if (/FROM cash_accounts/i.test(text)) return { rows: account ? [account] : [] } as any;
+      if (/UPDATE coupon_payments/i.test(text)) { updates.push(params); return { rows: [] } as any; }
+      return { rows: [] } as any;
+    });
+  }
+
+  it('_couponCoreBanking resolves the linked savings account, falls back to CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID and blocks when neither exists', () => {
+    const env = { FINERACT_URL: 'https://dlbtrust-fineract.internal', CANONICAL_FUNDING_PAYMENT_TYPE_ID: '1' };
+    expect(DebtOsEngine._couponCoreBanking({ account_id: 'CA-BOND-PROCEEDS', linked_fineract_account_id: '2' }, env)).toMatchObject({ system: 'fineract', required: true, configured: true, savingsAccountId: '2', paymentTypeId: 1, blocker: null });
+    expect(DebtOsEngine._couponCoreBanking({ account_id: 'CA-X' }, { ...env, CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: '2' }).savingsAccountId).toBe('2');
+    expect(DebtOsEngine._couponCoreBanking({ account_id: 'CA-X' }, env).blocker).toMatch(/no linked_fineract_account_id/);
+    expect(DebtOsEngine._couponCoreBanking({ account_id: 'CA-X', linked_fineract_account_id: '2' }, { FINERACT_URL: 'http://localhost:8443' }).blocker).toMatch(/FINERACT_URL/);
+    expect(DebtOsEngine._couponCoreBanking({ account_id: 'CA-X' }, { PRIVATE_PAYMENT_NETWORK_CORE_BANKING: 'false' })).toMatchObject({ required: false, blocker: null, savingsAccountId: null });
+  });
+
+  it('deposits the coupon into the linked Fineract savings account and the trust ledger, then marks the coupon paid (no asset sale)', async () => {
+    const updates: any[] = [];
+    stubLedger({ account_id: 'CA-BOND-PROCEEDS', account_type: 'bond_proceeds', balance_cents: '0', linked_fineract_account_id: '2' }, updates);
+    vi.spyOn(BondEngine, 'payInterest').mockResolvedValue({ remaining_accrued: 0 } as any);
+    const deposit = vi.spyOn(FineractClient, 'depositSavings').mockResolvedValue({ resourceId: 9001 } as any);
+    const cash = vi.spyOn(CashEngine, 'deposit').mockResolvedValue({ movement_id: 'MOV-1' } as any);
+
+    const dry = await DebtOsEngine.settleCouponToLedger({ bondId: 1, toAccountId: 'CA-BOND-PROCEEDS', couponDate: '2026-09-30', dryRun: true });
+    expect(dry).toMatchObject({ dryRun: true, amount: 250000, coreBanking: { savingsAccountId: '2', blocker: null } });
+    expect(dry.basis).toMatch(/Fineract core-banking savings account of record/);
+    expect(deposit).not.toHaveBeenCalled();
+
+    const res = await DebtOsEngine.settleCouponToLedger({ bondId: 1, toAccountId: 'CA-BOND-PROCEEDS', couponDate: '2026-09-30', approvedBy: 'trustee' });
+    expect(deposit).toHaveBeenCalledWith(expect.objectContaining({ accountId: '2', amount: 250000, paymentTypeId: 1 }));
+    expect(cash).toHaveBeenCalledWith(expect.objectContaining({ toAccountId: 'CA-BOND-PROCEEDS', amountCents: 25000000 }));
+    expect(res).toMatchObject({ status: 'paid', movementId: 'MOV-1', fineract: { system: 'fineract', savingsAccountId: '2', depositTransactionId: '9001', amount: 250000 } });
+    expect(updates.at(-1)[0]).toMatch(/^CPN-/);
+  });
+
+  it('fails closed before any leg when the cash account has no Fineract link and no canonical account is set', async () => {
+    stubLedger({ account_id: 'CA-MISC', account_type: 'operating', balance_cents: '0', linked_fineract_account_id: null });
+    const deposit = vi.spyOn(FineractClient, 'depositSavings');
+    const pay = vi.spyOn(BondEngine, 'payInterest');
+    await expect(DebtOsEngine.settleCouponToLedger({ bondId: 1, toAccountId: 'CA-MISC', couponDate: '2026-09-30' })).rejects.toThrow(/core-banking coupon deposit blocked: cash account CA-MISC has no linked_fineract_account_id/);
+    expect(deposit).not.toHaveBeenCalled();
+    expect(pay).not.toHaveBeenCalled();
+  });
+
+  it('does not claim coupon income reached core banking when the Fineract deposit fails', async () => {
+    const updates: any[] = [];
+    stubLedger({ account_id: 'CA-BOND-PROCEEDS', account_type: 'bond_proceeds', balance_cents: '0', linked_fineract_account_id: '2' }, updates);
+    vi.spyOn(BondEngine, 'payInterest').mockResolvedValue({ remaining_accrued: 0 } as any);
+    vi.spyOn(FineractClient, 'depositSavings').mockRejectedValue(new Error('Fineract 401'));
+    const cash = vi.spyOn(CashEngine, 'deposit');
+    await expect(DebtOsEngine.settleCouponToLedger({ bondId: 1, toAccountId: 'CA-BOND-PROCEEDS', couponDate: '2026-09-30' })).rejects.toThrow('Fineract 401');
+    expect(cash).not.toHaveBeenCalled();
+    expect(updates.at(-1)).toEqual([expect.stringMatching(/^CPN-/), 'Fineract 401', 'failed']);
+  });
+
+  it('keeps the coupon in processing with the Fineract transaction id when the ledger leg fails after the deposit posted', async () => {
+    const updates: any[] = [];
+    stubLedger({ account_id: 'CA-BOND-PROCEEDS', account_type: 'bond_proceeds', balance_cents: '0', linked_fineract_account_id: '2' }, updates);
+    vi.spyOn(BondEngine, 'payInterest').mockResolvedValue({ remaining_accrued: 0 } as any);
+    vi.spyOn(FineractClient, 'depositSavings').mockResolvedValue({ resourceId: 9002 } as any);
+    vi.spyOn(CashEngine, 'deposit').mockRejectedValue(new Error('ledger down'));
+    await expect(DebtOsEngine.settleCouponToLedger({ bondId: 1, toAccountId: 'CA-BOND-PROCEEDS', couponDate: '2026-09-30' })).rejects.toThrow('ledger down');
+    expect(updates.at(-1)[2]).toBe('processing');
+    expect(updates.at(-1)[1]).toMatch(/deposit 9002 already posted/);
   });
 });

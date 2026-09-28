@@ -1693,6 +1693,7 @@ class SmartRouterEngine extends BaseOSEngine {
 
 class BackOfficeEngine extends BaseOSEngine {
   static get engineName() { return 'back-office'; }
+  static get platformEngine() { return 'back-office'; }
 
   static _isLive() { return process.env.BACK_OFFICE_LIVE === 'true'; }
 

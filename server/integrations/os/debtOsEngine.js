@@ -315,7 +315,14 @@ class DebtOsEngine {
   static async recurringCouponConfig() {
     const Settings = tryRequire('../ach/systemSettings')?.SystemSettings;
     const account = Settings ? await Settings.get(SETTING_COUPON_LEDGER_ACCOUNT) : null;
-    return { enabled: !!account, ledgerAccountId: account || null, settingKey: SETTING_COUPON_LEDGER_ACCOUNT, scheduler: 'CouponService.scheduleCouponJob (startup + 6h), settles each due coupon_per_period internally' };
+    let coreBanking = null;
+    if (account && pool) {
+      const acct = await settle(() => pool.query(`SELECT account_id, status, linked_fineract_account_id FROM cash_accounts WHERE account_id = $1`, [account]));
+      const row = acct.ok ? acct.value.rows[0] : null;
+      coreBanking = row ? this._couponCoreBanking(row) : { system: 'fineract', savingsAccountId: null, blocker: `cash account ${account} not found` };
+      if (row && row.status !== 'active') coreBanking.blocker = coreBanking.blocker || `cash account ${account} is ${row.status}`;
+    }
+    return { enabled: !!account, ledgerAccountId: account || null, settingKey: SETTING_COUPON_LEDGER_ACCOUNT, coreBanking, scheduler: 'CouponService.scheduleCouponJob (startup + 6h), settles each due coupon_per_period into the ledger account and its linked Fineract savings account' };
   }
 
   /** Enable (accountId) or disable (null) recurring internal coupon settlement. */
@@ -332,6 +339,22 @@ class DebtOsEngine {
     return this.recurringCouponConfig();
   }
 
+  /**
+   * Fineract core-banking leg of a coupon settlement: the cash account's linked savings
+   * account (or CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID) receives the coupon so the treasury
+   * account of record — the PPN funding source — actually carries the income.
+   */
+  static _couponCoreBanking(cashAccount, env = process.env) {
+    const required = String(env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING || 'true').toLowerCase() !== 'false';
+    const savingsAccountId = String(cashAccount?.linked_fineract_account_id || env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || '').trim() || null;
+    const configured = Boolean(env.FINERACT_URL) && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(env.FINERACT_URL);
+    const paymentTypeId = Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) > 0 ? Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) : 1;
+    let blocker = null;
+    if (required && !configured) blocker = 'FINERACT_URL not set to the core-banking service';
+    else if (required && !savingsAccountId) blocker = `cash account ${cashAccount?.account_id} has no linked_fineract_account_id and CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is unset`;
+    return { system: 'fineract', required, configured, savingsAccountId: required && configured ? savingsAccountId : null, paymentTypeId, blocker };
+  }
+
   static async settleCouponToLedger({ bondId, toAccountId, amount, couponDate, approvedBy, dryRun = false }) {
     if (!pool) throw new Error('ledger unavailable');
     if (!toAccountId) throw new Error('toAccountId (ledger cash account) required');
@@ -344,24 +367,44 @@ class DebtOsEngine {
     const pay = Math.round((amount == null ? accrued : num(amount)) * 100) / 100;
     if (pay <= 0) throw new Error('no accrued interest to settle');
     if (pay > accrued + 1e-9) throw new Error(`amount ${pay} exceeds accrued interest ${accrued}`);
-    const acct = await pool.query(`SELECT account_id, account_type, balance_cents FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [toAccountId]);
+    const acct = await pool.query(`SELECT account_id, account_type, balance_cents, linked_fineract_account_id FROM cash_accounts WHERE account_id = $1 AND status = 'active'`, [toAccountId]);
     if (!acct.rows[0]) throw new Error(`cash account ${toAccountId} not found or not active`);
     couponDate = couponDate || new Date().toISOString().slice(0, 10);
     const couponPaymentId = `CPN-${bondId}-${couponDate.replace(/-/g, '')}-LEDGER`;
-    const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, basis: 'internal ledger settlement of accrued coupon; no ACH, no bank funds' };
+    const coreBanking = this._couponCoreBanking(acct.rows[0]);
+    const plan = { bondId, couponPaymentId, couponDate, amount: pay, accruedBefore: accrued, accruedAfter: Math.round((accrued - pay) * 100) / 100, toAccountId, toAccountType: acct.rows[0].account_type, toBalanceBefore: num(acct.rows[0].balance_cents) / 100, coreBanking, basis: coreBanking.savingsAccountId ? 'coupon income credited to the Fineract core-banking savings account of record and the trust ledger; no ACH, no external bank funds' : 'internal ledger settlement of accrued coupon; no ACH, no bank funds' };
     if (dryRun) return { dryRun: true, ...plan };
+    if (coreBanking.blocker) throw new Error(`core-banking coupon deposit blocked: ${coreBanking.blocker}`);
     if (Coupon) await Coupon.ensureTable();
     const dup = await pool.query(`SELECT coupon_payment_id FROM coupon_payments WHERE bond_id = $1 AND coupon_date = $2 AND status IN ('paid', 'processing')`, [bondId, couponDate]);
     if (dup.rows.length) throw new Error(`coupon already paid/processing for ${couponDate}: ${dup.rows[0].coupon_payment_id}`);
     await pool.query(`INSERT INTO coupon_payments (coupon_payment_id, bond_id, coupon_date, amount, status, bondholders_paid) VALUES ($1, $2, $3, $4, 'processing', $5)
                       ON CONFLICT (coupon_payment_id) DO UPDATE SET status = 'processing', amount = $4, updated_at = NOW()`, [couponPaymentId, bondId, couponDate, pay, reg.holders.length]);
+    let fineract = null;
     try {
       const payResult = await Bond.payInterest(bondId, pay);
-      const mov = await Cash.deposit({ toAccountId, amountCents: Math.round(pay * 100), referenceId: `BOND-${bondId}`, memo: `Coupon ${couponDate} ${reg.bondName} settled to ledger (${approvedBy || 'system'})`, initiatedBy: approvedBy || 'system' });
+      if (coreBanking.savingsAccountId) {
+        const FineractClient = tryRequire('../fineract/fineractClient')?.FineractClient;
+        if (!FineractClient) throw new Error('FineractClient unavailable');
+        const res = await FineractClient.depositSavings({
+          accountId: coreBanking.savingsAccountId,
+          amount: pay,
+          paymentTypeId: coreBanking.paymentTypeId,
+          note: `Coupon ${couponDate} ${reg.bondName} ${couponPaymentId}`,
+        });
+        fineract = { system: 'fineract', savingsAccountId: coreBanking.savingsAccountId, depositTransactionId: res?.resourceId != null ? String(res.resourceId) : null, amount: pay, at: new Date().toISOString() };
+      }
+      const mov = await Cash.deposit({ toAccountId, amountCents: Math.round(pay * 100), referenceId: `BOND-${bondId}`, memo: `Coupon ${couponDate} ${reg.bondName} settled to ledger (${approvedBy || 'system'})${fineract ? ` — Fineract savings ${fineract.savingsAccountId} deposit ${fineract.depositTransactionId}` : ''}`, initiatedBy: approvedBy || 'system' });
       await pool.query(`UPDATE coupon_payments SET status = 'paid', journal_entry_id = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, mov.movement_id]);
-      return { ...plan, accruedAfter: num(payResult.remaining_accrued), movementId: mov.movement_id, status: 'paid' };
+      return { ...plan, accruedAfter: num(payResult.remaining_accrued), movementId: mov.movement_id, fineract, status: 'paid' };
     } catch (err) {
-      await pool.query(`UPDATE coupon_payments SET status = 'failed', error_message = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, err.message]);
+      // A Fineract deposit that already posted must not be re-deposited by a retry:
+      // keep the row in 'processing' (blocks the duplicate check) and record the transaction id.
+      const status = fineract ? 'processing' : 'failed';
+      const message = fineract
+        ? `${err.message} — Fineract savings ${fineract.savingsAccountId} deposit ${fineract.depositTransactionId} already posted; reconcile ledger leg manually`
+        : err.message;
+      await pool.query(`UPDATE coupon_payments SET status = $3, error_message = $2, updated_at = NOW() WHERE coupon_payment_id = $1`, [couponPaymentId, message, status]);
       throw err;
     }
   }

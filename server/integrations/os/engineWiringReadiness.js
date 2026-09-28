@@ -36,7 +36,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -59,6 +59,16 @@ const ENGINE_TITLES = {
   'payment-hub': 'Payment Hub EE (PHEE orchestration, ACH connector)',
   openach: 'OpenACH Rail (ODFI origination, NACHA file relay)',
   mft: 'MFT / File Relay (SFTP / spool channels for NACHA, ISO 20022)',
+  'fixed-income': 'Bond & Fixed-Income Income Engine (coupon accrual -> Fineract savings account of record -> beneficiary distributions; income support only, no asset sales)',
+  custody: 'Custody OS (safekeeping accounts, fixed-income positions, dual-signed receipts, hash-chained title)',
+  collateral: 'Collateral OS (custody-receipted fixed-income as borrowing base; on-chain draw rail retired)',
+  'proof-of-asset': 'Proof of Asset OS (bond contract / schedule / Fineract account of record / GL / fiat settlement / custody proven and certified)',
+  payer: 'Payer OS (trust-originated ACH credits under dual control from the Trust Operating Account)',
+  'third-party-sender': 'Third-Party Sender OS (Nacha TPS register: ODFI agreements, originators, compliance calendar)',
+  m2m: 'M2M OS (machine identities and bank partner channels for file delivery)',
+  'clearing-netting': 'Clearing & Netting OS (daily obligations netted into one funded settlement position)',
+  'wealth-back-office': 'Wealth Back Office OS (family bank desks; hands credits to Payer OS)',
+  'back-office': 'Backend OS (Back Office engine: treasury summary, bank reconciliation, batches; distribution execution via PPN only — dapp/on-chain executor retired)',
 };
 
 const TABLES = {
@@ -82,6 +92,16 @@ const TABLES = {
   'payment-hub': ['payment_intents', 'payment_approvals', 'payment_events', 'ach_batches'],
   openach: ['ihb_openach_dispatches', 'ihb_openach_status_log', 'openach_file_relays', 'ach_batches'],
   mft: ['mft_channels', 'mft_files', 'mft_events'],
+  'fixed-income': ['bonds', 'bond_balances', 'bond_transactions', 'coupon_payments', 'crm_bond_subscriptions', 'cash_accounts', 'cash_movements', 'system_settings', 'fixed_income_distributions'],
+  custody: ['custody_accounts', 'custody_positions', 'custody_receipts', 'custody_events'],
+  collateral: ['custody_accounts', 'custody_positions', 'custody_receipts', 'bonds', 'bond_balances'],
+  'proof-of-asset': ['proof_of_asset_proofs', 'bonds', 'trust_journal_entries'],
+  payer: ['payer_disbursements', 'payer_disbursement_events', 'cash_accounts'],
+  'third-party-sender': ['tps_odfi_agreements', 'tps_originators', 'tps_obligations', 'tps_exposure', 'tps_returns', 'tps_events'],
+  m2m: ['m2m_identities', 'm2m_partners', 'm2m_events'],
+  'clearing-netting': ['clearing_cycles', 'clearing_cycle_legs', 'clearing_cycle_items', 'cash_accounts'],
+  'wealth-back-office': ['wealth_credit_pushes', 'payer_disbursements'],
+  'back-office': ['back_office_batches', 'back_office_tasks', 'os_events', 'cash_accounts', 'trust_journal_entries'],
 };
 
 function tryRequire(mod) {
@@ -341,6 +361,16 @@ const REPORTERS = {
   'payment-hub': paymentHubReadiness,
   openach: openachReadiness,
   mft: mftReadiness,
+  'fixed-income': fixedIncomeReadiness,
+  custody: custodyReadiness,
+  collateral: collateralReadiness,
+  'proof-of-asset': proofOfAssetReadiness,
+  payer: payerReadiness,
+  'third-party-sender': thirdPartySenderReadiness,
+  m2m: m2mReadiness,
+  'clearing-netting': clearingNettingReadiness,
+  'wealth-back-office': wealthBackOfficeReadiness,
+  'back-office': backOfficeReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1008,6 +1038,314 @@ async function mftReadiness(ctx) {
     modules: status.ok ? { channels: status.value.channels, files: status.value.files, inFlightCents: status.value.inFlightCents } : { error: status.error },
     routes: ['/api/os/mft/{status,readiness,list,process}', '/api/os/readiness/mft'],
     secrets: ['MFT_SFTP_PASSWORD or MFT_SFTP_PRIVATE_KEY (or an M2M identity bound to the channel)'],
+    tables,
+    blockers,
+  };
+}
+
+async function fixedIncomeReadiness(ctx) {
+  const env = process.env;
+  const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+  const Coupon = tryRequire('../bonds/couponService')?.CouponService;
+  const Live = tryRequire('../bonds/liveEngine')?.LiveBondEngine;
+  const Dist = tryRequire('./fixedIncomeDistributionEngine')?.FixedIncomeDistributionEngine;
+  const tables = await tablesPresent(TABLES['fixed-income']);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!Debt) blockers.push('DebtOsEngine not loadable');
+  if (!Coupon) blockers.push('CouponService (coupon scheduler) not loadable');
+  if (!Live) blockers.push('LiveBondEngine not loadable');
+  if (!Dist) blockers.push('FixedIncomeDistributionEngine not loadable');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const [obligations, recurring, dist, schedule] = await Promise.all([
+    Debt ? settle(() => Debt.obligations()) : { ok: false, error: 'skipped' },
+    Debt ? settle(() => Debt.recurringCouponConfig()) : { ok: false, error: 'skipped' },
+    Dist ? settle(() => Dist.readiness()) : { ok: false, error: 'skipped' },
+    Debt ? settle(() => Debt.schedule(90)) : { ok: false, error: 'skipped' },
+  ]);
+  const totals = obligations.ok ? obligations.value.totals : null;
+  if (obligations.ok && !(totals && totals.activeBonds > 0)) blockers.push('no active bond: no coupon income stream to fund the trust account of record');
+  else if (!obligations.ok) blockers.push(`bond obligations: ${obligations.error}`);
+  const coreBanking = recurring.ok ? recurring.value.coreBanking : null;
+  if (recurring.ok) {
+    if (!recurring.value.enabled) blockers.push('recurring coupon settlement disabled: set debt_os_coupon_ledger_account (POST /api/os/debt/recurring-coupon) to the ledger cash account linked to the Fineract savings account of record');
+    else if (coreBanking?.blocker) blockers.push(`coupon -> Fineract core banking: ${coreBanking.blocker}`);
+  } else blockers.push(`recurring coupon config: ${recurring.error}`);
+  if (!env.FINERACT_URL) blockers.push('FINERACT_URL not set (infra/gcp: dlbtrust-fineract Cloud Run service)');
+  if (dist.ok) {
+    if (dist.value.rail !== 'bank') blockers.push(`FIXED_INCOME_RAIL=${dist.value.rail}: distributions must use the fiat bank rail (blockchain/policy-contract rail retired)`);
+    if (!dist.value.enabled) blockers.push('FIXED_INCOME_DISTRIBUTION_ENABLED=false');
+  } else blockers.push(`fixed-income distribution readiness: ${dist.error}`);
+  const distributionWarnings = dist.ok ? (dist.value.issues || []).map((issue) => `downstream beneficiary distribution: ${issue}`) : [];
+  const live = Boolean(coreBanking?.savingsAccountId) && isTrue(env.CANONICAL_FUNDING_LIVE) && dist.ok && dist.value.rail === 'bank';
+  return {
+    provider: 'bond-engine+coupon-scheduler+fineract',
+    mode: live ? 'live' : 'shadow',
+    liveFlags: {
+      FINERACT_URL: Boolean(env.FINERACT_URL),
+      CANONICAL_FUNDING_LIVE: isTrue(env.CANONICAL_FUNDING_LIVE),
+      CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || null,
+      PRIVATE_PAYMENT_NETWORK_CORE_BANKING: String(env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING || 'true').toLowerCase() !== 'false',
+      FIXED_INCOME_RAIL: dist.ok ? dist.value.rail : env.FIXED_INCOME_RAIL || null,
+      FIXED_INCOME_DISTRIBUTION_ENABLED: dist.ok ? dist.value.enabled : null,
+      ASSET_SALES: false,
+    },
+    modules: {
+      bonds: totals,
+      obligations: obligations.ok ? obligations.value.obligations ?? obligations.value.bonds ?? null : { error: obligations.error },
+      schedule90d: schedule.ok ? schedule.value : { error: schedule.error },
+      couponSettlement: recurring.ok ? recurring.value : { error: recurring.error },
+      fundingChain: 'bond accrual -> coupon_payments -> DebtOsEngine.settleCouponToLedger -> FineractClient.depositSavings(account of record) + cash_accounts -> PPN payouts (withdraw before dispatch)',
+      distribution: dist.ok ? { rail: dist.value.rail, ready: dist.value.ready, issues: dist.value.issues, buckets: (dist.value.buckets || []).map((b) => ({ bucket: b.bucket, glAccountCode: b.glAccountCode, payees: (b.payees || []).length })) } : { error: dist.error },
+      accountingSync: 'DataBridge.syncBondsToAccounting (coupon_payments -> Dr 1020 / Cr 4100) + pushToFineract GL',
+      warnings: distributionWarnings,
+    },
+    jobs: ['coupon-payments (leader-elected in-process: CouponService.scheduleCouponJob, startup + every 6h)'],
+    routes: ['/api/bonds', '/api/bonds/:id/{live,coupon-schedule,coupon-payments,accrue,deposit-coupon}', '/api/bonds/coupon-check', '/api/os/debt/{status,recurring-coupon,settle-coupon}', '/api/fixed-income/{readiness,summary,sources,distributions,plan,cycle}', '/api/os/readiness/fixed-income'],
+    secrets: ['FINERACT_URL', 'FINERACT_TENANT_ID', 'FINERACT_USERNAME', 'FINERACT_PASSWORD', 'ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+function baseBlockers(ctx, tables, mod, name) {
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!mod) blockers.push(`${name} not loadable`);
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  return blockers;
+}
+
+async function custodyReadiness(ctx) {
+  const env = process.env;
+  const Custody = tryRequire('../custody/custodyOsEngine')?.CustodyOsEngine;
+  const tables = await tablesPresent(TABLES.custody);
+  const blockers = baseBlockers(ctx, tables, Custody, 'CustodyOsEngine');
+  const status = Custody && !missingTables(tables).length ? await settle(() => Custody.status()) : { ok: false, error: 'skipped' };
+  let fixedIncome = null;
+  if (status.ok) {
+    const s = status.value;
+    if (s.chain?.error) blockers.push(`custody chain: ${s.chain.error}`);
+    else if (s.chain && !s.chain.intact) blockers.push(`custody event chain broken at ${s.chain.breaks.length} event(s)`);
+    const issuer = (s.statement?.accounts || []).find((a) => a.custodyAccountId === s.fixedIncomeFeed?.issuerAccountId);
+    const positions = issuer ? issuer.positions : [];
+    fixedIncome = {
+      accountId: s.fixedIncomeFeed?.issuerAccountId, lastSyncedAt: s.fixedIncomeFeed?.lastSyncedAt,
+      positions: positions.length, receipted: positions.filter((p) => p.controlStatus === 'receipted').length,
+      valuationCents: positions.reduce((t, p) => t + Number(p.valuationCents || 0), 0),
+    };
+    if (!issuer) blockers.push('issuer fixed-income custody account not opened (CustodyOsEngine.syncFixedIncome runs at startup; CUSTODY_FIXED_INCOME_SYNC)');
+    else if (!positions.length) blockers.push('no fixed-income position in custody (no active bond synced)');
+    else if (!fixedIncome.receipted) blockers.push(`${s.pendingReceipts} safekeeping receipt(s) awaiting the second trustee countersignature (POST /api/finops/custody/receipts/:id/countersign)`);
+  } else if (status.error !== 'skipped') blockers.push(`custody status: ${status.error}`);
+  return {
+    provider: 'custody-os',
+    mode: fixedIncome && fixedIncome.receipted > 0 ? 'live' : 'shadow',
+    liveFlags: {
+      CUSTODY_REQUIRED_SIGNATURES: status.ok ? status.value.requiredSignatures : Number(env.CUSTODY_REQUIRED_SIGNATURES) || 2,
+      CUSTODY_RESERVE_SYNC: String(env.CUSTODY_RESERVE_SYNC || 'true').toLowerCase() !== 'false',
+      CUSTODY_FIXED_INCOME_SYNC: String(env.CUSTODY_FIXED_INCOME_SYNC || 'true').toLowerCase() !== 'false',
+      CUSTODY_GL_BOOKING_ENABLED: String(env.CUSTODY_GL_BOOKING_ENABLED || 'true').toLowerCase() !== 'false',
+    },
+    modules: status.ok ? { fixedIncome, pendingReceipts: status.value.pendingReceipts, chain: { events: status.value.chain?.events, intact: status.value.chain?.intact }, accounts: (status.value.statement?.accounts || []).map((a) => ({ id: a.custodyAccountId, type: a.custodyType, positions: a.positions.length })) } : { error: status.error },
+    jobs: ['custody fixed-income + collateral feed sync at startup (server-3002 init)'],
+    routes: ['/api/finops/custody/{status,statement,accounts,positions,receipts}', '/api/os/readiness/custody'],
+    secrets: ['ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function collateralReadiness(ctx) {
+  const env = process.env;
+  const Custody = tryRequire('../custody/custodyOsEngine')?.CustodyOsEngine;
+  const Debt = tryRequire('./debtOsEngine')?.DebtOsEngine;
+  const tables = await tablesPresent(TABLES.collateral);
+  const blockers = baseBlockers(ctx, tables, Custody, 'CustodyOsEngine');
+  if (!Debt) blockers.push('DebtOsEngine not loadable');
+  const [statement, obligations] = await Promise.all([
+    Custody && !missingTables(tables).length ? settle(() => Custody.statement()) : { ok: false, error: 'skipped' },
+    Debt ? settle(() => Debt.obligations()) : { ok: false, error: 'skipped' },
+  ]);
+  let base = null;
+  if (statement.ok) {
+    const positions = (statement.value.accounts || []).flatMap((a) => a.positions.filter((p) => p.assetClass === 'fixed_income'));
+    const receipted = positions.filter((p) => p.controlStatus === 'receipted');
+    base = {
+      positions: positions.length, receipted: receipted.length,
+      heldCents: positions.reduce((t, p) => t + Number(p.valuationCents || 0), 0),
+      receiptedCents: receipted.reduce((t, p) => t + Number(p.valuationCents || 0), 0),
+      principalOutstanding: obligations.ok ? obligations.value.totals.principalOutstanding : null,
+    };
+    if (!positions.length) blockers.push('no fixed-income position in custody to serve as collateral base');
+    else if (!receipted.length) blockers.push('fixed-income custody position not receipted (dual-signed safekeeping receipt required before it counts as collateral)');
+  } else if (statement.error !== 'skipped') blockers.push(`custody statement: ${statement.error}`);
+  if (isTrue(env.COLLATERAL_DRAWS_LIVE)) blockers.push('COLLATERAL_DRAWS_LIVE=true: on-chain collateral draws (thirdweb/USDC/Spritz) are retired; the trust is income-support only');
+  return {
+    provider: 'custody-receipted fixed income',
+    mode: base && base.receipted > 0 && !isTrue(env.COLLATERAL_DRAWS_LIVE) ? 'live' : 'shadow',
+    liveFlags: { COLLATERAL_OS_ENABLED: String(env.COLLATERAL_OS_ENABLED || 'true').toLowerCase() !== 'false', COLLATERAL_DRAWS_LIVE: isTrue(env.COLLATERAL_DRAWS_LIVE), ON_CHAIN_DRAW_RAIL: 'retired', ASSET_SALES: false },
+    modules: { base, draws: 'none: income-support-only trust; collateral is held and proven, never drawn against or sold' },
+    routes: ['/api/collateral-os/{readiness,status,facility}', '/api/finops/custody/statement', '/api/os/readiness/collateral'],
+    secrets: ['ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function proofOfAssetReadiness(ctx) {
+  const env = process.env;
+  const Proof = tryRequire('./proofOfAssetOsEngine')?.ProofOfAssetOsEngine;
+  const tables = await tablesPresent(TABLES['proof-of-asset']);
+  const blockers = baseBlockers(ctx, tables, Proof, 'ProofOfAssetOsEngine');
+  const status = Proof && ctx.ledger.connected ? await settle(() => Proof.status()) : { ok: false, error: 'skipped' };
+  if (status.ok) for (const issue of status.value.issues || []) blockers.push(issue);
+  else if (status.error !== 'skipped') blockers.push(`proof-of-asset status: ${status.error}`);
+  if (!env.FINERACT_URL) blockers.push('FINERACT_URL not set (Fineract account of record is a proof layer)');
+  const interval = Number(env.PROOF_OF_ASSET_INTERVAL_MINUTES) || 0;
+  return {
+    provider: 'proof-of-asset-os',
+    mode: status.ok && status.value.ready ? 'live' : 'shadow',
+    liveFlags: { PROOF_OF_ASSET_ENABLED: status.ok ? status.value.enabled : String(env.PROOF_OF_ASSET_ENABLED || 'true').toLowerCase() !== 'false', PROOF_OF_ASSET_INTERVAL_MINUTES: interval, PROOF_OF_ASSET_AUTO_CERTIFY: isTrue(env.PROOF_OF_ASSET_AUTO_CERTIFY), FINERACT_URL: Boolean(env.FINERACT_URL) },
+    modules: status.ok ? { latest: status.value.latest, counts: status.value.counts, layers: status.value.layers, scheduler: status.value.scheduler } : { error: status.error },
+    jobs: [interval > 0 ? `proof-of-asset scheduler every ${interval}m (in-process)` : 'proof-of-asset scheduler off (PROOF_OF_ASSET_INTERVAL_MINUTES=0); proofs on demand'],
+    routes: ['/api/proof-of-asset/{status,proofs,proofs/:id/certify}', '/api/os/readiness/proof-of-asset'],
+    secrets: ['FINERACT_URL', 'FINERACT_USERNAME', 'FINERACT_PASSWORD', 'ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function payerReadiness(ctx) {
+  const env = process.env;
+  const Payer = tryRequire('./payerOsEngine')?.PayerOsEngine;
+  const tables = await tablesPresent(TABLES.payer);
+  const blockers = baseBlockers(ctx, tables, Payer, 'PayerOsEngine');
+  const r = Payer && ctx.ledger.connected ? await settle(() => Payer.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...(r.value.blockers || []));
+  else if (r.error !== 'skipped') blockers.push(`payer readiness: ${r.error}`);
+  return {
+    provider: 'payer-os',
+    mode: r.ok && r.value.ready ? 'live' : 'shadow',
+    liveFlags: { NACHA_ODFI_ROUTING: Boolean(env.NACHA_ODFI_ROUTING), PAYER_OS_PAYEES: Boolean(env.PAYER_OS_PAYEES), PAYER_OS_FUNDING_SOURCE: env.PAYER_OS_FUNDING_SOURCE || null },
+    modules: r.ok ? { fundingSource: r.value.fundingSource, payees: (r.value.payees || []).length, achChannel: r.value.achChannel, odfi: r.value.odfi, warnings: r.value.warnings } : { error: r.error },
+    routes: ['/api/payer/{,payees,disbursements,plan}', '/api/payer/disbursements/:id/{approve,send}', '/api/os/readiness/payer'],
+    secrets: ['NACHA_ODFI_ROUTING', 'PAYER_OS_PAYEES', 'ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function thirdPartySenderReadiness(ctx) {
+  const Tps = tryRequire('./thirdPartySenderOsEngine')?.TpsOsEngine;
+  const tables = await tablesPresent(TABLES['third-party-sender']);
+  const blockers = baseBlockers(ctx, tables, Tps, 'TpsOsEngine');
+  const s = Tps && ctx.ledger.connected ? await settle(() => Tps.status()) : { ok: false, error: 'skipped' };
+  if (s.ok) blockers.push(...(s.value.readiness?.blockers || []));
+  else if (s.error !== 'skipped') blockers.push(`tps status: ${s.error}`);
+  return {
+    provider: 'third-party-sender-os',
+    mode: s.ok && s.value.readiness?.ready ? 'live' : 'shadow',
+    liveFlags: { TPS_ENFORCED: s.ok ? s.value.enforced : null },
+    modules: s.ok ? { role: s.value.role, agreements: { total: s.value.agreements.total, executed: s.value.agreements.executed }, originators: { total: s.value.originators.total, approved: s.value.originators.approved }, obligations: { open: s.value.obligations.open, overdue: s.value.obligations.overdue } } : { error: s.error },
+    routes: ['/api/tps-os/{status,agreements,originators,obligations}', '/api/os/readiness/third-party-sender'],
+    secrets: ['ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function m2mReadiness(ctx) {
+  const M2m = tryRequire('./m2mOsEngine')?.M2mOsEngine;
+  const tables = await tablesPresent(TABLES.m2m);
+  const blockers = baseBlockers(ctx, tables, M2m, 'M2mOsEngine');
+  const s = M2m && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => M2m.status()) : { ok: false, error: 'skipped' };
+  let activePartners = 0;
+  if (s.ok) {
+    activePartners = (s.value.partners || []).filter((p) => p.status === 'active').length;
+    if (!s.value.identities.active) blockers.push('no active machine identity (POST /api/m2m-os/identities)');
+    if (!activePartners) blockers.push('no active bank partner channel: no ODFI/bank has an M2M endpoint registered (Betterment offers none)');
+  } else if (s.error !== 'skipped') blockers.push(`m2m status: ${s.error}`);
+  return {
+    provider: 'm2m-os',
+    mode: activePartners > 0 ? 'live' : 'shadow',
+    liveFlags: { M2M_CYCLE_INTERVAL_MS: s.ok ? s.value.scheduler.intervalMs : null, SCHEDULER_RUNNING: s.ok ? s.value.scheduler.running : null },
+    modules: s.ok ? { identities: s.value.identities, partners: (s.value.partners || []).map((p) => ({ partnerId: p.partnerId, bankName: p.bankName, status: p.status, lastHandshakeAt: p.lastHandshakeAt })), policy: s.value.policy } : { error: s.error },
+    jobs: ['m2m key-rotation/handshake cycle (in-process, M2M_CYCLE_INTERVAL_MS)'],
+    routes: ['/api/m2m-os/{status,identities,partners}', '/api/os/readiness/m2m'],
+    secrets: ['machine identity private keys (m2m_identities, encrypted at rest)'],
+    tables,
+    blockers,
+  };
+}
+
+async function clearingNettingReadiness(ctx) {
+  const mod = tryRequire('./clearingNettingEngine');
+  const instance = mod?.ClearingNettingEngine || null;
+  const tables = await tablesPresent(TABLES['clearing-netting']);
+  const blockers = baseBlockers(ctx, tables, instance, 'ClearingNettingEngine');
+  const [funding, runbook] = await Promise.all([
+    instance && ctx.ledger.connected ? settle(() => instance.funding()) : { ok: false, error: 'skipped' },
+    instance && ctx.ledger.connected ? settle(() => instance.runbook({ limit: 20 })) : { ok: false, error: 'skipped' },
+  ]);
+  if (funding.ok) blockers.push(...(funding.value.blockers || []));
+  else if (funding.error !== 'skipped') blockers.push(`clearing funding: ${funding.error}`);
+  if (runbook.ok) blockers.push(...(runbook.value.breaks || []).map((b) => `clearing break: ${typeof b === 'string' ? b : JSON.stringify(b)}`));
+  return {
+    provider: 'clearing-netting-os',
+    mode: funding.ok && !(funding.value.blockers || []).length ? 'live' : 'shadow',
+    liveFlags: {},
+    modules: { funding: funding.ok ? funding.value : { error: funding.error }, runbook: runbook.ok ? runbook.value : { error: runbook.error } },
+    routes: ['/api/wealth-os/clearing/{candidates,funding,runbook,cycles}', '/api/os/readiness/clearing-netting'],
+    secrets: ['ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function wealthBackOfficeReadiness(ctx) {
+  const mod = tryRequire('./wealthBackOfficeEngine');
+  const Engine = mod?.WealthBackOfficeEngine || null;
+  const tables = await tablesPresent(TABLES['wealth-back-office']);
+  const blockers = baseBlockers(ctx, tables, Engine, 'WealthBackOfficeEngine');
+  const r = Engine && ctx.ledger.connected ? await settle(() => Engine.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...(r.value.blockers || []), ...(r.value.warnings || []));
+  else if (r.error !== 'skipped') blockers.push(`wealth back office readiness: ${r.error}`);
+  return {
+    provider: 'wealth-back-office-os',
+    mode: r.ok && r.value.ready ? 'live' : 'shadow',
+    liveFlags: { CAN_PUSH_CREDITS: r.ok ? r.value.canPushCredits : null },
+    modules: r.ok ? { desks: (r.value.desks || []).map((d) => ({ desk: d.desk, readable: d.readable })), payerOs: r.value.payerOs, schema: r.value.schema } : { error: r.error },
+    routes: ['/api/wealth-os/{,desks,desks/:desk,book-of-record,init}', '/api/os/readiness/wealth-back-office'],
+    secrets: ['ADMIN_SECRET_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function backOfficeReadiness(ctx, env = process.env) {
+  const Engine = tryRequire('./osEngine')?.BackOfficeEngine || null;
+  const tables = await tablesPresent(TABLES['back-office']);
+  const blockers = baseBlockers(ctx, tables, Engine, 'BackOfficeEngine');
+  const s = Engine && ctx.ledger.connected ? await settle(() => Engine.status()) : { ok: false, error: 'skipped' };
+  if (!s.ok && s.error !== 'skipped') blockers.push(`back office status: ${s.error}`);
+  const integrations = s.ok ? s.value.integrations || {} : {};
+  for (const dep of ['trustAccounting', 'cash', 'bond', 'bankSync']) {
+    if (s.ok && !integrations[dep]) blockers.push(`back office dependency ${dep} not loadable`);
+  }
+  if (!env.FINERACT_URL) blockers.push('FINERACT_URL unset: back office treasury summary cannot read the core-banking account of record');
+  const dappExecutorLive = isTrue(env.BACK_OFFICE_LIVE);
+  if (dappExecutorLive) blockers.push('BACK_OFFICE_LIVE=true: the back-office executeDistribution path settles through the dapp/thirdweb rail (retired); distributions go through the Private Payment Network (Fineract withdraw before dispatch)');
+  return {
+    provider: 'back-office-os',
+    mode: blockers.length === 0 ? 'live' : 'shadow',
+    liveFlags: { BACK_OFFICE_LIVE: dappExecutorLive, DAPP_DISTRIBUTION_EXECUTOR: 'retired', DISTRIBUTION_RAIL: 'private-payment-network', ASSET_SALES: false },
+    modules: s.ok ? { integrations, distributionCount: s.value.distributionCount, actions: ['treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'batchProcess'] } : { error: s.error },
+    routes: ['/api/os/back-office/{status,readiness,health,list,process}', '/api/os/readiness/back-office'],
+    jobs: ['none: on-demand; batches persisted to back_office_batches'],
+    secrets: ['ADMIN_SECRET_TOKEN', 'FINERACT_URL'],
     tables,
     blockers,
   };
