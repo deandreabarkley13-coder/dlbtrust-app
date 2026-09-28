@@ -421,8 +421,18 @@ variable "runtime_environment" {
     # <base_url>/clear through Egress OS, then idempotent post to Fineract
     # (withdraw debtor savings, deposit creditor savings). Handshake and
     # conversion never move money; submit needs approvalRef + screeningRef.
+    # The trust's own PPN serves the network side of the protocol at
+    # PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL/{handshake,clear} (routes/os.js ->
+    # clearingAgentNetworkEndpoint.js), admitting only CLEARING_AGENT_ID with
+    # the shared PRIVATE_PAYMENT_NETWORK_AGENT_SECRET (secret_names); the agent
+    # registers that network with credential_ref =
+    # PRIVATE_PAYMENT_NETWORK_AGENT_SECRET and capabilities.iapAudience so it
+    # can cross IAP with the runtime service account's identity token.
     CLEARING_AGENT_ENABLED                   = "true"
-    CLEARING_AGENT_LIVE                      = "false"
+    CLEARING_AGENT_LIVE                      = "true"
+    PRIVATE_PAYMENT_NETWORK_AGENT_ENABLED    = "true"
+    PRIVATE_PAYMENT_NETWORK_AGENT_NETWORK_ID = "PPN-FAMILY"
+    PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL   = "https://dlbtrust-app-514695212719.us-east1.run.app/api/os/private-payment-network/agent"
     CLEARING_AGENT_ID                        = "DLB-TRUST-CLEARING-AGENT"
     CLEARING_AGENT_POST_TO_FINERACT          = "true"
     CLEARING_AGENT_REQUIRE_DISTINCT_VERIFIER = "true"

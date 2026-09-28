@@ -152,6 +152,8 @@ describe('Clearing Agent OS — handshake, clear, post', () => {
     process.env.FINERACT_URL = 'https://fineract.internal/api/v1';
     process.env.FINERACT_USERNAME = 'mifos';
     process.env.PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY = 'true';
+    process.env.PRIVATE_PAYMENT_NETWORK_AGENT_SECRET = SECRET;
+    process.env.PRIVATE_PAYMENT_NETWORK_AGENT_BASE_URL = 'https://ppn.dlbtrust.internal/api/os/private-payment-network/agent';
     vi.spyOn(EgressOsEngine, 'authorize').mockResolvedValue({ allowed: true, enforced: true, host: 'ppn.dlbtrust.internal', reason: 'allowed' });
   });
   afterEach(() => { process.env = { ...saved }; vi.restoreAllMocks(); });

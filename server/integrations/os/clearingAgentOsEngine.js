@@ -37,6 +37,7 @@ const https = require('https');
 const { URL } = require('url');
 const pool = require('../bonds/pgPool');
 const { EgressOsEngine } = require('./egressOsEngine');
+const { ClearingAgentNetworkEndpoint } = require('./clearingAgentNetworkEndpoint');
 const { FineractClient } = require('../fineract/fineractClient');
 const nacha = require('../ach/nachaGenerator');
 
@@ -310,6 +311,27 @@ function signedHeaders(secret, agentId, method, path, body, ts = Date.now()) {
   return { 'X-Clearing-Agent-Id': agentId, 'X-Clearing-Agent-Ts': String(ts), 'X-Clearing-Agent-Body-Sha256': bodyHash, 'X-Clearing-Agent-Signature': sig };
 }
 
+const METADATA_IDENTITY_URL = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity';
+
+/**
+ * Google OIDC identity token for the runtime service account, for networks
+ * that sit behind Identity-Aware Proxy (the trust's own PPN on Cloud Run).
+ * Fetched from the metadata server per call; never persisted or logged.
+ */
+async function iapIdentityToken(audience) {
+  const res = await fetch(`${METADATA_IDENTITY_URL}?audience=${encodeURIComponent(audience)}&format=full`, { headers: { 'Metadata-Flavor': 'Google' }, signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new ClearingAgentError(`identity token unavailable (metadata HTTP ${res.status})`, 'CLEARING_AGENT_IAP', 503);
+  const token = (await res.text()).trim();
+  if (!token) throw new ClearingAgentError('identity token unavailable (empty)', 'CLEARING_AGENT_IAP', 503);
+  return token;
+}
+
+async function transportHeaders(n) {
+  const aud = n && n.capabilities && typeof n.capabilities.iapAudience === 'string' ? n.capabilities.iapAudience.trim() : '';
+  if (!aud) return {};
+  return { Authorization: `Bearer ${await iapIdentityToken(aud)}` };
+}
+
 function httpsPost(url, body, headers, timeoutMs) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
@@ -514,7 +536,7 @@ const ClearingAgentOsEngine = {
     const body = JSON.stringify({ agentId: cfg.agentId, networkId, nonce: n.handshake_nonce, signature: hmac(secret, cfg.agentId, networkId, n.handshake_nonce), country: COUNTRY, formats: [n.format] });
     let res;
     try {
-      res = await httpsPost(url, body, { 'Content-Type': 'application/json', ...signedHeaders(secret, cfg.agentId, 'POST', new URL(url).pathname, body) }, cfg.timeoutMs);
+      res = await httpsPost(url, body, { 'Content-Type': 'application/json', ...(await transportHeaders(n)), ...signedHeaders(secret, cfg.agentId, 'POST', new URL(url).pathname, body) }, cfg.timeoutMs);
     } catch (e) {
       await this._updateNetwork(networkId, { handshake_state: 'failed', last_error: e.message });
       await this._event('clearing_agent.handshake_failed', { networkId, actor: a, detail: { error: e.message } });
@@ -597,7 +619,7 @@ const ClearingAgentOsEngine = {
     await EgressOsEngine.authorize(url, { caller: 'clearing-agent', actor: a });
     let res;
     try {
-      res = await httpsPost(url, msg.body, { 'Content-Type': msg.contentType, 'X-Clearing-Format': n.format, 'X-Idempotency-Key': key, ...signedHeaders(secret, cfg.agentId, 'POST', new URL(url).pathname, msg.body) }, cfg.timeoutMs);
+      res = await httpsPost(url, msg.body, { 'Content-Type': msg.contentType, 'X-Clearing-Format': n.format, 'X-Idempotency-Key': key, ...(await transportHeaders(n)), ...signedHeaders(secret, cfg.agentId, 'POST', new URL(url).pathname, msg.body) }, cfg.timeoutMs);
     } catch (e) {
       const row = await this._updateInstruction(instructionId, { status: 'failed', error: e.message });
       await this._event('clearing_agent.clear_failed', { networkId, instructionId, actor: a, detail: { error: e.message } });
@@ -709,8 +731,10 @@ const ClearingAgentOsEngine = {
     if (!cfg.requireApproval) blockers.push('CLEARING_AGENT_REQUIRE_APPROVAL=false (approvalRef/screeningRef not enforced)');
     if (!cfg.familyOnly) blockers.push('PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY not true');
     if (!s.live) blockers.push('CLEARING_AGENT_LIVE not true');
+    const ep = await ClearingAgentNetworkEndpoint.status();
+    blockers.push(...ep.blockers.map((b) => `family PPN participant endpoint: ${b}`));
     const live = blockers.length === 0;
-    return { ready: live, mode: live ? 'live' : 'shadow', blockers, status: s };
+    return { ready: live, mode: live ? 'live' : 'shadow', blockers, status: { ...s, networkEndpoint: ep } };
   },
 
   async list({ limit = 50, status = null } = {}) {

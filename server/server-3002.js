@@ -516,6 +516,7 @@ async function initializeDatabase() {
     await PrivateEntityOsEngine.ensureTables();
     var ClearingAgentOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentOsEngine')).ClearingAgentOsEngine;
     await ClearingAgentOsEngine.ensureTables();
+    await require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentNetworkEndpoint')).ClearingAgentNetworkEndpoint.ensureTables();
     console.log('[idp-ocr/tax-os/private-entity/clearing-agent] tables ensured');
   } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent] table init:', e.message); }
 

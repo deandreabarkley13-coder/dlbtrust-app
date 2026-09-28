@@ -94,6 +94,11 @@ secret_names = [
   # Private Payment Network live plan (PRIVATE_PAYMENT_NETWORK_LIVE=true): HMAC-
   # SHA256 key for processor callbacks to /api/os/private-payment-network/webhook.
   "PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET",
+  # Clearing Agent OS live plan (CLEARING_AGENT_LIVE=true): shared HMAC
+  # credential between the agent and the family PPN participant endpoint
+  # (/api/os/private-payment-network/agent/*). Registered by NAME as the
+  # network's credential_ref; the value is never persisted, logged or returned.
+  "PRIVATE_PAYMENT_NETWORK_AGENT_SECRET",
   # Banking Aggregator live plan (AGGREGATOR_DEFAULT_MODE=live): admin token for
   # /api/aggregator/* and one credential set per provider connection. Rename
   # <CONNECTION> to the connection name (e.g. a connection "Lili Ops" reads

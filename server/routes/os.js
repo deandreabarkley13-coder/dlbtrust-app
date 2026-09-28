@@ -62,6 +62,7 @@ const {
   PrivatePaymentNetworkPlatformEngine,
 } = require('../integrations/os/osEngine');
 const { EngineWiringReadiness } = require('../integrations/os/engineWiringReadiness');
+const { ClearingAgentNetworkEndpoint } = require('../integrations/os/clearingAgentNetworkEndpoint');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -257,6 +258,31 @@ router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async 
     }
     const data = await req.osEngine.process(payload);
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Clearing Agent participant endpoint served by the trust's own PPN. Admits only
+// the configured CLEARING_AGENT_ID with an HMAC request signature made with the
+// shared PRIVATE_PAYMENT_NETWORK_AGENT_SECRET (verified by the endpoint module);
+// bodies are bank-format text/XML/JSON so they are read raw.
+const agentRaw = express.raw({ type: () => true, limit: '1mb' });
+function agentRawBody(req) {
+  if (Buffer.isBuffer(req.body)) return req.body;
+  return req.rawBody || Buffer.from(req.body && typeof req.body === 'object' ? JSON.stringify(req.body) : String(req.body || ''), 'utf8');
+}
+router.post('/private-payment-network/agent/handshake', writeRateLimiter(), agentRaw, async (req, res) => {
+  try {
+    const rawBody = agentRawBody(req);
+    let payload = {};
+    try { payload = JSON.parse(rawBody.toString('utf8') || '{}'); } catch { payload = {}; }
+    const data = await ClearingAgentNetworkEndpoint.handshake({ headers: req.headers, path: req.baseUrl + req.path, rawBody, payload });
+    res.json(data);
+  } catch (err) { sendError(res, err); }
+});
+router.post('/private-payment-network/agent/clear', writeRateLimiter(), agentRaw, async (req, res) => {
+  try {
+    const data = await ClearingAgentNetworkEndpoint.clear({ headers: req.headers, path: req.baseUrl + req.path, rawBody: agentRawBody(req) });
+    res.status(data.idempotent ? 200 : 201).json(data);
   } catch (err) { sendError(res, err); }
 });
 
