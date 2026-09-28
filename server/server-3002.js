@@ -508,6 +508,18 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[egress] table init:', e.message); }
 
   try {
+    var IdpOcrOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'idpOcrOsEngine')).IdpOcrOsEngine;
+    var TaxOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'taxOsEngine')).TaxOsEngine;
+    var PrivateEntityOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'privateEntityOsEngine')).PrivateEntityOsEngine;
+    await IdpOcrOsEngine.ensureTables();
+    await TaxOsEngine.ensureTables();
+    await PrivateEntityOsEngine.ensureTables();
+    var ClearingAgentOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentOsEngine')).ClearingAgentOsEngine;
+    await ClearingAgentOsEngine.ensureTables();
+    console.log('[idp-ocr/tax-os/private-entity/clearing-agent] tables ensured');
+  } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent] table init:', e.message); }
+
+  try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
     await SkrillLinkEngine.ensureTables();
     console.log('[skrill-link] tables ensured');

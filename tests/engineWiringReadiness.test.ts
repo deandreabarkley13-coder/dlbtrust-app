@@ -42,8 +42,12 @@ const { BackOfficeEngine } = require('../server/integrations/os/osEngine');
 const { H2hDiscoveryOsEngine } = require('../server/integrations/os/h2hDiscoveryOsEngine');
 const { OpenBankRestApiOsEngine } = require('../server/integrations/os/openBankRestApiOsEngine');
 const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
+const { IdpOcrOsEngine } = require('../server/integrations/os/idpOcrOsEngine');
+const { TaxOsEngine } = require('../server/integrations/os/taxOsEngine');
+const { PrivateEntityOsEngine } = require('../server/integrations/os/privateEntityOsEngine');
+const { ClearingAgentOsEngine } = require('../server/integrations/os/clearingAgentOsEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent'].sort();
 const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
@@ -138,6 +142,10 @@ function stubFiatComponents() {
   vi.spyOn(MftOsEngine, 'status').mockResolvedValue({ channels: [{ channelId: 'default', transport: 'sftp', status: 'active', readiness: { ready: true, transport: 'sftp', blockers: [] } }], files: {}, inFlightCents: 0, policy: { requireApproval: true } });
   vi.spyOn(H2hDiscoveryOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { allowedHosts: ['examplebank.com'], sources: { total: 1 }, candidates: { confirmed: 3, applied: 3 }, appliedBanks: ['examplebank'], fields: [], policy: { requireDistinctApplier: true } } });
   vi.spyOn(EgressOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { allowedHosts: ['api.ipify.org'], deniedHosts: ['api.stripe.com'], path: { staticIp: '34.1.2.3', vpcConnector: 'dlbtrust-run', nat: 'dlbtrust-egress' }, audit: { hosts: [], deniedButConfigured: [] }, last24h: { allowed: 0, refused: 0 }, lastProbe: { matched: true } } });
+  vi.spyOn(IdpOcrOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { provider: 'document_ai', storage: { ready: true }, policy: { minConfidence: 0.85, requireDistinctApprover: true }, documents: {} } });
+  vi.spyOn(TaxOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { entity: {}, returns: [], beneficiaries: 1, fineractAccounts: {}, exports: [], storage: {}, formats: [], reportTypes: [] } });
+  vi.spyOn(PrivateEntityOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { entity: {}, profile: {}, requiredAttestations: 2, audit: { failing: [] }, tax: {}, legalStatus: 'declared' } });
+  vi.spyOn(ClearingAgentOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { networks: { total: 1, verified: 1 }, formats: [], instructions: {}, policy: {} } });
   vi.spyOn(OpenBankRestApiOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { bank: { id: 'dlb-trust-company' }, apiVersion: 'v1', tracker: { base: 'https://raw.githubusercontent.com/x' }, providers: { total: 1 }, fileDrops: { total: 1, verified: 1 }, policy: {} } });
 }
 
