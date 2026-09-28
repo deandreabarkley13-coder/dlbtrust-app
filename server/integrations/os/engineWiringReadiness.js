@@ -17,6 +17,13 @@
  *   payment-gateway  Payment Gateway OS      PaymentGatewayOsEngine: trust distributions / disbursements
  *   enterprise-network Enterprise Network OS EnterpriseNetworkOsEngine: participants, routing policy, exposure limits
  *   private-payment-network Private Payment Network  PrivatePaymentNetworkOsEngine: ledger ↔ payout-instrument clearing
+ *   aggregator       Banking Aggregator      BankingAggregator: provider connections (SimpleFIN → Betterment), handshake, pull/push
+ *   accounting       Trust Accounting        Fineract GL + DataBridge + TrustAccountingEngine (corpus / coupon / interest / distributions)
+ *   stripe-intake    Stripe Intake & Payout  StripePaymentIntakeEngine (intake) + LiliStripePayoutOriginator (payout to Lili)
+ *   treasury-funding-bank Betterment Funding TreasuryFundingBankEngine: Stripe ACH-debit mandate on Betterment Trust Checking
+ *   payment-hub      Payment Hub EE          paymentHubConfig / PaymentHubEngine (PHEE orchestration)
+ *   openach          OpenACH Rail            OpenAchRailEngine + OpenAchFileRelay + TreasuryOdfiBank (ODFI file delivery)
+ *   mft              MFT / File Relay        MftOsEngine channels (SFTP / spool) for NACHA / ISO 20022 file drops
  *
  * Every report carries the same `gcp` block (project, Cloud Run, Cloud SQL
  * connectivity, evidence bucket) plus the engine's own provider / live flags
@@ -29,7 +36,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -46,6 +53,12 @@ const ENGINE_TITLES = {
   'enterprise-network': 'Enterprise Network OS Engine (participants, routing, exposure limits)',
   'private-payment-network': 'Private Electronic Payment Network (ledger clearing & settlement)',
   aggregator: 'Banking Aggregator (provider connections, handshake, pull/push)',
+  accounting: 'Trust Accounting (Fineract GL, DataBridge, corpus / coupon / interest classification)',
+  'stripe-intake': 'Stripe Intake & Payout (disbursing balance, Lili payout account)',
+  'treasury-funding-bank': 'Betterment Trust Checking Funding Bank (Stripe ACH-debit mandate)',
+  'payment-hub': 'Payment Hub EE (PHEE orchestration, ACH connector)',
+  openach: 'OpenACH Rail (ODFI origination, NACHA file relay)',
+  mft: 'MFT / File Relay (SFTP / spool channels for NACHA, ISO 20022)',
 };
 
 const TABLES = {
@@ -63,6 +76,12 @@ const TABLES = {
   'enterprise-network': ['enterprise_network_intents', 'enterprise_network_participants', 'enterprise_network_routing_policies', 'enterprise_network_exposure_limits', 'os_events'],
   'private-payment-network': ['private_payment_network_transactions', 'cash_accounts', 'cash_movements', 'payment_methods', 'payment_gateway_transactions', 'enterprise_network_participants', 'enterprise_network_exposure_limits', 'os_events'],
   aggregator: ['banking_aggregator_connections', 'banking_aggregator_accounts', 'banking_aggregator_transactions', 'banking_aggregator_statements', 'banking_aggregator_events', 'trust_journal_entries'],
+  accounting: ['trust_accounts', 'trust_journal_entries', 'fineract_gl_mappings', 'data_bridge_sync_log', 'data_bridge_discrepancies'],
+  'stripe-intake': ['stripe_payment_intakes', 'cash_accounts', 'cash_movements', 'lili_direct_deposits'],
+  'treasury-funding-bank': ['treasury_funding_bank', 'stripe_payment_intakes', 'cash_accounts'],
+  'payment-hub': ['payment_intents', 'payment_approvals', 'payment_events', 'ach_batches'],
+  openach: ['ihb_openach_dispatches', 'ihb_openach_status_log', 'openach_file_relays', 'ach_batches'],
+  mft: ['mft_channels', 'mft_files', 'mft_events'],
 };
 
 function tryRequire(mod) {
@@ -316,6 +335,12 @@ const REPORTERS = {
   'enterprise-network': enterpriseNetworkReadiness,
   'private-payment-network': privatePaymentNetworkReadiness,
   aggregator: aggregatorReadiness,
+  accounting: accountingReadiness,
+  'stripe-intake': stripeIntakeReadiness,
+  'treasury-funding-bank': treasuryFundingBankReadiness,
+  'payment-hub': paymentHubReadiness,
+  openach: openachReadiness,
+  mft: mftReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -717,6 +742,250 @@ async function aggregatorReadiness(ctx) {
     jobs: ['aggregator-auto-sync (leader-elected in-process, AGGREGATOR_PULL_INTERVAL_MS; sole poller, no Cloud Scheduler job)'],
     routes: ['/api/aggregator/{status,connections}', '/api/aggregator/connections/:id/{handshake,pull,push}', '/api/aggregator/webhooks/:id', '/api/os/readiness/aggregator'],
     secrets: ['ADMIN_SECRET_TOKEN', 'AGGREGATOR_<CONNECTION>_API_KEY / AGGREGATOR_<CONNECTION>_WEBHOOK_SECRET per connection (Secret Manager; loaded into connection config)'],
+    tables,
+    blockers,
+  };
+}
+
+async function accountingReadiness(ctx) {
+  const env = process.env;
+  const fineract = tryRequire('../fineract/fineractClient');
+  const bridge = tryRequire('../accounting/dataBridge');
+  const trust = tryRequire('../accounting/trustAccountingEngine');
+  const tables = await tablesPresent(TABLES.accounting);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!fineract) blockers.push('FineractClient not loadable');
+  if (!bridge) blockers.push('DataBridge not loadable');
+  if (!trust) blockers.push('TrustAccountingEngine not loadable');
+  if (!env.FINERACT_URL) blockers.push('FINERACT_URL not set (infra/gcp: dlbtrust-fineract Cloud Run service)');
+  if (!env.FINERACT_USERNAME || !env.FINERACT_PASSWORD) blockers.push('FINERACT_USERNAME / FINERACT_PASSWORD not set (Secret Manager)');
+  const health = fineract && env.FINERACT_URL ? await settle(() => fineract.FineractClient.healthCheck()) : { ok: false, error: 'skipped' };
+  if (env.FINERACT_URL && !health.ok) blockers.push(`fineract: ${health.error}`);
+  let lastSync = null;
+  if (bridge && tables.data_bridge_sync_log) {
+    const hist = await settle(() => bridge.DataBridge.getSyncHistory({ limit: 1 }));
+    if (hist.ok && Array.isArray(hist.value) && hist.value[0]) lastSync = hist.value[0];
+  }
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const live = health.ok && ctx.ledger.connected;
+  return {
+    provider: 'fineract-gl+data-bridge',
+    mode: live ? 'live' : 'shadow',
+    liveFlags: {
+      FINERACT_URL: Boolean(env.FINERACT_URL),
+      FINERACT_TENANT_ID: env.FINERACT_TENANT_ID || 'default',
+      FINERACT_CONNECTED: health.ok,
+      PAYMENT_HUB_ACCOUNTING_OWNER: env.PAYMENT_HUB_ACCOUNTING_OWNER || null,
+    },
+    modules: {
+      fineract: health.ok ? { connected: true, offices: Array.isArray(health.value.offices) ? health.value.offices.length : null } : { error: health.error },
+      dataBridge: Boolean(bridge),
+      trustAccounting: Boolean(trust),
+      lastSync,
+      glAccounts: bridge ? bridge.ACCOUNTS : null,
+      classification: 'DataBridge.classifyAggregatorTxn: coupon → 4100, interest → 4000, principal → 3000, distribution → 2000, operating expense → 5300',
+    },
+    jobs: ['DataBridge.runFullSync (aggregatorScheduler.runOnce)', 'DataBridge.getReconciliationReport (GET /api/accounting/bridge/report)'],
+    routes: ['/api/accounting/*', '/api/accounting/bridge/*', '/api/fineract/*', '/api/os/readiness/accounting'],
+    secrets: ['FINERACT_USERNAME', 'FINERACT_PASSWORD'],
+    tables,
+    blockers,
+  };
+}
+
+async function stripeIntakeReadiness(ctx) {
+  const env = process.env;
+  const Intake = tryRequire('../payments/stripePaymentIntakeEngine')?.StripePaymentIntakeEngine;
+  const Payout = tryRequire('../payments/liliStripePayoutOriginator')?.LiliStripePayoutOriginator;
+  const intake = Intake ? await settle(() => Intake.status()) : { ok: false, error: 'StripePaymentIntakeEngine unavailable' };
+  const payout = Payout ? await settle(() => Payout.status()) : { ok: false, error: 'LiliStripePayoutOriginator unavailable' };
+  const tables = await tablesPresent(TABLES['stripe-intake']);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!intake.ok) blockers.push(`stripe intake: ${intake.error}`);
+  else blockers.push(...(intake.value.issues || []).map(i => `stripe intake: ${i}`));
+  if (!payout.ok) blockers.push(`stripe payout: ${payout.error}`);
+  else if (payout.value.enabled) blockers.push(...(payout.value.issues || []).map(i => `stripe payout: ${i}`));
+  if (!env.PAYMENT_SERVER_SERVICE_TOKEN) blockers.push('PAYMENT_SERVER_SERVICE_TOKEN not set (/api/payment-server/v1 is service-gated)');
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const keyMode = intake.ok ? intake.value.mode : null;
+  return {
+    provider: 'stripe',
+    mode: keyMode === 'live' && intake.ok && intake.value.ready ? 'live' : 'shadow',
+    liveFlags: {
+      STRIPE_INTAKE_ENABLED: intake.ok ? intake.value.enabled : isTrue(env.STRIPE_INTAKE_ENABLED),
+      STRIPE_KEY_MODE: keyMode,
+      STRIPE_WEBHOOK_SECRET: intake.ok ? intake.value.webhookConfigured : Boolean(env.STRIPE_WEBHOOK_SECRET),
+      STRIPE_INTAKE_PAYMENT_METHODS: intake.ok ? intake.value.paymentMethodTypes : null,
+      LILI_ORIGINATOR: env.LILI_ORIGINATOR || null,
+      STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID: Boolean(env.STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID),
+    },
+    modules: {
+      intake: intake.ok ? { ready: intake.value.ready, account: intake.value.account, capabilities: intake.value.capabilities } : { error: intake.error },
+      payout: payout.ok ? { enabled: payout.value.enabled, ready: payout.value.ready, account: payout.value.account, externalAccount: payout.value.externalAccount && { bankName: payout.value.externalAccount.bankName, last4: payout.value.externalAccount.last4, status: payout.value.externalAccount.status }, balance: payout.value.balance } : { error: payout.error },
+    },
+    routes: ['/api/payment-server/v1/stripe-intakes/*', '/api/payment-server/v1/stripe/webhook', '/api/payment-server/v1/stripe-intakes/:id/payout', '/api/os/readiness/stripe-intake'],
+    secrets: ['STRIPE_PAYMENTS_SECRET_KEY (rk_live_/sk_live_)', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID', 'PAYMENT_SERVER_SERVICE_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function treasuryFundingBankReadiness(ctx) {
+  const env = process.env;
+  const T = tryRequire('../payments/treasuryFundingBankEngine')?.TreasuryFundingBankEngine;
+  const status = T ? await settle(() => T.status()) : { ok: false, error: 'TreasuryFundingBankEngine unavailable' };
+  const tables = await tablesPresent(TABLES['treasury-funding-bank']);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!status.ok) blockers.push(`treasury funding bank: ${status.error}`);
+  else blockers.push(...(status.value.issues || []).map(i => `treasury funding bank: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const bank = status.ok ? status.value.bank : null;
+  return {
+    provider: 'betterment-trust-checking via stripe_ach_debit',
+    mode: status.ok && status.value.ready ? 'live' : 'shadow',
+    liveFlags: {
+      TREASURY_BANK_ENABLED: isTrue(env.TREASURY_BANK_ENABLED),
+      STRIPE_KEY_MODE: status.ok ? status.value.keyMode : null,
+      MANDATE_ACCEPTANCE: status.ok ? status.value.mandateAcceptance : null,
+      TREASURY_BANK_REGISTER_SETTLEMENT: isTrue(env.TREASURY_BANK_REGISTER_SETTLEMENT),
+      BETTERMENT_ROUTING_NUMBER: Boolean(env.TREASURY_BANK_ROUTING_NUMBER || env.BETTERMENT_ROUTING_NUMBER),
+      BETTERMENT_ACCOUNT_NUMBER: Boolean(env.TREASURY_BANK_ACCOUNT_NUMBER || env.BETTERMENT_ACCOUNT_NUMBER),
+    },
+    modules: {
+      bank: bank ? { bankId: bank.bankId, name: bank.name, institution: bank.institution, accountNumberMasked: bank.accountNumberMasked, verification: bank.verification, nextAction: bank.nextAction, linkedAt: bank.linkedAt, verifiedAt: bank.verifiedAt } : null,
+      flow: status.ok ? status.value.flow : null,
+      warnings: status.ok ? status.value.warnings : [],
+    },
+    routes: ['/api/payment-server/v1/treasury-bank', '/api/payment-server/v1/treasury-bank/{link,verify,refresh,pull}', '/api/os/readiness/treasury-funding-bank'],
+    secrets: ['STRIPE_PAYMENTS_SECRET_KEY (live)', 'BETTERMENT_ROUTING_NUMBER', 'BETTERMENT_ACCOUNT_NUMBER', 'PAYMENT_SERVER_SERVICE_TOKEN'],
+    tables,
+    blockers,
+  };
+}
+
+async function paymentHubReadiness(ctx) {
+  const env = process.env;
+  const hubConfig = tryRequire('../paymentHub/paymentHubConfig');
+  const hubEngine = tryRequire('../paymentHub/paymentHubEngine');
+  const hub = hubConfig ? await settle(() => hubConfig.readiness()) : { ok: false, error: 'paymentHubConfig unavailable' };
+  const tables = await tablesPresent(TABLES['payment-hub']);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!hubEngine) blockers.push('PaymentHubEngine not loadable');
+  if (!hub.ok) blockers.push(`payment hub: ${hub.error}`);
+  else {
+    blockers.push(...(hub.value.issues || []).map(i => `payment hub: ${i}`));
+    if (!hub.value.canTransmit) blockers.push('payment hub cannot transmit (PAYMENT_HUB_LIVE / mode)');
+  }
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const cfg = hub.ok ? hub.value.config : {};
+  return {
+    provider: cfg.mode === 'phee' ? 'payment-hub-ee' : cfg.mode || null,
+    mode: hub.ok && hub.value.canTransmit ? 'live' : 'shadow',
+    liveFlags: {
+      PAYMENT_HUB_LIVE: isTrue(env.PAYMENT_HUB_LIVE),
+      PAYMENT_HUB_MODE: cfg.mode || env.PAYMENT_HUB_MODE || null,
+      PAYMENT_HUB_TENANT_ID: cfg.tenantId || env.PAYMENT_HUB_TENANT_ID || null,
+      PAYMENT_APPROVAL_THRESHOLD: cfg.approvalThreshold || null,
+      PAYMENT_HUB_ACCOUNTING_OWNER: cfg.accountingOwner || null,
+    },
+    modules: { paymentHub: hub.ok ? { ready: hub.value.ready, canTransmit: hub.value.canTransmit, warnings: hub.value.warnings, config: cfg } : { error: hub.error } },
+    routes: ['/api/payment-hub/*', '/api/os/readiness/payment-hub'],
+    secrets: ['PAYMENT_HUB_AUTH_TOKEN', 'PAYMENT_HUB_SERVICE_TOKEN', 'PAYMENT_HUB_WEBHOOK_SECRET', 'PAYMENT_DATA_ENCRYPTION_KEY'],
+    tables,
+    blockers,
+  };
+}
+
+async function openachReadiness(ctx) {
+  const env = process.env;
+  const railCfg = tryRequire('../openach/openachRailConfig');
+  const Rail = tryRequire('../openach/openachRailEngine')?.OpenAchRailEngine;
+  const Relay = tryRequire('../openach/openachFileRelay')?.OpenAchFileRelay;
+  const Odfi = tryRequire('../ach/treasuryOdfiBank')?.TreasuryOdfiBank;
+  const rail = railCfg ? await settle(() => railCfg.openAchRailReadiness()) : { ok: false, error: 'openachRailConfig unavailable' };
+  const relay = Relay ? await settle(() => Relay.status()) : { ok: false, error: 'OpenAchFileRelay unavailable' };
+  const odfi = Odfi ? await settle(() => Odfi.status()) : { ok: false, error: 'TreasuryOdfiBank unavailable' };
+  const pipeline = Rail && ctx.ledger.connected ? await settle(() => Rail.status()) : { ok: false, error: 'skipped' };
+  const tables = await tablesPresent(TABLES.openach);
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!Rail) blockers.push('OpenAchRailEngine not loadable');
+  if (!rail.ok) blockers.push(`openach rail: ${rail.error}`);
+  else blockers.push(...(rail.value.blockers || []).map(b => `openach rail: ${b}`));
+  if (!odfi.ok) blockers.push(`odfi: ${odfi.error}`);
+  else blockers.push(...(odfi.value.issues || []).map(i => `odfi (${odfi.value.bankName || odfi.value.bank || 'unset'}): ${i}`));
+  if (!relay.ok) blockers.push(`file relay: ${relay.error}`);
+  else if (!relay.value.ready) blockers.push(...(relay.value.issues || []).map(i => `file relay: ${i}`));
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const odfiReady = odfi.ok && odfi.value.ready;
+  return {
+    provider: `openach → ${odfi.ok && odfi.value.bankName ? odfi.value.bankName : 'no ODFI'}`,
+    mode: rail.ok && rail.value.ready && odfiReady ? 'live' : 'shadow',
+    liveFlags: {
+      OPENACH_RAIL_ENABLED: isTrue(env.OPENACH_RAIL_ENABLED),
+      OPENACH_BASE_URL: Boolean(env.OPENACH_BASE_URL),
+      OPENACH_ACH_FILES_BUCKET: Boolean(env.OPENACH_ACH_FILES_BUCKET),
+      ACH_ODFI_BANK: env.ACH_ODFI_BANK || null,
+      ODFI_FILE_CHANNEL_READY: odfiReady,
+      MFTGATEWAY_PARTNER_AS2_ID: Boolean(env.MFTGATEWAY_PARTNER_AS2_ID),
+      ACH_SFTP_URL: Boolean(env.ACH_SFTP_URL),
+    },
+    modules: {
+      rail: rail.ok ? rail.value : { error: rail.error },
+      odfi: odfi.ok ? { bank: odfi.value.bank, bankName: odfi.value.bankName, accountLast4: odfi.value.accountLast4, channels: odfi.value.channels, ready: odfi.value.ready } : { error: odfi.error },
+      fileRelay: relay.ok ? { ready: relay.value.ready, transport: relay.value.transport, partnerAs2Id: Boolean(relay.value.partnerAs2Id) } : { error: relay.error },
+      pipeline: pipeline.ok ? { awaitingOrigination: pipeline.value.awaitingOrigination, byState: pipeline.value.byState } : { error: pipeline.error },
+    },
+    jobs: ['openach-nightly (Cloud Run job, infra/gcp)', 'OpenAchFileRelay.run (OPENACH_FILE_RELAY_INTERVAL_MS)'],
+    routes: ['/api/openach/*', '/api/os/readiness/openach'],
+    secrets: ['OPENACH_API_TOKEN', 'OPENACH_API_KEY', 'MFTGATEWAY_API_TOKEN_ID', 'MFTGATEWAY_API_TOKEN_SECRET', 'ACH_SFTP_KEY or ACH_SFTP_PASSWORD'],
+    tables,
+    blockers,
+  };
+}
+
+async function mftReadiness(ctx) {
+  const env = process.env;
+  const M = tryRequire('./mftOsEngine')?.MftOsEngine;
+  const tables = await tablesPresent(TABLES.mft);
+  const status = M && ctx.ledger.connected && tables.mft_channels ? await settle(() => M.status()) : { ok: false, error: M ? 'mft tables missing or ledger disconnected' : 'MftOsEngine unavailable' };
+  const blockers = [];
+  if (!ctx.ledger.connected) blockers.push('ledger database (Cloud SQL / DATABASE_URL) not connected');
+  if (!M) blockers.push('MftOsEngine not loadable');
+  if (!status.ok) blockers.push(`mft: ${status.error}`);
+  else {
+    const channels = status.value.channels || [];
+    const ready = channels.filter(c => c.readiness && c.readiness.ready);
+    if (!channels.length) blockers.push('no MFT channels registered (POST /api/os/mft/process action=registerChannel)');
+    else if (!ready.length) {
+      for (const c of channels) blockers.push(`channel ${c.channelId} (${c.transport}): ${(c.readiness && c.readiness.blockers || []).join('; ') || 'not ready'}`);
+    }
+    if (!status.value.policy.requireApproval) blockers.push('MFT_REQUIRE_APPROVAL=false disables the file approval gate');
+  }
+  const missing = missingTables(tables);
+  if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
+  const anyBankChannel = status.ok && (status.value.channels || []).some(c => c.transport === 'sftp' && c.readiness && c.readiness.ready);
+  return {
+    provider: anyBankChannel ? 'sftp' : 'spool (no bank host)',
+    mode: anyBankChannel ? 'live' : 'shadow',
+    liveFlags: {
+      MFT_SFTP_HOST: Boolean(env.MFT_SFTP_HOST),
+      MFT_REQUIRE_APPROVAL: status.ok ? status.value.policy.requireApproval : true,
+      MFT_ALLOW_SPOOL_IN_PRODUCTION: isTrue(env.MFT_ALLOW_SPOOL_IN_PRODUCTION),
+      PRIVATE_PAYMENT_NETWORK_MFT_LIVE: isTrue(env.PRIVATE_PAYMENT_NETWORK_MFT_LIVE),
+    },
+    modules: status.ok ? { channels: status.value.channels, files: status.value.files, inFlightCents: status.value.inFlightCents } : { error: status.error },
+    routes: ['/api/os/mft/{status,readiness,list,process}', '/api/os/readiness/mft'],
+    secrets: ['MFT_SFTP_PASSWORD or MFT_SFTP_PRIVATE_KEY (or an M2M identity bound to the channel)'],
     tables,
     blockers,
   };

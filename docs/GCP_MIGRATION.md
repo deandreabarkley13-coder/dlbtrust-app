@@ -654,10 +654,19 @@ channel is configured (nothing leaves the platform).
 
 ## Platform engines — wiring state on `dlb-treasury-management`
 
-The fourteen platform engines are audited by one module,
+The twenty platform engines are audited by one module,
 `server/integrations/os/engineWiringReadiness.js`, exposed as
-`GET /api/os/readiness` (all fourteen; HTTP 503 until every engine is `ready`) and
-`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os|payment-processor|payment-gateway|enterprise-network|private-payment-network|aggregator}`.
+`GET /api/os/readiness` (all twenty; HTTP 503 until every engine is `ready`) and
+`GET /api/os/readiness/{payment|gateway|clearing|reconciliation|interop|credit|debt|liquidity|funding-os|payment-processor|payment-gateway|enterprise-network|private-payment-network|aggregator|accounting|stripe-intake|treasury-funding-bank|payment-hub|openach|mft}`.
+
+The six fiat components registered last (`accounting` = Fineract GL + DataBridge,
+`stripe-intake` = Stripe intake balance + Lili payout account, `treasury-funding-bank`
+= Betterment Trust Checking Stripe ACH-debit mandate, `payment-hub` = PHEE,
+`openach` = OpenACH rail + ODFI file relay, `mft` = MFT/SFTP file channels) report
+`mode: live` only from their own provider status: `treasury-funding-bank` stays
+`shadow` until `POST /treasury-bank/link` verifies the mandate, and `openach` / `mft`
+stay `shadow` until an ODFI exposes an AS2/SFTP intake (Betterment does not), so
+these two report the file-channel blocker rather than a false live.
 Every OS engine also answers `GET /api/os/:engine/readiness`
 (`payment`, `clearing`, `settlement`, `apigee`, `apisix`, `reconciliation`,
 `interop`, `credit`, `debt`, `liquidity`, `funding-os`, `payment-processor`, `payment-gateway`, `enterprise-network`, `private-payment-network` map onto the ten reports; other engines get the generic Cloud SQL +

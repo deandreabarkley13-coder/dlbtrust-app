@@ -18,6 +18,18 @@ const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
 const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngine');
 const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentProcessorOsEngine');
 const { BankingAggregator } = require('../server/integrations/aggregator/bankingAggregator');
+const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+const { DataBridge } = require('../server/integrations/accounting/dataBridge');
+const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
+const { LiliStripePayoutOriginator } = require('../server/integrations/payments/liliStripePayoutOriginator');
+const { TreasuryFundingBankEngine } = require('../server/integrations/payments/treasuryFundingBankEngine');
+const openachRailConfig = require('../server/integrations/openach/openachRailConfig');
+const { OpenAchRailEngine } = require('../server/integrations/openach/openachRailEngine');
+const { OpenAchFileRelay } = require('../server/integrations/openach/openachFileRelay');
+const { TreasuryOdfiBank } = require('../server/integrations/ach/treasuryOdfiBank');
+const { MftOsEngine } = require('../server/integrations/os/mftOsEngine');
+
+const ALL_ENGINES = ['accounting', 'aggregator', 'clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'mft', 'openach', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-payment-network', 'reconciliation', 'stripe-intake', 'treasury-funding-bank'];
 
 const GCP_ENV: Record<string, string> = {
   GCP_PROJECT: 'dlb-treasury-management',
@@ -46,7 +58,30 @@ const GCP_ENV: Record<string, string> = {
   AGGREGATOR_PULL_INTERVAL_MS: '900000',
   AGGREGATOR_HANDSHAKE_TIMEOUT_MS: '15000',
   ADMIN_SECRET_TOKEN: 'admin-token-test',
+  FINERACT_URL: 'https://dlbtrust-fineract.internal/fineract-provider/api/v1',
+  FINERACT_USERNAME: 'mifos',
+  FINERACT_PASSWORD: 'pw',
+  STRIPE_INTAKE_ENABLED: 'true',
+  TREASURY_BANK_ENABLED: 'true',
+  BETTERMENT_ROUTING_NUMBER: '000000000',
+  BETTERMENT_ACCOUNT_NUMBER: '0000',
+  OPENACH_RAIL_ENABLED: 'true',
+  ACH_ODFI_BANK: 'betterment',
+  MFT_SFTP_HOST: 'sftp.odfi.example',
 };
+
+function stubFiatComponents() {
+  vi.spyOn(FineractClient, 'healthCheck').mockResolvedValue({ connected: true, offices: [{ id: 1 }] });
+  vi.spyOn(DataBridge, 'getSyncHistory').mockResolvedValue([{ sync_id: 'SYNC-1', status: 'completed' }]);
+  vi.spyOn(StripePaymentIntakeEngine, 'status').mockResolvedValue({ channel: 'stripe_payments', enabled: true, mode: 'live', paymentMethodTypes: ['card', 'us_bank_account'], webhookConfigured: true, account: { id: 'acct_1', chargesEnabled: true }, capabilities: { card: 'active', us_bank_account: 'active' }, ready: true, issues: [] });
+  vi.spyOn(LiliStripePayoutOriginator, 'status').mockResolvedValue({ channel: 'stripe_payout', enabled: true, ready: true, keyMode: 'live', account: { id: 'acct_1', payoutsEnabled: true }, externalAccount: { bankName: 'Lili', last4: '1234', status: 'verified' }, balance: { availableCents: 0, pendingCents: 0, livemode: true }, issues: [] });
+  vi.spyOn(TreasuryFundingBankEngine, 'status').mockResolvedValue({ provider: 'treasury_funding_bank', channel: 'stripe_ach_debit', ready: true, issues: [], warnings: [], keyMode: 'live', mandateAcceptance: 'online', bank: { bankId: 'betterment', name: 'Betterment Checking', verification: 'verified', accountNumberMasked: '****3054' }, flow: [] });
+  vi.spyOn(openachRailConfig, 'openAchRailReadiness').mockReturnValue({ ready: true, blockers: [], rails: ['ach_standard'], baseUrl: 'https://openach.internal' });
+  vi.spyOn(OpenAchRailEngine, 'status').mockResolvedValue({ awaitingOrigination: 0, byState: [] });
+  vi.spyOn(OpenAchFileRelay, 'status').mockReturnValue({ ready: true, transport: 'mftgateway', partnerAs2Id: 'ODFI', issues: [] });
+  vi.spyOn(TreasuryOdfiBank, 'status').mockReturnValue({ role: 'odfi', enabled: true, ready: true, bank: 'betterment', bankName: 'Betterment Checking', accountLast4: '3054', channels: [{ channel: 'mft_as2', ready: true }], issues: [] });
+  vi.spyOn(MftOsEngine, 'status').mockResolvedValue({ channels: [{ channelId: 'default', transport: 'sftp', status: 'active', readiness: { ready: true, transport: 'sftp', blockers: [] } }], files: {}, inFlightCents: 0, policy: { requireApproval: true } });
+}
 
 const ENV_KEYS = [...Object.keys(GCP_ENV), 'DAPP_RPC_URL', 'DAPP_USDC_ADDRESS'];
 const saved: Record<string, string | undefined> = {};
@@ -147,9 +182,10 @@ describe('platform engine registry', () => {
 });
 
 describe('EngineWiringReadiness on dlb-treasury-management', () => {
-  it('reports all fourteen engines ready and healthy with the GCP config in place', async () => {
+  it('reports all twenty engines ready and healthy with the GCP config in place', async () => {
     stubCloudSql();
     stubProviders();
+    stubFiatComponents();
     const report = await EngineWiringReadiness.readiness();
 
     expect(report.project).toBe('dlb-treasury-management');
@@ -157,7 +193,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.gcp.cloudRun).toBe(true);
     expect(report.gcp.ledger.connected).toBe(true);
     expect(report.gcp.evidenceBucket).toBe(GCP_ENV.GCS_CLEARING_EVIDENCE_BUCKET);
-    expect(Object.keys(report.engines).sort()).toEqual(['aggregator', 'clearing', 'credit', 'debt', 'enterprise-network', 'funding-os', 'gateway', 'interop', 'liquidity', 'payment', 'payment-gateway', 'payment-processor', 'private-payment-network', 'reconciliation']);
+    expect(Object.keys(report.engines).sort()).toEqual(ALL_ENGINES);
     for (const [key, engine] of Object.entries<any>(report.engines)) {
       expect(engine.blockers, `${key} blockers`).toEqual([]);
       expect(engine.ready, key).toBe(true);
@@ -166,8 +202,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
       expect(Object.values(engine.tables).every(Boolean), `${key} tables`).toBe(true);
     }
     expect(report.ready).toBe(true);
-    expect(report.readyCount).toBe(14);
-    expect(report.total).toBe(14);
+    expect(report.readyCount).toBe(20);
+    expect(report.total).toBe(20);
 
     expect(report.engines.payment.mode).toBe('live');
     expect(report.engines.payment.provider).toBe('payment-hub-ee');
@@ -196,6 +232,52 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     expect(report.engines.aggregator.modules.verifiedHandshakes).toBe(1);
     expect(report.engines.aggregator.liveFlags.AGGREGATOR_PULL_INTERVAL_MS).toBe(900000);
     expect(report.engines.aggregator.liveFlags.REQUIRE_APPROVAL_REF).toBe(true);
+    expect(report.engines.accounting.mode).toBe('live');
+    expect(report.engines.accounting.liveFlags.FINERACT_CONNECTED).toBe(true);
+    expect(report.engines['stripe-intake'].mode).toBe('live');
+    expect(report.engines['treasury-funding-bank'].mode).toBe('live');
+    expect(report.engines['treasury-funding-bank'].modules.bank.verification).toBe('verified');
+    expect(report.engines['payment-hub'].mode).toBe('live');
+    expect(report.engines['payment-hub'].provider).toBe('payment-hub-ee');
+    expect(report.engines.openach.mode).toBe('live');
+    expect(report.engines.openach.liveFlags.ODFI_FILE_CHANNEL_READY).toBe(true);
+    expect(report.engines.mft.mode).toBe('live');
+  });
+
+  it('treasury-funding-bank stays shadow with the Stripe mandate blocker until Betterment is linked and verified', async () => {
+    stubCloudSql();
+    stubFiatComponents();
+    vi.spyOn(TreasuryFundingBankEngine, 'status').mockResolvedValue({ provider: 'treasury_funding_bank', channel: 'stripe_ach_debit', ready: false, issues: ['treasury bank not linked in Stripe (POST /treasury-bank/link)'], warnings: [], keyMode: 'live', mandateAcceptance: 'online', bank: { bankId: 'betterment', verification: 'unlinked' }, flow: [] });
+    const r = await EngineWiringReadiness.engineReadiness('treasury-funding-bank');
+    expect(r.ready).toBe(false);
+    expect(r.mode).toBe('shadow');
+    expect(r.liveFlags.TREASURY_BANK_ENABLED).toBe(true);
+    expect(r.blockers).toContain('treasury funding bank: treasury bank not linked in Stripe (POST /treasury-bank/link)');
+  });
+
+  it('openach and mft fail closed without a bank file-delivery channel instead of claiming live', async () => {
+    stubCloudSql();
+    stubFiatComponents();
+    vi.spyOn(TreasuryOdfiBank, 'status').mockReturnValue({ role: 'odfi', enabled: true, ready: false, bank: 'betterment', bankName: 'Betterment Checking', channels: [], issues: ['no ready file-delivery channel to the ODFI bank (OpenACH/MFT relay, MFTGATEWAY_PARTNER_AS2_ID, ACH_SFTP_URL or ACH_MFT_CHANNEL)'] });
+    vi.spyOn(OpenAchFileRelay, 'status').mockReturnValue({ ready: false, transport: 'mftgateway', partnerAs2Id: null, issues: ['MFTGATEWAY_PARTNER_AS2_ID not configured'] });
+    vi.spyOn(MftOsEngine, 'status').mockResolvedValue({ channels: [{ channelId: 'default', transport: 'spool', status: 'active', readiness: { ready: false, transport: 'spool', blockers: ['channel has no bank host and spool transmission is not allowed in production'] } }], files: {}, inFlightCents: 0, policy: { requireApproval: true } });
+    const o = await EngineWiringReadiness.engineReadiness('openach');
+    expect(o.mode).toBe('shadow');
+    expect(o.ready).toBe(false);
+    expect(o.liveFlags.ODFI_FILE_CHANNEL_READY).toBe(false);
+    expect(o.blockers.some((b: string) => /no ready file-delivery channel/.test(b))).toBe(true);
+    const m = await EngineWiringReadiness.engineReadiness('mft');
+    expect(m.mode).toBe('shadow');
+    expect(m.blockers).toContain('channel default (spool): channel has no bank host and spool transmission is not allowed in production');
+  });
+
+  it('accounting blocks when Fineract is unreachable', async () => {
+    stubCloudSql();
+    stubFiatComponents();
+    vi.spyOn(FineractClient, 'healthCheck').mockRejectedValue(new Error('ECONNREFUSED'));
+    const r = await EngineWiringReadiness.engineReadiness('accounting');
+    expect(r.mode).toBe('shadow');
+    expect(r.blockers).toContain('fineract: ECONNREFUSED');
   });
 
   it('aggregator engine blocks on unverified handshakes, missing tables and AGGREGATOR_ENABLED=false', async () => {
@@ -220,6 +302,7 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
   it('payment-processor engine is the tenth blocker until PAYMENT_PROCESSOR_LIVE and a real-value processor exist', async () => {
     stubCloudSql();
     stubProviders();
+    stubFiatComponents();
     delete process.env.PAYMENT_PROCESSOR_LIVE;
     (PaymentProcessorOsEngine.processors as any).mockImplementation(async () => ({
       config: PaymentProcessorOsEngine.getConfig(),
@@ -228,8 +311,8 @@ describe('EngineWiringReadiness on dlb-treasury-management', () => {
     }));
     const report = await EngineWiringReadiness.readiness();
     expect(report.ready).toBe(false);
-    expect(report.readyCount).toBe(11);
-    expect(report.total).toBe(14);
+    expect(report.readyCount).toBe(17);
+    expect(report.total).toBe(20);
     expect(report.engines['payment-gateway'].ready).toBe(false);
     expect(report.engines['private-payment-network'].ready).toBe(false);
     expect(report.engines['private-payment-network'].blockers.some((b: string) => b.startsWith('PAYMENT_PROCESSOR_LIVE is not true'))).toBe(true);
