@@ -466,6 +466,24 @@ variable "runtime_environment" {
     ENTERPRISE_ODFI_AI_LOCATION               = "us-east1"
     ENTERPRISE_ODFI_AI_MODEL                  = "gemini-2.0-flash"
     ENTERPRISE_ODFI_AI_TIMEOUT_MS             = "20000"
+    # Designated roles (portal usernames / emails, comma-separated): makers
+    # declare the originator profile and originate batches; checkers
+    # countersign and release. Empty = any trustee, distinct-actor rule only.
+    ENTERPRISE_ODFI_MAKERS   = "malissa.robinson"
+    ENTERPRISE_ODFI_CHECKERS = "deandreabarkley13@gmail.com,legacy-admin"
+    # TabaPay (licensed US money-movement processor: ACH next/same-day, RTP,
+    # push-to-card) as the trust's external sponsor network, driven through the
+    # Clearing Agent adapter (server/integrations/os/clearingAgentTabaPayAdapter).
+    # TABAPAY_BASE_URL is the https://FQDN:PORT from TabaPay's credentials file
+    # (Egress OS derives the allowed host from it); the bearer key lives ONLY in
+    # Secret Manager as TABAPAY_BEARER_TOKEN (secret_names) and is referenced
+    # by name when the network is registered:
+    #   POST /api/os/clearing-agent/process {action:'register', networkId:'TABAPAY',
+    #     kind:'ach_operator', format:'tabapay_json', baseUrl:TABAPAY_BASE_URL,
+    #     credentialRef:'TABAPAY_BEARER_TOKEN',
+    #     capabilities:{adapter:'tabapay', clientId:<22 chars>, settlementAccountId:<22 chars>}}
+    # then challenge (maker) -> verify (checker) = authenticated Retrieve Client.
+    TABAPAY_BASE_URL = ""
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

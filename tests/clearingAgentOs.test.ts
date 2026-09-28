@@ -115,7 +115,8 @@ describe('Clearing Agent OS — USA-only format conversion (pure)', () => {
 
   it('converts to every supported format with the same amount and end-to-end id', () => {
     const ix = canonicalize(IX);
-    expect(FORMATS).toEqual(['nacha', 'iso20022_pain001', 'iso20022_pacs008', 'fednow', 'rtp', 'bai2']);
+    expect(FORMATS).toEqual(['nacha', 'iso20022_pain001', 'iso20022_pacs008', 'fednow', 'rtp', 'bai2', 'tabapay_json']);
+    expect(() => convert(ix, 'tabapay_json', AGENT)).toThrow(/registered tabapay network/);
     const nachaOut = convert(ix, 'nacha', AGENT).body;
     const lines = nachaOut.split(/\r?\n/).filter(Boolean);
     expect(lines.every((l: string) => l.length === 94)).toBe(true);

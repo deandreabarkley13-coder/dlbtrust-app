@@ -93,8 +93,20 @@ function getEnterpriseOdfiConfig(env = process.env) {
     aiTimeoutMs: Math.max(1000, Number(env.ENTERPRISE_ODFI_AI_TIMEOUT_MS) || 20000),
     encryptionKeyConfigured: Boolean(env.PAYMENT_DATA_ENCRYPTION_KEY),
     familyOnly: bool(env.PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY, false),
+    makers: actorList(env.ENTERPRISE_ODFI_MAKERS),
+    checkers: actorList(env.ENTERPRISE_ODFI_CHECKERS),
   };
 }
+
+/** Comma-separated trustee identities (portal usernames / emails); empty = any trustee may act in that role. */
+function actorList(v) {
+  return String(v || '').split(',').map((s) => normalizeActor(s)).filter(Boolean);
+}
+function assertRole(cfg, role, actor) {
+  const list = role === 'maker' ? cfg.makers : cfg.checkers;
+  if (list.length && !list.includes(normalizeActor(actor))) throw new EnterpriseOdfiError(`${actor} is not a designated ${role} (ENTERPRISE_ODFI_${role.toUpperCase()}S)`, 'ENTERPRISE_ODFI_ROLE', 403);
+}
+const RAIL_SPEED = { rtp: 'instant', fednow: 'instant', ach_same_day: 'same_day', ach_standard: 'standard', family_book: 'instant' };
 
 // ─── Encryption at rest for item instructions ────────────────────────────────
 
@@ -127,7 +139,10 @@ function publicInstruction(ix) {
 
 /** Which rails a network can carry, from its registered kind. */
 function railsForNetwork(n) {
-  return RAILS.filter((r) => RAIL_TO_KIND[r].includes(n.kind));
+  const rails = RAILS.filter((r) => RAIL_TO_KIND[r].includes(n.kind));
+  // TabaPay processes ACH (next/same-day) and RTP over one API regardless of the registered kind.
+  if (n.capabilities && n.capabilities.adapter === 'tabapay') for (const r of ['rtp', 'ach_same_day', 'ach_standard']) if (!rails.includes(r)) rails.push(r);
+  return rails;
 }
 
 /**
@@ -326,6 +341,7 @@ const EnterpriseOdfiOsEngine = {
     if (!pool) throw new EnterpriseOdfiError('ledger database not connected', 'ENTERPRISE_ODFI_DB', 503);
     const a = normalizeActor(actor);
     if (!a) throw new EnterpriseOdfiError('declaring trustee identity required', 'ENTERPRISE_ODFI_ACTOR', 401);
+    assertRole(cfg, 'maker', a);
     if (!companyName || String(companyName).trim().length < 2) throw new EnterpriseOdfiError('companyName required', 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     const secs = [...new Set((Array.isArray(secCodes) ? secCodes : [secCodes]).map((s) => String(s).toUpperCase()))];
     if (!secs.length || secs.some((s) => !SEC_CODES.includes(s))) throw new EnterpriseOdfiError(`secCodes must be among ${SEC_CODES.join(', ')}`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
@@ -352,6 +368,7 @@ const EnterpriseOdfiOsEngine = {
     if (!p) throw new EnterpriseOdfiError('no originator profile declared', 'ENTERPRISE_ODFI_NOT_FOUND', 404);
     const a = normalizeActor(actor);
     if (!a) throw new EnterpriseOdfiError('countersigning trustee identity required', 'ENTERPRISE_ODFI_ACTOR', 401);
+    assertRole(getEnterpriseOdfiConfig(), 'checker', a);
     if (a === normalizeActor(p.declared_by)) throw new EnterpriseOdfiError('countersigner must differ from declaring trustee (maker/checker)', 'ENTERPRISE_ODFI_SAME_ACTOR', 409);
     const row = await this._update('enterprise_odfi_profiles', 'originator_id', p.originator_id, { countersigned_by: a, countersigned_at: new Date() });
     await this._event('enterprise_odfi.profile_countersigned', { actor: a });
@@ -370,6 +387,7 @@ const EnterpriseOdfiOsEngine = {
     if (!pool) throw new EnterpriseOdfiError('ledger database not connected', 'ENTERPRISE_ODFI_DB', 503);
     const a = normalizeActor(actor);
     if (!a) throw new EnterpriseOdfiError('originating trustee identity required', 'ENTERPRISE_ODFI_ACTOR', 401);
+    assertRole(cfg, 'maker', a);
     if (!PURPOSE_CLASSES.includes(purposeClass)) throw new EnterpriseOdfiError(`purposeClass must be one of ${PURPOSE_CLASSES.join(', ')}`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     if (!Array.isArray(items) || !items.length) throw new EnterpriseOdfiError('items required', 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     if (items.length > cfg.maxBatchItems) throw new EnterpriseOdfiError(`batch exceeds ENTERPRISE_ODFI_MAX_BATCH_ITEMS (${cfg.maxBatchItems})`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
@@ -444,6 +462,7 @@ const EnterpriseOdfiOsEngine = {
     if (b.status !== 'planned') throw new EnterpriseOdfiError(`batch is ${b.status}; only planned batches release`, 'ENTERPRISE_ODFI_STATE', 409);
     const a = normalizeActor(actor);
     if (!a) throw new EnterpriseOdfiError('releasing trustee identity required', 'ENTERPRISE_ODFI_ACTOR', 401);
+    assertRole(cfg, 'checker', a);
     if (cfg.requireDistinctReleaser && a === normalizeActor(b.planned_by)) throw new EnterpriseOdfiError('releaser must differ from originating trustee (maker/checker)', 'ENTERPRISE_ODFI_SAME_ACTOR', 409);
     const p = await this._profile();
     if (!p || !p.countersigned_by) throw new EnterpriseOdfiError('originator profile not countersigned by a second trustee', 'ENTERPRISE_ODFI_PROFILE', 409);
@@ -458,7 +477,7 @@ const EnterpriseOdfiOsEngine = {
     for (const it of items) {
       if (it.status !== 'planned') continue;
       try {
-        const ix = decrypt(it.instruction_enc);
+        const ix = { ...decrypt(it.instruction_enc), speed: RAIL_SPEED[it.rail] || 'standard' };
         const cleared = await ClearingAgentOsEngine.submit({ networkId: it.network_id, instruction: ix, idempotencyKey: it.idempotency_key, approvalRef: it.approval_ref, screeningRef: it.screening_ref, actor: a });
         if (cleared.status !== 'cleared' && cleared.status !== 'posted') {
           failed += 1;
@@ -579,7 +598,7 @@ const EnterpriseOdfiOsEngine = {
       planner: { provider: cfg.aiEnabled ? 'vertex_ai' : 'rules', model: cfg.aiEnabled ? cfg.aiModel : null, location: cfg.aiLocation, advisory: true, validator: 'deterministic', sensitiveDataLeavesBox: false },
       exposure: await this.reconcile(),
       storage: { instructions: 'aes-256-gcm under PAYMENT_DATA_ENCRYPTION_KEY', keyConfigured: cfg.encryptionKeyConfigured },
-      policy: { usaOnly: true, requireDistinctReleaser: cfg.requireDistinctReleaser, approvalAndScreeningRequired: true, plannerMovesMoney: false, profileMovesMoney: false, releaseVia: 'clearing-agent (verified network, HMAC, Egress OS, Fineract post)', isBank: false, note: 'originator-side OS; settlement is by the sponsor ODFI network, never by this software' },
+      policy: { usaOnly: true, requireDistinctReleaser: cfg.requireDistinctReleaser, makers: cfg.makers, checkers: cfg.checkers, approvalAndScreeningRequired: true, plannerMovesMoney: false, profileMovesMoney: false, releaseVia: 'clearing-agent (verified network, HMAC, Egress OS, Fineract post)', isBank: false, note: 'originator-side OS; settlement is by the sponsor ODFI network, never by this software' },
     };
   },
 

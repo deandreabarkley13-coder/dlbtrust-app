@@ -99,6 +99,10 @@ secret_names = [
   # (/api/os/private-payment-network/agent/*). Registered by NAME as the
   # network's credential_ref; the value is never persisted, logged or returned.
   "PRIVATE_PAYMENT_NETWORK_AGENT_SECRET",
+  # TabaPay sponsor network (Clearing Agent tabapay adapter): bearer key from
+  # TabaPay's credentials file, registered by NAME as credential_ref. Add once
+  # the client agreement is signed; set TABAPAY_BASE_URL alongside.
+  # "TABAPAY_BEARER_TOKEN",
   # Banking Aggregator live plan (AGGREGATOR_DEFAULT_MODE=live): admin token for
   # /api/aggregator/* and one credential set per provider connection. Rename
   # <CONNECTION> to the connection name (e.g. a connection "Lili Ops" reads

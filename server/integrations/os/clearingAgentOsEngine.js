@@ -40,10 +40,12 @@ const { EgressOsEngine } = require('./egressOsEngine');
 const { ClearingAgentNetworkEndpoint } = require('./clearingAgentNetworkEndpoint');
 const { FineractClient } = require('../fineract/fineractClient');
 const nacha = require('../ach/nachaGenerator');
+const TabaPay = require('./clearingAgentTabaPayAdapter');
 
 const COUNTRY = 'US';
 const CURRENCY = 'USD';
-const FORMATS = ['nacha', 'iso20022_pain001', 'iso20022_pacs008', 'fednow', 'rtp', 'bai2'];
+const FORMATS = ['nacha', 'iso20022_pain001', 'iso20022_pacs008', 'fednow', 'rtp', 'bai2', 'tabapay_json'];
+const SPEEDS = ['instant', 'same_day', 'standard'];
 const NETWORK_KINDS = ['private_payment_network', 'ach_operator', 'rtp_participant', 'fednow_participant', 'book_transfer'];
 const HANDSHAKE_STATES = ['registered', 'challenged', 'verified', 'failed', 'revoked'];
 const INSTRUCTION_STATES = ['converted', 'cleared', 'posted', 'rejected', 'failed'];
@@ -172,8 +174,10 @@ function canonicalize(input = {}) {
   if (!endToEndId) throw new ClearingAgentError('endToEndId invalid', 'CLEARING_AGENT_BAD_REQUEST', 400);
   const secCode = String(input.secCode || 'PPD').toUpperCase();
   if (!['PPD', 'CCD'].includes(secCode)) throw new ClearingAgentError('secCode must be PPD|CCD', 'CLEARING_AGENT_BAD_REQUEST', 400);
+  const speed = SPEEDS.includes(input.speed) ? input.speed : 'standard';
   return {
     endToEndId,
+    speed,
     amountCents,
     amount: (amountCents / 100).toFixed(2),
     currency,
@@ -291,7 +295,8 @@ function toBai2(ix, agentId) {
   return lines.join('\n') + '\n';
 }
 
-function convert(ix, format, agentId) {
+/** tabapay_json needs the registered network (settlement AccountID) and the idempotency key; there is no standalone rendering. */
+function convert(ix, format, agentId, ctx = {}) {
   switch (format) {
     case 'nacha': return { contentType: 'text/plain', body: toNacha(ix, agentId) };
     case 'iso20022_pain001': return { contentType: 'application/xml', body: toPain001(ix, agentId) };
@@ -299,6 +304,12 @@ function convert(ix, format, agentId) {
     case 'fednow': return { contentType: 'application/json', body: toInstantJson(ix, agentId, 'fednow') };
     case 'rtp': return { contentType: 'application/json', body: toInstantJson(ix, agentId, 'rtp') };
     case 'bai2': return { contentType: 'text/plain', body: toBai2(ix, agentId) };
+    case 'tabapay_json': {
+      if (!TabaPay.isTabaPay(ctx.network) || !ctx.idempotencyKey) throw new ClearingAgentError('tabapay_json requires a registered tabapay network and an idempotency key', 'CLEARING_AGENT_BAD_FORMAT', 400);
+      let conf;
+      try { conf = TabaPay.adapterConfig(ctx.network); } catch (e) { throw new ClearingAgentError(e.message, 'CLEARING_AGENT_BAD_REQUEST', 400); }
+      return { contentType: 'application/json', body: JSON.stringify(TabaPay.toTransaction(ix, { settlementAccountId: conf.settlementAccountId, idempotencyKey: ctx.idempotencyKey })) };
+    }
     default: throw new ClearingAgentError(`format must be one of ${FORMATS.join(', ')}`, 'CLEARING_AGENT_BAD_FORMAT', 400);
   }
 }
@@ -481,6 +492,12 @@ const ClearingAgentOsEngine = {
     if (u.username || u.password || /[?#]/.test(String(baseUrl))) throw new ClearingAgentError('baseUrl must not embed credentials or query strings', 'CLEARING_AGENT_INSECURE', 400);
     const egress = await EgressOsEngine.authorize(u.toString(), { caller: 'clearing-agent', actor: a, record: false });
     if (!egress.allowed) throw new ClearingAgentError(`egress policy does not allow ${u.hostname}: ${egress.reason}`, 'CLEARING_AGENT_EGRESS', 403, { host: u.hostname });
+    if (TabaPay.isTabaPay({ capabilities })) {
+      if (format !== 'tabapay_json') throw new ClearingAgentError('tabapay networks must use format tabapay_json', 'CLEARING_AGENT_BAD_FORMAT', 400);
+      try { TabaPay.adapterConfig({ capabilities }); } catch (e) { throw new ClearingAgentError(e.message, 'CLEARING_AGENT_BAD_REQUEST', 400); }
+    } else if (format === 'tabapay_json') {
+      throw new ClearingAgentError('format tabapay_json requires capabilities.adapter=tabapay', 'CLEARING_AGENT_BAD_FORMAT', 400);
+    }
     const secret = readCredential(credentialRef);
     const fingerprint = sha256(secret).slice(0, 16);
 
@@ -531,6 +548,7 @@ const ClearingAgentOsEngine = {
       await this._updateNetwork(networkId, { handshake_state: 'failed', last_error: 'credential rotated since registration; re-register' });
       throw new ClearingAgentError('credential rotated since registration; re-register', 'CLEARING_AGENT_CREDENTIAL_ROTATED', 409);
     }
+    if (TabaPay.isTabaPay(n)) return this._verifyTabaPay(n, secret, a, cfg);
     const url = `${n.base_url}/handshake`;
     await EgressOsEngine.authorize(url, { caller: 'clearing-agent', actor: a });
     const body = JSON.stringify({ agentId: cfg.agentId, networkId, nonce: n.handshake_nonce, signature: hmac(secret, cfg.agentId, networkId, n.handshake_nonce), country: COUNTRY, formats: [n.format] });
@@ -553,6 +571,28 @@ const ClearingAgentOsEngine = {
     const caps = res.json && typeof res.json.capabilities === 'object' && res.json.capabilities ? res.json.capabilities : {};
     const row = await this._updateNetwork(networkId, { handshake_state: 'verified', verified_by: a, verified_at: new Date(), handshake_nonce: null, handshake_expires: null, capabilities: { ...(n.capabilities || {}), ...redactPayload(caps) }, last_error: null });
     await this._event('clearing_agent.verified', { networkId, actor: a, detail: { capabilities: caps } });
+    return redactNetwork(row);
+  },
+
+  /** TabaPay handshake: authenticated Retrieve Client for the configured ClientID (no HMAC ack exists on their side). */
+  async _verifyTabaPay(n, bearer, a, cfg) {
+    const networkId = n.network_id;
+    await EgressOsEngine.authorize(`${n.base_url}/v1/clients/x`, { caller: 'clearing-agent', actor: a });
+    let res;
+    try {
+      res = await TabaPay.handshake(n, bearer, cfg.timeoutMs);
+    } catch (e) {
+      await this._updateNetwork(networkId, { handshake_state: 'failed', last_error: e.message });
+      await this._event('clearing_agent.handshake_failed', { networkId, actor: a, detail: { error: e.message, adapter: TabaPay.ADAPTER } });
+      throw new ClearingAgentError(`handshake transport failed: ${e.message}`, 'CLEARING_AGENT_HANDSHAKE', 502);
+    }
+    if (!res.ok) {
+      await this._updateNetwork(networkId, { handshake_state: 'failed', last_error: res.reason, handshake_nonce: null });
+      await this._event('clearing_agent.handshake_failed', { networkId, actor: a, detail: { reason: res.reason, statusCode: res.statusCode, adapter: TabaPay.ADAPTER } });
+      throw new ClearingAgentError(res.reason, 'CLEARING_AGENT_HANDSHAKE', 502);
+    }
+    const row = await this._updateNetwork(networkId, { handshake_state: 'verified', verified_by: a, verified_at: new Date(), handshake_nonce: null, handshake_expires: null, capabilities: { ...(n.capabilities || {}), ...redactPayload(res.capabilities) }, last_error: null });
+    await this._event('clearing_agent.verified', { networkId, actor: a, detail: { capabilities: res.capabilities, adapter: TabaPay.ADAPTER } });
     return redactNetwork(row);
   },
 
@@ -598,7 +638,7 @@ const ClearingAgentOsEngine = {
     if (n.country !== COUNTRY) throw new ClearingAgentError('non-US network refused', 'CLEARING_AGENT_NON_US', 422);
     const ix = canonicalize(instruction);
     if (cfg.familyOnly && !ix.creditor.participantId) throw new ClearingAgentError('family-only mode: creditor.participantId (admitted PPN participant) required', 'CLEARING_AGENT_FAMILY_ONLY', 403);
-    const msg = convert(ix, n.format, cfg.agentId);
+    const msg = convert(ix, n.format, cfg.agentId, { network: n, idempotencyKey: key });
     const instructionId = newId('CAI');
     await pool.query(
       `INSERT INTO clearing_agent_instructions (instruction_id, idempotency_key, network_id, format, status, amount_cents, currency, debtor_name, debtor_routing, debtor_account_last4, debtor_fineract_id,
@@ -615,6 +655,25 @@ const ClearingAgentOsEngine = {
       return { ...row, shadow: true };
     }
     const secret = readCredential(n.credential_ref);
+    if (TabaPay.isTabaPay(n)) {
+      await EgressOsEngine.authorize(`${n.base_url}/v1/clients/x/transactions`, { caller: 'clearing-agent', actor: a });
+      let tp;
+      try {
+        tp = await TabaPay.clear(n, secret, ix, key, cfg.timeoutMs);
+      } catch (e) {
+        const row = await this._updateInstruction(instructionId, { status: 'failed', error: e.message });
+        await this._event('clearing_agent.clear_failed', { networkId, instructionId, actor: a, detail: { error: e.message, adapter: TabaPay.ADAPTER } });
+        return row;
+      }
+      if (!tp.ok) {
+        const row = await this._updateInstruction(instructionId, { status: 'rejected', error: tp.reason });
+        await this._event('clearing_agent.rejected', { networkId, instructionId, actor: a, detail: { statusCode: tp.statusCode, reason: tp.reason, adapter: TabaPay.ADAPTER } });
+        return row;
+      }
+      const row = await this._updateInstruction(instructionId, { status: 'cleared', network_ref: tp.networkRef, cleared_at: new Date(), error: null });
+      await this._event('clearing_agent.cleared', { networkId, instructionId, actor: a, detail: { networkRef: tp.networkRef, tabapayStatus: tp.status, referenceId: tp.body.referenceID, adapter: TabaPay.ADAPTER } });
+      return row;
+    }
     const url = `${n.base_url}/clear`;
     await EgressOsEngine.authorize(url, { caller: 'clearing-agent', actor: a });
     let res;

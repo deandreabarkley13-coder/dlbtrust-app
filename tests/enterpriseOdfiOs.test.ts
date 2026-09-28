@@ -178,6 +178,8 @@ describe('Enterprise ODFI OS — originate / release / returns', () => {
     expect(submit.mock.calls[0][0]).toMatchObject({ networkId: 'PPN-FAMILY', approvalRef: 'APR-d1', screeningRef: 'OFAC-d1', actor: 'trustee.b@f' });
     expect(submit.mock.calls[0][0].instruction.creditor.accountNumber).toBe('9876543210');
     expect(submit.mock.calls[1][0].networkId).toBe('SPONSOR-ODFI');
+    expect(submit.mock.calls[0][0].instruction.speed).toBe('instant');
+    expect(submit.mock.calls[1][0].instruction.speed).toBe('standard');
     expect(post).toHaveBeenCalledTimes(2);
     expect(rel.items.every((i: any) => i.status === 'posted')).toBe(true);
     await expect(EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'trustee.b@f' })).rejects.toThrow(/only planned/);
@@ -196,6 +198,33 @@ describe('Enterprise ODFI OS — originate / release / returns', () => {
     const noc = await EnterpriseOdfiOsEngine.exception({ itemId: rel.items[1].item_id, code: 'C01', reason: 'account number', actor: 'trustee.a@f' });
     expect(noc.status).toBe('noc');
     expect((await EnterpriseOdfiOsEngine.reconcile()).returnedCents).toBe(125000);
+  });
+
+  it('designated roles: only ENTERPRISE_ODFI_MAKERS declare/originate, only ENTERPRISE_ODFI_CHECKERS countersign/release', async () => {
+    process.env.ENTERPRISE_ODFI_MAKERS = 'malissa.robinson';
+    process.env.ENTERPRISE_ODFI_CHECKERS = 'DeAndreaBarkley13@gmail.com, legacy-admin';
+    await expect(EnterpriseOdfiOsEngine.profile({ companyName: 'DLB Family Trust Company', actor: 'deandreabarkley13@gmail.com' })).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_ROLE', statusCode: 403 });
+    await EnterpriseOdfiOsEngine.profile({ companyName: 'DLB Family Trust Company', actor: 'Malissa.Robinson' });
+    await expect(EnterpriseOdfiOsEngine.countersign({ actor: 'trustee.b@f' })).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_ROLE' });
+    const p = await EnterpriseOdfiOsEngine.countersign({ actor: 'deandreabarkley13@gmail.com' });
+    expect(p.countersigned_by).toBe('deandreabarkley13@gmail.com');
+    await expect(EnterpriseOdfiOsEngine.originate({ purposeClass: 'distribution', items: [item('r1')], actor: 'deandreabarkley13@gmail.com' })).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_ROLE' });
+    const b = await EnterpriseOdfiOsEngine.originate({ purposeClass: 'distribution', items: [item('r1')], actor: 'malissa.robinson' });
+    await expect(EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'trustee.b@f' })).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_ROLE' });
+    await expect(EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'malissa.robinson' })).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_ROLE' });
+    vi.spyOn(ClearingAgentOsEngine, 'submit').mockResolvedValue({ instruction_id: 'CAI-r1', status: 'cleared' } as any);
+    vi.spyOn(ClearingAgentOsEngine, 'post').mockResolvedValue({ status: 'posted' } as any);
+    const rel = await EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'legacy-admin' });
+    expect(rel.released_by).toBe('legacy-admin');
+    const st = await EnterpriseOdfiOsEngine.status();
+    expect(st.policy).toMatchObject({ makers: ['malissa.robinson'], checkers: ['deandreabarkley13@gmail.com', 'legacy-admin'] });
+  });
+
+  it('a verified TabaPay network carries rtp + ach rails whatever its registered kind', () => {
+    const tp = { network_id: 'TABAPAY', kind: 'ach_operator', country: 'US', handshake_state: 'verified', capabilities: { adapter: 'tabapay' } };
+    const cfg = getEnterpriseOdfiConfig(process.env);
+    expect(rulesPlan({ purposeClass: 'vendor_payout', urgency: 'instant', instruction: { amountCents: 1000, creditor: {} } }, [tp], cfg)).toMatchObject({ rail: 'rtp', networkId: 'TABAPAY' });
+    expect(rulesPlan({ purposeClass: 'vendor_payout', urgency: 'standard', instruction: { amountCents: 1000, creditor: {} } }, [tp], cfg)).toMatchObject({ rail: 'ach_standard', networkId: 'TABAPAY' });
   });
 
   it('records failures per item and marks the batch partially_failed', async () => {
