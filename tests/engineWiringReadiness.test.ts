@@ -61,6 +61,8 @@ const GCP_ENV: Record<string, string> = {
   FINERACT_URL: 'https://dlbtrust-fineract.internal/fineract-provider/api/v1',
   FINERACT_USERNAME: 'mifos',
   FINERACT_PASSWORD: 'pw',
+  CANONICAL_FUNDING_LIVE: 'true',
+  CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: '2',
   STRIPE_INTAKE_ENABLED: 'true',
   TREASURY_BANK_ENABLED: 'true',
   BETTERMENT_ROUTING_NUMBER: '000000000',
@@ -72,6 +74,7 @@ const GCP_ENV: Record<string, string> = {
 
 function stubFiatComponents() {
   vi.spyOn(FineractClient, 'healthCheck').mockResolvedValue({ connected: true, offices: [{ id: 1 }] });
+  vi.spyOn(FineractClient, 'listSavingsAccounts').mockResolvedValue({ pageItems: [{ id: 2, accountNo: '000000002', externalId: 'holder:dlb-irrevocable-trust:savings', clientName: 'DeAndrea Lavar Barkley Irrevocable Trust', savingsProductName: 'Trust Account of Record (USD)', status: { active: true }, summary: { accountBalance: 7709589.04, availableBalance: 7709589.04 } }] });
   vi.spyOn(DataBridge, 'getSyncHistory').mockResolvedValue([{ sync_id: 'SYNC-1', status: 'completed' }]);
   vi.spyOn(StripePaymentIntakeEngine, 'status').mockResolvedValue({ channel: 'stripe_payments', enabled: true, mode: 'live', paymentMethodTypes: ['card', 'us_bank_account'], webhookConfigured: true, account: { id: 'acct_1', chargesEnabled: true }, capabilities: { card: 'active', us_bank_account: 'active' }, ready: true, issues: [] });
   vi.spyOn(LiliStripePayoutOriginator, 'status').mockResolvedValue({ channel: 'stripe_payout', enabled: true, ready: true, keyMode: 'live', account: { id: 'acct_1', payoutsEnabled: true }, externalAccount: { bankName: 'Lili', last4: '1234', status: 'verified' }, balance: { availableCents: 0, pendingCents: 0, livemode: true }, issues: [] });

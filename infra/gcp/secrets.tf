@@ -163,12 +163,24 @@ locals {
     "MFTGATEWAY_API_TOKEN_ID",
     "MFTGATEWAY_API_TOKEN_SECRET",
   ]
+  # CANONICAL_FUNDING_LIVE=true lets the network withdraw payouts from the
+  # Fineract core-banking account of record, so the Fineract credentials must
+  # be mounted (FINERACT_URL is the dlbtrust-fineract Cloud Run service URL).
+  canonical_funding_live = lookup(var.runtime_environment, "CANONICAL_FUNDING_LIVE", "false") == "true"
+  canonical_funding_secret_names = [
+    "FINERACT_URL",
+    "FINERACT_USERNAME",
+    "FINERACT_PASSWORD",
+  ]
   missing_private_payment_network_secrets = concat([
     for s in local.private_payment_network_secret_names : s
     if local.private_payment_network_live && !contains(local.runtime_secret_names, s)
     ], [
     for s in local.private_payment_network_mft_secret_names : s
     if local.private_payment_network_mft_live && !contains(local.runtime_secret_names, s)
+    ], [
+    for s in local.canonical_funding_secret_names : s
+    if local.canonical_funding_live && !contains(local.runtime_secret_names, s)
   ])
   private_payment_network_without_dependencies = local.private_payment_network_live && (!local.payment_processor_live || !local.enterprise_network_live)
   private_payment_network_gates_relaxed = local.private_payment_network_live && (

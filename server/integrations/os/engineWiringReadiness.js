@@ -53,7 +53,7 @@ const ENGINE_TITLES = {
   'enterprise-network': 'Enterprise Network OS Engine (participants, routing, exposure limits)',
   'private-payment-network': 'Private Electronic Payment Network (ledger clearing & settlement)',
   aggregator: 'Banking Aggregator (provider connections, handshake, pull/push)',
-  accounting: 'Trust Accounting (Fineract GL, DataBridge, corpus / coupon / interest classification)',
+  accounting: 'Core Banking & Treasury (Fineract: trust account of record, savings, GL, DataBridge classification)',
   'stripe-intake': 'Stripe Intake & Payout (disbursing balance, Lili payout account)',
   'treasury-funding-bank': 'Betterment Trust Checking Funding Bank (Stripe ACH-debit mandate)',
   'payment-hub': 'Payment Hub EE (PHEE orchestration, ACH connector)',
@@ -659,6 +659,8 @@ async function privatePaymentNetworkReadiness(ctx) {
     if (!cfg.requireScreening) blockers.push('PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF=false disables the screeningRef gate');
     if (!cfg.requireParticipant) blockers.push('PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT=false allows payouts outside the enterprise-network registry');
     if (!cfg.webhookSecret) blockers.push('PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET not set (processor callbacks to /api/os/private-payment-network/webhook cannot be verified)');
+    if (inventory.value.coreBankingGate) blockers.push(`core-banking funding source (Fineract): ${inventory.value.coreBankingGate}`);
+    else if (cfg.coreBanking?.required && !cfg.coreBanking.defaultSavingsAccountId) blockers.push('CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID not set: only ledger accounts with linked_fineract_account_id can fund payouts');
   }
   if (!env.PAYMENT_DATA_ENCRYPTION_KEY) blockers.push('PAYMENT_DATA_ENCRYPTION_KEY not set (payout instruments are stored encrypted)');
   const missing = missingTables(tables);
@@ -677,9 +679,13 @@ async function privatePaymentNetworkReadiness(ctx) {
       MAX_TRANSFER_CENTS: cfg.maxTransferCents || null,
       WEBHOOK_SECRET: Boolean(cfg.webhookSecret),
       MFT_FILE_DROP_LIVE: Boolean(cfg.mftLive),
+      CORE_BANKING_FUNDING_SOURCE: cfg.coreBanking ? (cfg.coreBanking.required ? cfg.coreBanking.system : 'disabled') : null,
+      CANONICAL_FUNDING_LIVE: Boolean(cfg.coreBanking?.live),
+      CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: cfg.coreBanking?.defaultSavingsAccountId || null,
       REAL_VALUE_PROCESSORS: inventory.ok ? inventory.value.realValueCapable : [],
     },
     modules: {
+      fundingSource: inventory.ok ? inventory.value.fundingSource : null,
       processors: inventory.ok ? inventory.value.sources : { error: inventory.error },
       pipeline: pipeline.ok ? pipeline.value : { error: pipeline.error },
     },
@@ -762,6 +768,19 @@ async function accountingReadiness(ctx) {
   if (!env.FINERACT_USERNAME || !env.FINERACT_PASSWORD) blockers.push('FINERACT_USERNAME / FINERACT_PASSWORD not set (Secret Manager)');
   const health = fineract && env.FINERACT_URL ? await settle(() => fineract.FineractClient.healthCheck()) : { ok: false, error: 'skipped' };
   if (env.FINERACT_URL && !health.ok) blockers.push(`fineract: ${health.error}`);
+  let savings = null;
+  if (health.ok) {
+    const list = await settle(() => fineract.FineractClient.listSavingsAccounts({ limit: 50 }));
+    if (list.ok) {
+      const items = Array.isArray(list.value?.pageItems) ? list.value.pageItems : Array.isArray(list.value) ? list.value : [];
+      savings = items.map((s) => ({
+        id: s.id, accountNo: s.accountNo, externalId: s.externalId || null, clientName: s.clientName || null,
+        product: s.savingsProductName || null, active: Boolean(s.status?.active),
+        availableBalance: s.summary?.availableBalance ?? s.summary?.accountBalance ?? null,
+      }));
+      if (!savings.some((s) => s.active)) blockers.push('no active Fineract savings account (trust account of record) to fund payouts');
+    } else savings = { error: list.error };
+  }
   let lastSync = null;
   if (bridge && tables.data_bridge_sync_log) {
     const hist = await settle(() => bridge.DataBridge.getSyncHistory({ limit: 1 }));
@@ -771,16 +790,19 @@ async function accountingReadiness(ctx) {
   if (missing.length) blockers.push(`Cloud SQL tables missing: ${missing.join(', ')}`);
   const live = health.ok && ctx.ledger.connected;
   return {
-    provider: 'fineract-gl+data-bridge',
+    provider: 'fineract-core-banking+data-bridge',
     mode: live ? 'live' : 'shadow',
     liveFlags: {
       FINERACT_URL: Boolean(env.FINERACT_URL),
       FINERACT_TENANT_ID: env.FINERACT_TENANT_ID || 'default',
       FINERACT_CONNECTED: health.ok,
+      CANONICAL_FUNDING_LIVE: String(env.CANONICAL_FUNDING_LIVE).toLowerCase() === 'true',
+      CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || null,
       PAYMENT_HUB_ACCOUNTING_OWNER: env.PAYMENT_HUB_ACCOUNTING_OWNER || null,
     },
     modules: {
       fineract: health.ok ? { connected: true, offices: Array.isArray(health.value.offices) ? health.value.offices.length : null } : { error: health.error },
+      savingsAccounts: savings,
       dataBridge: Boolean(bridge),
       trustAccounting: Boolean(trust),
       lastSync,

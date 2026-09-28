@@ -30,7 +30,10 @@
 # PAYMENT_PROCESSOR_LIVE=true, ENTERPRISE_NETWORK_LIVE=true and the
 # PRIVATE_PAYMENT_NETWORK_REQUIRE_* gates on. Its mft_as2 file drop
 # (runtime_environment.PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true) also requires
-# MFTGATEWAY_API_TOKEN_ID and MFTGATEWAY_API_TOKEN_SECRET.
+# MFTGATEWAY_API_TOKEN_ID and MFTGATEWAY_API_TOKEN_SECRET. Its Fineract
+# core-banking funding source (runtime_environment.CANONICAL_FUNDING_LIVE=true,
+# CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = trust savings account of record) also
+# requires FINERACT_URL, FINERACT_USERNAME and FINERACT_PASSWORD.
 #
 # The Banking Aggregator block is REQUIRED when
 # runtime_environment.AGGREGATOR_DEFAULT_MODE=live (the production default):
@@ -70,6 +73,11 @@ secret_names = [
   # Enterprise Network OS live plan (ENTERPRISE_NETWORK_LIVE=true): HMAC-SHA256
   # key for screening / partner callbacks to /api/os/enterprise-network/webhook.
   "ENTERPRISE_NETWORK_WEBHOOK_SECRET",
+  # Fineract core banking (dlbtrust-fineract Cloud Run): PPN funding source of
+  # record when CANONICAL_FUNDING_LIVE=true. Already in the migrate list.
+  "FINERACT_URL",
+  "FINERACT_USERNAME",
+  "FINERACT_PASSWORD",
   # Private Payment Network live plan (PRIVATE_PAYMENT_NETWORK_LIVE=true): HMAC-
   # SHA256 key for processor callbacks to /api/os/private-payment-network/webhook.
   "PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET",

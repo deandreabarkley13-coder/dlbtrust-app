@@ -28,7 +28,9 @@ Stripe balance  (CA-STRIPE-BALANCE)           signed webhook payment_intent.succ
    │  maker submit → checker approve (approvalRef + screeningRef)
    ▼
 Private Electronic Payment Network            PRIVATE_PAYMENT_NETWORK_LIVE
-   ├─ book_transfer  trust ledger ↔ trust ledger (CashEngine)                       no bank involved
+   ├─ funding source Fineract core-banking savings account of record             CANONICAL_FUNDING_LIVE + CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID
+   │                   (cash_accounts.linked_fineract_account_id) — balance / debit-block check, withdrawal before dispatch, redeposit on return
+   ├─ book_transfer  trust ledger ↔ trust ledger (CashEngine, mirrored in Fineract)  no bank involved
    ├─ payout         PaymentGatewayServerEngine → PaymentProcessorServerEngine     PAYMENT_GATEWAY_LIVE + PAYMENT_PROCESSOR_LIVE
    │                   → Stripe payout to a registered external bank (Lili ****)      LILI_ORIGINATOR=stripe_payout
    │                   → direct deposit to a beneficiary payout instrument
@@ -41,7 +43,7 @@ Private Electronic Payment Network            PRIVATE_PAYMENT_NETWORK_LIVE
 | --- | --- | --- |
 | API / dashboards | Cloud Run `dlbtrust-app` (us-east1) | env in `infra/gcp/variables.tf` `runtime_environment`, overridden by the git-ignored `terraform.tfvars`; secrets in Secret Manager (`infra/gcp/secrets.tf`), runtime SA `dlbtrust-app-runtime@…` |
 | Database | Cloud SQL Postgres `dlbtrust` | aggregator, ledger, OS engine tables |
-| General ledger | Cloud Run `dlbtrust-fineract` (+ Mifos X UI) | migrated: 2,080 journal entries, 57 GL accounts |
+| Core banking & treasury (Fineract) | Cloud Run `dlbtrust-fineract` (+ Mifos X UI) | trust account of record (savings, client "DeAndrea Lavar Barkley Irrevocable Trust") = PPN funding source; GL migrated: 2,080 journal entries, 57 GL accounts |
 | ACH file generation | Cloud Run `openach` + job `dlbtrust-openach-nightly` | ODFI branch uses the `Manual` plugin → files land in `gs://dlb-treasury-management-openach-ach-files/export/` |
 | Payment Hub EE | Cloud Run `dlbtrust-phee` (internal ingress) | `PAYMENT_HUB_MODE=phee`; ACH connector needs a verified external ODFI endpoint |
 | Schedulers | Cloud Scheduler → Cloud Run | aggregator pull every 15 min, OpenACH nightly, treasury sweeps |
@@ -161,6 +163,8 @@ Gates:
 | `PAYMENT_PROCESSOR_DEFAULT` | `lili` | Stripe payout to the registered Lili external account |
 | `PAYMENT_GATEWAY_WEBHOOK_SECRET`, `PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET`, `PAYMENT_DATA_ENCRYPTION_KEY` | Secret Manager | webhook HMAC + instrument encryption |
 | `PRIVATE_PAYMENT_NETWORK_MFT_LIVE` | `false` | keep shadow until an ODFI AS2 partner exists (§6) |
+| `CANONICAL_FUNDING_LIVE`, `CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID` | `true`, Fineract savings account id | Fineract (core banking & treasury, `dlbtrust-fineract`) is the funding source of record: a payout is admitted only if the Fineract account linked to the source ledger account (`POST /api/cash/accounts/:id/link-fineract`) is active, not debit-blocked and covers the amount; it is withdrawn before the processor is called and redeposited if the processor rejects or returns it. `false` → every external processor reports shadow |
+| `FINERACT_URL`, `FINERACT_USERNAME`, `FINERACT_PASSWORD`, `FINERACT_TENANT_ID` | Secret Manager | Fineract API (must be the Cloud Run service URL, not localhost) |
 
 Procedure (`POST /api/os/private-payment-network/process`, `x-admin-token`):
 
@@ -178,8 +182,9 @@ Procedure (`POST /api/os/private-payment-network/process`, `x-admin-token`):
    it to `settled` or `returned`; only `settled` posts the GL.
 5. `{ action: 'pipeline' }` lists open transactions and exposure per participant.
 
-Real value leaves only when the source ledger account is backed by actual funds in the
-Stripe balance (§4 or card / ACH intakes). Approving a payout against an unfunded
+A Fineract withdrawal is a core-banking movement, not external settlement: real value
+leaves only when the source ledger account is backed by actual funds in the
+Stripe balance (§4 or card / ACH intakes) and the processor acknowledges. Approving a payout against an unfunded
 ledger balance produces the same result as the three 2026-09 Lili test deposits:
 transmitted, never confirmed, closed out as `returned`.
 

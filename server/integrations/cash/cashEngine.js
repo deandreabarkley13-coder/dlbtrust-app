@@ -58,6 +58,23 @@ class CashEngine {
     return result.rows;
   }
 
+  /** Link (or unlink with null) a ledger account to its Fineract core-banking savings account. */
+  static async linkFineractAccount(accountId, fineractAccountId) {
+    const linked = fineractAccountId == null || fineractAccountId === '' ? null : String(fineractAccountId).trim();
+    if (linked) {
+      const acct = await FineractClient.getAccountBalance(linked);
+      if (!acct || !acct.status || !acct.status.active) {
+        throw new Error(`Fineract savings account ${linked} not found or not active`);
+      }
+    }
+    const result = await pool.query(
+      `UPDATE cash_accounts SET linked_fineract_account_id = $2, updated_at = NOW() WHERE account_id = $1 RETURNING *`,
+      [accountId, linked]
+    );
+    if (!result.rows[0]) throw new Error(`Cash account ${accountId} not found`);
+    return result.rows[0];
+  }
+
   static async transfer({
     fromAccountId, toAccountId, amountCents, movementType, memo,
     referenceId, referenceType, initiatedBy, glDebitAccountId, glCreditAccountId,

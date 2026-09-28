@@ -15,6 +15,7 @@ const { PaymentProcessorOsEngine } = require('../server/integrations/os/paymentP
 const { EngineWiringReadiness } = require('../server/integrations/os/engineWiringReadiness');
 const { PaymentGatewayServerEngine } = require('../server/integrations/payments/paymentGatewayServerEngine');
 const { CashEngine } = require('../server/integrations/cash/cashEngine');
+const { FineractClient } = require('../server/integrations/fineract/fineractClient');
 const OS = require('../server/integrations/os/osEngine');
 const osRouter = require('../server/routes/os');
 const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
@@ -29,7 +30,34 @@ const ENV_KEYS = [
   'PAYMENT_PROCESSOR_LIVE', 'PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF', 'PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF', 'PAYMENT_DATA_ENCRYPTION_KEY',
   'PRIVATE_PAYMENT_NETWORK_MFT_LIVE', 'MFTGATEWAY_API_TOKEN_ID', 'MFTGATEWAY_API_TOKEN_SECRET', 'MFTGATEWAY_STATION_AS2_ID', 'MFTGATEWAY_PARTNER_AS2_ID',
   'EDI_820_SENDER_ID', 'EDI_820_RECEIVER_ID', 'AS2_LOCAL_AS2_ID', 'OPENACH_ACH_FILES_BUCKET',
+  'FINERACT_URL', 'FINERACT_TENANT_ID', 'CANONICAL_FUNDING_LIVE', 'CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID', 'CANONICAL_FUNDING_PAYMENT_TYPE_ID', 'PRIVATE_PAYMENT_NETWORK_CORE_BANKING',
 ];
+
+const FINERACT_URL = 'https://dlbtrust-fineract-514695212719.us-east1.run.app/fineract-provider/api/v1';
+
+function savingsAccount(id: string | number, overrides: Record<string, any> = {}) {
+  return {
+    id: Number(id), accountNo: String(id).padStart(9, '0'), clientName: 'DeAndrea Lavar Barkley Irrevocable Trust', savingsProductName: 'Trust Account of Record (USD)',
+    status: { active: true }, subStatus: { block: false, blockDebit: false },
+    summary: { accountBalance: 7709589.04, availableBalance: 7709589.04 },
+    ...overrides,
+  };
+}
+
+/** Fineract core-banking account of record behind the ledger: FINERACT_URL + CANONICAL_FUNDING_LIVE, default savings account 2. */
+function coreBankingLive(accounts: Record<string, any> = { '2': savingsAccount(2) }) {
+  process.env.FINERACT_URL = FINERACT_URL;
+  process.env.CANONICAL_FUNDING_LIVE = 'true';
+  process.env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = '2';
+  const balance = vi.spyOn(FineractClient, 'getAccountBalance').mockImplementation(async (id: any) => {
+    const a = accounts[String(id)];
+    if (!a) throw new Error(`Fineract savings account ${id} not found`);
+    return a;
+  });
+  const withdraw = vi.spyOn(FineractClient, 'withdrawSavings').mockResolvedValue({ resourceId: 901 });
+  const deposit = vi.spyOn(FineractClient, 'depositSavings').mockResolvedValue({ resourceId: 902 });
+  return { balance, withdraw, deposit };
+}
 const saved: Record<string, string | undefined> = {};
 
 function upstreamLive(processor = 'payment_hub') {
@@ -57,6 +85,7 @@ function networkLive(processor = 'payment_hub') {
   process.env.ENTERPRISE_NETWORK_LIVE = 'true';
   process.env.PAYMENT_DATA_ENCRYPTION_KEY = 'ab'.repeat(32);
   vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamLive(processor));
+  return coreBankingLive();
 }
 
 function account(id: string, overrides: Record<string, any> = {}) {
@@ -139,7 +168,7 @@ describe('private-payment-network OS engine registration and routing', () => {
     expect(OS.engines['private-payment-network']).toBe(OS.PrivatePaymentNetworkPlatformEngine);
     expect(OS.PrivatePaymentNetworkPlatformEngine.platformEngine).toBe('private-payment-network');
     expect(EngineWiringReadiness.ENGINE_KEYS).toEqual(expect.arrayContaining(['enterprise-network', 'private-payment-network']));
-    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(14);
+    expect(EngineWiringReadiness.ENGINE_KEYS).toHaveLength(20);
     expect(EngineWiringReadiness.ENGINE_TITLES['private-payment-network']).toMatch(/Private Electronic Payment Network/);
     expect(PrivatePaymentNetworkOsEngine.TABLES[0]).toBe('private_payment_network_transactions');
     expect(EngineWiringReadiness.TABLES['private-payment-network']).toEqual(PrivatePaymentNetworkOsEngine.TABLES);
@@ -303,7 +332,8 @@ describe('private-payment-network fail-closed gates', () => {
     const sale = vi.spyOn(PaymentGatewayServerEngine, 'sale').mockResolvedValue({ gatewayTxId: 'GW-TX-1', processorTxId: 'PH-1', status: 'processing' });
     const transfer = vi.spyOn(CashEngine, 'transfer');
     const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
-    expect(out).toMatchObject({ status: 'cleared', dispatched: true, gatewayTxId: 'GW-TX-1', route: 'PaymentGatewayServerEngine.sale', realValue: true });
+    expect(out).toMatchObject({ status: 'cleared', dispatched: true, gatewayTxId: 'GW-TX-1', route: 'FineractClient.withdrawSavings → PaymentGatewayServerEngine.sale', realValue: true });
+    expect(out.result.coreBanking).toMatchObject({ system: 'fineract', savingsAccountId: '2', withdrawalTransactionId: '901', amount: 2500 });
     expect(admit).toHaveBeenCalledWith({ participantId: 'ENP-1', amountCents: 0, realValue: true });
     expect(sale).toHaveBeenCalledTimes(1);
     expect(sale.mock.calls[0][0]).toMatchObject({
@@ -348,6 +378,126 @@ describe('private-payment-network fail-closed gates', () => {
     vi.spyOn(PaymentGatewayServerEngine, 'sale').mockRejectedValue(new Error('processor declined'));
     await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' })).rejects.toMatchObject({ status: 502, message: /dispatch failed: processor declined/ });
     expect(rows['PPN-1'].status).toBe('failed');
+  });
+});
+
+describe('private-payment-network Fineract core-banking funding source', () => {
+  it('lists the Fineract account of record as the funding source and keeps every payout processor shadow until it is live', async () => {
+    process.env.PRIVATE_PAYMENT_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_PROCESSOR_LIVE = 'true';
+    process.env.ENTERPRISE_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_DATA_ENCRYPTION_KEY = 'ab'.repeat(32);
+    vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamLive());
+    let inv = await PrivatePaymentNetworkOsEngine.processors();
+    expect(inv.fundingSource).toMatchObject({ id: 'fineract_core_banking', system: 'fineract', mode: 'shadow', required: true, configured: false });
+    expect(inv.coreBankingGate).toMatch(/FINERACT_URL not set/);
+    expect(inv.sources.find((s: any) => s.id === 'payment_hub')).toMatchObject({ realValueCapable: false, reason: expect.stringMatching(/core-banking funding source: FINERACT_URL/) });
+    expect(inv.realValueCapable).toEqual(['internal_ledger']);
+
+    process.env.FINERACT_URL = FINERACT_URL;
+    inv = await PrivatePaymentNetworkOsEngine.processors();
+    expect(inv.coreBankingGate).toMatch(/CANONICAL_FUNDING_LIVE=false/);
+
+    process.env.CANONICAL_FUNDING_LIVE = 'true';
+    inv = await PrivatePaymentNetworkOsEngine.processors();
+    expect(inv.coreBankingGate).toBeNull();
+    expect(inv.fundingSource).toMatchObject({ mode: 'live', live: true });
+    expect(inv.realValueCapable).toEqual(['internal_ledger', 'payment_hub']);
+
+    process.env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING = 'false';
+    delete process.env.CANONICAL_FUNDING_LIVE;
+    inv = await PrivatePaymentNetworkOsEngine.processors();
+    expect(inv.fundingSource.mode).toBe('disabled');
+    expect(inv.realValueCapable).toEqual(['internal_ledger', 'payment_hub']);
+  });
+
+  it('refuses a real-value payout when the ledger account has no Fineract account, or that account is inactive, debit-blocked or short', async () => {
+    const rows = { 'PPN-1': txRow() };
+    stubCloudSql(rows);
+    const fx = networkLive();
+    stubLedger();
+    vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod());
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({});
+    const sale = vi.spyOn(PaymentGatewayServerEngine, 'sale');
+    const approve = () => PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+
+    delete process.env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID;
+    await expect(approve()).rejects.toMatchObject({ status: 409, message: /not linked to a Fineract core-banking account/ });
+    process.env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = '2';
+
+    fx.balance.mockResolvedValueOnce(savingsAccount(2, { status: { active: false } }));
+    await expect(approve()).rejects.toMatchObject({ status: 409, message: /not active/ });
+    fx.balance.mockResolvedValueOnce(savingsAccount(2, { subStatus: { blockDebit: true } }));
+    await expect(approve()).rejects.toMatchObject({ status: 409, message: /debit-blocked/ });
+    fx.balance.mockResolvedValueOnce(savingsAccount(2, { summary: { accountBalance: 5000, availableBalance: 10 } }));
+    await expect(approve()).rejects.toMatchObject({ status: 409, message: /insufficient core-banking balance in Fineract account 2: 1000 < 250000/ });
+    expect(sale).not.toHaveBeenCalled();
+    expect(fx.withdraw).not.toHaveBeenCalled();
+  });
+
+  it('uses the ledger account\'s own linked_fineract_account_id over the default and withdraws before the processor is called', async () => {
+    const rows = { 'PPN-1': txRow() };
+    stubCloudSql(rows);
+    const fx = coreBankingLive({ '2': savingsAccount(2), '7': savingsAccount(7, { summary: { accountBalance: 3000, availableBalance: 3000 } }) });
+    process.env.PRIVATE_PAYMENT_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_PROCESSOR_LIVE = 'true';
+    process.env.ENTERPRISE_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_DATA_ENCRYPTION_KEY = 'ab'.repeat(32);
+    vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamLive());
+    stubLedger({ 'CA-TRUST': account('CA-TRUST', { linked_fineract_account_id: '7' }) });
+    vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod());
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({});
+    const order: string[] = [];
+    fx.withdraw.mockImplementation(async () => { order.push('withdraw'); return { resourceId: 77 }; });
+    vi.spyOn(PaymentGatewayServerEngine, 'sale').mockImplementation(async () => { order.push('sale'); return { gatewayTxId: 'GW-TX-1', processorTxId: 'PH-1', status: 'processing' }; });
+    const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(order).toEqual(['withdraw', 'sale']);
+    expect(fx.withdraw).toHaveBeenCalledWith(expect.objectContaining({ accountId: '7', amount: 2500, paymentTypeId: 1 }));
+    expect(out.result.coreBanking).toMatchObject({ savingsAccountId: '7', withdrawalTransactionId: '77' });
+    expect(fx.deposit).not.toHaveBeenCalled();
+  });
+
+  it('redeposits the withdrawal when the processor rejects the payout and when a cleared payout is returned', async () => {
+    const rows = { 'PPN-1': txRow() };
+    stubCloudSql(rows);
+    const fx = networkLive();
+    stubLedger();
+    vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod());
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({});
+    vi.spyOn(PaymentGatewayServerEngine, 'sale').mockRejectedValue(new Error('processor declined'));
+    await expect(PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' })).rejects.toMatchObject({ status: 502 });
+    expect(fx.withdraw).toHaveBeenCalledTimes(1);
+    expect(fx.deposit).toHaveBeenCalledWith(expect.objectContaining({ accountId: '2', amount: 2500, note: expect.stringMatching(/processor rejected/) }));
+
+    fx.deposit.mockClear();
+    const cleared = {
+      'PPN-5': txRow({ transaction_id: 'PPN-5', status: 'cleared', gateway_tx_id: 'GW-TX-5', real_value: true, result: { coreBanking: { system: 'fineract', savingsAccountId: '2', withdrawalTransactionId: '901', amount: 2500 } } }),
+    };
+    stubCloudSql(cleared);
+    vi.spyOn(PaymentGatewayServerEngine, 'reconcileWebhook').mockResolvedValue({ ok: true });
+    const returned = await PrivatePaymentNetworkOsEngine.reconcile({ transactionId: 'PPN-5', status: 'returned' });
+    expect(returned.status).toBe('returned');
+    expect(returned.coreBanking).toMatchObject({ savingsAccountId: '2', reversal: { depositTransactionId: '902', reason: 'payout returned' } });
+    expect(fx.deposit).toHaveBeenCalledWith(expect.objectContaining({ accountId: '2', amount: 2500 }));
+    fx.deposit.mockClear();
+    const settled = await PrivatePaymentNetworkOsEngine.reconcile({ transactionId: 'PPN-5', status: 'settled' });
+    expect(fx.deposit).not.toHaveBeenCalled();
+    expect(settled.status).toBe('returned');
+  });
+
+  it('mirrors a book transfer between ledger accounts linked to different Fineract accounts as withdrawal + deposit', async () => {
+    const rows = { 'PPN-2': txRow({ transaction_id: 'PPN-2', type: 'book_transfer', destination_account_id: 'CA-RESERVE', method_id: null, participant_id: null, processor: 'internal_ledger' }) };
+    stubCloudSql(rows);
+    process.env.PRIVATE_PAYMENT_NETWORK_LIVE = 'true';
+    vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamShadow());
+    const fx = coreBankingLive({ '2': savingsAccount(2), '1': savingsAccount(1, { summary: { accountBalance: 0, availableBalance: 0 } }) });
+    stubLedger({ 'CA-TRUST': account('CA-TRUST', { linked_fineract_account_id: '2' }), 'CA-RESERVE': account('CA-RESERVE', { linked_fineract_account_id: '1' }) });
+    vi.spyOn(CashEngine, 'transfer').mockResolvedValue({ movement_id: 'MOV-1' });
+    const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-2', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(out.status).toBe('settled');
+    expect(fx.withdraw).toHaveBeenCalledWith(expect.objectContaining({ accountId: '2', amount: 2500 }));
+    expect(fx.deposit).toHaveBeenCalledWith(expect.objectContaining({ accountId: '1', amount: 2500 }));
+    expect(out.result.coreBanking).toMatchObject({ mirrored: true, savingsAccountId: '2', toSavingsAccountId: '1', withdrawalTransactionId: '901', depositTransactionId: '902' });
   });
 });
 
@@ -419,8 +569,12 @@ describe('private-payment-network readiness on dlb-treasury-management', () => {
     expect(r.blockers).toEqual([]);
     expect(r.ready).toBe(true);
     expect(r.mode).toBe('live');
-    expect(r.liveFlags).toMatchObject({ PRIVATE_PAYMENT_NETWORK_LIVE: true, PAYMENT_PROCESSOR_LIVE: true, ENTERPRISE_NETWORK_LIVE: true, REQUIRE_APPROVAL_REF: true, REQUIRE_SCREENING_REF: true, REQUIRE_PARTICIPANT: true });
+    expect(r.liveFlags).toMatchObject({ PRIVATE_PAYMENT_NETWORK_LIVE: true, PAYMENT_PROCESSOR_LIVE: true, ENTERPRISE_NETWORK_LIVE: true, REQUIRE_APPROVAL_REF: true, REQUIRE_SCREENING_REF: true, REQUIRE_PARTICIPANT: true, CORE_BANKING_FUNDING_SOURCE: 'fineract', CANONICAL_FUNDING_LIVE: true, CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID: '2' });
     expect(r.liveFlags.REAL_VALUE_PROCESSORS).toEqual(['internal_ledger', 'payment_hub']);
+    expect(r.modules.fundingSource).toMatchObject({ id: 'fineract_core_banking', mode: 'live' });
+    delete process.env.CANONICAL_FUNDING_LIVE;
+    const shadow = await EngineWiringReadiness.engineReadiness('private-payment-network');
+    expect(shadow.blockers).toContainEqual(expect.stringMatching(/core-banking funding source \(Fineract\): CANONICAL_FUNDING_LIVE=false/));
   });
 });
 
