@@ -267,6 +267,25 @@ variable "runtime_environment" {
     TRUST_HOLDER_ID                             = "dlb-irrevocable-trust"
     FINERACT_PRINCIPAL_SAVINGS_ACCOUNT_ID       = ""
     FINERACT_INTEREST_INCOME_SAVINGS_ACCOUNT_ID = ""
+    # H2H Discovery OS (server/integrations/os/h2hDiscoveryOsEngine): web data
+    # scraping of bank host-to-host onboarding docs for AS2 ID / client ID /
+    # base URL / SFTP host / MDN / cert fingerprint. HTTPS only, hosts must be
+    # allow-listed here (comma-separated; subdomains match), scraped credentials
+    # are refused, candidates need trustee confirm + a second trustee to apply.
+    H2H_DISCOVERY_ENABLED                 = "true"
+    H2H_DISCOVERY_ALLOWED_HOSTS           = "developer.betterment.com,betterment.com,sunrisebanks.com,developer.hsbc.com,developer.jpmorgan.com,developer.citi.com,developer.wellsfargo.com,developer.usbank.com,openbankingtracker.com,raw.githubusercontent.com"
+    H2H_DISCOVERY_REQUIRE_DISTINCT_APPLIER = "true"
+    # Open Bank REST API OS (server/integrations/os/openBankRestApiOsEngine):
+    # /api/open-bank/v1 over Fineract core banking + Open Banking Tracker
+    # directory (public dataset not-a-bank/open-banking-tracker-data). File-drop
+    # registrations project onto AS2Partners / MFT channels; live only when a
+    # drop is verified by a second trustee.
+    OPEN_BANK_API_ENABLED           = "true"
+    OPEN_BANK_ID                    = "dlb-trust-company"
+    OPEN_BANK_NAME                  = "DeAndrea LaVar Barkley Trust Company"
+    OPEN_BANK_PUBLIC_BASE_URL       = "https://dlbtrust-app-514695212719.us-east1.run.app"
+    OPEN_BANKING_TRACKER_BASE_URL   = "https://raw.githubusercontent.com/not-a-bank/open-banking-tracker-data/master/data/account-providers"
+    OPEN_BANKING_TRACKER_INDEX_URL  = "https://api.github.com/repos/not-a-bank/open-banking-tracker-data/contents/data/account-providers"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

@@ -66,6 +66,7 @@ try { app.use('/api/analytics', require(path.join(HD, 'server', 'routes', 'analy
 
 // Fineract core banking routes
 try { app.use('/api/fineract', require(path.join(HD, 'server', 'routes', 'fineract'))); console.log('[fineract] loaded'); } catch(e) { console.warn('[fineract]', e.message); }
+try { app.use('/api/open-bank', require(path.join(HD, 'server', 'routes', 'openBank'))); console.log('[open-bank] loaded'); } catch(e) { console.warn('[open-bank]', e.message); }
 
 // Fixed Income / Bond routes
 try { app.use('/api/bonds', require(path.join(HD, 'server', 'routes', 'bonds'))); console.log('[bonds] loaded'); } catch(e) { console.warn('[bonds]', e.message); }
@@ -486,6 +487,14 @@ async function initializeDatabase() {
     await TrustAccountStructure.ensureTables();
     console.log('[fineract-trust-accounts] tables ensured');
   } catch(e) { console.warn('[fineract-trust-accounts] table init:', e.message); }
+
+  try {
+    var H2hDiscoveryOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'h2hDiscoveryOsEngine')).H2hDiscoveryOsEngine;
+    await H2hDiscoveryOsEngine.ensureTables();
+    var OpenBankRestApiOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'openBankRestApiOsEngine')).OpenBankRestApiOsEngine;
+    await OpenBankRestApiOsEngine.ensureTables();
+    console.log('[h2h-discovery/open-bank] tables ensured');
+  } catch(e) { console.warn('[h2h-discovery/open-bank] table init:', e.message); }
 
   try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
