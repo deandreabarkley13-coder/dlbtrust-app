@@ -3,10 +3,16 @@
 # the in-process schedulers (OpenSanctions refresh, Spritz/Melio status sync)
 # must not run concurrently.
 
+# Private, family-only: no allUsers invoker; every request enters through
+# Identity-Aware Proxy (family Google identities in var.family_accessors) and
+# the app re-verifies the IAP assertion (PRIVATE_ACCESS_MODE=enforce).
 resource "google_cloud_run_v2_service" "app" {
+  provider            = google-beta
   name                = var.service_name
   location            = var.region
-  ingress             = "INGRESS_TRAFFIC_ALL"
+  ingress             = var.private_access_ingress
+  launch_stage        = "BETA"
+  iap_enabled         = true
   deletion_protection = false
 
   template {
@@ -123,6 +129,56 @@ resource "google_cloud_run_v2_service" "app" {
       env {
         name  = "EGRESS_NAT_NAME"
         value = google_compute_router_nat.egress.name
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_IAP_AUDIENCE"
+        value = "/projects/${data.google_project.current.number}/locations/${var.region}/services/${var.service_name}"
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_FAMILY_EMAILS"
+        value = join(",", [for p in var.family_accessors : trimprefix(p, "user:") if startswith(p, "user:")])
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_FAMILY_DOMAINS"
+        value = join(",", [for p in var.family_accessors : trimprefix(p, "domain:") if startswith(p, "domain:")])
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_SERVICE_ACCOUNTS"
+        value = join(",", [for p in local.platform_accessors : trimprefix(p, "serviceAccount:")])
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_INGRESS"
+        value = var.private_access_ingress
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_IAP_ENABLED"
+        value = "true"
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_PUBLIC_INVOKER"
+        value = "false"
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_VPN_ENABLED"
+        value = local.vpn_enabled ? "true" : "false"
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_VPN_GATEWAY"
+        value = local.vpn_enabled ? google_compute_ha_vpn_gateway.family[0].name : ""
+      }
+
+      env {
+        name  = "PRIVATE_ACCESS_VPN_TUNNELS"
+        value = tostring(length(google_compute_vpn_tunnel.family))
       }
 
       dynamic "env" {
@@ -298,9 +354,11 @@ resource "google_cloud_run_v2_service" "app" {
   }
 }
 
-resource "google_cloud_run_v2_service_iam_member" "public" {
+# Only the IAP service agent may invoke the service; humans reach it through
+# IAP with roles/iap.httpsResourceAccessor (private_access.tf).
+resource "google_cloud_run_v2_service_iam_member" "iap_invoker" {
   name     = google_cloud_run_v2_service.app.name
   location = google_cloud_run_v2_service.app.location
   role     = "roles/run.invoker"
-  member   = "allUsers"
+  member   = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-iap.iam.gserviceaccount.com"
 }

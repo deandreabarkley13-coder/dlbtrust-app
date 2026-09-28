@@ -46,6 +46,11 @@ app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 // Input sanitization (null bytes, oversized strings)
 app.use(security.sanitizeInput);
 
+// Family-only private access: IAP assertion for an allow-listed identity (or
+// the scheduler's OIDC token) on every request except liveness probes.
+var privateAccess = require(path.join(HD, 'server', 'integrations', 'auth', 'privateAccessGuard'));
+app.use(privateAccess.privateAccessGuard());
+
 // Dashboard API responses are live ledger reads; never let a browser or edge
 // cache serve a stale one.
 app.use('/api', function(req, res, next) {

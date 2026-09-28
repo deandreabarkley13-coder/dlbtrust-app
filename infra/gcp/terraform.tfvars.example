@@ -47,6 +47,19 @@
 
 project_id = "dlb-treasury-management"
 
+# Private family-only access (private_access.tf): Google identities allowed
+# through IAP to dlbtrust-app; also the app's PRIVATE_ACCESS_FAMILY_EMAILS.
+family_accessors = ["user:deandreabarkley13@gmail.com"]
+# Extra Cloud Scheduler / platform service accounts (deployer + runtime are
+# always included).
+scheduler_accessors = []
+# Cloud VPN to a trusted family site: leave vpn_peer_ip empty until the site's
+# VPN device is known; seed the IKE key with
+#   gcloud secrets create VPN_FAMILY_SHARED_SECRET --replication-policy automatic
+#   gcloud secrets versions add VPN_FAMILY_SHARED_SECRET --data-file=-
+# vpn_peer_ip  = ""
+# vpn_peer_asn = 65001
+
 secret_names = [
   # … everything printed by migrate-northflank-secrets.mjs --list …
 

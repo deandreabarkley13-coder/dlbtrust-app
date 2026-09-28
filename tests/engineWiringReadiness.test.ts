@@ -43,7 +43,7 @@ const { H2hDiscoveryOsEngine } = require('../server/integrations/os/h2hDiscovery
 const { OpenBankRestApiOsEngine } = require('../server/integrations/os/openBankRestApiOsEngine');
 const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office'];
 const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
@@ -87,6 +87,13 @@ const GCP_ENV: Record<string, string> = {
   MFT_SFTP_HOST: 'sftp.odfi.example',
   FIXED_INCOME_RAIL: 'bank',
   PRIVATE_PAYMENT_NETWORK_CORE_BANKING: 'true',
+  PRIVATE_PAYMENT_NETWORK_FAMILY_ONLY: 'true',
+  PRIVATE_ACCESS_MODE: 'enforce',
+  PRIVATE_ACCESS_IAP_AUDIENCE: '/projects/514695212719/locations/us-east1/services/dlbtrust-app',
+  PRIVATE_ACCESS_FAMILY_EMAILS: 'deandreabarkley13@gmail.com',
+  PRIVATE_ACCESS_IAP_ENABLED: 'true',
+  PRIVATE_ACCESS_PUBLIC_INVOKER: 'false',
+  PRIVATE_ACCESS_INGRESS: 'INGRESS_TRAFFIC_ALL',
 };
 
 const RECEIPTED_BOND = { positionId: 'POS-1', assetClass: 'fixed_income', instrumentRef: 'bond:1', instrumentName: 'DLB Trust Income Bond', quantity: 1, valuationCents: 9852462751, controlStatus: 'receipted', lastReceiptId: 'RCPT-1', verifiedExternally: false };

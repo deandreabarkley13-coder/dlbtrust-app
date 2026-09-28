@@ -72,7 +72,11 @@ jobs:
           url=$(gcloud run services describe "$SERVICE" \
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
             --format 'value(status.url)')
-          curl -fsS "$url/api/health/ready"
+          # The service is private (IAP, no allUsers invoker): an anonymous
+          # request must be refused at the edge, never answered by the app.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "$url/api/health/ready")
+          echo "anonymous /api/health/ready -> HTTP $code"
+          case "$code" in 302|401|403) ;; *) echo 'expected IAP to refuse anonymous access'; exit 1;; esac
 
       # Platform engine readiness (payment, gateway, clearing, reconciliation,
       # interop, credit, debt, liquidity, funding-os) on dlb-treasury-management. Informational: the credit
@@ -87,7 +91,9 @@ jobs:
           token=$(gcloud secrets versions access latest --secret ADMIN_SECRET_TOKEN --project "$GCP_PROJECT_ID" 2>/dev/null || true)
           if [ -z "$token" ]; then echo "ADMIN_SECRET_TOKEN not readable; skipping engine readiness"; exit 0; fi
           echo "::add-mask::$token"
-          curl -sS -H "x-admin-token: $token" "$url/api/os/readiness" \
+          # Behind IAP the deploy identity needs roles/iap.httpsResourceAccessor
+          # (terraform var.scheduler_accessors); otherwise this reports the refusal.
+          curl -sS -H "x-admin-token: $token" -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$url/api/os/readiness" \
             | node -e '
               let s=""; process.stdin.on("data",d=>s+=d).on("end",()=>{
                 const r=JSON.parse(s);
