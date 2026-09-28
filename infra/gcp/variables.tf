@@ -242,6 +242,19 @@ variable "runtime_environment" {
     # MFTGATEWAY_PARTNER_AS2_ID). Shadow until this is "true"; also needs
     # PRIVATE_PAYMENT_NETWORK_LIVE=true and MFTGATEWAY_API_TOKEN_ID/SECRET.
     PRIVATE_PAYMENT_NETWORK_MFT_LIVE = "false"
+    # Core-banking funding source of record for the private payment network:
+    # the Fineract savings account (dlbtrust-fineract Cloud Run; FINERACT_URL,
+    # FINERACT_USERNAME, FINERACT_PASSWORD, FINERACT_TENANT_ID come from Secret
+    # Manager). A real-value payout is admitted only against the Fineract
+    # account linked to the source ledger account (cash_accounts
+    # .linked_fineract_account_id, else CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID) and
+    # is withdrawn from it before the processor is called (redeposited on
+    # return). Shadow until CANONICAL_FUNDING_LIVE=true.
+    # PRIVATE_PAYMENT_NETWORK_CORE_BANKING=false runs sub-ledger only.
+    CANONICAL_FUNDING_LIVE               = "false"
+    CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = ""
+    CANONICAL_FUNDING_PAYMENT_TYPE_ID    = "1"
+    PRIVATE_PAYMENT_NETWORK_CORE_BANKING = "true"
     # Banking Aggregator (server/integrations/aggregator): provider-agnostic
     # pull (accounts/transactions/statements -> trust GL via DataBridge) and
     # push (payments) hub. AGGREGATOR_ENABLED starts the leader-elected

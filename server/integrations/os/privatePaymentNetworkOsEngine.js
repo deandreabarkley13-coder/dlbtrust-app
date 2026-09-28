@@ -25,6 +25,17 @@
  *   webhook()      HMAC-verified processor callback → reconcile
  *   pipeline()     transactions by status and type, open exposure by participant
  *
+ * Funding source of record is the Fineract core-banking savings account the
+ * source ledger account is linked to (cash_accounts.linked_fineract_account_id,
+ * else CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID). A real-value payout is admitted
+ * only if that account is active, not debit-blocked and has the available
+ * balance; on dispatch the amount is withdrawn from it before the processor is
+ * called (redeposited if the processor rejects or later returns the payout).
+ * Book transfers between ledger accounts linked to different Fineract accounts
+ * are mirrored as a withdrawal + deposit. Requires FINERACT_URL and
+ * CANONICAL_FUNDING_LIVE=true; PRIVATE_PAYMENT_NETWORK_CORE_BANKING=false
+ * disables the core-banking leg (sub-ledger only).
+ *
  * Nothing executes unless PRIVATE_PAYMENT_NETWORK_LIVE=true AND the underlying
  * processor is real-value capable (PaymentProcessorOsEngine for payouts; the
  * trust ledger for book transfers) AND the checker supplied both an approvalRef
@@ -126,6 +137,7 @@ class PrivatePaymentNetworkOsEngine {
   static _nacha() { return tryRequire('../ach/nachaGenerator'); }
   static _fileRelay() { return tryRequire('../openach/openachFileRelay')?.OpenAchFileRelay || null; }
   static _paymentCrypto() { return tryRequire('../paymentHub/paymentCrypto'); }
+  static _fineract() { return tryRequire('../fineract/fineractClient')?.FineractClient || null; }
 
   static async ensureTables() {
     if (!pool) return;
@@ -184,6 +196,93 @@ class PrivatePaymentNetworkOsEngine {
       webhookSecret: Boolean(env.PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET),
       encryptionKey: Boolean(env.PAYMENT_DATA_ENCRYPTION_KEY),
       maxTransferCents: Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) > 0 ? Number(env.PRIVATE_PAYMENT_NETWORK_MAX_TRANSFER_CENTS) : null,
+      coreBanking: {
+        system: 'fineract',
+        required: env.PRIVATE_PAYMENT_NETWORK_CORE_BANKING !== 'false',
+        url: env.FINERACT_URL || null,
+        configured: Boolean(env.FINERACT_URL) && !/^https?:\/\/(localhost|127\.0\.0\.1)/i.test(env.FINERACT_URL),
+        tenantId: env.FINERACT_TENANT_ID || 'default',
+        live: isTrue(env.CANONICAL_FUNDING_LIVE),
+        defaultSavingsAccountId: env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID || null,
+        paymentTypeId: Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) > 0 ? Number(env.CANONICAL_FUNDING_PAYMENT_TYPE_ID) : 1,
+      },
+    };
+  }
+
+  /** Why the Fineract core-banking account of record cannot fund real value (null = it can). */
+  static _coreBankingGate(cfg = this.getConfig()) {
+    const cb = cfg.coreBanking;
+    if (!cb.required) return null;
+    if (!cb.configured) return 'FINERACT_URL not set to the core-banking service (Fineract funding source unreachable)';
+    if (!this._fineract()) return 'FineractClient unavailable';
+    if (!cb.live) return 'CANONICAL_FUNDING_LIVE=false (Fineract core-banking account of record is shadow-only; real-value payouts cannot draw on it)';
+    return null;
+  }
+
+  static _savingsAccountId(acct, cfg = this.getConfig()) {
+    return String(acct?.linked_fineract_account_id || cfg.coreBanking.defaultSavingsAccountId || '').trim() || null;
+  }
+
+  /** Live Fineract savings position of a linked ledger account. */
+  static async _coreBankingPosition(savingsAccountId) {
+    const Fineract = this._fineract();
+    if (!Fineract) throw httpError('FineractClient unavailable', 503);
+    const acct = await Fineract.getAccountBalance(savingsAccountId);
+    const summary = acct?.summary || {};
+    const available = summary.availableBalance ?? summary.accountBalance ?? 0;
+    return {
+      system: 'fineract',
+      savingsAccountId: String(savingsAccountId),
+      accountNo: acct?.accountNo || null,
+      clientName: acct?.clientName || null,
+      productName: acct?.savingsProductName || null,
+      active: Boolean(acct?.status?.active),
+      debitBlocked: Boolean(acct?.subStatus?.block || acct?.subStatus?.blockDebit),
+      balanceCents: toCents(summary.accountBalance || 0),
+      availableCents: toCents(available),
+    };
+  }
+
+  /** Withdraw from the linked Fineract account of record (core-banking debit). */
+  static async _coreBankingWithdraw(savingsAccountId, tx, note) {
+    const Fineract = this._fineract();
+    const cfg = this.getConfig();
+    const res = await Fineract.withdrawSavings({
+      accountId: savingsAccountId,
+      amount: tx.amount,
+      paymentTypeId: cfg.coreBanking.paymentTypeId,
+      note: note || `private payment network ${tx.transactionId}`,
+    });
+    return {
+      system: 'fineract',
+      savingsAccountId: String(savingsAccountId),
+      withdrawalTransactionId: res?.resourceId != null ? String(res.resourceId) : null,
+      amount: tx.amount,
+      at: new Date().toISOString(),
+    };
+  }
+
+  /** Undo a withdrawal after a failed dispatch; a failed redeposit is named in the error so the Fineract movement is never silent. */
+  static async _unwindWithdrawal(coreBanking, tx, reason, cause) {
+    const undo = await settle(() => this._coreBankingRedeposit(coreBanking, tx, reason));
+    if (undo.ok) return new Error(cause);
+    return new Error(`${cause}; Fineract withdrawal ${coreBanking.withdrawalTransactionId} on account ${coreBanking.savingsAccountId} NOT redeposited (${undo.error}) — reverse manually`);
+  }
+
+  /** Redeposit a prior withdrawal (processor rejected or returned the payout). */
+  static async _coreBankingRedeposit(coreBanking, tx, reason) {
+    const Fineract = this._fineract();
+    if (!Fineract || !coreBanking?.savingsAccountId || coreBanking.reversal) return coreBanking;
+    const cfg = this.getConfig();
+    const res = await Fineract.depositSavings({
+      accountId: coreBanking.savingsAccountId,
+      amount: coreBanking.amount ?? tx.amount,
+      paymentTypeId: cfg.coreBanking.paymentTypeId,
+      note: `private payment network ${tx.transactionId} ${reason}`,
+    });
+    return {
+      ...coreBanking,
+      reversal: { depositTransactionId: res?.resourceId != null ? String(res.resourceId) : null, reason, at: new Date().toISOString() },
     };
   }
 
@@ -262,13 +361,15 @@ class PrivatePaymentNetworkOsEngine {
     const cfg = this.getConfig();
     const P = this._processorOs();
     const upstream = P ? await settle(() => P.processors()) : { ok: false, error: 'PaymentProcessorOsEngine unavailable' };
+    const coreBankingGate = this._coreBankingGate(cfg);
     const gate = !cfg.live ? 'PRIVATE_PAYMENT_NETWORK_LIVE=false'
       : !cfg.encryptionKey ? 'PAYMENT_DATA_ENCRYPTION_KEY not set (payout instruments cannot be tokenized safely)'
         : !cfg.networkLive ? 'ENTERPRISE_NETWORK_LIVE=false (payout participants and exposure limits are shadow-only)'
           : !this._gateway() ? 'PaymentGatewayServerEngine unavailable'
             : !upstream.ok ? `payment-processor: ${upstream.error}`
               : !upstream.value.config.live ? 'PAYMENT_PROCESSOR_LIVE=false (payouts dispatch through the payment-processor engine)'
-                : null;
+                : coreBankingGate ? `core-banking funding source: ${coreBankingGate}`
+                  : null;
     const ledgerGate = !cfg.live ? 'PRIVATE_PAYMENT_NETWORK_LIVE=false'
       : !pool ? 'ledger database unavailable'
         : !this._ledger() ? 'CashEngine unavailable'
@@ -291,7 +392,7 @@ class PrivatePaymentNetworkOsEngine {
       reason: ledgerGate,
       route: 'CashEngine.transfer',
     };
-    const mftGate = this._mftGate(cfg);
+    const mftGate = this._mftGate(cfg) || (coreBankingGate ? `core-banking funding source: ${coreBankingGate}` : null);
     const Mft = this._mft();
     const mcfg = Mft ? Mft.getConfig() : {};
     const fileDrop = {
@@ -307,7 +408,19 @@ class PrivatePaymentNetworkOsEngine {
     };
     const sources = [ledger, ...external, fileDrop];
     const realValueCapable = sources.filter((s) => s.realValueCapable).map((s) => s.id);
-    return { config: cfg, gate, ledgerGate, mftGate, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
+    const fundingSource = {
+      id: 'fineract_core_banking',
+      kind: 'funding_source',
+      system: 'fineract',
+      mode: coreBankingGate ? 'shadow' : cfg.coreBanking.required ? 'live' : 'disabled',
+      required: cfg.coreBanking.required,
+      configured: cfg.coreBanking.configured,
+      live: cfg.coreBanking.live,
+      defaultSavingsAccountId: cfg.coreBanking.defaultSavingsAccountId,
+      reason: coreBankingGate,
+      route: 'cash_accounts.linked_fineract_account_id → FineractClient.getAccountBalance / withdrawSavings (redeposit on return)',
+    };
+    return { config: cfg, gate, ledgerGate, mftGate, coreBankingGate, fundingSource, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0 };
   }
 
   static async isRealValue(processor, inventory) {
@@ -318,7 +431,7 @@ class PrivatePaymentNetworkOsEngine {
 
   // ── Admission checks ────────────────────────────────────────────────────
 
-  static async _account(accountId, label, { cents } = {}) {
+  static async _account(accountId, label, { cents, coreBanking = false } = {}) {
     const Ledger = this._ledger();
     if (!Ledger) throw httpError('CashEngine (trust ledger) not available', 503);
     if (!accountId) throw httpError(`${label} required`);
@@ -328,7 +441,22 @@ class PrivatePaymentNetworkOsEngine {
     if (cents != null && Number(acct.balance_cents) < cents) {
       throw httpError(`insufficient balance in ${accountId}: ${acct.balance_cents} < ${cents} cents`, 409);
     }
-    return acct;
+    if (!coreBanking) return acct;
+    const cfg = this.getConfig();
+    if (!cfg.coreBanking.required) return acct;
+    const gate = this._coreBankingGate(cfg);
+    if (gate) throw httpError(`core-banking funding source: ${gate}`, 409);
+    const savingsAccountId = this._savingsAccountId(acct, cfg);
+    if (!savingsAccountId) {
+      throw httpError(`ledger account ${accountId} is not linked to a Fineract core-banking account (POST /api/cash/accounts/${accountId}/link-fineract or set CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID)`, 409);
+    }
+    const position = await this._coreBankingPosition(savingsAccountId);
+    if (!position.active) throw httpError(`Fineract account ${savingsAccountId} is not active`, 409);
+    if (position.debitBlocked) throw httpError(`Fineract account ${savingsAccountId} is debit-blocked`, 409);
+    if (cents != null && position.availableCents < cents) {
+      throw httpError(`insufficient core-banking balance in Fineract account ${savingsAccountId}: ${position.availableCents} < ${cents} cents available`, 409);
+    }
+    return { ...acct, coreBanking: position };
   }
 
   static async _method(methodId) {
@@ -432,7 +560,7 @@ class PrivatePaymentNetworkOsEngine {
     if (realValue) {
       if (cfg.requireApproval && !approvalRef) throw httpError('approvalRef (maker/checker record) is required from the checker before a real-value network transaction is cleared', 409);
       if (cfg.requireScreening && !screeningRef) throw httpError('screeningRef (compliance screening id) is required from the checker before a real-value network transaction is cleared', 409);
-      await this._account(tx.sourceAccountId, 'sourceAccountId', { cents: tx.amountCents });
+      await this._account(tx.sourceAccountId, 'sourceAccountId', { cents: tx.amountCents, coreBanking: tx.type === 'payout' });
       if (tx.type === 'book_transfer') await this._account(tx.destinationAccountId, 'destinationAccountId');
       else {
         const method = await this._method(tx.methodId);
@@ -489,6 +617,7 @@ class PrivatePaymentNetworkOsEngine {
     if (tx.type === 'book_transfer') {
       const Ledger = this._ledger();
       if (!Ledger) throw new Error('CashEngine not available');
+      const coreBanking = await this._mirrorBookTransfer(tx);
       const movement = await Ledger.transfer({
         fromAccountId: tx.sourceAccountId,
         toAccountId: tx.destinationAccountId,
@@ -499,12 +628,28 @@ class PrivatePaymentNetworkOsEngine {
         referenceType: 'private_payment_network',
         initiatedBy: tx.approvedBy,
       });
-      return { route: 'CashEngine.transfer', status: 'settled', movementId: movement?.movement_id || null, result: { movement, metadata } };
+      return { route: 'CashEngine.transfer', status: 'settled', movementId: movement?.movement_id || null, result: { movement, metadata, coreBanking } };
     }
-    if (tx.processor === MFT_PROCESSOR) return this._dispatchFileDrop(tx, metadata);
+    const cfg = this.getConfig();
+    let coreBanking = null;
+    if (cfg.coreBanking.required) {
+      const gate = this._coreBankingGate(cfg);
+      if (gate) throw new Error(`core-banking funding source: ${gate}`);
+      const src = await this._ledger().getAccount(tx.sourceAccountId);
+      const savingsAccountId = this._savingsAccountId(src, cfg);
+      if (!savingsAccountId) throw new Error(`ledger account ${tx.sourceAccountId} is not linked to a Fineract core-banking account`);
+      coreBanking = await this._coreBankingWithdraw(savingsAccountId, tx, tx.memo);
+    }
+    if (tx.processor === MFT_PROCESSOR) {
+      const out = await settle(() => this._dispatchFileDrop(tx, metadata));
+      if (!out.ok) {
+        throw coreBanking ? await this._unwindWithdrawal(coreBanking, tx, 'file drop failed', out.error) : new Error(out.error);
+      }
+      return { ...out.value, result: { ...(out.value.result || {}), coreBanking } };
+    }
     const Gateway = this._gateway();
     if (!Gateway) throw new Error('PaymentGatewayServerEngine not available');
-    const sale = await Gateway.sale({
+    const attempt = await settle(() => Gateway.sale({
       amount: tx.amount,
       currency: tx.currency,
       methodId: tx.methodId,
@@ -515,15 +660,39 @@ class PrivatePaymentNetworkOsEngine {
       processor: tx.processor,
       metadata,
       initiatedBy: tx.approvedBy,
-    });
-    if (sale.status === 'failed') throw new Error(`processor rejected payout ${sale.gatewayTxId || ''}`.trim());
+    }));
+    if (!attempt.ok || attempt.value.status === 'failed') {
+      const cause = attempt.ok ? `processor rejected payout ${attempt.value.gatewayTxId || ''}`.trim() : attempt.error;
+      throw coreBanking ? await this._unwindWithdrawal(coreBanking, tx, 'processor rejected', cause) : new Error(cause);
+    }
+    const sale = attempt.value;
     return {
-      route: 'PaymentGatewayServerEngine.sale',
+      route: coreBanking ? 'FineractClient.withdrawSavings → PaymentGatewayServerEngine.sale' : 'PaymentGatewayServerEngine.sale',
       status: sale.status === 'settled' ? 'settled' : 'cleared',
       gatewayTxId: sale.gatewayTxId || null,
       processorTxId: sale.processorTxId || null,
-      result: sale,
+      result: { ...sale, coreBanking },
     };
+  }
+
+  /**
+   * Book transfers between ledger accounts linked to different Fineract accounts
+   * move the cash in the core bank too (withdrawal + deposit). Same account (or
+   * unlinked, or core banking disabled/shadow) → sub-ledger movement only.
+   */
+  static async _mirrorBookTransfer(tx) {
+    const cfg = this.getConfig();
+    if (!cfg.coreBanking.required || this._coreBankingGate(cfg)) return null;
+    const Ledger = this._ledger();
+    const [src, dst] = await Promise.all([Ledger.getAccount(tx.sourceAccountId), Ledger.getAccount(tx.destinationAccountId)]);
+    const from = this._savingsAccountId(src, cfg);
+    const to = this._savingsAccountId(dst, cfg);
+    if (!from || !to || from === to) return { system: 'fineract', mirrored: false, savingsAccountId: from || to || null };
+    const withdrawal = await this._coreBankingWithdraw(from, tx, tx.memo);
+    const Fineract = this._fineract();
+    const dep = await settle(() => Fineract.depositSavings({ accountId: to, amount: tx.amount, paymentTypeId: cfg.coreBanking.paymentTypeId, note: `private payment network ${tx.transactionId}` }));
+    if (!dep.ok) throw await this._unwindWithdrawal(withdrawal, tx, 'destination deposit failed', `Fineract deposit to ${to} failed: ${dep.error}`);
+    return { ...withdrawal, mirrored: true, toSavingsAccountId: to, depositTransactionId: dep.value?.resourceId != null ? String(dep.value.resourceId) : null };
   }
 
   /**
@@ -656,13 +825,18 @@ class PrivatePaymentNetworkOsEngine {
     let next = tx.status;
     if (tx.status === 'cleared' && SETTLED.has(s)) next = 'settled';
     else if (['cleared', 'settled'].includes(tx.status) && RETURNED.has(s)) next = 'returned';
+    const patch = { reconciliation: { status: s || null, at: new Date().toISOString(), gateway: out } };
+    if (next === 'returned' && tx.status !== 'returned' && tx.result?.coreBanking?.withdrawalTransactionId && !tx.result.coreBanking.reversal) {
+      const reversed = await settle(() => this._coreBankingRedeposit(tx.result.coreBanking, tx, `payout ${s}`));
+      patch.coreBanking = reversed.ok ? reversed.value : { ...tx.result.coreBanking, reversalError: reversed.error };
+    }
     await pool.query(
       `UPDATE ${TABLE} SET status = $2, processor_tx_id = COALESCE(processor_tx_id, $3), result = COALESCE(result, '{}'::jsonb) || $4::jsonb,
          settled_at = CASE WHEN $2 = 'settled' AND settled_at IS NULL THEN NOW() ELSE settled_at END
        WHERE transaction_id = $1`,
-      [tx.transactionId, next, processorTxId || null, JSON.stringify({ reconciliation: { status: s || null, at: new Date().toISOString(), gateway: out } })]
+      [tx.transactionId, next, processorTxId || null, JSON.stringify(patch)]
     );
-    return { transactionId: tx.transactionId, gatewayTxId: txId || null, previousStatus: tx.status, status: next, reconciliation: out };
+    return { transactionId: tx.transactionId, gatewayTxId: txId || null, previousStatus: tx.status, status: next, reconciliation: out, coreBanking: patch.coreBanking || tx.result?.coreBanking || null };
   }
 
   /** Processor callback: HMAC-SHA256 over the raw body with PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET. */

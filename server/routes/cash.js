@@ -11,6 +11,13 @@ const express = require('express');
 const router  = express.Router();
 const { CashEngine } = require('../integrations/cash/cashEngine');
 
+// Admin token via x-admin-token header (same gate as /api/aggregator, /api/os).
+const requireAdmin = (req, res, next) => {
+  const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && process.env.ADMIN_SECRET_TOKEN && adminToken === process.env.ADMIN_SECRET_TOKEN) return next();
+  return res.status(401).json({ success: false, error: 'Authentication required (x-admin-token).' });
+};
+
 // ─── GET /api/cash/accounts ───────────────────────────────────────────────────
 router.get('/accounts', async (req, res) => {
   try {
@@ -84,6 +91,19 @@ router.post('/accounts/:id/reconcile', async (req, res) => {
     res.json({ success: true, data: result });
   } catch (err) {
     const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/cash/accounts/:id/link-fineract ────────────────────────────────
+// Body: { fineractAccountId } — links the ledger account to its Fineract
+// core-banking savings account (the PPN funding source of record); null unlinks.
+router.post('/accounts/:id/link-fineract', requireAdmin, async (req, res) => {
+  try {
+    const result = await CashEngine.linkFineractAccount(req.params.id, req.body?.fineractAccountId ?? null);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : err.message.includes('not active') ? 409 : 500;
     res.status(status).json({ success: false, error: err.message });
   }
 });
