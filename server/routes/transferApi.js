@@ -78,4 +78,23 @@ router.post(`${v}/transfers/:id/cancel`, transferAuth(adminAuth), writeRateLimit
   } catch (err) { sendError(res, err); }
 });
 
+router.post(`${v}/screenings`, transferAuth(adminAuth), writeRateLimiter(), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const data = await TransferApiOsEngine.screen({ payee: b.payee, amountCents: b.amountCents, amount: b.amount, rail: b.rail, bankId: b.bankId, approvalRef: b.approvalRef, reference: b.reference, caller: req.transferCaller, idempotencyKey: idempotencyKeyFromRequest(req) });
+    res.status(data.replayed ? 200 : 201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get(`${v}/screenings/:ref`, transferAuth(operatorAuth), async (req, res) => {
+  try { res.json({ success: true, data: await TransferApiOsEngine.getScreening({ screeningRef: req.params.ref }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post(`${v}/screenings/:ref/review`, transferAuth(adminAuth), writeRateLimiter(), async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json({ success: true, data: await TransferApiOsEngine.reviewScreening({ screeningRef: req.params.ref, decision: b.decision, notes: b.notes, caller: req.transferCaller, idempotencyKey: idempotencyKeyFromRequest(req) }) });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;

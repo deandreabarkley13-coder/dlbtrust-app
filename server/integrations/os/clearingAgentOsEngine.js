@@ -37,6 +37,7 @@ const https = require('https');
 const { URL } = require('url');
 const pool = require('../bonds/pgPool');
 const { EgressOsEngine } = require('./egressOsEngine');
+const { FraudComplianceOsEngine } = require('./fraudComplianceOsEngine');
 const { ClearingAgentNetworkEndpoint } = require('./clearingAgentNetworkEndpoint');
 const { FineractClient } = require('../fineract/fineractClient');
 const nacha = require('../ach/nachaGenerator');
@@ -640,6 +641,15 @@ const ClearingAgentOsEngine = {
     if (cfg.familyOnly && !ix.creditor.participantId) throw new ClearingAgentError('family-only mode: creditor.participantId (admitted PPN participant) required', 'CLEARING_AGENT_FAMILY_ONLY', 403);
     const msg = convert(ix, n.format, cfg.agentId, { network: n, idempotencyKey: key });
     const instructionId = newId('CAI');
+    if (cfg.live && FraudComplianceOsEngine.enforcesSettlement()) {
+      await FraudComplianceOsEngine.verify({
+        screeningRef,
+        amountCents: ix.amountCents,
+        payee: ix.creditor.accountNumber ? { name: ix.creditor.name, routingNumber: ix.creditor.routingNumber, accountNumber: ix.creditor.accountNumber } : null,
+        consume: true,
+        consumer: instructionId,
+      });
+    }
     await pool.query(
       `INSERT INTO clearing_agent_instructions (instruction_id, idempotency_key, network_id, format, status, amount_cents, currency, debtor_name, debtor_routing, debtor_account_last4, debtor_fineract_id,
          creditor_name, creditor_routing, creditor_account_last4, creditor_fineract_id, purpose, approval_ref, screening_ref, message_sha256, submitted_by)

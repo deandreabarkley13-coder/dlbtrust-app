@@ -30,13 +30,14 @@ const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
 const { EnterpriseOdfiOsEngine, PURPOSE_CLASSES } = require('./enterpriseOdfiOsEngine');
 const { redactPayload } = require('./clearingAgentOsEngine');
+const { FraudComplianceOsEngine } = require('./fraudComplianceOsEngine');
 
 const API_VERSION = 'v1';
 const USERINFO_HEADER = 'x-apigateway-api-userinfo';
 const IDEMPOTENCY_HEADER = 'idempotency-key';
 const IDEMPOTENCY_RE = /^[A-Za-z0-9._:-]{8,128}$/;
-const WRITE_ACTIONS = ['transfer', 'release', 'cancel'];
-const READ_ACTIONS = ['get', 'list', 'rails'];
+const WRITE_ACTIONS = ['transfer', 'release', 'cancel', 'screen', 'review_screening'];
+const READ_ACTIONS = ['get', 'list', 'rails', 'get_screening'];
 
 class TransferApiError extends Error {
   constructor(message, code, statusCode = 400, details = {}) {
@@ -225,6 +226,26 @@ const TransferApiOsEngine = {
     });
   },
 
+  /** screen: maker requests a Fraud & Compliance screeningRef for one payee / amount. */
+  async screen({ payee, amountCents, amount, rail, bankId = null, approvalRef = null, reference = null, caller = null, idempotencyKey } = {}) {
+    return this._write('screen', idempotencyKey, caller, async () =>
+      FraudComplianceOsEngine.screen({ payee, amountCents, amount, rail, bankId, approvalRef, reference, actor: caller.email }));
+  },
+
+  /** reviewScreening: a distinct checker clears or blocks a screening in review. */
+  async reviewScreening({ screeningRef, decision, notes = null, caller = null, idempotencyKey } = {}) {
+    return this._write('review_screening', idempotencyKey, caller, async () => {
+      if (!screeningRef) throw new TransferApiError('screeningRef required', 'TRANSFER_API_BAD_REQUEST', 400);
+      return FraudComplianceOsEngine.review({ screeningRef, decision, notes, actor: caller.email });
+    });
+  },
+
+  async getScreening({ screeningRef } = {}) {
+    const s = await FraudComplianceOsEngine.getScreening(screeningRef);
+    if (!s) throw new TransferApiError('screening not found', 'TRANSFER_API_NOT_FOUND', 404);
+    return s;
+  },
+
   async getTransfer({ transferId } = {}) {
     return publicTransfer(await EnterpriseOdfiOsEngine.batch({ batchId: transferId }));
   },
@@ -259,7 +280,7 @@ const TransferApiOsEngine = {
         edgeAuth: ['google_id_token (maker/checker Google identities)', 'api_key (read-only)'],
         backendAuth: 'gateway service-account OIDC token through IAP; caller identity from x-apigateway-api-userinfo',
       },
-      routes: { base: `/api/transfer/${API_VERSION}`, resources: ['transfers', 'transfers/:id', 'transfers/:id/release', 'transfers/:id/cancel', 'rails', 'status'] },
+      routes: { base: `/api/transfer/${API_VERSION}`, resources: ['transfers', 'transfers/:id', 'transfers/:id/release', 'transfers/:id/cancel', 'screenings', 'screenings/:ref', 'screenings/:ref/review', 'rails', 'status'] },
       idempotency: { header: 'Idempotency-Key', required: true, replay: 'stored response (including failures)' },
       requests,
       delegate: { engine: 'enterprise-odfi', profile: odfi.profile, rails: odfi.rails, policy: odfi.policy },
@@ -308,6 +329,9 @@ const TransferApiOsEngine = {
       case 'transfer': return this.transfer({ ...body, caller, idempotencyKey: this._key(idempotencyKey) });
       case 'release': return this.release({ ...body, caller, idempotencyKey: this._key(idempotencyKey) });
       case 'cancel': return this.cancel({ ...body, caller, idempotencyKey: this._key(idempotencyKey) });
+      case 'screen': return this.screen({ ...body, caller, idempotencyKey: this._key(idempotencyKey) });
+      case 'review_screening': return this.reviewScreening({ ...body, caller, idempotencyKey: this._key(idempotencyKey) });
+      case 'get_screening': return this.getScreening(body);
       case 'get': return this.getTransfer(body);
       case 'list': return this.listTransfers(body);
       case 'rails': return this.rails();
