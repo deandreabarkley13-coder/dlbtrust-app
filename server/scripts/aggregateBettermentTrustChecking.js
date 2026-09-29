@@ -36,6 +36,11 @@
  *        To obtain it once: create a Setup Token at https://beta-bridge.simplefin.org and run
  *        --connector simplefin --claim-setup-token <token> --claim-to <file>; the Access URL is
  *        written to <file> (mode 0600) for upload to Secret Manager and never printed)
+ *   node server/scripts/aggregateBettermentTrustChecking.js --connector finlynq --account-ids 12 --pull
+ *       (Finlynq MCP: CONN-BETTERMENT-TRUST-CHECKING-FINLYNQ; needs a Finlynq pf_ API key
+ *        FINLYNQ_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ_API_KEY, Betterment linked
+ *        inside Finlynq (Settings → Bank Feeds); --account-ids are Finlynq accounts.id values,
+ *        --base-url overrides https://finlynq.com/api/mcp for a self-hosted Finlynq)
  *   node server/scripts/aggregateBettermentTrustChecking.js --connector orangerails --pull
  *       (Orange Rails: CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS; needs the platform key
  *        ORANGERAILS_PLATFORM_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY and
@@ -61,6 +66,9 @@ const CONNECTORS = {
   banksync: (o) => Object.assign({ bankName: 'Betterment' }, o.bankId ? { bankId: o.bankId } : {}),
   simplefin: (o) => Object.assign({ orgName: 'Betterment', lookbackDays: 90 },
     o.bankId ? { connId: o.bankId } : {},
+    o.accountIds ? { accountIds: o.accountIds } : {}),
+  finlynq: (o) => Object.assign({ lookbackDays: 90, credentialsEnvPrefix: 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ' },
+    o.baseUrl ? { mcpUrl: o.baseUrl } : {},
     o.accountIds ? { accountIds: o.accountIds } : {}),
   orangerails: (o) => Object.assign({ institutionName: 'Betterment', appUserId: 'dlb-family-trust' },
     o.baseUrl ? { baseUrl: o.baseUrl } : {},
