@@ -10,6 +10,7 @@ const ENV_KEYS = [
   'PARTNER_BANK_ACCOUNT_LABEL',
   'UNIT_API_TOKEN',
   'UNIT_ACCOUNT_ID',
+  'PARTNER_BANK_LIVE',
 ];
 
 const INSTRUCTION = {
@@ -154,6 +155,7 @@ describe('Partner bank rails', () => {
     process.env.PARTNER_BANK_API_KEY = 'test_key';
     process.env.PARTNER_BANK_ACCOUNT_ID = 'trust-settlement';
     process.env.PARTNER_BANK_BASE_URL = `http://127.0.0.1:${port}`;
+    process.env.PARTNER_BANK_LIVE = 'true';
 
     try {
       reply = {
@@ -307,6 +309,7 @@ describe('Partner bank rails', () => {
     process.env.UNIT_API_TOKEN = 'unit_token';
     process.env.UNIT_ACCOUNT_ID = '10001';
     process.env.PARTNER_BANK_BASE_URL = `http://127.0.0.1:${port}`;
+    process.env.PARTNER_BANK_LIVE = 'true';
 
     try {
       reply = {
@@ -364,6 +367,27 @@ describe('Partner bank rails', () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it('stays in shadow mode and refuses origination until PARTNER_BANK_LIVE=true', async () => {
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    process.env.UNIT_API_TOKEN = 'unit_token';
+    process.env.UNIT_ACCOUNT_ID = '10001';
+    process.env.PARTNER_BANK_BASE_URL = 'http://127.0.0.1:1';
+
+    const shadow = PartnerBankRails.status();
+    expect(shadow).toMatchObject({ ready: true, live: false, mode: 'shadow' });
+    expect(shadow.note).toMatch(/PARTNER_BANK_LIVE/);
+    expect(PartnerBankRails.isLive()).toBe(false);
+    expect(PartnerBankRails.prepare('ach', { ...INSTRUCTION, counterpartyId: '555' }).url).toBe('http://127.0.0.1:1/payments');
+    await expect(PartnerBankRails.originate('ach', { ...INSTRUCTION, counterpartyId: '555' }))
+      .rejects.toThrow(/Unit is in shadow mode \(PARTNER_BANK_LIVE is not true\)/);
+
+    process.env.PARTNER_BANK_LIVE = 'true';
+    expect(PartnerBankRails.status()).toMatchObject({ live: true, mode: 'live' });
+
+    delete process.env.UNIT_API_TOKEN;
+    expect(PartnerBankRails.status()).toMatchObject({ ready: false, live: false });
   });
 
   it('never exposes the API key in status output', () => {

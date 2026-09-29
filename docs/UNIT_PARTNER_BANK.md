@@ -44,7 +44,14 @@ PARTNER_BANK_PROVIDER      = "unit"
 PARTNER_BANK_BASE_URL      = "https://api.unit.co"   # live; sandbox https://api.s.unit.sh (provider default)
 PARTNER_BANK_ACCOUNT_ID    = "<unit-deposit-account-id>"
 PARTNER_BANK_ACCOUNT_LABEL = "DLB Trust Unit Operating"
+PARTNER_BANK_LIVE          = "true"                   # omit / "false" = shadow
 ```
+
+`PARTNER_BANK_LIVE` is the kill switch for every partner-bank provider: until it
+is `true`, `PartnerBankRails.originate` refuses and `BankSettlementEngine`
+records settlements as `shadow` (no Unit call). `cloudrun.tf` refuses a plan
+with `PARTNER_BANK_PROVIDER=unit` + `PARTNER_BANK_LIVE=true` and no explicit
+`PARTNER_BANK_BASE_URL`.
 
 `PARTNER_BANK_API_KEY` / `PARTNER_BANK_ACCOUNT_ID` win when set;
 `UNIT_API_TOKEN` / `UNIT_ACCOUNT_ID` are the fallbacks for `unit`.
@@ -54,7 +61,7 @@ cd infra/gcp
 terraform plan && terraform apply
 ```
 
-`GET /api/wire/rails` should then report `provider: "unit"`, `ready: true`.
+`GET /api/wire/rails` should then report `provider: "unit"`, `ready: true` and `mode: "live"` (or `"shadow"`).
 
 ## 3. Register the settlement bank
 

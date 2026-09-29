@@ -93,6 +93,7 @@ locals {
     for s in local.unit_secret_names : s
     if local.unit_partner_bank && !contains(local.runtime_secret_names, s)
   ]
+  unit_live_without_base_url = local.unit_partner_bank && lower(lookup(var.runtime_environment, "PARTNER_BANK_LIVE", "")) == "true" && trimspace(lookup(var.runtime_environment, "PARTNER_BANK_BASE_URL", "")) == ""
 
   # Fraud & Compliance OS (server/integrations/os/fraudComplianceOsEngine.js):
   # FRAUD_COMPLIANCE_LIVE=true issues live screeningRefs from the sanctions list

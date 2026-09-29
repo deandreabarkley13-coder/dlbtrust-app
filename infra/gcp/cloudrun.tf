@@ -290,6 +290,12 @@ resource "google_cloud_run_v2_service" "app" {
       error_message = "PARTNER_BANK_PROVIDER=unit but secret_names lacks ${join(", ", local.missing_unit_secrets)}. Add it to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add UNIT_API_TOKEN --data-file=-`; GET /api/wire/rails reports the same blocker at runtime."
     }
 
+    # Live Unit must name its API host: the provider default is the sandbox.
+    precondition {
+      condition     = !local.unit_live_without_base_url
+      error_message = "PARTNER_BANK_PROVIDER=unit with PARTNER_BANK_LIVE=true needs PARTNER_BANK_BASE_URL set explicitly (https://api.unit.co for live, https://api.s.unit.sh for sandbox); the provider default is the Unit sandbox."
+    }
+
     # Fraud & Compliance OS: live screenings need a real sanctions list (and,
     # with FRAUD_COMPLIANCE_PROVIDER=sardine, Sardine credentials + the live
     # Sardine host); settlement enforcement needs live screenings
