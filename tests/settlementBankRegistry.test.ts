@@ -78,4 +78,15 @@ describe('SettlementBankRegistry', () => {
     expect(acme.accountNumberMasked).toBe('****5555');
     await expect(SettlementBankRegistry.register({ bankId: 'bad id!', provider: 'generic', name: 'x', routingNumber: '1', accountNumber: '2' })).rejects.toMatchObject({ status: 400 });
   });
+
+  it('registers unit with routing/account, a counterparty endpointId, or a book-transfer receivingAccountId', async () => {
+    await expect(SettlementBankRegistry.register({ bankId: 'unit-operating', provider: 'unit', name: 'Unit' })).rejects.toMatchObject({ status: 400 });
+    const inline = await SettlementBankRegistry.register({ bankId: 'unit-operating', provider: 'unit', name: 'Unit', routingNumber: '091000019', accountNumber: '4444' });
+    expect(inline).toMatchObject({ provider: 'unit', accountNumberMasked: '****4444' });
+    const cpty = await SettlementBankRegistry.register({ bankId: 'unit-cpty', provider: 'unit', name: 'Unit', endpointId: '555' });
+    expect(cpty).toMatchObject({ provider: 'unit', endpointId: '555' });
+    const book = await SettlementBankRegistry.register({ bankId: 'unit-book', provider: 'unit', name: 'Unit', metadata: { receivingAccountId: '10002' } });
+    expect(book.metadata).toMatchObject({ receivingAccountId: '10002' });
+    await expect(SettlementBankRegistry.register({ bankId: 'col', provider: 'column', name: 'C', metadata: { receivingAccountId: '1' } })).rejects.toMatchObject({ status: 400 });
+  });
 });

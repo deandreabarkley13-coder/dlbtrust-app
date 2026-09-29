@@ -44,6 +44,10 @@
 # config.credentialsEnvPrefix). bankingAggregator.js projects them onto the
 # connection's apiKey / webhookSecret / apiSecret / bearerToken / clientSecret
 # at load time (secrets.tf missing_aggregator_secrets, cloudrun.tf precondition).
+#
+# The Unit block (UNIT_API_TOKEN — secrets.tf unit_secret_names) is REQUIRED
+# when runtime_environment.PARTNER_BANK_PROVIDER="unit" (cloudrun.tf
+# precondition). See docs/UNIT_PARTNER_BANK.md.
 
 project_id = "dlb-treasury-management"
 
@@ -146,6 +150,11 @@ secret_names = [
   # Betterment is connected in the Bridge ("Login with App Password").
   "SIMPLEFIN_ACCESS_URL",
   # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_SIMPLEFIN_ACCESS_URL)
+  # Unit (Unit Finance BaaS) partner bank (PARTNER_BANK_PROVIDER=unit): org API
+  # token from Unit Dashboard > Developer > API Tokens, scope payments-write
+  # (plus counterparties-write if counterparties are created through the API).
+  # partnerBankRails.js reads it when PARTNER_BANK_API_KEY is unset.
+  # "UNIT_API_TOKEN",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",
@@ -159,3 +168,16 @@ unseeded_secret_names = [
   "LILI_OAUTH_REFRESH_TOKEN",
   "LILI_BUSINESS_USER_ID",
 ]
+
+# Unit partner bank (docs/UNIT_PARTNER_BANK.md). runtime_environment replaces
+# the variables.tf default map wholesale, so copy that default into
+# terraform.tfvars and add these entries to it:
+# runtime_environment = {
+#   # … every entry of the variables.tf runtime_environment default …
+#   PARTNER_BANK_PROVIDER      = "unit"
+#   # Live: https://api.unit.co — sandbox (provider default): https://api.s.unit.sh
+#   PARTNER_BANK_BASE_URL      = "https://api.unit.co"
+#   # Unit deposit account id the trust originates from (not a bank account number).
+#   PARTNER_BANK_ACCOUNT_ID    = "<unit-deposit-account-id>"
+#   PARTNER_BANK_ACCOUNT_LABEL = "DLB Trust Unit Operating"
+# }
