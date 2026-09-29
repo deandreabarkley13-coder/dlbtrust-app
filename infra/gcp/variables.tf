@@ -573,7 +573,7 @@ variable "runtime_environment" {
     # Gateway file drop / SFTP / S2S). At startup its secret-backed routing /
     # account (BETTERMENT_ROUTING_NUMBER / BETTERMENT_ACCOUNT_NUMBER in
     # secret_names) are projected onto ACH_ODFI_ROUTING, NACHA_ODFI_ROUTING,
-    # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_OPERATING_ACCOUNT, LILI_ODFI_*,
+    # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_SETTLEMENT_ACCOUNT, LILI_ODFI_*,
     # etc., superseding the Lili/Sunrise originator values below. Company id
     # defaults to "1" + INCOME_OBLIGOR_EIN unless Betterment assigns one.
     ACH_ODFI_BANK            = "betterment"
@@ -688,7 +688,7 @@ variable "runtime_environment" {
     ACH_COMPANY_ID                   = "1091017138"
     # usAchConnector.js originator block (what PHEE hands to /connectors/us-ach/execute)
     # and the debtor side of LiliSettlementBankEngine._cfg() (ACH_ODFI_ROUTING /
-    # ACH_ORIGINATOR_NAME). CLEARING_FUNDING_OPERATING_ACCOUNT (trust operating
+    # ACH_ORIGINATOR_NAME). CLEARING_FUNDING_SETTLEMENT_ACCOUNT (trust bank
     # account number) is Secret Manager only.
     ACH_ODFI_ROUTING      = "121145307"
     ACH_ODFI_NAME         = "SUNRISE BANKS NA"
