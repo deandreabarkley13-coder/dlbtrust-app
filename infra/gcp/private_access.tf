@@ -23,6 +23,7 @@ locals {
   platform_accessors = distinct(concat(
     ["serviceAccount:${google_service_account.deployer.email}", "serviceAccount:${google_service_account.runtime.email}"],
     var.scheduler_accessors,
+    var.transfer_api_enabled ? ["serviceAccount:${local.transfer_gateway_sa_email}"] : [],
   ))
 }
 
@@ -34,6 +35,7 @@ resource "google_iap_web_cloud_run_service_iam_member" "scheduler" {
   cloud_run_service_name = google_cloud_run_v2_service.app.name
   role                   = "roles/iap.httpsResourceAccessor"
   member                 = each.value
+  depends_on             = [google_service_account.transfer_gateway]
 }
 
 # ── Cloud VPN for trusted family sites (optional) ─────────────────────────────

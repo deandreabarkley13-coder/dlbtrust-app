@@ -72,6 +72,7 @@ try { app.use('/api/analytics', require(path.join(HD, 'server', 'routes', 'analy
 // Fineract core banking routes
 try { app.use('/api/fineract', require(path.join(HD, 'server', 'routes', 'fineract'))); console.log('[fineract] loaded'); } catch(e) { console.warn('[fineract]', e.message); }
 try { app.use('/api/open-bank', require(path.join(HD, 'server', 'routes', 'openBank'))); console.log('[open-bank] loaded'); } catch(e) { console.warn('[open-bank]', e.message); }
+try { app.use('/api/transfer', require(path.join(HD, 'server', 'routes', 'transferApi'))); console.log('[transfer-api] loaded'); } catch(e) { console.warn('[transfer-api]', e.message); }
 
 // Fixed Income / Bond routes
 try { app.use('/api/bonds', require(path.join(HD, 'server', 'routes', 'bonds'))); console.log('[bonds] loaded'); } catch(e) { console.warn('[bonds]', e.message); }
@@ -518,8 +519,9 @@ async function initializeDatabase() {
     await ClearingAgentOsEngine.ensureTables();
     await require(path.join(HD, 'server', 'integrations', 'os', 'clearingAgentNetworkEndpoint')).ClearingAgentNetworkEndpoint.ensureTables();
     await require(path.join(HD, 'server', 'integrations', 'os', 'enterpriseOdfiOsEngine')).EnterpriseOdfiOsEngine.ensureTables();
-    console.log('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi] tables ensured');
-  } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi] table init:', e.message); }
+    await require(path.join(HD, 'server', 'integrations', 'os', 'transferApiOsEngine')).TransferApiOsEngine.ensureTables();
+    console.log('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi/transfer-api] tables ensured');
+  } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi/transfer-api] table init:', e.message); }
 
   try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
