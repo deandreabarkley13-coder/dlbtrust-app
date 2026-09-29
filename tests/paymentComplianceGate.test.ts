@@ -8,6 +8,7 @@ const { ComplianceEngine } = require('../server/integrations/compliance/complian
 const { CustomerIdentificationEngine } = require('../server/integrations/compliance/customerIdentificationEngine');
 const { OfacSanctionsListEngine, parseCsvLine, parseEntries } = require('../server/integrations/compliance/ofacSanctionsListEngine');
 const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
+const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
@@ -370,5 +371,24 @@ describe('OFAC sanctions readiness', () => {
     expect(routes).toContain("router.post('/compliance/ofac/refresh', operatorAuth");
     expect(packageJson.scripts['compliance:refresh-ofac'])
       .toBe('node scripts/refresh-ofac-sanctions.cjs');
+  });
+});
+
+describe('payment compliance gate — Fraud & Compliance OS screeningRefs', () => {
+  it('verifies FCS- refs through FraudComplianceOsEngine (live required when FRAUD_COMPLIANCE_LIVE=true)', async () => {
+    const saved = process.env.FRAUD_COMPLIANCE_LIVE;
+    process.env.FRAUD_COMPLIANCE_LIVE = 'true';
+    vi.spyOn(ComplianceEngine, 'assertPaymentReady').mockResolvedValue({ ready: true, provider: 'opensanctions' });
+    const get = vi.spyOn(ComplianceEngine, 'getScreening');
+    const verify = vi.spyOn(FraudComplianceOsEngine, 'verify').mockResolvedValue({ screeningRef: 'FCS-1', status: 'clear', mode: 'live' });
+    try {
+      await expect(PaymentComplianceGate.verifyRecordedScreening('FCS-1')).resolves.toMatchObject({ status: 'clear' });
+      expect(verify).toHaveBeenCalledWith({ screeningRef: 'FCS-1', requireLive: true });
+      expect(get).not.toHaveBeenCalled();
+      verify.mockRejectedValueOnce(Object.assign(new Error('screeningRef FCS-2 is review, not clear'), { status: 409 }));
+      await expect(PaymentComplianceGate.verifyRecordedScreening('FCS-2')).rejects.toThrow(/not clear/);
+    } finally {
+      if (saved === undefined) delete process.env.FRAUD_COMPLIANCE_LIVE; else process.env.FRAUD_COMPLIANCE_LIVE = saved;
+    }
   });
 });

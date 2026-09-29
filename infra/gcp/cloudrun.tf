@@ -290,17 +290,18 @@ resource "google_cloud_run_v2_service" "app" {
       error_message = "PARTNER_BANK_PROVIDER=unit but secret_names lacks ${join(", ", local.missing_unit_secrets)}. Add it to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add UNIT_API_TOKEN --data-file=-`; GET /api/wire/rails reports the same blocker at runtime."
     }
 
-    # Fraud & Compliance OS: live screenings need Sardine credentials, the live
-    # Sardine host and a real sanctions list; settlement enforcement needs live
-    # screenings (secrets.tf fraud_compliance_*).
+    # Fraud & Compliance OS: live screenings need a real sanctions list (and,
+    # with FRAUD_COMPLIANCE_PROVIDER=sardine, Sardine credentials + the live
+    # Sardine host); settlement enforcement needs live screenings
+    # (secrets.tf fraud_compliance_*).
     precondition {
       condition     = length(local.missing_fraud_compliance_secrets) == 0
       error_message = "FRAUD_COMPLIANCE_LIVE=true but secret_names lacks ${join(", ", local.missing_fraud_compliance_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/fraud-compliance reports the same blockers at runtime."
     }
 
     precondition {
-      condition     = !local.fraud_compliance_live_without_sardine
-      error_message = "FRAUD_COMPLIANCE_LIVE=true requires FRAUD_COMPLIANCE_PROVIDER=\"sardine\": a live screeningRef needs a fraud / AML risk decision, not only a sanctions list match."
+      condition     = !local.fraud_compliance_live_bad_provider
+      error_message = "FRAUD_COMPLIANCE_LIVE=true requires FRAUD_COMPLIANCE_PROVIDER=\"internal\" (DLB fraud rules) or \"sardine\" (DLB rules + Sardine): a live screeningRef needs a fraud-risk decision, not only a sanctions list match."
     }
 
     precondition {

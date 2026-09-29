@@ -6,6 +6,7 @@ import path from 'path';
 const require = createRequire(import.meta.url);
 const { TransferApiOsEngine, callerFromRequest, idempotencyKeyFromRequest, decodeUserInfo, getTransferApiConfig } = require('../server/integrations/os/transferApiOsEngine');
 const { EnterpriseOdfiOsEngine } = require('../server/integrations/os/enterpriseOdfiOsEngine');
+const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -168,12 +169,38 @@ describe('Transfer API — API Gateway OpenAPI template', () => {
     expect(tpl).toMatch(/x-google-backend:\s+address: \$\{backend_address\}\s+jwt_audience: \$\{backend_jwt_audience\}/);
     expect(tpl).toMatch(/x-google-issuer: https:\/\/accounts\.google\.com/);
     const ops = [...tpl.matchAll(/operationId: (\w+)[\s\S]*?security:\n((?:\s+- \w+: \[\]\n)+)/g)].map((m) => [m[1], m[2].match(/\w+(?=: \[\])/g)]);
-    const writes = ops.filter(([op]) => /create|release|cancel/.test(op as string));
-    expect(writes.map(([op]) => op)).toEqual(['createTransfer', 'releaseTransfer', 'cancelTransfer']);
+    const writes = ops.filter(([op]) => /create|release|cancel|review/.test(op as string));
+    expect(writes.map(([op]) => op)).toEqual(['createTransfer', 'releaseTransfer', 'cancelTransfer', 'createScreening', 'reviewScreening']);
     for (const [, sec] of writes) expect(sec).toEqual(['google_id_token']);
-    for (const [, sec] of ops.filter(([op]) => !/create|release|cancel/.test(op as string))) expect(sec).toEqual(['google_id_token', 'api_key']);
-    expect((tpl.match(/name: Idempotency-Key\s+in: header\s+required: true/g) || []).length).toBe(3);
+    for (const [, sec] of ops.filter(([op]) => !/create|release|cancel|review/.test(op as string))) expect(sec).toEqual(['google_id_token', 'api_key']);
+    expect((tpl.match(/name: Idempotency-Key\s+in: header\s+required: true/g) || []).length).toBe(5);
     expect(tpl).toMatch(/transfer-writes-per-minute[\s\S]*STANDARD: \$\{write_quota_per_minute\}/);
     expect(tpl).not.toMatch(/accountNumber|routingNumber|bearer/i);
+  });
+});
+
+describe('Transfer API OS — Fraud & Compliance screenings', () => {
+  const PAYEE = { name: 'Jeremy N Robinson', routingNumber: '021000021', accountNumber: '9876543210', country: 'US' };
+
+  it('screen delegates to FraudComplianceOsEngine as the gateway caller and replays; review goes to the checker', async () => {
+    const screen = vi.spyOn(FraudComplianceOsEngine, 'screen').mockResolvedValue({ screeningRef: 'FCS-1', status: 'review', mode: 'live', payee: { last4: '3210' } });
+    const review = vi.spyOn(FraudComplianceOsEngine, 'review').mockResolvedValue({ screeningRef: 'FCS-1', status: 'clear' });
+    const s = await TransferApiOsEngine.screen({ payee: PAYEE, amountCents: 125000, rail: 'ach', bankId: 'lili', caller: MAKER, idempotencyKey: 'scr-0001-abc' });
+    expect(s).toMatchObject({ screeningRef: 'FCS-1', status: 'review' });
+    expect(screen.mock.calls[0][0]).toMatchObject({ amountCents: 125000, bankId: 'lili', actor: 'malissa.robinson' });
+    await expect(TransferApiOsEngine.screen({ payee: PAYEE, amountCents: 125000, caller: MAKER, idempotencyKey: 'scr-0001-abc' })).resolves.toMatchObject({ replayed: true });
+    expect(screen).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify([...store.values()])).not.toContain('9876543210');
+
+    await TransferApiOsEngine.reviewScreening({ screeningRef: 'FCS-1', decision: 'clear', caller: CHECKER, idempotencyKey: 'rev-0001-abc' });
+    expect(review.mock.calls[0][0]).toMatchObject({ screeningRef: 'FCS-1', decision: 'clear', actor: 'deandreabarkley13@gmail.com' });
+  });
+
+  it('refuses screening writes from API-key callers and 404s an unknown screening', async () => {
+    const screen = vi.spyOn(FraudComplianceOsEngine, 'screen');
+    await expect(TransferApiOsEngine.screen({ payee: PAYEE, amountCents: 1, caller: { email: 'k', via: 'api_gateway_key' }, idempotencyKey: 'scr-0002-abc' })).rejects.toMatchObject({ code: 'TRANSFER_API_FORBIDDEN' });
+    expect(screen).not.toHaveBeenCalled();
+    vi.spyOn(FraudComplianceOsEngine, 'getScreening').mockResolvedValue(null);
+    await expect(TransferApiOsEngine.getScreening({ screeningRef: 'FCS-missing' })).rejects.toMatchObject({ statusCode: 404 });
   });
 });

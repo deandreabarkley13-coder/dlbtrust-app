@@ -8,6 +8,7 @@ const TabaPay = require('../server/integrations/os/clearingAgentTabaPayAdapter')
 const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
 const { getEgressConfig } = require('../server/integrations/os/egressOsEngine');
 const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -243,6 +244,24 @@ describe('TabaPay adapter — register, handshake, clear', () => {
     expect(s.error).toMatch(/UNKNOWN HTTP 207/);
     await expect(ClearingAgentOsEngine.post({ instructionId: s.instruction_id, actor: 'x' })).rejects.toMatchObject({ code: 'CLEARING_AGENT_STATE' });
     expect(w).not.toHaveBeenCalled();
+  });
+
+  it('FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true consumes the screening bound to amount + creditor before TabaPay, and a failed one stops it', async () => {
+    memPool();
+    const calls = mockTabaPay();
+    await register();
+    await ClearingAgentOsEngine.challenge({ networkId: 'TABAPAY', actor: 'malissa.robinson' });
+    await ClearingAgentOsEngine.verify({ networkId: 'TABAPAY', actor: 'deandreabarkley13@gmail.com' });
+    process.env.FRAUD_COMPLIANCE_LIVE = 'true';
+    process.env.FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT = 'true';
+    const verify = vi.spyOn(FraudComplianceOsEngine, 'verify').mockRejectedValueOnce(Object.assign(new Error('screeningRef FCS-1 is review, not clear'), { status: 409 }));
+    await expect(ClearingAgentOsEngine.submit({ networkId: 'TABAPAY', instruction: IX, idempotencyKey: 'kF1', approvalRef: 'APR-1', screeningRef: 'FCS-1', actor: 'deandreabarkley13@gmail.com' })).rejects.toThrow(/not clear/);
+    expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+
+    verify.mockResolvedValueOnce({ screeningRef: 'FCS-2', status: 'consumed' });
+    const s = await ClearingAgentOsEngine.submit({ networkId: 'TABAPAY', instruction: IX, idempotencyKey: 'kF2', approvalRef: 'APR-1', screeningRef: 'FCS-2', actor: 'deandreabarkley13@gmail.com' });
+    expect(s.status).toBe('cleared');
+    expect(verify.mock.calls[1][0]).toMatchObject({ screeningRef: 'FCS-2', amountCents: 125000, consume: true, consumer: s.instruction_id, payee: { name: 'Jeremy N Robinson', routingNumber: '011000015', accountNumber: '9876543210' } });
   });
 
   it('shadow mode converts but never calls TabaPay', async () => {

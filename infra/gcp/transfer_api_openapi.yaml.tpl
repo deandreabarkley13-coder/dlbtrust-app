@@ -186,3 +186,71 @@ paths:
       responses:
         "200":
           description: OK
+  /v1/screenings:
+    post:
+      operationId: createScreening
+      summary: Maker requests a Fraud & Compliance screeningRef (sanctions + DLB fraud rules)
+      security:
+        - google_id_token: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      x-google-quota:
+        metricCosts:
+          transfer-writes: 1
+      responses:
+        "201":
+          description: Created
+        "200":
+          description: Replayed
+  /v1/screenings/{ref}:
+    get:
+      operationId: getScreening
+      summary: One screening (payee hash + last-4 only)
+      security:
+        - google_id_token: []
+        - api_key: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          type: string
+      x-google-quota:
+        metricCosts:
+          transfer-reads: 1
+      responses:
+        "200":
+          description: OK
+  /v1/screenings/{ref}/review:
+    post:
+      operationId: reviewScreening
+      summary: Distinct checker clears or blocks a screening in review
+      security:
+        - google_id_token: []
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          type: string
+        - name: Idempotency-Key
+          in: header
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      x-google-quota:
+        metricCosts:
+          transfer-writes: 1
+      responses:
+        "200":
+          description: OK

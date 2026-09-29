@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const {
   FraudComplianceOsEngine,
   buildSardineRequest,
+  evaluateInternalRules,
   parseSardineResponse,
   getFraudComplianceConfig,
   normalizePayee,
@@ -33,6 +34,16 @@ function memPool() {
       return { rows: [] };
     }
     if (/^SELECT \* FROM fraud_compliance_screenings WHERE screening_ref/.test(s)) return { rows: [rows.get(params[0])].filter(Boolean) };
+    if (/FROM fraud_compliance_screenings WHERE payee_hash/.test(s)) {
+      const mine = [...rows.values()].filter((r) => r.payee_hash === params[0]);
+      const day = mine.filter((r) => Date.now() - new Date(r.created_at).getTime() < 86400000);
+      return { rows: [{
+        blocked: mine.filter((r) => r.status === 'blocked').length,
+        trusted: mine.filter((r) => ['clear', 'consumed'].includes(r.status) && (r.reviewed_by || r.consumed_at)).length,
+        day_count: day.length,
+        day_cents: day.filter((r) => r.status !== 'blocked').reduce((a, r) => a + Number(r.amount_cents), 0),
+      }] };
+    }
     if (/^UPDATE fraud_compliance_screenings SET status=\$2, reviewed_by/.test(s)) {
       const r = rows.get(params[0]);
       if (!r || r.status !== 'review') return { rows: [] };
@@ -60,6 +71,8 @@ function sanctions(status = 'clear') {
 function liveEnv() {
   process.env.FRAUD_COMPLIANCE_LIVE = 'true';
   process.env.COMPLIANCE_PROVIDER = 'opensanctions';
+  process.env.FRAUD_COMPLIANCE_PROVIDER = 'sardine';
+  process.env.FRAUD_COMPLIANCE_REVIEW_NEW_PAYEES = 'false';
   process.env.SARDINE_CLIENT_ID = 'cid';
   process.env.SARDINE_CLIENT_SECRET = 'csecret';
   process.env.SARDINE_BASE_URL = 'https://api.sardine.ai';
@@ -78,9 +91,10 @@ afterEach(() => {
 });
 
 describe('Fraud & Compliance OS — Sardine adapter', () => {
-  it('defaults to the Sardine sandbox and shadow mode', () => {
+  it('defaults to the internal provider, the Sardine sandbox and shadow mode', () => {
     const cfg = getFraudComplianceConfig({});
-    expect(cfg).toMatchObject({ enabled: true, live: false, provider: 'sardine', ttlMinutes: 60, enforceSettlement: false });
+    expect(cfg).toMatchObject({ enabled: true, live: false, provider: 'internal', ttlMinutes: 60, enforceSettlement: false });
+    expect(cfg.rules).toEqual({ reviewAmountCents: 1000000, maxAmountCents: 0, velocityCount: 5, velocityCents: 5000000, reviewNewPayees: true });
     expect(cfg.sardine.baseUrl).toBe(SARDINE_SANDBOX_URL);
     expect(cfg.sardine.explicitBaseUrl).toBe(false);
   });
@@ -109,7 +123,7 @@ describe('Fraud & Compliance OS — screen / review / verify workflow', () => {
     sanctions('clear');
     const f = sardineReply({ sessionKey: 'sk-1', status: 'Success', level: 'low', customer: { score: 12, level: 'low' }, transaction: { level: 'low', amlLevel: 'low' } });
     const s = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 125000, bankId: 'unit-operating', approvalRef: 'APR-1', actor: 'malissa.robinson' });
-    expect(s).toMatchObject({ status: 'clear', mode: 'live', bankId: 'unit-operating', amountCents: 125000, payee: { last4: '3210' }, fraud: { provider: 'sardine', level: 'low', sessionKey: 'sk-1' } });
+    expect(s).toMatchObject({ status: 'clear', mode: 'live', bankId: 'unit-operating', amountCents: 125000, payee: { last4: '3210' }, fraud: { provider: 'internal+sardine', level: 'low', sessionKey: 'sk-1' } });
     const [url, init] = f.mock.calls[0] as any[];
     expect(url).toBe('https://api.sardine.ai/v1/customers');
     expect(init.headers.Authorization).toBe(`Basic ${Buffer.from('cid:csecret').toString('base64')}`);
@@ -128,9 +142,10 @@ describe('Fraud & Compliance OS — screen / review / verify workflow', () => {
 
   it('shadow without Sardine credentials records a review screening that cannot authorize a live settlement', async () => {
     sanctions('clear');
+    process.env.FRAUD_COMPLIANCE_PROVIDER = 'sardine';
     const s = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 5000, actor: 'malissa.robinson' });
     expect(s).toMatchObject({ status: 'review', mode: 'shadow' });
-    expect(s.reasons).toContain('fraud provider not configured');
+    expect(s.reasons).toContain('sardine not configured');
     const cleared = await FraudComplianceOsEngine.review({ screeningRef: s.screeningRef, decision: 'clear', actor: 'deandreabarkley13@gmail.com' });
     expect(cleared.status).toBe('clear');
     await expect(FraudComplianceOsEngine.verify({ screeningRef: s.screeningRef, amountCents: 5000 })).rejects.toThrow(/shadow screening/);
@@ -198,11 +213,10 @@ describe('Fraud & Compliance OS — readiness', () => {
     expect(r.mode).toBe('shadow');
     expect(r.blockers).toEqual(expect.arrayContaining([
       'COMPLIANCE_PROVIDER=local: live screening needs ofac or opensanctions',
-      'SARDINE_CLIENT_ID not set',
-      'SARDINE_CLIENT_SECRET not set',
       'FRAUD_COMPLIANCE_LIVE not true',
       'FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT not true (live settlements accept any screeningRef)',
     ]));
+    expect(r.blockers.join(' ')).not.toMatch(/SARDINE/);
   });
 
   it('is live with sanctions ready, Sardine live host and enforcement on', async () => {
@@ -213,5 +227,69 @@ describe('Fraud & Compliance OS — readiness', () => {
     expect(r.blockers).toEqual([]);
     expect(r).toMatchObject({ ready: true, mode: 'live' });
     expect(r.status.fraud).toMatchObject({ provider: 'sardine', configured: true, sandbox: false });
+  });
+});
+
+describe('Fraud & Compliance OS — DLB internal rules (FRAUD_COMPLIANCE_PROVIDER=internal)', () => {
+  function internalLive() {
+    process.env.FRAUD_COMPLIANCE_LIVE = 'true';
+    process.env.COMPLIANCE_PROVIDER = 'opensanctions';
+    vi.spyOn(ComplianceEngine, 'assertPaymentReady').mockResolvedValue({ ready: true, provider: 'opensanctions' });
+  }
+
+  it('evaluateInternalRules: prior block and cap block; amount, new payee, velocity and missing bank details review', () => {
+    const rules = getFraudComplianceConfig({ FRAUD_COMPLIANCE_MAX_AMOUNT_CENTS: '2000000' }).rules;
+    const p = normalizePayee(PAYEE);
+    const none = { blocked: 0, trusted: 1, dayCount: 0, dayCents: 0 };
+    expect(evaluateInternalRules({ payee: p, amountCents: 5000, rail: 'ach', history: none, rules })).toMatchObject({ status: 'clear', level: 'low', reasons: [] });
+    expect(evaluateInternalRules({ payee: p, amountCents: 5000, rail: 'ach', history: { ...none, blocked: 1 }, rules }).status).toBe('blocked');
+    expect(evaluateInternalRules({ payee: p, amountCents: 2000001, rail: 'ach', history: none, rules }).status).toBe('blocked');
+    const rule = (h: any, amt = 5000, rail = 'ach', payee = p) => evaluateInternalRules({ payee, amountCents: amt, rail, history: { ...none, ...h }, rules }).summary.rules.map((r: any) => r.rule);
+    expect(rule({}, 1000000)).toEqual(['review_amount']);
+    expect(rule({ trusted: 0 })).toEqual(['new_payee']);
+    expect(rule({ dayCount: 4 })).toEqual(['velocity_count']);
+    expect(rule({ dayCents: 4999000 }, 1000)).toEqual(['velocity_amount']);
+    expect(rule({}, 5000, 'wire', normalizePayee({ name: 'X', country: 'US' }))).toEqual(['bank_details']);
+  });
+
+  it('live without Sardine: first payment to a payee goes to review, checker clears it, the next one is clear and settles', async () => {
+    internalLive();
+    sanctions('clear');
+    const f = vi.spyOn(globalThis, 'fetch');
+    const first = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 50000, bankId: 'lili', actor: 'AnnRobinson1117@gmail.com' });
+    expect(first).toMatchObject({ status: 'review', mode: 'live', fraud: { provider: 'internal', level: 'medium' } });
+    expect(first.reasons.join(' ')).toMatch(/internal:new_payee/);
+    await FraudComplianceOsEngine.review({ screeningRef: first.screeningRef, decision: 'clear', actor: 'deandreabarkley13@gmail.com' });
+    const second = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 50000, bankId: 'lili', actor: 'AnnRobinson1117@gmail.com' });
+    expect(second).toMatchObject({ status: 'clear', mode: 'live', fraud: { provider: 'internal', level: 'low' } });
+    await expect(FraudComplianceOsEngine.verify({ screeningRef: second.screeningRef, amountCents: 50000, bankId: 'lili', consume: true, consumer: 'SET-1' })).resolves.toMatchObject({ status: 'consumed' });
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('a blocked payee stays blocked on the next screening', async () => {
+    internalLive();
+    sanctions('clear');
+    const s = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 50000, actor: 'AnnRobinson1117@gmail.com' });
+    await FraudComplianceOsEngine.review({ screeningRef: s.screeningRef, decision: 'block', actor: 'deandreabarkley13@gmail.com' });
+    const again = await FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 100, actor: 'AnnRobinson1117@gmail.com' });
+    expect(again.status).toBe('blocked');
+    expect(again.reasons.join(' ')).toMatch(/internal:prior_block/);
+  });
+
+  it('readiness is live with the internal provider, a real sanctions list and enforcement on — no Sardine needed', async () => {
+    internalLive();
+    process.env.FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT = 'true';
+    vi.spyOn(ComplianceEngine, 'readiness').mockResolvedValue({ ready: true, issues: [] });
+    const r = await FraudComplianceOsEngine.readiness();
+    expect(r.blockers).toEqual([]);
+    expect(r).toMatchObject({ ready: true, mode: 'live' });
+    expect(r.status.fraud).toMatchObject({ provider: 'internal', configured: true });
+  });
+
+  it('refuses an unknown fraud provider in live mode', async () => {
+    internalLive();
+    process.env.FRAUD_COMPLIANCE_PROVIDER = 'none';
+    sanctions('clear');
+    await expect(FraudComplianceOsEngine.screen({ payee: PAYEE, amountCents: 100, actor: 'm' })).rejects.toMatchObject({ code: 'FRAUD_COMPLIANCE_NOT_READY' });
   });
 });

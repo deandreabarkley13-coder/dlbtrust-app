@@ -1183,8 +1183,10 @@ another sponsor network is handshake-verified.
 ## Fraud & Compliance OS
 
 `server/integrations/os/fraudComplianceOsEngine.js` issues the `screeningRef`
-live settlements carry (sanctions list + Sardine fraud / AML risk, distinct
-reviewer, single use, bound to amount / bank / payee). Secrets
+live settlements carry (sanctions list + DLB internal fraud rules, optional
+Sardine fraud / AML risk; distinct reviewer, single use, bound to amount / bank
+/ payee). Live by default with `FRAUD_COMPLIANCE_PROVIDER=internal`; exposed on
+the Transfer API gateway as `/v1/screenings`. Optional secrets
 `SARDINE_CLIENT_ID` / `SARDINE_CLIENT_SECRET`; flags `FRAUD_COMPLIANCE_LIVE`,
 `FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT`. Runbook: `docs/FRAUD_COMPLIANCE_OS.md`.
 
