@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi', 'transfer-api'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -80,6 +80,7 @@ const ENGINE_TITLES = {
   'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
   'enterprise-odfi': 'Enterprise ODFI OS (agentic originator operating system for trust administration: maker/checker originator profile, approved+screened distribution / disbursement / vendor-payout / trustee-expense batches, Vertex AI advisory rail planner with deterministic validator, distinct-trustee release through the Clearing Agent to a verified sponsor ODFI network, returns/NOC handling with Fineract re-deposit, exposure reconciliation; the software is not a bank)',
   'transfer-api': 'Transfer API OS (single versioned transfer facade /api/transfer/v1 behind GCP API Gateway: Google ID-token / API-key edge auth, quotas, mandatory Idempotency-Key with stored-response replay, caller identity from the gateway user-info header only when IAP proves the gateway called; every write delegates to the Enterprise ODFI OS maker/checker flow — the facade never moves money itself)',
+  'fraud-compliance': 'Fraud & Compliance OS (screening authority behind every screeningRef: OFAC / OpenSanctions list via ComplianceEngine + Sardine fraud / AML risk; distinct-reviewer resolution of review cases; single-use screenings bound to amount, settlement bank and payee, consumed by BankSettlementEngine when FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true)',
   'clearing-agent': 'Clearing Agent OS (backend-to-backend agent for the private Electronic Payment Networks: Secret-Manager-referenced credentials, HMAC challenge/verify handshake by two trustees, USA-only conversion to NACHA / ISO 20022 pain.001 + pacs.008 / FedNow + RTP / BAI2, HMAC-signed clear over Egress OS, idempotent post to Fineract core banking)',
 };
 
@@ -124,6 +125,7 @@ const TABLES = {
   'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
   'enterprise-odfi': ['enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items', 'enterprise_odfi_events', 'clearing_agent_networks', 'clearing_agent_instructions'],
   'transfer-api': ['transfer_api_requests', 'enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items'],
+  'fraud-compliance': ['fraud_compliance_screenings', 'fraud_compliance_events', 'compliance_screenings'],
 };
 
 function tryRequire(mod) {
@@ -403,6 +405,7 @@ const REPORTERS = {
   'clearing-agent': clearingAgentReadiness,
   'enterprise-odfi': enterpriseOdfiReadiness,
   'transfer-api': transferApiReadiness,
+  'fraud-compliance': fraudComplianceReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1745,6 +1748,34 @@ async function transferApiReadiness(ctx, env = process.env) {
     modules: s ? { gateway: s.gateway, routes: s.routes, idempotency: s.idempotency, requests: s.requests, policy: s.policy } : { error: r.error },
     routes: ['/api/transfer/v1/{status,rails,transfers,transfers/:id,transfers/:id/release,transfers/:id/cancel}', '/api/os/transfer-api/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/transfer-api'],
     secrets: ['none of its own: gateway API key is issued by GCP (google_apikeys_key) and never enters the app; edge ID tokens are verified by API Gateway'],
+    tables,
+    blockers,
+  };
+}
+
+async function fraudComplianceReadiness(ctx, env = process.env) {
+  const Fc = tryRequire('./fraudComplianceOsEngine')?.FraudComplianceOsEngine;
+  const tables = await tablesPresent(TABLES['fraud-compliance']);
+  const blockers = baseBlockers(ctx, tables, Fc, 'FraudComplianceOsEngine');
+  const r = Fc && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Fc.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`fraud-compliance: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'fraud-compliance (ComplianceEngine sanctions list + Sardine fraud / AML risk -> screeningRef consumed by BankSettlementEngine)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      FRAUD_COMPLIANCE_ENABLED: String(env.FRAUD_COMPLIANCE_ENABLED || 'true').toLowerCase() !== 'false',
+      FRAUD_COMPLIANCE_LIVE: isTrue(env.FRAUD_COMPLIANCE_LIVE),
+      FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT: isTrue(env.FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT),
+      COMPLIANCE_PROVIDER: env.COMPLIANCE_PROVIDER || 'local',
+      SARDINE_CLIENT_ID: Boolean(env.SARDINE_CLIENT_ID),
+      SARDINE_CLIENT_SECRET: Boolean(env.SARDINE_CLIENT_SECRET),
+      SARDINE_BASE_URL: Boolean(env.SARDINE_BASE_URL),
+    },
+    modules: s ? { sanctions: s.sanctions, fraud: s.fraud, workflow: s.workflow, policy: s.policy, screenings: s.screenings } : { error: r.error },
+    routes: ['/api/payment-server/v1/fraud-compliance/{readiness,screenings,screenings/:ref,screenings/:ref/verify}', '/api/os/fraud-compliance/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/fraud-compliance'],
+    secrets: ['SARDINE_CLIENT_ID', 'SARDINE_CLIENT_SECRET'],
     tables,
     blockers,
   };

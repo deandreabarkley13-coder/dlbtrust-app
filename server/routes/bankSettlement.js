@@ -16,6 +16,7 @@ const { BankSettlementEngine } = require('../integrations/payments/bankSettlemen
 const { StripePaymentIntakeEngine } = require('../integrations/payments/stripePaymentIntakeEngine');
 const { TreasuryFundingBankEngine } = require('../integrations/payments/treasuryFundingBankEngine');
 const { TreasuryOdfiBank } = require('../integrations/ach/treasuryOdfiBank');
+const { FraudComplianceOsEngine } = require('../integrations/os/fraudComplianceOsEngine');
 
 const router = express.Router();
 
@@ -168,6 +169,36 @@ router.get('/settlement-banks/:id/readiness', async (req, res) => {
   try {
     const data = await BankSettlementEngine.readiness(req.params.id);
     res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Fraud & Compliance OS: screen a payee/amount/bank before settling; the
+// returned screeningRef is what POST /settlements must carry. Reviews of
+// status=review screenings are human checker actions on /api/os/fraud-compliance.
+router.get('/fraud-compliance/readiness', async (req, res) => {
+  try {
+    const data = await FraudComplianceOsEngine.readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/fraud-compliance/screenings', writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await FraudComplianceOsEngine.screen({ ...body, actor: body.requestedBy || 'payment_server' });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/fraud-compliance/screenings/:ref', async (req, res) => {
+  try { res.json({ success: true, data: await FraudComplianceOsEngine.getScreening(req.params.ref) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/fraud-compliance/screenings/:ref/verify', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await FraudComplianceOsEngine.verify({ screeningRef: req.params.ref, amountCents: body.amountCents, bankId: body.bankId, payee: body.payee, consume: false });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

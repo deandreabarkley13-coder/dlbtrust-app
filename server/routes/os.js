@@ -9,7 +9,8 @@
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
  * ptc-treasury, settlement-endpoint, moov-paygate, apisix, apigee, nickel, canonical-money,
  * canonical-liquidity, canonical-consensus, canonical-funding, collateral-os,
- * live-value-runbook, live-money, enterprise-network, and private-payment-network.
+ * live-value-runbook, live-money, enterprise-network, private-payment-network,
+ * and fraud-compliance.
  */
 
 const express = require('express');
@@ -148,10 +149,11 @@ const ENGINES = {
   'clearing-agent': require('../integrations/os/clearingAgentOsEngine').ClearingAgentOsEngine,
   'enterprise-odfi': require('../integrations/os/enterpriseOdfiOsEngine').EnterpriseOdfiOsEngine,
   'transfer-api': require('../integrations/os/transferApiOsEngine').TransferApiOsEngine,
+  'fraud-compliance': require('../integrations/os/fraudComplianceOsEngine').FraudComplianceOsEngine,
 };
 
 // Engines whose actions are attributed to the authenticated trustee (maker/checker).
-const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi', 'transfer-api']);
+const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance']);
 
 function sendError(res, err) {
   const status = err.status || 400;

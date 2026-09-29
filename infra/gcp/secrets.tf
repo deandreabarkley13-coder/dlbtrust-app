@@ -94,6 +94,36 @@ locals {
     if local.unit_partner_bank && !contains(local.runtime_secret_names, s)
   ]
 
+  # Fraud & Compliance OS (server/integrations/os/fraudComplianceOsEngine.js):
+  # FRAUD_COMPLIANCE_LIVE=true issues live screeningRefs from the sanctions list
+  # (ComplianceEngine) + Sardine fraud / AML risk, so the Sardine HTTP Basic
+  # credentials must be declared, the live Sardine host set explicitly (the
+  # engine defaults to the sandbox) and the sanctions list must be a real one.
+  # FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true makes BankSettlementEngine consume
+  # a screening per live settlement, which only works once screenings are live.
+  fraud_compliance_secret_names = [
+    "SARDINE_CLIENT_ID",
+    "SARDINE_CLIENT_SECRET",
+  ]
+  fraud_compliance_live     = lookup(var.runtime_environment, "FRAUD_COMPLIANCE_LIVE", "false") == "true"
+  fraud_compliance_provider = lookup(var.runtime_environment, "FRAUD_COMPLIANCE_PROVIDER", "sardine")
+  missing_fraud_compliance_secrets = [
+    for s in local.fraud_compliance_secret_names : s
+    if local.fraud_compliance_live && local.fraud_compliance_provider == "sardine" && !contains(local.runtime_secret_names, s)
+  ]
+  fraud_compliance_live_without_sardine = local.fraud_compliance_live && local.fraud_compliance_provider != "sardine"
+  fraud_compliance_live_without_base_url = (
+    local.fraud_compliance_live && local.fraud_compliance_provider == "sardine" &&
+    lookup(var.runtime_environment, "SARDINE_BASE_URL", "") == ""
+  )
+  fraud_compliance_live_local_sanctions = (
+    local.fraud_compliance_live &&
+    !contains(["ofac", "opensanctions"], lookup(var.runtime_environment, "COMPLIANCE_PROVIDER", "local"))
+  )
+  fraud_compliance_enforce_without_live = (
+    lookup(var.runtime_environment, "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT", "false") == "true" && !local.fraud_compliance_live
+  )
+
   # Payment Processor OS (paymentProcessorOsEngine.js). PAYMENT_PROCESSOR_LIVE=true
   # lets an approved submission (approvalRef + screeningRef) reach a processor,
   # so the Stripe payout/payments keys and the payment-data encryption key must

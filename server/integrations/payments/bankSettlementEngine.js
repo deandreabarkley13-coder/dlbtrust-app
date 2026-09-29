@@ -13,7 +13,10 @@
  *   api_gateway              -> ApiGatewayClearingEngine.clearPayment
  *
  * Every attempt is journaled in settlement_bank_events. Live calls require
- * approvalRef + screeningRef (409 otherwise). A missing ODFI channel for Lili
+ * approvalRef + screeningRef (409 otherwise); with
+ * FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true the screeningRef must also be a
+ * live, clear, unconsumed FraudComplianceOsEngine screening for this amount
+ * and bank, and is consumed by the settlement. A missing ODFI channel for Lili
  * surfaces as 503 with status awaiting_odfi — nothing leaves the platform.
  */
 
@@ -24,6 +27,7 @@ const { LiliDirectDepositEngine } = require('./liliDirectDepositEngine');
 const { PartnerBankRails } = require('../rails/partnerBankRails');
 const { ApiGatewayClearingEngine } = require('../dapp/apiGatewayClearingEngine');
 const { StripePayoutSettlementOriginator } = require('./stripePayoutSettlementOriginator');
+const { FraudComplianceOsEngine } = require('../os/fraudComplianceOsEngine');
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
@@ -226,11 +230,16 @@ class BankSettlementEngine {
     if (live && !approvalRef) throw httpError('approvalRef (maker/checker record) is required for a live settlement', 409);
     if (live && !screeningRef) throw httpError('screeningRef (compliance screening id) is required for a live settlement', 409);
 
+    const sid = settlementId();
+    if (live && FraudComplianceOsEngine.enforcesSettlement()) {
+      await FraudComplianceOsEngine.verify({ screeningRef, amountCents: cents, bankId: bank.bankId, consume: true, consumer: sid });
+    }
+
     if (bank.provider === 'lili') await SettlementBankRegistry.assertLiliDestination(destination);
     const useRail = rail || bank.rail || (bank.provider === 'lili' ? 'ach' : bank.provider);
 
     const evt = {
-      settlementId: settlementId(),
+      settlementId: sid,
       bankId: bank.bankId,
       provider: bank.provider,
       rail: useRail,
