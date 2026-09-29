@@ -53,6 +53,16 @@ family_accessors = ["user:deandreabarkley13@gmail.com"]
 # Extra Cloud Scheduler / platform service accounts (deployer + runtime are
 # always included).
 scheduler_accessors = []
+# Transfer API facade on GCP API Gateway (transfer_api.tf). Callers send a
+# Google ID token with aud = transfer_api_id_token_audience (or the read-only
+# x-api-key); the gateway reaches Cloud Run through IAP as
+# dlbtrust-transfer-gateway@<project>.iam.gserviceaccount.com, so
+# iap_oauth_client_id must be the IAP client of dlbtrust-app. The facade only
+# delegates to enterprise-odfi (maker/checker) and stays shadow until that
+# engine has a verified external sponsor network.
+transfer_api_enabled = true
+transfer_api_live    = true
+iap_oauth_client_id  = "514695212719-ga4gu9h6j22g8o044ce9iunq3co58qfn.apps.googleusercontent.com"
 # Cloud VPN to a trusted family site: leave vpn_peer_ip empty until the site's
 # VPN device is known; seed the IKE key with
 #   gcloud secrets create VPN_FAMILY_SHARED_SECRET --replication-policy automatic

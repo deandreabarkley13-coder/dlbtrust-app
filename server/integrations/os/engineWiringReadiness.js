@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'clearing-agent', 'enterprise-odfi', 'transfer-api'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -79,6 +79,7 @@ const ENGINE_TITLES = {
   'tax-os': 'Tax OS (Form 1041 + Schedule K-1 reports from the trust journal and Fineract principal / interest-income accounts; JSON / CSV / PDF exports; reports only, no e-file)',
   'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
   'enterprise-odfi': 'Enterprise ODFI OS (agentic originator operating system for trust administration: maker/checker originator profile, approved+screened distribution / disbursement / vendor-payout / trustee-expense batches, Vertex AI advisory rail planner with deterministic validator, distinct-trustee release through the Clearing Agent to a verified sponsor ODFI network, returns/NOC handling with Fineract re-deposit, exposure reconciliation; the software is not a bank)',
+  'transfer-api': 'Transfer API OS (single versioned transfer facade /api/transfer/v1 behind GCP API Gateway: Google ID-token / API-key edge auth, quotas, mandatory Idempotency-Key with stored-response replay, caller identity from the gateway user-info header only when IAP proves the gateway called; every write delegates to the Enterprise ODFI OS maker/checker flow — the facade never moves money itself)',
   'clearing-agent': 'Clearing Agent OS (backend-to-backend agent for the private Electronic Payment Networks: Secret-Manager-referenced credentials, HMAC challenge/verify handshake by two trustees, USA-only conversion to NACHA / ISO 20022 pain.001 + pacs.008 / FedNow + RTP / BAI2, HMAC-signed clear over Egress OS, idempotent post to Fineract core banking)',
 };
 
@@ -122,6 +123,7 @@ const TABLES = {
   'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
   'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
   'enterprise-odfi': ['enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items', 'enterprise_odfi_events', 'clearing_agent_networks', 'clearing_agent_instructions'],
+  'transfer-api': ['transfer_api_requests', 'enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items'],
 };
 
 function tryRequire(mod) {
@@ -400,6 +402,7 @@ const REPORTERS = {
   'private-entity': privateEntityReadiness,
   'clearing-agent': clearingAgentReadiness,
   'enterprise-odfi': enterpriseOdfiReadiness,
+  'transfer-api': transferApiReadiness,
 };
 
 async function creditReadiness(ctx) {
@@ -1715,6 +1718,33 @@ async function enterpriseOdfiReadiness(ctx, env = process.env) {
     modules: s ? { profile: s.profile, rails: s.rails, planner: s.planner, exposure: s.exposure, storage: s.storage, policy: s.policy } : { error: r.error },
     routes: ['/api/os/enterprise-odfi/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/enterprise-odfi'],
     secrets: ['PAYMENT_DATA_ENCRYPTION_KEY', 'ENTERPRISE_ODFI_SERVICE_ACCOUNT_KEY (optional; runtime SA identity used on Cloud Run)', 'per-network credential_ref via clearing-agent'],
+    tables,
+    blockers,
+  };
+}
+
+async function transferApiReadiness(ctx, env = process.env) {
+  const Ta = tryRequire('./transferApiOsEngine')?.TransferApiOsEngine;
+  const tables = await tablesPresent(TABLES['transfer-api']);
+  const blockers = baseBlockers(ctx, tables, Ta, 'TransferApiOsEngine');
+  const r = Ta && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Ta.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`transfer-api: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'transfer-api (GCP API Gateway facade -> enterprise-odfi maker/checker -> clearing-agent)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      TRANSFER_API_ENABLED: String(env.TRANSFER_API_ENABLED || 'true').toLowerCase() !== 'false',
+      TRANSFER_API_LIVE: isTrue(env.TRANSFER_API_LIVE),
+      TRANSFER_API_GATEWAY_HOST: Boolean(env.TRANSFER_API_GATEWAY_HOST),
+      TRANSFER_API_GATEWAY_SERVICE_ACCOUNT: Boolean(env.TRANSFER_API_GATEWAY_SERVICE_ACCOUNT),
+      TRANSFER_API_AUDIENCE: Boolean(env.TRANSFER_API_AUDIENCE),
+      ENTERPRISE_ODFI_LIVE: isTrue(env.ENTERPRISE_ODFI_LIVE),
+    },
+    modules: s ? { gateway: s.gateway, routes: s.routes, idempotency: s.idempotency, requests: s.requests, policy: s.policy } : { error: r.error },
+    routes: ['/api/transfer/v1/{status,rails,transfers,transfers/:id,transfers/:id/release,transfers/:id/cancel}', '/api/os/transfer-api/{status,readiness,health,list,get/:id,process}', '/api/os/readiness/transfer-api'],
+    secrets: ['none of its own: gateway API key is issued by GCP (google_apikeys_key) and never enters the app; edge ID tokens are verified by API Gateway'],
     tables,
     blockers,
   };

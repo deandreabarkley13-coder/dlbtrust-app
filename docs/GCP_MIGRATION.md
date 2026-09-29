@@ -1142,6 +1142,44 @@ settlement AccountID and a bearer key.
 Funding: the TabaPay settlement account is pre-funded by the trust from its
 bank (outside the platform); Fineract mirrors each release as a withdrawal.
 
+## Transfer API facade (GCP API Gateway)
+
+`server/integrations/os/transferApiOsEngine.js`, `server/routes/transferApi.js`,
+`infra/gcp/transfer_api.tf`, `infra/gcp/transfer_api_openapi.yaml.tpl`.
+One versioned hostname for maker/checker transfer clients; API Gateway
+(~USD 3 per million calls, no fixed fee) is the lightweight alternative to
+Apigee chosen for this volume. It is an API-management layer — it
+authenticates, meters and routes — not a payment rail, bank or ODFI.
+
+```
+client --Google ID token (aud = TRANSFER_API_AUDIENCE) | x-api-key (reads)--> API Gateway
+  -> quotas (30 writes / 300 reads per minute), edge JWT validation, logging
+  -> OIDC token of dlbtrust-transfer-gateway@<project>, aud = IAP OAuth client
+  -> IAP -> Cloud Run dlbtrust-app (privateAccessGuard: platform identity)
+  -> /api/transfer/v1 (caller = x-apigateway-api-userinfo, only when IAP
+     principal is the gateway SA) -> Enterprise ODFI OS -> Clearing Agent
+```
+
+Routes: `GET /v1/status|rails|transfers|transfers/:id`,
+`POST /v1/transfers` (maker originate), `POST /v1/transfers/:id/release`
+(distinct checker), `POST /v1/transfers/:id/cancel`. Every write needs an
+`Idempotency-Key` (8–128 chars); the stored response — including a failure —
+is replayed for a repeated key, and a key reused for another action is a 409.
+API-key callers may only read. Nothing here bypasses the Enterprise ODFI gates
+(ENTERPRISE_ODFI_MAKERS/CHECKERS, approvalRef + screeningRef, distinct
+releaser, exposure limits, verified network): the facade delegates and
+records an audit row (`transfer_api_requests`, no account numbers).
+
+Terraform: `transfer_api_enabled=true`, `iap_oauth_client_id=<IAP client of
+dlbtrust-app>`; the gateway SA is added to `platform_accessors` (IAP accessor +
+`PRIVATE_ACCESS_SERVICE_ACCOUNTS`) and `TRANSFER_API_GATEWAY_HOST /
+_SERVICE_ACCOUNT / _AUDIENCE` are set on Cloud Run from the created gateway.
+Readiness (`/api/os/readiness/transfer-api`) is `live` only when the gateway is
+configured, its SA is on the platform list, `TRANSFER_API_LIVE=true` and
+enterprise-odfi itself is live — so it stays `shadow` (blocker
+`enterprise-odfi: no verified external sponsor ODFI network`) until TabaPay or
+another sponsor network is handshake-verified.
+
 ## Out of scope for this phase
 
 - Cloud Armor in front of IAP — recommended, separate PR.

@@ -108,6 +108,46 @@ variable "private_access_ingress" {
   }
 }
 
+# Transfer API facade on GCP API Gateway (transfer_api.tf): one hostname for
+# maker/checker transfer clients -> IAP -> Cloud Run /api/transfer/v1 ->
+# Enterprise ODFI OS -> Clearing Agent. The gateway is not a payment rail; it
+# authenticates, applies quotas and routes. Off by default (paid product).
+variable "transfer_api_enabled" {
+  description = "Create the API Gateway facade, its service account and read-only API key."
+  type        = bool
+  default     = false
+}
+
+variable "transfer_api_live" {
+  description = "TRANSFER_API_LIVE: the facade reports live (still gated by enterprise-odfi readiness: a verified external sponsor network is required)."
+  type        = bool
+  default     = false
+}
+
+variable "transfer_api_id_token_audience" {
+  description = "Audience callers must put in their Google ID token (x-google-audiences). Empty = https://transfer.<project_id>.dlbtrust."
+  type        = string
+  default     = ""
+}
+
+variable "iap_oauth_client_id" {
+  description = "OAuth client id of the IAP-protected Cloud Run service; the gateway mints its backend OIDC token with this audience so IAP admits it. Empty = backend URL (only valid without IAP)."
+  type        = string
+  default     = ""
+}
+
+variable "transfer_api_write_quota_per_minute" {
+  description = "Gateway quota for transfer writes (create / release / cancel) per minute."
+  type        = number
+  default     = 30
+}
+
+variable "transfer_api_read_quota_per_minute" {
+  description = "Gateway quota for transfer reads per minute."
+  type        = number
+  default     = 300
+}
+
 # Cloud VPN to a trusted family site (private_access.tf). Off until
 # vpn_peer_ip is set; the IKE pre-shared key lives in Secret Manager.
 variable "vpn_peer_ip" {
