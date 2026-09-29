@@ -33,7 +33,7 @@ function set(env, name, value) {
 const ORIGINATOR_VARS = [
   'ACH_ODFI_ROUTING', 'ACH_ODFI_NAME', 'ACH_IMMEDIATE_ORIGIN', 'ACH_ORIGINATOR_NAME', 'ACH_COMPANY_NAME', 'ACH_COMPANY_ID',
   'NACHA_ODFI_ROUTING', 'NACHA_ORIGINATOR_NAME', 'NACHA_COMPANY_NAME', 'NACHA_IMMEDIATE_ORIGIN_NAME', 'NACHA_IMMEDIATE_DESTINATION_NAME',
-  'CLEARING_FUNDING_OPERATING_ACCOUNT', 'LILI_ODFI_ROUTING', 'LILI_ODFI_ACCOUNT', 'LILI_ODFI_NAME',
+  'CLEARING_FUNDING_SETTLEMENT_ACCOUNT', 'CLEARING_FUNDING_SETTLEMENT_ROUTING', 'LILI_ODFI_ROUTING', 'LILI_ODFI_ACCOUNT', 'LILI_ODFI_NAME',
   'TRUST_BANK_ROUTING', 'TRUST_BANK_ACCOUNT', 'TRUST_BANK_NAME', 'EDI_820_ODFI_ACCOUNT',
 ];
 
@@ -85,6 +85,7 @@ class TreasuryOdfiBank {
     put('NACHA_ODFI_ROUTING', cfg._routing);
     put('TRUST_BANK_ROUTING', cfg._routing);
     put('LILI_ODFI_ROUTING', cfg._routing);
+    put('CLEARING_FUNDING_SETTLEMENT_ROUTING', cfg._routing);
     put('ACH_ODFI_NAME', cfg.bankName);
     put('NACHA_IMMEDIATE_DESTINATION_NAME', cfg.bankName);
     put('TRUST_BANK_NAME', cfg.bankName);
@@ -97,7 +98,7 @@ class TreasuryOdfiBank {
     put('NACHA_COMPANY_NAME', cfg.companyName);
     put('ACH_COMPANY_ID', cfg.companyId);
     if (cfg.accountConfigured) {
-      put('CLEARING_FUNDING_OPERATING_ACCOUNT', cfg._account);
+      put('CLEARING_FUNDING_SETTLEMENT_ACCOUNT', cfg._account);
       put('LILI_ODFI_ACCOUNT', cfg._account);
       put('TRUST_BANK_ACCOUNT', cfg._account);
       put('EDI_820_ODFI_ACCOUNT', cfg._account);

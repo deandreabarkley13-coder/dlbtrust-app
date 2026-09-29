@@ -277,15 +277,12 @@ variable "runtime_environment" {
     API_GATEWAY_PROVIDER   = "lili"
     LILI_CLEARING_LIVE     = "true"
     LILI_CLEARING_SEC_CODE = "CCD"
-    # Direct deposit into Lili (Sunrise Banks N.A., RDFI) is a Stripe Payout
-    # (standard ACH) from the trust's live Stripe balance to the Lili account
-    # registered as the Stripe external bank account; STRIPE_SECRET_KEY must be
-    # live-mode. stripe_treasury (OutboundPayment) needs a live Treasury
-    # financial account, which this Stripe account does not have.
-    LILI_ORIGINATOR           = "stripe_payout"
-    LILI_STRIPE_PAYOUT_METHOD = "standard"
-    # The Lili account as registered on the trust's live Stripe account (****2959).
-    STRIPE_PAYOUT_EXTERNAL_ACCOUNT_ID = "ba_1U3OcSFE15CwMad3BBD35eGT"
+    # Direct deposit into Lili (Sunrise Banks N.A., RDFI) is a NACHA CCD credit
+    # built by the treasury and transmitted over the ODFI channel
+    # (OpenACH/AS2/MFT/SFTP); fixed-income distributions are funded from the
+    # bucket's canonical GL account in Fineract (CanonicalFundingSource) and
+    # gated by ReserveEngine.assertSpendable. Stripe is not a funding source.
+    LILI_ORIGINATOR = "nacha"
     # Stripe payment processing funds that balance: card / us_bank_account ACH
     # debit PaymentIntents and hosted Checkout links, confirmed by the Stripe
     # webhook (STRIPE_WEBHOOK_SECRET) and posted to the treasury ledger
@@ -573,7 +570,7 @@ variable "runtime_environment" {
     # Gateway file drop / SFTP / S2S). At startup its secret-backed routing /
     # account (BETTERMENT_ROUTING_NUMBER / BETTERMENT_ACCOUNT_NUMBER in
     # secret_names) are projected onto ACH_ODFI_ROUTING, NACHA_ODFI_ROUTING,
-    # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_OPERATING_ACCOUNT, LILI_ODFI_*,
+    # ACH_IMMEDIATE_ORIGIN, CLEARING_FUNDING_SETTLEMENT_ACCOUNT, LILI_ODFI_*,
     # etc., superseding the Lili/Sunrise originator values below. Company id
     # defaults to "1" + INCOME_OBLIGOR_EIN unless Betterment assigns one.
     ACH_ODFI_BANK            = "betterment"
@@ -688,7 +685,7 @@ variable "runtime_environment" {
     ACH_COMPANY_ID                   = "1091017138"
     # usAchConnector.js originator block (what PHEE hands to /connectors/us-ach/execute)
     # and the debtor side of LiliSettlementBankEngine._cfg() (ACH_ODFI_ROUTING /
-    # ACH_ORIGINATOR_NAME). CLEARING_FUNDING_OPERATING_ACCOUNT (trust operating
+    # ACH_ORIGINATOR_NAME). CLEARING_FUNDING_SETTLEMENT_ACCOUNT (trust bank
     # account number) is Secret Manager only.
     ACH_ODFI_ROUTING      = "121145307"
     ACH_ODFI_NAME         = "SUNRISE BANKS NA"

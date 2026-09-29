@@ -25,7 +25,9 @@
  *
  * FIXED_INCOME_RAIL=bank replaces the policy-contract leg with the settlement
  * banks (settlementBankRegistry.js): payees are bank ids, funding is the
- * treasury's Stripe balance (Stripe payment processing receipts), and execute
+ * bucket's canonical GL account in the Fineract treasury ERP
+ * (CanonicalFundingSource, reconciled against the trust sub-ledger) and must be
+ * covered by attested external reserves (ReserveEngine), and execute
  * originates the direct deposit through BankSettlementEngine.clearAndSettle
  * (maker/checker approvalRef + screeningRef), booking Dr distributions / Cr cash.
  */
@@ -45,19 +47,18 @@ try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine'
 let CustodyOsEngine;
 try { ({ CustodyOsEngine } = require('../custody/custodyOsEngine')); } catch (e) { CustodyOsEngine = null; }
 
-let BankSettlementEngine, SettlementBankRegistry, LiliStripePayoutOriginator;
+let BankSettlementEngine, SettlementBankRegistry, CanonicalFundingSource, ReserveEngine;
 try { ({ BankSettlementEngine } = require('../payments/bankSettlementEngine')); } catch (e) { BankSettlementEngine = null; }
 try { ({ SettlementBankRegistry } = require('../payments/settlementBankRegistry')); } catch (e) { SettlementBankRegistry = null; }
-try { ({ LiliStripePayoutOriginator } = require('../payments/liliStripePayoutOriginator')); } catch (e) { LiliStripePayoutOriginator = null; }
-let StripePayoutSettlementOriginator = null;
-try { ({ StripePayoutSettlementOriginator } = require('../payments/stripePayoutSettlementOriginator')); } catch (e) { StripePayoutSettlementOriginator = null; }
+try { ({ CanonicalFundingSource } = require('../fineract/canonicalFundingSource')); } catch (e) { CanonicalFundingSource = null; }
+try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { ReserveEngine = null; }
 
 const RAILS = ['policy_contract', 'bank'];
 const DEFAULT_BANK_PAYEES = [
   { bucket: 'coupon_income', bankId: 'lili', shareBps: 10000 },
   { bucket: 'trust_operating', bankId: 'lili', shareBps: 10000 },
 ];
-const BANK_FUNDING_SOURCE = 'stripe_balance';
+const BANK_FUNDING_SOURCE = 'fineract_canonical';
 
 const POLICY_CONFIG = path.join(__dirname, '..', '..', '..', 'contracts', 'policy.base.json');
 const YEAR_SECONDS = 31536000;
@@ -183,18 +184,12 @@ const FixedIncomeDistributionEngine = {
     return out;
   },
 
-  /** Available treasury cash behind a bank payee (Stripe balance for the Stripe payout originator), null when unknown. */
-  async bankFundingAvailableCents(bankId) {
-    if (lower(bankId) === 'lili') {
-      if (!LiliStripePayoutOriginator || str('LILI_ORIGINATOR') !== 'stripe_payout') return null;
-      const st = await LiliStripePayoutOriginator.status();
-      return st.balance ? Number(st.balance.availableCents) : null;
-    }
-    if (!SettlementBankRegistry) return null;
-    const bank = await SettlementBankRegistry.resolve(bankId).catch(() => null);
-    if (!bank || bank.provider !== 'stripe_payout' || !StripePayoutSettlementOriginator) return null;
-    const st = await StripePayoutSettlementOriginator.status(bank);
-    return st.balance ? Number(st.balance.availableCents) : null;
+  /** Treasury ERP funding position behind a bucket: its canonical GL account in Fineract, reconciled against the sub-ledger. */
+  async bankFunding(bucketKey) {
+    if (!CanonicalFundingSource) throw new FixedIncomeError('CanonicalFundingSource unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
+    const accountCode = TrustAllocationEngine.glAccountCode(bucketKey);
+    if (!accountCode) throw new FixedIncomeError(`${bucketKey} has no canonical GL account`, 'FIXED_INCOME_NO_FUNDING_ACCOUNT', 409);
+    return CanonicalFundingSource.position({ accountCode, purpose: 'fixed income distribution' });
   },
 
   async ensureTables() {
@@ -263,13 +258,17 @@ const FixedIncomeDistributionEngine = {
       if (!payees.length) issues.push(`${b.key} has no bank payee (FIXED_INCOME_BANK_PAYEES)`);
       if (share > 10000) issues.push(`${b.key} bank shares exceed 100% (${share} bps)`);
       if (payees.some((p) => !(p.shareBps > 0))) issues.push(`${b.key} bank payee with a non-positive share`);
-      buckets.push({ bucket: b.key, label: b.label, glAccountCode: TrustAllocationEngine.glAccountCode(b.key), purposes: b.purposes, payees });
+      let funding;
+      try {
+        const pos = await this.bankFunding(b.key);
+        funding = { accountCode: pos.accountCode, availableCents: pos.availableBalanceCents, eligible: pos.fundingEligible, reason: pos.segregationReason };
+      } catch (e) { funding = { error: e.message }; issues.push(`${b.key} funding: ${e.message}`); }
+      buckets.push({ bucket: b.key, label: b.label, glAccountCode: TrustAllocationEngine.glAccountCode(b.key), purposes: b.purposes, payees, funding });
       for (const p of payees) {
         if (banks[p.bankId] || !BankSettlementEngine) continue;
         try {
           const r = await BankSettlementEngine.readiness(p.bankId);
-          const availableCents = await this.bankFundingAvailableCents(p.bankId).catch(() => null);
-          banks[p.bankId] = { bankId: r.bankId, provider: r.provider, mode: r.mode, ready: r.ready, blockers: r.blockers, requires: r.requires, fundingSource: BANK_FUNDING_SOURCE, availableCents };
+          banks[p.bankId] = { bankId: r.bankId, provider: r.provider, mode: r.mode, ready: r.ready, blockers: r.blockers, requires: r.requires };
           if (!r.ready) issues.push(`${p.bankId}: ${(r.blockers || []).join('; ') || 'not ready'}`);
         } catch (e) {
           banks[p.bankId] = { bankId: p.bankId, ready: false, error: e.message };
@@ -432,9 +431,9 @@ const FixedIncomeDistributionEngine = {
   },
 
   /**
-   * Bank rail funding check: the treasury cash behind the payee bank (Stripe
-   * balance fed by payment processing) must cover the distribution. Nothing
-   * moves here; the distribution becomes `funded` and awaits maker/checker.
+   * Bank rail funding check: the bucket's canonical GL account in the treasury
+   * ERP must cover the distribution, and so must the attested external reserve.
+   * Nothing moves here; the distribution becomes `funded` and awaits maker/checker.
    */
   async _stageBank(d, reference) {
     if (!BankSettlementEngine) throw new FixedIncomeError('BankSettlementEngine unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
@@ -443,16 +442,26 @@ const FixedIncomeDistributionEngine = {
       await this._set(d.distributionId, { error: `bank ${d.payee} not ready: ${(readiness.blockers || []).join('; ')}` });
       throw new FixedIncomeError(`settlement bank ${d.payee} not ready`, 'FIXED_INCOME_BANK_NOT_READY', 409, { blockers: readiness.blockers });
     }
-    const availableCents = await this.bankFundingAvailableCents(d.payee);
+    const position = await this.bankFunding(d.bucket);
+    const availableCents = position.availableBalanceCents;
     const needCents = Math.round(d.amountUsd * 100);
-    if (availableCents != null && availableCents < needCents) {
-      await this._set(d.distributionId, { error: `insufficient ${BANK_FUNDING_SOURCE}: ${availableCents} < ${needCents} cents` });
-      throw new FixedIncomeError(`insufficient treasury funds for ${d.distributionId}`, 'FIXED_INCOME_UNFUNDED', 409, { availableCents, needCents, fundingSource: BANK_FUNDING_SOURCE });
+    if (!position.fundingEligible || availableCents < needCents) {
+      const why = position.fundingEligible ? `${availableCents} < ${needCents} cents` : position.segregationReason;
+      await this._set(d.distributionId, { error: `insufficient ${BANK_FUNDING_SOURCE} ${position.accountCode}: ${why}` });
+      throw new FixedIncomeError(`insufficient treasury funds for ${d.distributionId}`, 'FIXED_INCOME_UNFUNDED', 409, { availableCents, needCents, accountCode: position.accountCode, reason: position.segregationReason, fundingSource: BANK_FUNDING_SOURCE });
+    }
+    if (!ReserveEngine) throw new FixedIncomeError('ReserveEngine unavailable', 'FIXED_INCOME_UNAVAILABLE', 503);
+    let reserve;
+    try {
+      reserve = await ReserveEngine.assertSpendable({ amountCents: needCents, rail: 'fixed_income_bank', accountId: position.accountCode });
+    } catch (err) {
+      await this._set(d.distributionId, { error: err.message });
+      throw err;
     }
     await this._set(d.distributionId, { status: 'funding', funding_reference: reference, funding_request_id: BANK_FUNDING_SOURCE, error: null });
     return {
       ...(await this._set(d.distributionId, { status: 'funded' })),
-      funding: { source: BANK_FUNDING_SOURCE, availableCents, needCents, bank: readiness.bank },
+      funding: { source: BANK_FUNDING_SOURCE, accountCode: position.accountCode, availableCents, needCents, reserve, bank: readiness.bank },
       next: 'reconcile() proposes the payout; execute() with approvalRef + screeningRef originates the direct deposit.',
     };
   },

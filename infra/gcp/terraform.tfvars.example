@@ -85,8 +85,10 @@ secret_names = [
   "LILI_BUSINESS_USER_ID",
   # Full Lili (RDFI) account number; routing/name are plain runtime_environment.
   "LILI_DD_ACCOUNT_NUMBER",
-  # Treasury (ODFI) operating account debited by the Lili credit.
-  "CLEARING_FUNDING_OPERATING_ACCOUNT",
+  # Treasury (ODFI) bank account debited by the Lili credit. The operating
+  # account itself (CLEARING_FUNDING_OPERATING_ACCOUNT) is a chart-of-accounts
+  # code, 1010, and stays a plain runtime value.
+  "CLEARING_FUNDING_SETTLEMENT_ACCOUNT",
   # Bearer token for /api/payment-server/v1/* (server/routes/bankSettlement.js).
   "PAYMENT_SERVER_SERVICE_TOKEN",
   # Payment Processor OS live plan (PAYMENT_PROCESSOR_LIVE=true). Already in

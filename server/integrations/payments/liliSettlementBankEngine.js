@@ -56,7 +56,7 @@ class LiliSettlementBankEngine {
         ? String(env.LILI_CLEARING_SEC_CODE).toUpperCase() : 'CCD',
       // Treasury (ODFI) side — the debtor. Named so requestSummary.source reports configured=true.
       sourceRouting: env.ACH_ODFI_ROUTING || env.NACHA_ODFI_ROUTING || env.TRUST_BANK_ROUTING || null,
-      sourceAccount: env.CLEARING_FUNDING_OPERATING_ACCOUNT || env.CLEARING_FUNDING_SETTLEMENT_ACCOUNT || null,
+      sourceAccount: env.CLEARING_FUNDING_SETTLEMENT_ACCOUNT || env.CLEARING_FUNDING_OPERATING_ACCOUNT || null,
       sourceName: env.ACH_ORIGINATOR_NAME || env.ACH_COMPANY_NAME || env.TRUST_NAME || 'DLB Trust',
       gcpProject: env.GCP_PROJECT || env.GOOGLE_CLOUD_PROJECT || null,
       originator: ORIGINATORS[String(env.LILI_ORIGINATOR || 'nacha').toLowerCase()] || 'nacha',
