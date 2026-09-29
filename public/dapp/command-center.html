@@ -339,7 +339,8 @@
       if (res.status === 401) { resetSession(); return new Promise(function () {}); }
       return res.text().then(function (text) {
         var data; try { data = JSON.parse(text); } catch (e) { data = { error: res.ok ? 'Unexpected non-JSON response from server' : (res.status + ' ' + res.statusText) }; }
-        if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
+        var okStatus = res.ok || (opts.okStatuses || []).indexOf(res.status) !== -1;
+        if (!okStatus || !data.success) throw new Error(data.error || data.message || res.statusText);
         return data;
       });
     });
@@ -379,7 +380,12 @@
       var errs = s.syncErrors || [];
       el('live-indicator').textContent = errs.length ? 'Partial' : 'Live';
       el('live-indicator').className = 'badge ' + (errs.length ? 'warn' : 'ok');
-      el('live-status').textContent = 'as of ' + (s.asOf ? new Date(s.asOf) : new Date()).toLocaleTimeString();
+      var failing = errs.map(function (x) {
+        var since = x.lastSuccessAt ? ' (last good sync ' + new Date(x.lastSuccessAt).toLocaleString() + ')' : '';
+        return (x.name || x.connectionId || 'source') + ': ' + (x.error || 'sync failed') + since;
+      });
+      el('live-status').textContent = 'as of ' + (s.asOf ? new Date(s.asOf) : new Date()).toLocaleTimeString() + (failing.length ? ' · ' + failing.join(' · ') : '');
+      el('live-status').title = failing.join('\n');
     }).catch(function (e) {
       el('live-indicator').textContent = 'Stale';
       el('live-indicator').className = 'badge bad';
@@ -390,7 +396,8 @@
 
   var ENGINE_LABELS = { payment: 'Payment initiation', gateway: 'Bank gateway (treasury → Lili)', clearing: 'Clearing & settlement', reconciliation: 'Reconciliation & matching', interop: 'Interoperability', credit: 'Credit OS (funding sources & GL validation)', debt: 'Debt OS (private-placement bond)', liquidity: 'Liquidity OS (debt-service coverage)', 'funding-os': 'Funding OS (real-value sources → ledger)' };
   function loadPipeline() {
-    return api('/api/os/readiness').then(function (r) {
+    // 503 means "not every engine is ready"; the body still carries the per-engine report.
+    return api('/api/os/readiness', { okStatuses: [503] }).then(function (r) {
       var p = r.data || {};
       var engines = p.engines || {};
       el('pipe-indicator').textContent = p.ready ? 'Ready' : 'Attention';

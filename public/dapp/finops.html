@@ -204,7 +204,7 @@
     const res = await fetch(path, opts);
     const text = await res.text();
     let data; try { data = JSON.parse(text); } catch { data = { error: text }; }
-    if (!res.ok) throw new Error(data.error || data.message || res.statusText);
+    if (!res.ok && !(opts.okStatuses || []).includes(res.status)) throw new Error(data.error || data.message || res.statusText);
     return data;
   }
 
@@ -528,7 +528,8 @@
   async function loadModuleData(m, body) {
     try {
       if (!m.endpoint) return;
-      const data = await api(m.endpoint);
+      // /api/os/readiness answers 503 with the per-engine report when any engine is unready.
+      const data = await api(m.endpoint, m.endpoint === '/api/os/readiness' ? { okStatuses: [503] } : {});
       if (m.key === 'core-banking' || m.key === 'treasury') {
         const rows = normalizeBalances(data.data);
         body.innerHTML = renderTable(
