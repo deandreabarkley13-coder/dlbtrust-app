@@ -155,6 +155,12 @@ secret_names = [
   # (plus counterparties-write if counterparties are created through the API).
   # partnerBankRails.js reads it when PARTNER_BANK_API_KEY is unset.
   # "UNIT_API_TOKEN",
+  # Fraud & Compliance OS (FRAUD_COMPLIANCE_LIVE=true): Sardine HTTP Basic
+  # credentials (client id / secret issued by Sardine after the Google Cloud
+  # Marketplace "Fraud and Compliance Operating Suite" subscription or a direct
+  # contract). See docs/FRAUD_COMPLIANCE_OS.md.
+  # "SARDINE_CLIENT_ID",
+  # "SARDINE_CLIENT_SECRET",
   # ODFI channel credentials when ACH_SFTP_URL is the chosen channel.
   # "ACH_SFTP_KEY",
   # "ACH_SFTP_PASSWORD",
@@ -183,3 +189,14 @@ unseeded_secret_names = [
 #   # Shadow until "true"; live Unit also requires PARTNER_BANK_BASE_URL (cloudrun.tf).
 #   PARTNER_BANK_LIVE          = "true"
 # }
+
+# Fraud & Compliance OS (docs/FRAUD_COMPLIANCE_OS.md). Add to the same
+# runtime_environment map once SARDINE_* are seeded:
+#   FRAUD_COMPLIANCE_LIVE               = "true"
+#   FRAUD_COMPLIANCE_PROVIDER           = "sardine"
+#   SARDINE_BASE_URL                    = "https://api.sardine.ai"   # sandbox: https://api.sandbox.sardine.ai
+#   COMPLIANCE_PROVIDER                 = "opensanctions"            # already the variables.tf default
+#   FRAUD_COMPLIANCE_TTL_MINUTES        = "60"
+#   FRAUD_COMPLIANCE_REVIEWERS          = "deandreabarkley13@gmail.com"
+#   # Turn on last, after a live screening has been issued and reviewed:
+#   FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT = "true"

@@ -524,6 +524,11 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[idp-ocr/tax-os/private-entity/clearing-agent/enterprise-odfi/transfer-api] table init:', e.message); }
 
   try {
+    await require(path.join(HD, 'server', 'integrations', 'os', 'fraudComplianceOsEngine')).FraudComplianceOsEngine.ensureTables();
+    console.log('[fraud-compliance] tables ensured');
+  } catch(e) { console.warn('[fraud-compliance] table init:', e.message); }
+
+  try {
     var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
     await SkrillLinkEngine.ensureTables();
     console.log('[skrill-link] tables ensured');

@@ -296,6 +296,34 @@ resource "google_cloud_run_v2_service" "app" {
       error_message = "PARTNER_BANK_PROVIDER=unit with PARTNER_BANK_LIVE=true needs PARTNER_BANK_BASE_URL set explicitly (https://api.unit.co for live, https://api.s.unit.sh for sandbox); the provider default is the Unit sandbox."
     }
 
+    # Fraud & Compliance OS: live screenings need Sardine credentials, the live
+    # Sardine host and a real sanctions list; settlement enforcement needs live
+    # screenings (secrets.tf fraud_compliance_*).
+    precondition {
+      condition     = length(local.missing_fraud_compliance_secrets) == 0
+      error_message = "FRAUD_COMPLIANCE_LIVE=true but secret_names lacks ${join(", ", local.missing_fraud_compliance_secrets)}. Add them to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add`; GET /api/os/readiness/fraud-compliance reports the same blockers at runtime."
+    }
+
+    precondition {
+      condition     = !local.fraud_compliance_live_without_sardine
+      error_message = "FRAUD_COMPLIANCE_LIVE=true requires FRAUD_COMPLIANCE_PROVIDER=\"sardine\": a live screeningRef needs a fraud / AML risk decision, not only a sanctions list match."
+    }
+
+    precondition {
+      condition     = !local.fraud_compliance_live_without_base_url
+      error_message = "FRAUD_COMPLIANCE_LIVE=true requires an explicit SARDINE_BASE_URL (https://api.sardine.ai): the engine defaults to the Sardine sandbox (https://api.sandbox.sardine.ai)."
+    }
+
+    precondition {
+      condition     = !local.fraud_compliance_live_local_sanctions
+      error_message = "FRAUD_COMPLIANCE_LIVE=true requires COMPLIANCE_PROVIDER=\"ofac\" or \"opensanctions\": local COMPLIANCE_SANCTIONED_NAMES screening cannot authorize production payments."
+    }
+
+    precondition {
+      condition     = !local.fraud_compliance_enforce_without_live
+      error_message = "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true requires FRAUD_COMPLIANCE_LIVE=true: only live screenings satisfy a live settlement, so enforcement without live screenings refuses every live settlement."
+    }
+
     # Payment Processor OS: PAYMENT_PROCESSOR_LIVE=true needs the processor
     # credentials declared (secrets.tf payment_processor_secret_names) and the
     # approvalRef / screeningRef gates left on.

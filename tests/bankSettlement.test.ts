@@ -11,6 +11,7 @@ const { LiliMcpEngine } = require('../server/integrations/payments/liliMcpEngine
 const { SystemSettings } = require('../server/integrations/ach/systemSettings');
 const pool = require('../server/integrations/bonds/pgPool');
 const bankSettlementRoutes = require('../server/routes/bankSettlement');
+const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 
 const saved = { ...process.env };
 const TOKEN = 'test-payment-server-token';
@@ -105,6 +106,26 @@ describe('S2S payment server — /api/payment-server/v1', () => {
     expect(r.data.destination.configured).toBe(true);
     expect(r.data.odfi.ready).toBe(true);
     expect(r.data.mcp.configured).toBe(true);
+  });
+
+  it('with FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true a live settlement consumes a verified Fraud & Compliance screening', async () => {
+    process.env.FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT = 'true';
+    const send = vi.spyOn(LiliSettlementBankEngine, '_sendPayment').mockResolvedValue({ transferId: 'LILIDD-2', status: 'originated', live: true, provider: 'lili' });
+    const verify = vi.spyOn(FraudComplianceOsEngine, 'verify')
+      .mockRejectedValueOnce(Object.assign(new Error('screeningRef SCR-X is a shadow screening and cannot authorize a live settlement'), { status: 409 }))
+      .mockResolvedValueOnce({ screeningRef: 'FCS-1', status: 'consumed' });
+
+    const refused = await call('POST', '/settlements', { bankId: 'lili', amountCents: 500, approvalRef: 'APR-1', screeningRef: 'SCR-X' });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).error).toMatch(/shadow screening/);
+    expect(send).not.toHaveBeenCalled();
+    expect(Object.keys(events)).toHaveLength(0);
+
+    const ok = await call('POST', '/settlements', { bankId: 'lili', amountCents: 500, approvalRef: 'APR-1', screeningRef: 'FCS-1' });
+    expect(ok.status).toBe(201);
+    const body = await ok.json();
+    expect(verify).toHaveBeenLastCalledWith({ screeningRef: 'FCS-1', amountCents: 500, bankId: 'lili', consume: true, consumer: body.data.settlementId });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('POST /settlements delegates to LiliSettlementBankEngine._sendPayment with autoTransmit via the ODFI channel', async () => {
