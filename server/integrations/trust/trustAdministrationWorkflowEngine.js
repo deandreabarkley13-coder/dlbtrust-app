@@ -142,7 +142,13 @@ class TrustAdministrationWorkflowEngine {
   static async liquidity() {
     return attempt(LiquidityOsEngine && (async () => {
       const coverage = await LiquidityOsEngine.coverage();
-      return { ready: Boolean(coverage.adequate), status: { issues: coverage.issues || [] }, coverage };
+      const issues = [...(coverage.issues || [])];
+      const due = coverage.horizons && coverage.horizons['365d'] ? coverage.horizons['365d'].due : null;
+      const reserve = ReserveEngine ? await ReserveEngine.coverage().catch((e) => ({ error: e.message })) : { error: 'ReserveEngine unavailable' };
+      const bankCash = reserve.error ? null : reserve.spendable;
+      if (bankCash === null) issues.push(`bank-confirmed cash: ${reserve.error}`);
+      else if (due !== null && due > bankCash) issues.push(`365d debt service ${due} exceeds Reserve OS bank-confirmed cash ${bankCash} (ledger liquid ${coverage.cash && coverage.cash.liquid})`);
+      return { ready: issues.length === 0, status: { issues }, bankConfirmedCash: bankCash, coverage };
     }), 'LiquidityOsEngine unavailable');
   }
 
