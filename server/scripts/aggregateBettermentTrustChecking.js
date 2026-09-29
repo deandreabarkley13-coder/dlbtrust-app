@@ -40,7 +40,9 @@
  *       (Finlynq MCP: CONN-BETTERMENT-TRUST-CHECKING-FINLYNQ; needs a Finlynq pf_ API key
  *        FINLYNQ_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ_API_KEY, Betterment linked
  *        inside Finlynq (Settings → Bank Feeds); --account-ids are Finlynq accounts.id values,
- *        --base-url overrides https://finlynq.com/api/mcp for a self-hosted Finlynq)
+ *        --base-url overrides https://finlynq.com/api/mcp for a self-hosted Finlynq; reads Finlynq's
+ *        bank-side ledger and re-syncs its SimpleFIN feed every 6 h, --source ledger reads the
+ *        bookkeeping ledger instead)
  *   node server/scripts/aggregateBettermentTrustChecking.js --connector orangerails --pull
  *       (Orange Rails: CONN-BETTERMENT-TRUST-CHECKING-ORANGERAILS; needs the platform key
  *        ORANGERAILS_PLATFORM_API_KEY / AGGREGATOR_BETTERMENT_TRUST_CHECKING_ORANGERAILS_API_KEY and
@@ -67,7 +69,7 @@ const CONNECTORS = {
   simplefin: (o) => Object.assign({ orgName: 'Betterment', lookbackDays: 90 },
     o.bankId ? { connId: o.bankId } : {},
     o.accountIds ? { accountIds: o.accountIds } : {}),
-  finlynq: (o) => Object.assign({ lookbackDays: 90, credentialsEnvPrefix: 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ' },
+  finlynq: (o) => Object.assign({ lookbackDays: 90, source: o.source || 'bank', syncBankFeed: true, credentialsEnvPrefix: 'AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ' },
     o.baseUrl ? { mcpUrl: o.baseUrl } : {},
     o.accountIds ? { accountIds: o.accountIds } : {}),
   orangerails: (o) => Object.assign({ institutionName: 'Betterment', appUserId: 'dlb-family-trust' },
@@ -116,6 +118,7 @@ async function main() {
     bankId: arg('--bank-id'),
     mode: arg('--mode'),
     baseUrl: arg('--base-url'),
+    source: arg('--source'),
     accountIds: accountIds ? accountIds.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
   });
   const id = conn.id;
