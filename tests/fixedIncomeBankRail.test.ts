@@ -194,7 +194,7 @@ describe('TrustAdministrationWorkflowEngine', () => {
     vi.spyOn(PtcCashManagementEngine, 'listAccounts').mockResolvedValue([{ cma_id: 'CMA-1', name: 'PTC CMA', status: 'active' }]);
     vi.spyOn(PtcCashManagementEngine, 'getLiquidityHistory').mockResolvedValue([{ at: '2026-09-29', totalUsd: 1250.5, liquidUsd: 1250.5, health: 'critical', coverageDays: 3 }]);
     vi.spyOn(LiquidityOsEngine, 'coverage').mockResolvedValue({ adequate: true, issues: [], cash: { liquid: 7158156.64 }, horizons: { '365d': { due: 985246.28 } } });
-    vi.spyOn(ReserveEngine, 'coverage').mockResolvedValue({ spendable: 0.84 });
+    vi.spyOn(ReserveEngine, 'coverage').mockResolvedValue({ spendable: 1000000 });
     vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: true, issues: [], latest: { verdict: 'proven' } });
     vi.spyOn(ReserveEngine, 'status').mockResolvedValue({ enforcement: 'strict', coverage: { attestedReserveCents: 84 } });
     vi.spyOn(CollateralOsEngine, 'readiness').mockResolvedValue({ ready: false, issues: ['TRUST_POLICY_ADDRESS not configured (draw destination)'] });
@@ -217,8 +217,7 @@ describe('TrustAdministrationWorkflowEngine', () => {
     expect(w.pipeline).not.toMatch(/stripe/i);
     expect(w.gaps).toContain('collateral: TRUST_POLICY_ADDRESS not configured (draw destination)');
     expect(w.gaps).toContain('cashManagement: CMA-1: liquidity critical');
-    expect(w.gaps).toContain('liquidity: 365d debt service 985246.28 exceeds Reserve OS bank-confirmed cash 0.84 (ledger liquid 7158156.64)');
-    expect(w.stages.liquidity).toMatchObject({ ready: false, bankConfirmedCash: 0.84 });
+    expect(w.stages.liquidity).toMatchObject({ ready: true, bankConfirmedCash: 1000000 });
     expect(w.stages.cashAccounts).toMatchObject({ ready: true, totalUsd: 1250.5, byType: { distribution: { totalUsd: 1250.5, accounts: 1 } } });
     expect(w.blocking).toEqual([]);
     expect(w.ready).toBe(true);
@@ -243,6 +242,16 @@ describe('TrustAdministrationWorkflowEngine', () => {
     ]);
     expect(w.gaps).toContain('issuance: fineract down');
     expect(w.stages.distribution.ready).toBe(true);
+  });
+
+  it('blocks on Liquidity OS when debt service exceeds Reserve OS bank-confirmed cash, even with ledger cash', async () => {
+    allReady();
+    (ReserveEngine.coverage as any).mockResolvedValue({ spendable: 0.84 });
+    const w = await TrustAdministrationWorkflowEngine.status();
+    expect(w.ready).toBe(false);
+    expect(w.blocking).toEqual(['liquidity: 365d debt service 985246.28 exceeds Reserve OS bank-confirmed cash 0.84 (ledger liquid 7158156.64)']);
+    expect(w.stages.liquidity).toMatchObject({ ready: false, bankConfirmedCash: 0.84 });
+    expect(w.stages.cashAccounts.ready).toBe(true);
   });
 
   it('run() refreshes feeds, reserve and proofs before planning distributions, and never executes a payment', async () => {

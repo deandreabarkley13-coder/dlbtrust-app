@@ -72,7 +72,7 @@ let FraudComplianceOsEngine = null;
 try { ({ FraudComplianceOsEngine } = require('../os/fraudComplianceOsEngine')); } catch (e) { FraudComplianceOsEngine = null; }
 
 const STAGES = ['bankFeed', 'issuance', 'fineract', 'cashAccounts', 'cashManagement', 'liquidity', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger'];
-const GATING = ['bankFeed', 'fineract', 'reserve', 'distribution', 'compliance', 'settlement'];
+const GATING = ['bankFeed', 'fineract', 'liquidity', 'reserve', 'distribution', 'compliance', 'settlement'];
 
 let lastRun = null;
 let running = false;
