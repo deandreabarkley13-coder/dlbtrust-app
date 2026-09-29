@@ -23,6 +23,8 @@
  *   PARTNER_BANK_ACCOUNT_ID      the trust's account/bank-account id at the provider
  *                                (unit: deposit account id, falls back to UNIT_ACCOUNT_ID)
  *   PARTNER_BANK_ACCOUNT_LABEL   human label shown in dashboards
+ *   PARTNER_BANK_LIVE            `true` to send origination to the bank; otherwise
+ *                                the rail is shadow (prepare() only, originate() refuses)
  */
 
 const https = require('https');
@@ -341,6 +343,7 @@ class PartnerBankRails {
       apiKey: process.env.PARTNER_BANK_API_KEY || (isUnit && process.env.UNIT_API_TOKEN) || '',
       accountId: process.env.PARTNER_BANK_ACCOUNT_ID || (isUnit && process.env.UNIT_ACCOUNT_ID) || '',
       accountLabel: process.env.PARTNER_BANK_ACCOUNT_LABEL || '',
+      live: String(process.env.PARTNER_BANK_LIVE || '').toLowerCase().trim() === 'true',
       baseUrl: (process.env.PARTNER_BANK_BASE_URL || provider?.defaultBaseUrl || '').replace(/\/+$/, ''),
       railPaths: {
         wire: process.env.PARTNER_BANK_WIRE_PATH || '',
@@ -360,9 +363,12 @@ class PartnerBankRails {
     if (!cfg.accountId) missing.push(isUnit ? 'PARTNER_BANK_ACCOUNT_ID (or UNIT_ACCOUNT_ID)' : 'PARTNER_BANK_ACCOUNT_ID');
     if (!cfg.baseUrl) missing.push('PARTNER_BANK_BASE_URL');
     const ready = missing.length === 0;
+    const live = ready && cfg.live;
     return {
       configured: Boolean(cfg.provider),
       ready,
+      live,
+      mode: live ? 'live' : 'shadow',
       provider: cfg.providerName,
       providerLabel: cfg.provider?.label || null,
       baseUrl: cfg.baseUrl || null,
@@ -373,14 +379,20 @@ class PartnerBankRails {
         return acc;
       }, {}),
       missingConfiguration: missing,
-      note: ready
-        ? 'Origination executes against the configured partner bank.'
-        : 'No partner bank configured — origination is refused rather than sent to a dead host.',
+      note: !ready
+        ? 'No partner bank configured — origination is refused rather than sent to a dead host.'
+        : live
+          ? 'Origination executes against the configured partner bank.'
+          : 'Partner bank configured but PARTNER_BANK_LIVE is not true — shadow mode, origination is refused.',
     };
   }
 
   static isConfigured() {
     return this.status().configured;
+  }
+
+  static isLive() {
+    return this.status().live;
   }
 
   static _assertReady(rail) {
@@ -437,6 +449,12 @@ class PartnerBankRails {
    */
   static async originate(rail, instruction) {
     const cfg = this._assertReady(rail);
+    if (!cfg.live) {
+      throw new Error(
+        `${cfg.provider.label} is in shadow mode (PARTNER_BANK_LIVE is not true);`
+        + ' set PARTNER_BANK_LIVE=true to originate real payments'
+      );
+    }
     const normalized = this._normalize(instruction);
     const request = cfg.provider.buildRequest(rail, normalized, cfg);
     const url = new URL(`${cfg.baseUrl}${request.path}`);

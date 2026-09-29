@@ -93,6 +93,7 @@ locals {
     for s in local.unit_secret_names : s
     if local.unit_partner_bank && !contains(local.runtime_secret_names, s)
   ]
+  unit_live_without_base_url = local.unit_partner_bank && lower(lookup(var.runtime_environment, "PARTNER_BANK_LIVE", "")) == "true" && trimspace(lookup(var.runtime_environment, "PARTNER_BANK_BASE_URL", "")) == ""
 
   # Payment Processor OS (paymentProcessorOsEngine.js). PAYMENT_PROCESSOR_LIVE=true
   # lets an approved submission (approvalRef + screeningRef) reach a processor,

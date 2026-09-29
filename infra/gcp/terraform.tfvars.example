@@ -180,4 +180,6 @@ unseeded_secret_names = [
 #   # Unit deposit account id the trust originates from (not a bank account number).
 #   PARTNER_BANK_ACCOUNT_ID    = "<unit-deposit-account-id>"
 #   PARTNER_BANK_ACCOUNT_LABEL = "DLB Trust Unit Operating"
+#   # Shadow until "true"; live Unit also requires PARTNER_BANK_BASE_URL (cloudrun.tf).
+#   PARTNER_BANK_LIVE          = "true"
 # }

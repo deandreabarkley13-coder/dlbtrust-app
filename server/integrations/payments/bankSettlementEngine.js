@@ -45,7 +45,7 @@ function isLive(provider) {
     case 'host_to_host': return true;
     case 'api_gateway': return String(env.LILI_CLEARING_LIVE || env.APIGEE_LIVE || env.APISIX_LIVE || 'false').toLowerCase() === 'true';
     case 'stripe_payout': return StripePayoutSettlementOriginator.getConfig().keyMode === 'live';
-    default: return PartnerBankRails.status().ready;
+    default: return PartnerBankRails.isLive();
   }
 }
 
