@@ -1180,6 +1180,14 @@ enterprise-odfi itself is live — so it stays `shadow` (blocker
 `enterprise-odfi: no verified external sponsor ODFI network`) until TabaPay or
 another sponsor network is handshake-verified.
 
+## Fraud & Compliance OS
+
+`server/integrations/os/fraudComplianceOsEngine.js` issues the `screeningRef`
+live settlements carry (sanctions list + Sardine fraud / AML risk, distinct
+reviewer, single use, bound to amount / bank / payee). Secrets
+`SARDINE_CLIENT_ID` / `SARDINE_CLIENT_SECRET`; flags `FRAUD_COMPLIANCE_LIVE`,
+`FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT`. Runbook: `docs/FRAUD_COMPLIANCE_OS.md`.
+
 ## Out of scope for this phase
 
 - Cloud Armor in front of IAP — recommended, separate PR.
