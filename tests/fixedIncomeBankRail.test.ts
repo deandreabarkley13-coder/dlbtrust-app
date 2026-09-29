@@ -4,7 +4,6 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 
 process.env.FIXED_INCOME_RAIL = 'bank';
-process.env.LILI_ORIGINATOR = 'stripe_payout';
 process.env.COUPON_INCOME_GL_ACCOUNT_CODE = '1020';
 process.env.TRUST_OPERATING_GL_ACCOUNT_CODE = '1030';
 delete process.env.FIXED_INCOME_BANK_PAYEES;
@@ -12,7 +11,8 @@ delete process.env.FIXED_INCOME_BANK_PAYEES;
 const pool = require('../server/integrations/bonds/pgPool');
 const { BankSettlementEngine } = require('../server/integrations/payments/bankSettlementEngine');
 const { SettlementBankRegistry } = require('../server/integrations/payments/settlementBankRegistry');
-const { LiliStripePayoutOriginator } = require('../server/integrations/payments/liliStripePayoutOriginator');
+const { CanonicalFundingSource } = require('../server/integrations/fineract/canonicalFundingSource');
+const { ReserveEngine } = require('../server/integrations/finops/reserveEngine');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/spritzTreasuryLegEngine');
 const { TrustPolicyEngine } = require('../server/integrations/dapp/trustPolicyEngine');
@@ -71,7 +71,8 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
   let s: ReturnType<typeof store>;
   let readiness: ReturnType<typeof vi.spyOn>;
   let settle: ReturnType<typeof vi.spyOn>;
-  let balance: ReturnType<typeof vi.spyOn>;
+  let funding: ReturnType<typeof vi.spyOn>;
+  let reserve: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     s = store([COUPON, ALLOC]);
     vi.spyOn(pool, 'query').mockImplementation(s.query as any);
@@ -79,7 +80,8 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
     vi.spyOn(SettlementBankRegistry, 'list').mockResolvedValue([LILI]);
     readiness = vi.spyOn(BankSettlementEngine, 'readiness').mockResolvedValue({ bankId: 'lili', provider: 'lili', mode: 'live', ready: true, blockers: [], requires: ['approvalRef', 'screeningRef'], bank: SettlementBankRegistry.publicView(LILI) });
     settle = vi.spyOn(BankSettlementEngine, 'clearAndSettle').mockResolvedValue({ settlementId: 'STL-1', status: 'originated', providerReference: 'po_123' });
-    balance = vi.spyOn(LiliStripePayoutOriginator, 'status').mockResolvedValue({ ready: true, balance: { availableCents: 500000 } });
+    funding = vi.spyOn(CanonicalFundingSource, 'position').mockImplementation(async ({ accountCode }: any) => ({ accountCode, availableBalanceCents: 500000, fundingEligible: true, segregationReason: null }));
+    reserve = vi.spyOn(ReserveEngine, 'assertSpendable').mockResolvedValue({ allowed: true, enforcement: 'strict' });
     vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entryId: 'JE-DIST' });
     vi.spyOn(SpritzTreasuryLegEngine, 'fund').mockRejectedValue(new Error('spritz must not be called'));
     vi.spyOn(TrustPolicyEngine, 'propose').mockRejectedValue(new Error('policy contract must not be called'));
@@ -90,8 +92,8 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
     const r = await FixedIncomeDistributionEngine.readiness();
     expect(r.rail).toBe('bank');
     expect(r.ready).toBe(true);
-    expect(r.treasury.fundingSource).toBe('stripe_balance');
-    expect(r.treasury.banks.lili.availableCents).toBe(500000);
+    expect(r.treasury.fundingSource).toBe('fineract_canonical');
+    expect(r.buckets.map((b: any) => [b.bucket, b.funding.accountCode, b.funding.availableCents])).toEqual([['coupon_income', '1020', 500000], ['trust_operating', '1030', 500000]]);
     for (const b of r.buckets) expect(b.payees).toEqual([expect.objectContaining({ bankId: 'lili', shareBps: 10000, accountNumberMasked: '****2959' })]);
     expect(JSON.stringify(r)).not.toContain('_account');
   });
@@ -120,7 +122,10 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
     const id = s.t.fixed_income_distributions[0].distribution_id;
     const staged = await FixedIncomeDistributionEngine.stage({ distributionId: id, actor: 'maker' });
     expect(staged.status).toBe('funded');
-    expect(staged.funding.source).toBe('stripe_balance');
+    expect(staged.funding.source).toBe('fineract_canonical');
+    expect(staged.funding.accountCode).toBe('1020');
+    expect(funding).toHaveBeenCalledWith(expect.objectContaining({ accountCode: '1020' }));
+    expect(reserve).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 125050, rail: 'fixed_income_bank' }));
 
     const rec = await FixedIncomeDistributionEngine.reconcile({ actor: 'maker' });
     expect(rec.rail).toBe('bank');
@@ -140,11 +145,16 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
     expect(TrustPolicyEngine.propose).not.toHaveBeenCalled();
   });
 
-  it('refuses to stage when the Stripe balance cannot cover the distribution or the bank is not ready', async () => {
+  it('refuses to stage when the treasury ERP or the attested reserve cannot cover the distribution, or the bank is not ready', async () => {
     await FixedIncomeDistributionEngine.plan({ createdBy: 't' });
     const id = s.t.fixed_income_distributions[0].distribution_id;
-    balance.mockResolvedValue({ ready: true, balance: { availableCents: 29 } });
+    funding.mockResolvedValueOnce({ accountCode: '1020', availableBalanceCents: 29, fundingEligible: true, segregationReason: null });
     await expect(FixedIncomeDistributionEngine.stage({ distributionId: id })).rejects.toMatchObject({ code: 'FIXED_INCOME_UNFUNDED', details: { availableCents: 29, needCents: 125050 } });
+    funding.mockResolvedValueOnce({ accountCode: '1020', availableBalanceCents: 0, fundingEligible: false, segregationReason: 'sub-ledger and canonical GL differ by $10 — reconcile before funding' });
+    await expect(FixedIncomeDistributionEngine.stage({ distributionId: id })).rejects.toMatchObject({ code: 'FIXED_INCOME_UNFUNDED', details: { reason: expect.stringMatching(/reconcile/) } });
+    reserve.mockRejectedValueOnce(Object.assign(new Error('Reserve shortfall: fixed_income_bank origination of $1250.50 exceeds the $0.84 held at an external custodian'), { code: 'RESERVE_SHORTFALL' }));
+    await expect(FixedIncomeDistributionEngine.stage({ distributionId: id })).rejects.toMatchObject({ code: 'RESERVE_SHORTFALL' });
+    expect((await FixedIncomeDistributionEngine.get(id)).error).toMatch(/Reserve shortfall/);
     readiness.mockResolvedValue({ ready: false, blockers: ['STRIPE_SECRET_KEY is a test-mode key'] });
     await expect(FixedIncomeDistributionEngine.stage({ distributionId: id })).rejects.toMatchObject({ code: 'FIXED_INCOME_BANK_NOT_READY' });
     expect((await FixedIncomeDistributionEngine.get(id)).status).toBe('planned');
