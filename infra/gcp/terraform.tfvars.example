@@ -150,6 +150,13 @@ secret_names = [
   # Betterment is connected in the Bridge ("Login with App Password").
   "SIMPLEFIN_ACCESS_URL",
   # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_SIMPLEFIN_ACCESS_URL)
+  # Finlynq connection CONN-BETTERMENT-TRUST-CHECKING-FINLYNQ (finlynq connector,
+  # read-only over Finlynq's MCP server https://finlynq.com/api/mcp, AGPL-3.0
+  # github.com/finlynq/finlynq): a pf_ API key from Finlynq Settings → API Keys.
+  # Betterment is linked inside Finlynq (Settings → Bank Feeds). FINLYNQ_MCP_URL
+  # in runtime_environment points at a self-hosted Finlynq instead.
+  # "FINLYNQ_API_KEY",
+  # (or connection-scoped: AGGREGATOR_BETTERMENT_TRUST_CHECKING_FINLYNQ_API_KEY)
   # Unit (Unit Finance BaaS) partner bank (PARTNER_BANK_PROVIDER=unit): org API
   # token from Unit Dashboard > Developer > API Tokens, scope payments-write
   # (plus counterparties-write if counterparties are created through the API).
