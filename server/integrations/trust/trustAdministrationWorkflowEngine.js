@@ -7,6 +7,9 @@
  *   bankFeed     BankingAggregator (Finlynq/Betterment) -> DataBridge -> trust GL -> Fineract
  *   issuance     BondIssuanceEngine: issuer -> holder P&I booked in Fineract + GL
  *   fineract     CanonicalFundingSource: the treasury ERP GL is the funding authority
+ *   cashAccounts CashEngine: investment-income cash ledger (cash_accounts) by account type
+ *   cashManagement PtcCashManagementEngine: CMA operating / liquidity_reserve / investment_sweep
+ *   liquidity    LiquidityOsEngine: liquid cash vs the Debt OS coupon/principal schedule
  *   proof        ProofOfAssetOsEngine over contract + Fineract + GL + fiat + custody
  *   reserve      ReserveEngine: externally attested, spendable reserve (strict gate)
  *   collateral   CollateralOsEngine facility readiness
@@ -56,10 +59,19 @@ try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { Re
 let CollateralOsEngine = null;
 try { ({ CollateralOsEngine } = require('../os/collateralOsEngine')); } catch (e) { CollateralOsEngine = null; }
 
+let CashEngine = null;
+try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
+
+let PtcCashManagementEngine = null;
+try { ({ PtcCashManagementEngine } = require('../finops/ptcCashManagementEngine')); } catch (e) { PtcCashManagementEngine = null; }
+
+let LiquidityOsEngine = null;
+try { ({ LiquidityOsEngine } = require('../os/liquidityOsEngine')); } catch (e) { LiquidityOsEngine = null; }
+
 let FraudComplianceOsEngine = null;
 try { ({ FraudComplianceOsEngine } = require('../os/fraudComplianceOsEngine')); } catch (e) { FraudComplianceOsEngine = null; }
 
-const STAGES = ['bankFeed', 'issuance', 'fineract', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger'];
+const STAGES = ['bankFeed', 'issuance', 'fineract', 'cashAccounts', 'cashManagement', 'liquidity', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger'];
 const GATING = ['bankFeed', 'fineract', 'reserve', 'distribution', 'compliance', 'settlement'];
 
 let lastRun = null;
@@ -99,6 +111,39 @@ class TrustAdministrationWorkflowEngine {
       const dataFlow = includeFineract && DataBridge ? await DataBridge.getDataFlowStatus().catch((e) => ({ error: e.message })) : undefined;
       return { ready: Boolean(status.ready), status, ...(dataFlow ? { dataFlow } : {}) };
     }), 'CanonicalFundingSource unavailable');
+  }
+
+  static async cashAccounts() {
+    return attempt(CashEngine && (async () => {
+      const summary = await CashEngine.getPositionSummary();
+      const byType = Object.fromEntries(Object.entries(summary.by_type || {}).map(([t, v]) => [t, { totalUsd: v.total_cents / 100, accounts: v.account_count }]));
+      return { ready: true, basis: 'ledger book balances, not bank-confirmed', totalUsd: summary.grand_total_dollars, byType };
+    }), 'CashEngine unavailable');
+  }
+
+  static async cashManagement() {
+    return attempt(PtcCashManagementEngine && (async () => {
+      const accounts = [];
+      for (const a of await PtcCashManagementEngine.listAccounts()) {
+        const [latest] = await PtcCashManagementEngine.getLiquidityHistory(a.cma_id, { limit: 1 }).catch(() => []);
+        accounts.push({ cmaId: a.cma_id, name: a.name, status: a.status, latest: latest || null });
+      }
+      const issues = [];
+      if (!accounts.length) issues.push('no Cash Management Account provisioned (POST /api/finops/ptc-cma)');
+      for (const a of accounts) {
+        if (a.status !== 'active') issues.push(`${a.cmaId}: status ${a.status}`);
+        else if (!a.latest) issues.push(`${a.cmaId}: no liquidity snapshot yet`);
+        else if (a.latest.health !== 'healthy') issues.push(`${a.cmaId}: liquidity ${a.latest.health}`);
+      }
+      return { ready: issues.length === 0, status: { issues }, accounts };
+    }), 'PtcCashManagementEngine unavailable');
+  }
+
+  static async liquidity() {
+    return attempt(LiquidityOsEngine && (async () => {
+      const coverage = await LiquidityOsEngine.coverage();
+      return { ready: Boolean(coverage.adequate), status: { issues: coverage.issues || [] }, coverage };
+    }), 'LiquidityOsEngine unavailable');
   }
 
   static async issuance() {
@@ -177,6 +222,9 @@ class TrustAdministrationWorkflowEngine {
       this.bankFeed(),
       this.issuance(),
       this.fineract({ includeFineract }),
+      this.cashAccounts(),
+      this.cashManagement(),
+      this.liquidity(),
       this.proof(),
       this.reserve(),
       this.collateral(),
@@ -200,7 +248,7 @@ class TrustAdministrationWorkflowEngine {
     }
     const blocking = gaps.filter((g) => GATING.includes(g.slice(0, g.indexOf(':'))));
     return {
-      pipeline: 'bank feeds (Finlynq) -> DataBridge -> trust GL -> Fineract (treasury ERP, ledger of record) -> bond issuance + proof of asset -> Reserve OS attestation -> fixed-income distribution planned from posted 1020/1030 -> staged against the Fineract canonical GL + Reserve OS -> Fraud & Compliance screeningRef -> maker/checker approvalRef -> Lili NACHA credit originated by dlb-treasury (OpenACH) -> ODFI via MFT Gateway/SFTP -> bank acknowledgement/return evidence',
+      pipeline: 'bank feeds (Finlynq) -> DataBridge -> trust GL -> Fineract (treasury ERP, ledger of record) -> investment-income cash accounts + Cash Management Account + Liquidity OS coverage -> bond issuance + proof of asset -> Reserve OS attestation -> fixed-income distribution planned from posted 1020/1030 -> staged against the Fineract canonical GL + Reserve OS -> Fraud & Compliance screeningRef -> maker/checker approvalRef -> Lili NACHA credit originated by dlb-treasury (OpenACH) -> ODFI via MFT Gateway/SFTP -> bank acknowledgement/return evidence',
       ready: blocking.length === 0 && GATING.every((name) => stages[name].ready === true),
       gating: GATING.slice(),
       blocking,
@@ -213,7 +261,7 @@ class TrustAdministrationWorkflowEngine {
 
   /**
    * One ordered administration cycle: refresh bank feeds into the GL and
-   * Fineract, re-attest reserves, re-prove assets, then plan (and, when
+   * Fineract, snapshot CMA liquidity, re-attest reserves, re-prove assets, then plan (and, when
    * FIXED_INCOME_AUTO_STAGE=true, stage) fixed-income distributions against
    * the freshly reconciled data. No step originates a payment.
    */
@@ -224,6 +272,10 @@ class TrustAdministrationWorkflowEngine {
     try {
       const steps = {
         bankFeed: await attempt(aggregatorScheduler && (() => aggregatorScheduler.runOnce()), 'aggregatorScheduler unavailable'),
+        cashManagement: await attempt(PtcCashManagementEngine && (async () => {
+          const o = await PtcCashManagementEngine.getOverview();
+          return { accounts: o.count, totalUsd: o.totalCents / 100, liquidUsd: o.liquidCents / 100 };
+        }), 'PtcCashManagementEngine unavailable'),
         reserve: await attempt(ReserveEngine && (() => ReserveEngine.verifyLive()), 'ReserveEngine unavailable'),
         proof: await attempt(ProofOfAssetOsEngine && (async () => {
           const proofs = await ProofOfAssetOsEngine.proveAll({ createdBy: actor });

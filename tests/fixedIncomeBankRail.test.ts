@@ -22,6 +22,9 @@ const { BankingAggregator } = require('../server/integrations/aggregator/banking
 const aggregatorScheduler = require('../server/integrations/aggregator/aggregatorScheduler');
 const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEngine');
 const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
+const { CashEngine } = require('../server/integrations/cash/cashEngine');
+const { PtcCashManagementEngine } = require('../server/integrations/finops/ptcCashManagementEngine');
+const { LiquidityOsEngine } = require('../server/integrations/os/liquidityOsEngine');
 const { BondIssuanceEngine } = require('../server/integrations/bonds/bondIssuanceEngine');
 const { ProofOfAssetOsEngine } = require('../server/integrations/os/proofOfAssetOsEngine');
 const { DepositAndSettlementEngine } = require('../server/integrations/payments/depositAndSettlementEngine');
@@ -187,6 +190,10 @@ describe('TrustAdministrationWorkflowEngine', () => {
     vi.spyOn(BankingAggregator, 'feedStatus').mockResolvedValue([FEED]);
     vi.spyOn(BondIssuanceEngine, 'status').mockResolvedValue({ ready: true, issues: [], issuances: 1 });
     vi.spyOn(CanonicalFundingSource, 'readiness').mockReturnValue({ ready: true, issues: [], system: 'fineract' });
+    vi.spyOn(CashEngine, 'getPositionSummary').mockResolvedValue({ by_type: { distribution: { total_cents: 125050, account_count: 1 } }, grand_total_cents: 125050, grand_total_dollars: 1250.5 });
+    vi.spyOn(PtcCashManagementEngine, 'listAccounts').mockResolvedValue([{ cma_id: 'CMA-1', name: 'PTC CMA', status: 'active' }]);
+    vi.spyOn(PtcCashManagementEngine, 'getLiquidityHistory').mockResolvedValue([{ at: '2026-09-29', totalUsd: 1250.5, liquidUsd: 1250.5, health: 'critical', coverageDays: 3 }]);
+    vi.spyOn(LiquidityOsEngine, 'coverage').mockResolvedValue({ adequate: false, issues: ['no funded real-value source to pay coupons out (see credit engine)'] });
     vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: true, issues: [], latest: { verdict: 'proven' } });
     vi.spyOn(ReserveEngine, 'status').mockResolvedValue({ enforcement: 'strict', coverage: { attestedReserveCents: 84 } });
     vi.spyOn(CollateralOsEngine, 'readiness').mockResolvedValue({ ready: false, issues: ['TRUST_POLICY_ADDRESS not configured (draw destination)'] });
@@ -204,10 +211,13 @@ describe('TrustAdministrationWorkflowEngine', () => {
   it('connects every engine in one status surface; only gating stages decide ready, Stripe is not a stage', async () => {
     allReady();
     const w = await TrustAdministrationWorkflowEngine.status();
-    expect(Object.keys(w.stages)).toEqual(['bankFeed', 'issuance', 'fineract', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger']);
+    expect(Object.keys(w.stages)).toEqual(['bankFeed', 'issuance', 'fineract', 'cashAccounts', 'cashManagement', 'liquidity', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger']);
     expect(w.stages).not.toHaveProperty('intake');
     expect(w.pipeline).not.toMatch(/stripe/i);
     expect(w.gaps).toContain('collateral: TRUST_POLICY_ADDRESS not configured (draw destination)');
+    expect(w.gaps).toContain('cashManagement: CMA-1: liquidity critical');
+    expect(w.gaps).toContain('liquidity: no funded real-value source to pay coupons out (see credit engine)');
+    expect(w.stages.cashAccounts).toMatchObject({ ready: true, totalUsd: 1250.5, byType: { distribution: { totalUsd: 1250.5, accounts: 1 } } });
     expect(w.blocking).toEqual([]);
     expect(w.ready).toBe(true);
     expect(w.stages.distribution.fundingSource).toBe('fineract_canonical');
@@ -237,12 +247,13 @@ describe('TrustAdministrationWorkflowEngine', () => {
     allReady();
     const order: string[] = [];
     vi.spyOn(aggregatorScheduler, 'runOnce').mockImplementation(async () => { order.push('bankFeed'); return { connections: 1, pulled: 4, errors: [] }; });
+    vi.spyOn(PtcCashManagementEngine, 'getOverview').mockImplementation(async () => { order.push('cashManagement'); return { count: 1, totalCents: 125050, liquidCents: 125050 }; });
     vi.spyOn(ReserveEngine, 'verifyLive').mockImplementation(async () => { order.push('reserve'); return { verified: 3, sources: [] }; });
     vi.spyOn(ProofOfAssetOsEngine, 'proveAll').mockImplementation(async () => { order.push('proof'); return [{ scope: 'portfolio', bondId: null, verdict: 'proven' }]; });
     vi.spyOn(FixedIncomeDistributionEngine, 'runCycle').mockImplementation(async () => { order.push('distribution'); return { planned: 2, staged: 0 }; });
     const execute = vi.spyOn(FixedIncomeDistributionEngine, 'execute');
     const r = await TrustAdministrationWorkflowEngine.run({ actor: 'tester' });
-    expect(order).toEqual(['bankFeed', 'reserve', 'proof', 'distribution']);
+    expect(order).toEqual(['bankFeed', 'cashManagement', 'reserve', 'proof', 'distribution']);
     expect(execute).not.toHaveBeenCalled();
     expect(r.errors).toEqual([]);
     expect(r.steps.proof.proofs).toEqual([{ scope: 'portfolio', bondId: null, verdict: 'proven' }]);
