@@ -624,15 +624,26 @@ variable "runtime_environment" {
     MELIO_EXPORT_DIR         = "/data/melio-exports"
     # Compliance gate (paymentComplianceGate.js): "live" permits real vendor
     # payment execution through the gateway clearing engine.
-    VENDOR_PAYMENT_EXECUTION_MODE  = "live"
-    COMPLIANCE_PROVIDER            = "opensanctions"
-    TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
-    TRUST_CHECKER_EMAIL            = "deandreabarkley13@gmail.com"
-    MELIO_SOURCE_TYPE              = "trust"
-    MELIO_SOURCE_ACCOUNT_ID        = "1010"
-    MELIO_ALLOWED_SOURCE_ACCOUNTS  = "1010,cash:CA-OPERATING"
-    TRUST_SEGREGATED_ACCOUNT_CODES = "1210"
-    TRUST_SIGNATURE_DOCUMENT_PATH  = "/data/governance/Trustees_Signature_Page.pdf"
+    VENDOR_PAYMENT_EXECUTION_MODE = "live"
+    COMPLIANCE_PROVIDER           = "opensanctions"
+    # Fraud & Compliance OS (docs/FRAUD_COMPLIANCE_OS.md): live screeningRefs
+    # from OpenSanctions + DLB internal fraud rules; the trust checker reviews.
+    # FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT stays "false" until the callers of
+    # BankSettlementEngine / Clearing Agent send FCS- screeningRefs.
+    FRAUD_COMPLIANCE_ENABLED             = "true"
+    FRAUD_COMPLIANCE_LIVE                = "true"
+    FRAUD_COMPLIANCE_PROVIDER            = "internal"
+    FRAUD_COMPLIANCE_TTL_MINUTES         = "60"
+    FRAUD_COMPLIANCE_REVIEWERS           = "deandreabarkley13@gmail.com"
+    FRAUD_COMPLIANCE_REVIEW_AMOUNT_CENTS = "1000000"
+    FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT  = "false"
+    TRUST_MAKER_EMAIL                    = "AnnRobinson1117@gmail.com"
+    TRUST_CHECKER_EMAIL                  = "deandreabarkley13@gmail.com"
+    MELIO_SOURCE_TYPE                    = "trust"
+    MELIO_SOURCE_ACCOUNT_ID              = "1010"
+    MELIO_ALLOWED_SOURCE_ACCOUNTS        = "1010,cash:CA-OPERATING"
+    TRUST_SEGREGATED_ACCOUNT_CODES       = "1210"
+    TRUST_SIGNATURE_DOCUMENT_PATH        = "/data/governance/Trustees_Signature_Page.pdf"
 
     # Family Trust Company mandate + fixed-income distribution (docs/TRUST_CONTROL_PLANE.md)
     TRUST_LEGAL_NAME                 = "DEANDREA LAVAR BARKLEY FAMILY TRUST"

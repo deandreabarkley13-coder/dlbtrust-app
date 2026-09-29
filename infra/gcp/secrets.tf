@@ -96,9 +96,10 @@ locals {
 
   # Fraud & Compliance OS (server/integrations/os/fraudComplianceOsEngine.js):
   # FRAUD_COMPLIANCE_LIVE=true issues live screeningRefs from the sanctions list
-  # (ComplianceEngine) + Sardine fraud / AML risk, so the Sardine HTTP Basic
-  # credentials must be declared, the live Sardine host set explicitly (the
-  # engine defaults to the sandbox) and the sanctions list must be a real one.
+  # (ComplianceEngine) + DLB internal fraud rules, so the sanctions list must be
+  # a real one. FRAUD_COMPLIANCE_PROVIDER=sardine adds Sardine fraud / AML risk:
+  # its HTTP Basic credentials must be declared and the live Sardine host set
+  # explicitly (the engine defaults to the sandbox).
   # FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true makes BankSettlementEngine consume
   # a screening per live settlement, which only works once screenings are live.
   fraud_compliance_secret_names = [
@@ -106,12 +107,12 @@ locals {
     "SARDINE_CLIENT_SECRET",
   ]
   fraud_compliance_live     = lookup(var.runtime_environment, "FRAUD_COMPLIANCE_LIVE", "false") == "true"
-  fraud_compliance_provider = lookup(var.runtime_environment, "FRAUD_COMPLIANCE_PROVIDER", "sardine")
+  fraud_compliance_provider = lookup(var.runtime_environment, "FRAUD_COMPLIANCE_PROVIDER", "internal")
   missing_fraud_compliance_secrets = [
     for s in local.fraud_compliance_secret_names : s
     if local.fraud_compliance_live && local.fraud_compliance_provider == "sardine" && !contains(local.runtime_secret_names, s)
   ]
-  fraud_compliance_live_without_sardine = local.fraud_compliance_live && local.fraud_compliance_provider != "sardine"
+  fraud_compliance_live_bad_provider = local.fraud_compliance_live && !contains(["internal", "sardine"], local.fraud_compliance_provider)
   fraud_compliance_live_without_base_url = (
     local.fraud_compliance_live && local.fraud_compliance_provider == "sardine" &&
     lookup(var.runtime_environment, "SARDINE_BASE_URL", "") == ""

@@ -7,8 +7,10 @@
  * settlement bank it was run for:
  *
  *   screen()   maker step: sanctions (ComplianceEngine: OFAC / OpenSanctions
- *              list) + fraud / AML risk (Sardine POST /v1/customers) -> a
- *              screening_ref with status clear | review | blocked
+ *              list) + DLB internal fraud rules (prior block, new payee,
+ *              amount, 24h velocity) + optional Sardine fraud / AML risk
+ *              (POST /v1/customers) -> a screening_ref with status
+ *              clear | review | blocked
  *   review()   checker step for status=review: a distinct reviewer (optionally
  *              on FRAUD_COMPLIANCE_REVIEWERS) clears or blocks it
  *   verify()   is this screening_ref a live, clear, unexpired, unconsumed
@@ -20,15 +22,25 @@
  * live Unit / Column / Increase / Lili settlement only leaves with a
  * screeningRef this engine issued.
  *
- * Nothing is `live` unless FRAUD_COMPLIANCE_LIVE=true, the sanctions list is
- * ready (COMPLIANCE_PROVIDER=ofac|opensanctions) and Sardine credentials plus
- * an explicit SARDINE_BASE_URL are present. Shadow screenings are recorded
- * but can never satisfy a live settlement.
+ * ClearingAgentOsEngine.submit() (Enterprise ODFI / Transfer API path) does the
+ * same, and PaymentComplianceGate.verifyRecordedScreening() accepts FCS- refs.
+ *
+ * Nothing is `live` unless FRAUD_COMPLIANCE_LIVE=true and the sanctions list is
+ * ready (COMPLIANCE_PROVIDER=ofac|opensanctions); with
+ * FRAUD_COMPLIANCE_PROVIDER=sardine, Sardine credentials plus an explicit
+ * SARDINE_BASE_URL are also required. Shadow screenings are recorded but can
+ * never satisfy a live settlement.
  *
  * Env:
  *   FRAUD_COMPLIANCE_ENABLED            default true
  *   FRAUD_COMPLIANCE_LIVE               true to issue live screenings
- *   FRAUD_COMPLIANCE_PROVIDER           sardine (default) | none
+ *   FRAUD_COMPLIANCE_PROVIDER           internal (default: DLB rules only) |
+ *                                       sardine (DLB rules + Sardine)
+ *   FRAUD_COMPLIANCE_REVIEW_AMOUNT_CENTS    review at/above (default 1000000 = $10k)
+ *   FRAUD_COMPLIANCE_MAX_AMOUNT_CENTS       block above (default 0 = no cap)
+ *   FRAUD_COMPLIANCE_VELOCITY_COUNT         review at N screenings / payee / 24h (default 5)
+ *   FRAUD_COMPLIANCE_VELOCITY_CENTS         review at 24h payee total (default 5000000)
+ *   FRAUD_COMPLIANCE_REVIEW_NEW_PAYEES      true (default): first payment to a payee needs review
  *   FRAUD_COMPLIANCE_TTL_MINUTES        validity of a clear screening (default 60)
  *   FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT true: live settlements must present a
  *                                       verified, unconsumed screeningRef
@@ -49,6 +61,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 const SARDINE_SANDBOX_URL = 'https://api.sandbox.sardine.ai';
 const SARDINE_LIVE_URL = 'https://api.sardine.ai';
 const LIST_PROVIDERS = ['ofac', 'opensanctions'];
+const FRAUD_PROVIDERS = ['internal', 'sardine'];
 const STATUSES = ['clear', 'review', 'blocked', 'consumed'];
 const ACTIONS = ['screen', 'review', 'verify', 'get', 'list', 'status', 'readiness'];
 const RANK = { clear: 0, review: 1, blocked: 2 };
@@ -83,16 +96,53 @@ function worst(...statuses) {
   return statuses.filter(Boolean).reduce((a, b) => (RANK[b] > RANK[a] ? b : a), 'clear');
 }
 
+function nonNegative(v, dflt) {
+  const n = Number(v);
+  return v === undefined || v === null || v === '' || !Number.isFinite(n) || n < 0 ? dflt : Math.floor(n);
+}
+
+/**
+ * DLB internal fraud rules over the screening history in Cloud SQL.
+ * history: { blocked, trusted, dayCount, dayCents } for this payee hash.
+ */
+function evaluateInternalRules({ payee, amountCents, rail, history, rules }) {
+  const hits = [];
+  const hit = (rule, status, detail) => hits.push({ rule, status, detail });
+  if (history.blocked > 0) hit('prior_block', 'blocked', `payee has ${history.blocked} blocked screening(s)`);
+  if (rules.maxAmountCents > 0 && amountCents > rules.maxAmountCents) hit('max_amount', 'blocked', `amount ${amountCents} > FRAUD_COMPLIANCE_MAX_AMOUNT_CENTS ${rules.maxAmountCents}`);
+  if (rules.reviewAmountCents > 0 && amountCents >= rules.reviewAmountCents) hit('review_amount', 'review', `amount ${amountCents} >= ${rules.reviewAmountCents}`);
+  if (rules.reviewNewPayees && history.trusted === 0) hit('new_payee', 'review', 'no prior reviewed or settled screening for this payee');
+  if (rules.velocityCount > 0 && history.dayCount + 1 >= rules.velocityCount) hit('velocity_count', 'review', `${history.dayCount + 1} screenings for this payee in 24h`);
+  if (rules.velocityCents > 0 && history.dayCents + amountCents >= rules.velocityCents) hit('velocity_amount', 'review', `${history.dayCents + amountCents} cents to this payee in 24h`);
+  if (['ach', 'wire'].includes(rail) && (!payee.routingNumber || !payee.accountNumber)) hit('bank_details', 'review', `${rail} payee without routing / account number`);
+  const status = worst(...hits.map((h) => h.status));
+  return {
+    status,
+    level: status === 'blocked' ? 'very_high' : status === 'review' ? 'medium' : 'low',
+    amlLevel: null,
+    sessionKey: null,
+    reasons: hits.map((h) => `internal:${h.rule} (${h.detail})`),
+    summary: { rules: hits.map(({ rule, status: st }) => ({ rule, status: st })), history },
+  };
+}
+
 function getFraudComplianceConfig(env = process.env) {
   const explicitBaseUrl = String(env.SARDINE_BASE_URL || '').trim().replace(/\/+$/, '');
   return {
     enabled: bool(env.FRAUD_COMPLIANCE_ENABLED, true),
     live: bool(env.FRAUD_COMPLIANCE_LIVE, false),
-    provider: lower(env.FRAUD_COMPLIANCE_PROVIDER) || 'sardine',
+    provider: lower(env.FRAUD_COMPLIANCE_PROVIDER) || 'internal',
     ttlMinutes: Math.max(1, Number(env.FRAUD_COMPLIANCE_TTL_MINUTES) || 60),
     enforceSettlement: bool(env.FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT, false),
     reviewers: list(env.FRAUD_COMPLIANCE_REVIEWERS),
     sanctionsProvider: lower(env.COMPLIANCE_PROVIDER) || 'local',
+    rules: {
+      reviewAmountCents: nonNegative(env.FRAUD_COMPLIANCE_REVIEW_AMOUNT_CENTS, 1000000),
+      maxAmountCents: nonNegative(env.FRAUD_COMPLIANCE_MAX_AMOUNT_CENTS, 0),
+      velocityCount: nonNegative(env.FRAUD_COMPLIANCE_VELOCITY_COUNT, 5),
+      velocityCents: nonNegative(env.FRAUD_COMPLIANCE_VELOCITY_CENTS, 5000000),
+      reviewNewPayees: bool(env.FRAUD_COMPLIANCE_REVIEW_NEW_PAYEES, true),
+    },
     sardine: {
       clientId: String(env.SARDINE_CLIENT_ID || '').trim(),
       clientSecret: String(env.SARDINE_CLIENT_SECRET || '').trim(),
@@ -290,6 +340,21 @@ const FraudComplianceOsEngine = {
     ).catch(() => {});
   },
 
+  async _payeeHistory(hash) {
+    const empty = { blocked: 0, trusted: 0, dayCount: 0, dayCents: 0 };
+    if (!pool || !hash) return empty;
+    const r = await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE status = 'blocked')::int AS blocked,
+              COUNT(*) FILTER (WHERE status IN ('clear', 'consumed') AND (reviewed_by IS NOT NULL OR consumed_at IS NOT NULL))::int AS trusted,
+              COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours')::int AS day_count,
+              COALESCE(SUM(amount_cents) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours' AND status <> 'blocked'), 0)::bigint AS day_cents
+         FROM fraud_compliance_screenings WHERE payee_hash = $1`,
+      [hash]
+    );
+    const row = r.rows[0] || {};
+    return { blocked: Number(row.blocked) || 0, trusted: Number(row.trusted) || 0, dayCount: Number(row.day_count) || 0, dayCents: Number(row.day_cents) || 0 };
+  },
+
   sardineConfigured(cfg = getFraudComplianceConfig()) {
     return Boolean(cfg.sardine.clientId && cfg.sardine.clientSecret);
   },
@@ -344,9 +409,11 @@ const FraudComplianceOsEngine = {
         throw new FraudComplianceError(`live screening requires COMPLIANCE_PROVIDER=ofac|opensanctions (is ${cfg.sanctionsProvider})`, 'FRAUD_COMPLIANCE_NOT_READY', 503);
       }
       await ComplianceEngine.assertPaymentReady();
-      if (cfg.provider !== 'sardine') throw new FraudComplianceError('live screening requires FRAUD_COMPLIANCE_PROVIDER=sardine', 'FRAUD_COMPLIANCE_NOT_READY', 503);
-      if (!this.sardineConfigured(cfg)) throw new FraudComplianceError('live screening requires SARDINE_CLIENT_ID and SARDINE_CLIENT_SECRET', 'FRAUD_COMPLIANCE_NOT_READY', 503);
-      if (!cfg.sardine.explicitBaseUrl) throw new FraudComplianceError(`live screening requires an explicit SARDINE_BASE_URL (${SARDINE_LIVE_URL})`, 'FRAUD_COMPLIANCE_NOT_READY', 503);
+      if (!FRAUD_PROVIDERS.includes(cfg.provider)) throw new FraudComplianceError(`live screening requires FRAUD_COMPLIANCE_PROVIDER=${FRAUD_PROVIDERS.join('|')}`, 'FRAUD_COMPLIANCE_NOT_READY', 503);
+      if (cfg.provider === 'sardine') {
+        if (!this.sardineConfigured(cfg)) throw new FraudComplianceError('live screening requires SARDINE_CLIENT_ID and SARDINE_CLIENT_SECRET', 'FRAUD_COMPLIANCE_NOT_READY', 503);
+        if (!cfg.sardine.explicitBaseUrl) throw new FraudComplianceError(`live screening requires an explicit SARDINE_BASE_URL (${SARDINE_LIVE_URL})`, 'FRAUD_COMPLIANCE_NOT_READY', 503);
+      }
     }
 
     let sanctions;
@@ -372,20 +439,32 @@ const FraudComplianceOsEngine = {
       reasons.push(`sanctions unavailable: ${e.message}`);
     }
 
-    let fraud;
-    if (cfg.provider === 'sardine' && this.sardineConfigured(cfg)) {
-      try {
-        const r = await this._sardine(buildSardineRequest({ screeningRef, payee: p, amountCents: cents, rail, cfg }), cfg);
-        fraud = { provider: 'sardine', ...r };
-        reasons.push(...r.reasons);
-      } catch (e) {
-        if (live) throw e;
-        fraud = { provider: 'sardine', status: 'review', level: null, amlLevel: null, sessionKey: null, summary: { error: e.message } };
-        reasons.push(`fraud provider unavailable: ${e.message}`);
+    const internal = FRAUD_PROVIDERS.includes(cfg.provider)
+      ? evaluateInternalRules({ payee: p, amountCents: cents, rail, history: await this._payeeHistory(payeeHash(p)), rules: cfg.rules })
+      : { status: 'review', level: null, amlLevel: null, sessionKey: null, reasons: [`fraud provider ${cfg.provider} not supported`], summary: {} };
+    reasons.push(...internal.reasons);
+    let fraud = { provider: 'internal', ...internal };
+    if (cfg.provider === 'sardine') {
+      let sardine;
+      if (this.sardineConfigured(cfg)) {
+        try {
+          sardine = await this._sardine(buildSardineRequest({ screeningRef, payee: p, amountCents: cents, rail, cfg }), cfg);
+        } catch (e) {
+          if (live) throw e;
+          sardine = { status: 'review', level: null, amlLevel: null, sessionKey: null, reasons: [`sardine unavailable: ${e.message}`], summary: { error: e.message } };
+        }
+      } else {
+        sardine = { status: 'review', level: null, amlLevel: null, sessionKey: null, reasons: ['sardine not configured'], summary: { note: 'SARDINE_CLIENT_ID / SARDINE_CLIENT_SECRET not set' } };
       }
-    } else {
-      fraud = { provider: cfg.provider, status: 'review', level: null, amlLevel: null, sessionKey: null, summary: { note: 'fraud provider not configured' } };
-      reasons.push('fraud provider not configured');
+      reasons.push(...sardine.reasons);
+      fraud = {
+        provider: 'internal+sardine',
+        status: worst(internal.status, sardine.status),
+        level: sardine.level,
+        amlLevel: sardine.amlLevel,
+        sessionKey: sardine.sessionKey,
+        summary: { internal: internal.summary, sardine: sardine.summary },
+      };
     }
 
     const status = worst(sanctions.status, fraud.status);
@@ -501,15 +580,16 @@ const FraudComplianceOsEngine = {
       sanctions: { provider: cfg.sanctionsProvider, engine: 'ComplianceEngine' },
       fraud: {
         provider: cfg.provider,
-        configured: cfg.provider === 'sardine' ? this.sardineConfigured(cfg) : false,
+        rules: cfg.rules,
+        configured: cfg.provider === 'sardine' ? this.sardineConfigured(cfg) : FRAUD_PROVIDERS.includes(cfg.provider),
         baseUrl: cfg.provider === 'sardine' ? cfg.sardine.baseUrl : null,
         sandbox: cfg.provider === 'sardine' ? cfg.sardine.baseUrl === SARDINE_SANDBOX_URL : null,
-        marketplace: 'Google Cloud Marketplace: Sardine Fraud and Compliance Operating Suite',
+        marketplace: cfg.provider === 'sardine' ? 'Google Cloud Marketplace: Sardine Fraud and Compliance Operating Suite' : null,
       },
       workflow: {
-        screen: 'POST /api/payment-server/v1/fraud-compliance/screenings (service) | /api/os/fraud-compliance/process action=screen (portal)',
-        review: '/api/os/fraud-compliance/process action=review (distinct reviewer)',
-        settle: 'POST /api/payment-server/v1/settlements { approvalRef, screeningRef }',
+        screen: 'POST /api/transfer/v1/screenings (API Gateway) | POST /api/payment-server/v1/fraud-compliance/screenings (service) | /api/os/fraud-compliance/process action=screen (portal)',
+        review: 'POST /api/transfer/v1/screenings/{ref}/review | /api/os/fraud-compliance/process action=review (distinct reviewer)',
+        settle: 'POST /api/payment-server/v1/settlements | POST /api/transfer/v1/transfers (Enterprise ODFI -> Clearing Agent) { approvalRef, screeningRef }',
       },
       policy: {
         ttlMinutes: cfg.ttlMinutes,
@@ -526,7 +606,7 @@ const FraudComplianceOsEngine = {
 
   async health() {
     const cfg = getFraudComplianceConfig();
-    return { ok: cfg.enabled, engine: 'fraud-compliance', ledger: Boolean(pool), fraudProviderConfigured: this.sardineConfigured(cfg) };
+    return { ok: cfg.enabled, engine: 'fraud-compliance', ledger: Boolean(pool), fraudProvider: cfg.provider, sardineConfigured: this.sardineConfigured(cfg) };
   },
 
   async readiness() {
@@ -541,8 +621,8 @@ const FraudComplianceOsEngine = {
       try { sanctions = await ComplianceEngine.readiness(); } catch (e) { sanctions = { ready: false, issues: [e.message] }; }
       if (!sanctions.ready) blockers.push(...(sanctions.issues && sanctions.issues.length ? sanctions.issues : ['sanctions list not ready']).map((i) => `sanctions: ${i}`));
     }
-    if (cfg.provider !== 'sardine') blockers.push(`FRAUD_COMPLIANCE_PROVIDER=${cfg.provider}: live screening needs sardine`);
-    else {
+    if (!FRAUD_PROVIDERS.includes(cfg.provider)) blockers.push(`FRAUD_COMPLIANCE_PROVIDER=${cfg.provider}: live screening needs ${FRAUD_PROVIDERS.join(' or ')}`);
+    else if (cfg.provider === 'sardine') {
       if (!cfg.sardine.clientId) blockers.push('SARDINE_CLIENT_ID not set');
       if (!cfg.sardine.clientSecret) blockers.push('SARDINE_CLIENT_SECRET not set');
       if (!cfg.sardine.explicitBaseUrl) blockers.push(`SARDINE_BASE_URL not set (defaults to sandbox ${SARDINE_SANDBOX_URL}; live is ${SARDINE_LIVE_URL})`);
@@ -581,6 +661,7 @@ module.exports = {
   FraudComplianceError,
   getFraudComplianceConfig,
   buildSardineRequest,
+  evaluateInternalRules,
   parseSardineResponse,
   normalizePayee,
   payeeHash,

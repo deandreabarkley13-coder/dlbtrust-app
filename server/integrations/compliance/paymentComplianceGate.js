@@ -1,6 +1,7 @@
 'use strict';
 
 const { ComplianceEngine } = require('./complianceEngine');
+const { FraudComplianceOsEngine, getFraudComplianceConfig } = require('../os/fraudComplianceOsEngine');
 const { CustomerIdentificationEngine } = require('./customerIdentificationEngine');
 
 function configuredCipRails() {
@@ -192,6 +193,9 @@ class PaymentComplianceGate {
   static async verifyRecordedScreening(screeningId) {
     if (!screeningId) throw complianceError('Compliance screening is required before payment');
     const readiness = await ComplianceEngine.assertPaymentReady();
+    if (String(screeningId).startsWith('FCS-')) {
+      return FraudComplianceOsEngine.verify({ screeningRef: screeningId, requireLive: getFraudComplianceConfig().live });
+    }
     const screening = await ComplianceEngine.getScreening(screeningId);
     ComplianceEngine.mustPass(screening);
     if (String(screening.provider || '').toLowerCase() !== String(readiness.provider || '').toLowerCase()) {
