@@ -417,7 +417,7 @@ variable "runtime_environment" {
     EGRESS_OS_ENABLED    = "true"
     EGRESS_ENFORCE       = "true"
     EGRESS_HTTPS_ONLY    = "true"
-    EGRESS_ALLOWED_HOSTS = "api.ipify.org,beta-bridge.simplefin.org,simplefin.org,api.orangerails.com"
+    EGRESS_ALLOWED_HOSTS = "api.ipify.org,beta-bridge.simplefin.org,simplefin.org,api.orangerails.com,finlynq.com"
     EGRESS_ECHO_URL      = "https://api.ipify.org?format=json"
     # IDP / OCR OS (server/integrations/os/idpOcrOsEngine): Document AI intake
     # of distribution / disbursement / request / vendor-payout documents. Bytes

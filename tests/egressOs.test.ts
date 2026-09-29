@@ -31,6 +31,14 @@ describe('Egress OS — policy', () => {
     expect(decide('not a url').allowed).toBe(false);
   });
 
+  it('allows the Finlynq MCP host by default and a self-hosted FINLYNQ_MCP_URL host when set', () => {
+    process.env.EGRESS_ALLOWED_HOSTS = 'api.ipify.org,finlynq.com';
+    expect(decide('https://finlynq.com/api/mcp').allowed).toBe(true);
+    process.env.FINLYNQ_MCP_URL = 'https://finlynq.trust.example/api/mcp';
+    expect(getEgressConfig().derivedHosts).toContain('finlynq.trust.example');
+    expect(decide('https://finlynq.trust.example/api/mcp').allowed).toBe(true);
+  });
+
   it('authorize() audits but does not block until EGRESS_ENFORCE=true, then fails closed', async () => {
     const q = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [], rowCount: 1 } as any);
     const d = await EgressOsEngine.authorize('https://api.stripe.com/v1', { caller: 't' });
