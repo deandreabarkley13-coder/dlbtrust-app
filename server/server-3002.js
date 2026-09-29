@@ -1196,6 +1196,26 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[proof-of-asset] scheduler:', e.message); }
 
+  // Trust Administration & Distribution pipeline: one ordered cycle
+  // (bank feeds -> Reserve OS -> proof of asset -> fixed-income plan/stage).
+  // Never originates a payment. OFF unless TRUST_ADMIN_WORKFLOW_INTERVAL_MS > 0.
+  try {
+    var trustAdminMs = parseInt(process.env.TRUST_ADMIN_WORKFLOW_INTERVAL_MS || '0', 10);
+    if (trustAdminMs > 0) {
+      var trustAdminTimer = null;
+      leader.register('trust-admin-workflow', function() {
+        trustAdminTimer = setInterval(function() {
+          var TrustAdministrationWorkflowEngine = require(path.join(HD, 'server', 'integrations', 'trust', 'trustAdministrationWorkflowEngine')).TrustAdministrationWorkflowEngine;
+          TrustAdministrationWorkflowEngine.run({ actor: 'trust-admin-scheduler' }).then(function(r) {
+            if (r.skipped) return;
+            console.log('[trust-admin-workflow] ready=' + r.ready + (r.errors.length ? ' errors=' + r.errors.join('; ') : '') + (r.blocking.length ? ' blocking=' + r.blocking.join(' | ') : ''));
+          }).catch(function(err) { console.warn('[trust-admin-workflow] tick failed:', err.message); });
+        }, trustAdminMs);
+        console.log('[trust-admin-workflow] scheduler started every ' + trustAdminMs + 'ms');
+      }, function() { if (trustAdminTimer) { clearInterval(trustAdminTimer); trustAdminTimer = null; } });
+    }
+  } catch(e) { console.warn('[trust-admin-workflow] scheduler:', e.message); }
+
   // US ACH API Connector: poll the ODFI provider for settlement/returns of
   // non-final transfers (webhook fallback). OFF unless ACH_ODFI_SYNC_INTERVAL_MS > 0
   // and ACH_ODFI_PROVIDER is configured.

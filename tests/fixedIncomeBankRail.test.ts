@@ -18,7 +18,10 @@ const { SpritzTreasuryLegEngine } = require('../server/integrations/spritz/sprit
 const { TrustPolicyEngine } = require('../server/integrations/dapp/trustPolicyEngine');
 const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fixedIncomeDistributionEngine');
 const { TrustAdministrationWorkflowEngine } = require('../server/integrations/trust/trustAdministrationWorkflowEngine');
-const { StripePaymentIntakeEngine } = require('../server/integrations/payments/stripePaymentIntakeEngine');
+const { BankingAggregator } = require('../server/integrations/aggregator/bankingAggregator');
+const aggregatorScheduler = require('../server/integrations/aggregator/aggregatorScheduler');
+const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEngine');
+const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 const { BondIssuanceEngine } = require('../server/integrations/bonds/bondIssuanceEngine');
 const { ProofOfAssetOsEngine } = require('../server/integrations/os/proofOfAssetOsEngine');
 const { DepositAndSettlementEngine } = require('../server/integrations/payments/depositAndSettlementEngine');
@@ -178,47 +181,75 @@ describe('FixedIncomeDistributionEngine (FIXED_INCOME_RAIL=bank)', () => {
 });
 
 describe('TrustAdministrationWorkflowEngine', () => {
-  afterEach(() => vi.restoreAllMocks());
+  const FEED = { connectionId: 'CONN-BETTERMENT-TRUST-CHECKING-FINLYNQ', name: 'Betterment (Finlynq)', connector: 'finlynq', status: 'ok', error: null, accounts: [{ name: 'Checking', mask: '3054', balanceCurrent: 0.84 }] };
 
-  it('aggregates issuance, intake, ledger, distribution and settlement and lists gaps per stage', async () => {
+  function allReady() {
+    vi.spyOn(BankingAggregator, 'feedStatus').mockResolvedValue([FEED]);
     vi.spyOn(BondIssuanceEngine, 'status').mockResolvedValue({ ready: true, issues: [], issuances: 1 });
-    vi.spyOn(StripePaymentIntakeEngine, 'status').mockResolvedValue({ ready: true, mode: 'live', issues: [] });
-    vi.spyOn(StripePaymentIntakeEngine, 'list').mockResolvedValue([{ intakeId: 'SPI-1', status: 'received' }]);
-    vi.spyOn(DepositAndSettlementEngine, 'list').mockResolvedValue([{ order_id: 'DEP-1' }]);
-    vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ ready: false, rail: 'bank', issues: ['lili: Stripe balance is test-mode'] });
+    vi.spyOn(CanonicalFundingSource, 'readiness').mockReturnValue({ ready: true, issues: [], system: 'fineract' });
+    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: true, issues: [], latest: { verdict: 'proven' } });
+    vi.spyOn(ReserveEngine, 'status').mockResolvedValue({ enforcement: 'strict', coverage: { attestedReserveCents: 84 } });
+    vi.spyOn(CollateralOsEngine, 'readiness').mockResolvedValue({ ready: false, issues: ['TRUST_POLICY_ADDRESS not configured (draw destination)'] });
+    vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ ready: true, rail: 'bank', issues: [], treasury: { fundingSource: 'fineract_canonical' } });
     vi.spyOn(FixedIncomeDistributionEngine, 'summary').mockResolvedValue([]);
+    vi.spyOn(FraudComplianceOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [] });
     vi.spyOn(SettlementBankRegistry, 'list').mockResolvedValue([LILI]);
     vi.spyOn(BankSettlementEngine, 'readiness').mockResolvedValue({ bankId: 'lili', provider: 'lili', mode: 'live', ready: true, blockers: [], bank: SettlementBankRegistry.publicView(LILI) });
     vi.spyOn(BankSettlementEngine, 'list').mockResolvedValue([]);
-    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: true, issues: [], latest: { verdict: 'proven' } });
+    vi.spyOn(DepositAndSettlementEngine, 'list').mockResolvedValue([{ order_id: 'DEP-1' }]);
+  }
 
+  afterEach(() => vi.restoreAllMocks());
+
+  it('connects every engine in one status surface; only gating stages decide ready, Stripe is not a stage', async () => {
+    allReady();
     const w = await TrustAdministrationWorkflowEngine.status();
-    expect(w.ready).toBe(false);
-    expect(w.gaps).toEqual(['distribution: lili: Stripe balance is test-mode']);
-    expect(w.stages.proof.status.latest.verdict).toBe('proven');
-    expect(w.stages.issuance.status.issuances).toBe(1);
-    expect(w.stages.intake.recent).toHaveLength(1);
+    expect(Object.keys(w.stages)).toEqual(['bankFeed', 'issuance', 'fineract', 'proof', 'reserve', 'collateral', 'distribution', 'compliance', 'funding', 'settlement', 'ledger']);
+    expect(w.stages).not.toHaveProperty('intake');
+    expect(w.pipeline).not.toMatch(/stripe/i);
+    expect(w.gaps).toContain('collateral: TRUST_POLICY_ADDRESS not configured (draw destination)');
+    expect(w.blocking).toEqual([]);
+    expect(w.ready).toBe(true);
+    expect(w.stages.distribution.fundingSource).toBe('fineract_canonical');
+    expect(w.stages.bankFeed.feeds[0].connector).toBe('finlynq');
     expect(w.stages.ledger.deposits).toEqual([{ order_id: 'DEP-1' }]);
-    expect(w.stages.fineract.skipped).toBe(true);
-    expect(w.stages.settlement.banks[0]).toMatchObject({ bankId: 'lili', ready: true });
     expect(JSON.stringify(w)).not.toContain('_account');
-
-    (FixedIncomeDistributionEngine.readiness as any).mockResolvedValue({ ready: true, rail: 'bank', issues: [] });
-    expect((await TrustAdministrationWorkflowEngine.status()).ready).toBe(true);
   });
 
-  it('never lets one failing engine hide the others', async () => {
-    vi.spyOn(BondIssuanceEngine, 'status').mockResolvedValue({ ready: false, issues: ['issuer Fineract account not provisioned'] });
-    vi.spyOn(StripePaymentIntakeEngine, 'status').mockRejectedValue(new Error('stripe down'));
-    vi.spyOn(DepositAndSettlementEngine, 'list').mockResolvedValue([]);
-    vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({ ready: true, rail: 'bank', issues: [] });
-    vi.spyOn(FixedIncomeDistributionEngine, 'summary').mockResolvedValue([]);
-    vi.spyOn(SettlementBankRegistry, 'list').mockResolvedValue([]);
-    vi.spyOn(BankSettlementEngine, 'list').mockResolvedValue([]);
-    vi.spyOn(ProofOfAssetOsEngine, 'status').mockResolvedValue({ ready: false, issues: ['no portfolio proof yet'] });
+  it('blocks on a failing Finlynq feed, non-strict Reserve OS and shadow screening, without hiding other stages', async () => {
+    allReady();
+    (BankingAggregator.feedStatus as any).mockResolvedValue([{ ...FEED, status: 'failing', error: 'HTTP 401' }]);
+    (ReserveEngine.status as any).mockResolvedValue({ enforcement: 'warn', coverage: {} });
+    (FraudComplianceOsEngine.readiness as any).mockResolvedValue({ ready: false, mode: 'shadow', blockers: ['FRAUD_COMPLIANCE_LIVE not true'] });
+    (BondIssuanceEngine.status as any).mockRejectedValue(new Error('fineract down'));
     const w = await TrustAdministrationWorkflowEngine.status();
     expect(w.ready).toBe(false);
-    expect(w.gaps).toEqual(['issuance: issuer Fineract account not provisioned', 'intake: stripe down', 'settlement: not ready', 'proof: no portfolio proof yet']);
+    expect(w.blocking).toEqual([
+      'bankFeed: Betterment (Finlynq): HTTP 401',
+      'reserve: RESERVE_ENFORCEMENT=warn: outbound value is not gated on external reserve',
+      'compliance: FRAUD_COMPLIANCE_LIVE not true',
+    ]);
+    expect(w.gaps).toContain('issuance: fineract down');
     expect(w.stages.distribution.ready).toBe(true);
+  });
+
+  it('run() refreshes feeds, reserve and proofs before planning distributions, and never executes a payment', async () => {
+    allReady();
+    const order: string[] = [];
+    vi.spyOn(aggregatorScheduler, 'runOnce').mockImplementation(async () => { order.push('bankFeed'); return { connections: 1, pulled: 4, errors: [] }; });
+    vi.spyOn(ReserveEngine, 'verifyLive').mockImplementation(async () => { order.push('reserve'); return { verified: 3, sources: [] }; });
+    vi.spyOn(ProofOfAssetOsEngine, 'proveAll').mockImplementation(async () => { order.push('proof'); return [{ scope: 'portfolio', bondId: null, verdict: 'proven' }]; });
+    vi.spyOn(FixedIncomeDistributionEngine, 'runCycle').mockImplementation(async () => { order.push('distribution'); return { planned: 2, staged: 0 }; });
+    const execute = vi.spyOn(FixedIncomeDistributionEngine, 'execute');
+    const r = await TrustAdministrationWorkflowEngine.run({ actor: 'tester' });
+    expect(order).toEqual(['bankFeed', 'reserve', 'proof', 'distribution']);
+    expect(execute).not.toHaveBeenCalled();
+    expect(r.errors).toEqual([]);
+    expect(r.steps.proof.proofs).toEqual([{ scope: 'portfolio', bondId: null, verdict: 'proven' }]);
+    expect(r.ready).toBe(true);
+    expect((await TrustAdministrationWorkflowEngine.status()).lastRun).toMatchObject({ actor: 'tester', ready: true });
+
+    (ReserveEngine.verifyLive as any).mockRejectedValue(new Error('circle 503'));
+    expect((await TrustAdministrationWorkflowEngine.run()).errors).toEqual(['reserve: circle 503']);
   });
 });

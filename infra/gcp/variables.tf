@@ -556,6 +556,10 @@ variable "runtime_environment" {
     PROOF_OF_ASSET_INTERVAL_MINUTES = "1440"
     PROOF_OF_ASSET_AUTO_CERTIFY     = "true"
     PROOF_OF_ASSET_CERTIFIER        = "DeAndrea Lavar Barkley, Trustee"
+    # Trust Administration & Distribution pipeline (trustAdministrationWorkflowEngine.run):
+    # bank feeds -> Reserve OS -> proof of asset -> fixed-income plan/stage, in order.
+    # Never originates a payment. GET/POST /api/trust/administration/workflow[/run].
+    TRUST_ADMIN_WORKFLOW_INTERVAL_MS = "21600000"
     # US ACH API Connector OS (server/integrations/ach/odfiApiConnectorEngine.js):
     # the bank-as-API ODFI executing treasury credits from a real funded account.
     # Set ACH_ODFI_PROVIDER to increase|column and ACH_ODFI_ACCOUNT_ID once the
