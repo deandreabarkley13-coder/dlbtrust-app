@@ -477,7 +477,8 @@
     if (res.status === 401) { logout(); return {}; }
     const text = await res.text();
     let data; try { data = JSON.parse(text); } catch (e) { data = { error: res.ok ? 'Unexpected non-JSON response from server' : (res.status + ' ' + res.statusText) }; }
-    if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
+    const okStatus = res.ok || (opts.okStatuses || []).includes(res.status);
+    if (!okStatus || !data.success) throw new Error(data.error || data.message || res.statusText);
     return data;
   };
   const fmtUsd = n => '$' + Number(n || 0).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -623,6 +624,10 @@
     const asOf = s && s.asOf ? new Date(s.asOf) : new Date();
     const parts = ['Balances as of ' + asOf.toLocaleTimeString(), 'auto-refresh every ' + Math.round(LIVE_REFRESH_MS / 1000) + 's'];
     if (errors.length) parts.push(errors.length + ' source(s) failed to sync');
+    errors.forEach(x => {
+      const since = x.lastSuccessAt ? ' (last good sync ' + new Date(x.lastSuccessAt).toLocaleString() + ')' : '';
+      parts.push((x.name || x.connectionId || 'source') + ': ' + (x.error || 'sync failed') + since);
+    });
     status.textContent = parts.join(' · ');
   }
 
@@ -686,7 +691,8 @@
     if (pipeline.loading) return;
     pipeline.loading = true;
     try {
-      const res = await api('/api/os/readiness');
+      // 503 means "not every engine is ready"; the body still carries the per-engine report.
+      const res = await api('/api/os/readiness', { okStatuses: [503] });
       pipeline.data = res.data || null;
       renderPipeline(pipeline.data, null);
     } catch (e) {

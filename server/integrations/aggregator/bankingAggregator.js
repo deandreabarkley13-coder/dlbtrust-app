@@ -959,6 +959,54 @@ class BankingAggregator {
     return result.rows;
   }
 
+  /**
+   * Freshness of every active inbound bank feed: the last pull attempt, the
+   * last successful pull, and the balances that pull left behind.
+   */
+  static async feedStatus() {
+    await BankingAggregator.ensureTables();
+    const conns = await pool.query(`
+      SELECT c.id, c.name, c.connector_type, c.last_pull_at,
+             lp.status AS last_status, lp.error AS last_error, lp.created_at AS last_attempt_at,
+             ls.created_at AS last_success_at
+      FROM banking_aggregator_connections c
+      LEFT JOIN LATERAL (
+        SELECT status, error, created_at FROM banking_aggregator_events
+        WHERE connection_id = c.id AND event_type = 'pull'
+        ORDER BY created_at DESC LIMIT 1
+      ) lp ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT created_at FROM banking_aggregator_events
+        WHERE connection_id = c.id AND event_type = 'pull' AND status = 'processed'
+        ORDER BY created_at DESC LIMIT 1
+      ) ls ON TRUE
+      WHERE c.active AND c.direction <> 'outbound'
+      ORDER BY c.created_at`);
+    const accts = await pool.query(`
+      SELECT connection_id, name, mask, account_type, currency, balance_current, balance_available, updated_at
+      FROM banking_aggregator_accounts ORDER BY name`);
+    const toIso = (v) => (v ? new Date(v).toISOString() : null);
+    const toNum = (v) => (v === null || v === undefined ? null : Number(v));
+    return conns.rows.map((c) => ({
+      connectionId: c.id,
+      name: c.name,
+      connector: c.connector_type,
+      status: c.last_status === 'failed' ? 'failing' : (c.last_status ? 'ok' : 'never_pulled'),
+      error: c.last_status === 'failed' ? (c.last_error || 'pull failed') : null,
+      lastAttemptAt: toIso(c.last_attempt_at || c.last_pull_at),
+      lastSuccessAt: toIso(c.last_success_at),
+      accounts: accts.rows.filter((a) => a.connection_id === c.id).map((a) => ({
+        name: a.name,
+        mask: a.mask,
+        type: a.account_type,
+        currency: a.currency,
+        balanceCurrent: toNum(a.balance_current),
+        balanceAvailable: toNum(a.balance_available),
+        updatedAt: toIso(a.updated_at),
+      })),
+    }));
+  }
+
   static async status() {
     await BankingAggregator.ensureTables();
     const [conns, accts, txns, evts, hs] = await Promise.all([

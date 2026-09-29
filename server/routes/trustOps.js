@@ -16,7 +16,7 @@ function toUsd(cents) {
 }
 
 // Lazy-load engines so optional modules do not break startup
-let TrustAggregatorEngine, LiveBondEngine, DistributionRequestEngine, DappEngine, VendorPaymentEngine, TrustBankEngine;
+let TrustAggregatorEngine, LiveBondEngine, DistributionRequestEngine, DappEngine, VendorPaymentEngine, TrustBankEngine, BankingAggregator;
 function loadEngines() {
   try { ({ TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine')); } catch (e) { TrustAggregatorEngine = null; }
   try { ({ LiveBondEngine } = require('../integrations/bonds/liveEngine')); } catch (e) { LiveBondEngine = null; }
@@ -24,6 +24,7 @@ function loadEngines() {
   try { ({ DappEngine } = require('../integrations/dapp/dappEngine')); } catch (e) { DappEngine = null; }
   try { ({ VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngine')); } catch (e) { VendorPaymentEngine = null; }
   try { ({ TrustBankEngine } = require('../integrations/dapp/trustBankEngine')); } catch (e) { TrustBankEngine = null; }
+  try { ({ BankingAggregator } = require('../integrations/aggregator/bankingAggregator')); } catch (e) { BankingAggregator = null; }
 }
 
 router.get('/summary', operatorAuth, async (req, res) => {
@@ -38,6 +39,7 @@ router.get('/summary', operatorAuth, async (req, res) => {
       asOf: null,
       ageSeconds: null,
       syncErrors: [],
+      bankFeeds: [],
       bondValue: 0,
       pendingApprovals: 0,
       distributions: [],
@@ -60,6 +62,25 @@ router.get('/summary', operatorAuth, async (req, res) => {
       } catch (e) {
         console.warn('[trust-ops] net worth:', e.message);
         summary.syncErrors.push({ connectionId: null, error: e.message });
+      }
+    }
+
+    if (BankingAggregator) {
+      try {
+        summary.bankFeeds = await BankingAggregator.feedStatus();
+        for (const feed of summary.bankFeeds) {
+          if (feed.status !== 'failing') continue;
+          summary.syncErrors.push({
+            connectionId: feed.connectionId,
+            source: 'bank_feed',
+            name: feed.name,
+            error: feed.error,
+            lastSuccessAt: feed.lastSuccessAt,
+          });
+        }
+      } catch (e) {
+        console.warn('[trust-ops] bank feeds:', e.message);
+        summary.syncErrors.push({ connectionId: null, source: 'bank_feed', error: e.message });
       }
     }
 
