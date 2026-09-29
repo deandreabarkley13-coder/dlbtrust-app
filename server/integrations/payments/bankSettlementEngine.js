@@ -8,7 +8,8 @@
  *                               (NACHA credit, autoTransmit via the ODFI channel)
  *   host_to_host             -> SettlementEngine.createSettlement + executeSettlement
  *                               (HostToHostEngine.executeSettlement)
- *   column | increase | generic -> PartnerBankRails.originate
+ *   column | increase | unit | generic -> PartnerBankRails.originate
+ *                               (unit: metadata.receivingAccountId -> bookPayment)
  *   api_gateway              -> ApiGatewayClearingEngine.clearPayment
  *
  * Every attempt is journaled in settlement_bank_events. Live calls require
@@ -32,7 +33,7 @@ let HostToHostEngine;
 try { ({ HostToHostEngine } = require('../dapp/hostToHostEngine')); } catch (e) { HostToHostEngine = null; }
 
 const STATUSES = ['pending', 'originated', 'awaiting_odfi', 'pending_approval', 'shadow', 'settled', 'reconciled', 'failed', 'rejected'];
-const PARTNER_PROVIDERS = ['column', 'increase', 'generic'];
+const PARTNER_PROVIDERS = ['column', 'increase', 'unit', 'generic'];
 
 function httpError(message, status) { return Object.assign(new Error(message), { status }); }
 function settlementId() { return `SBS-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`; }
@@ -283,6 +284,7 @@ class BankSettlementEngine {
         }
         case 'column':
         case 'increase':
+        case 'unit':
         case 'generic': {
           if (!live) {
             out = { status: 'shadow', providerReference: null, providerStatus: 'shadow', result: { shadow: true, note: PartnerBankRails.status().note } };
@@ -294,6 +296,7 @@ class BankSettlementEngine {
             beneficiaryRouting: bank.routingNumber,
             beneficiaryAccount: bank._account,
             externalAccountId: bank.endpointId || undefined,
+            receivingAccountId: (bank.metadata && bank.metadata.receivingAccountId) || undefined,
             reference: ref,
             description,
             approvalRef,

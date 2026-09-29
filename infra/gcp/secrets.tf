@@ -81,6 +81,19 @@ locals {
     if local.lili_clearing_live && !contains(local.runtime_secret_names, s)
   ]
 
+  # Unit (Unit Finance BaaS) as the partner bank (server/integrations/rails/
+  # partnerBankRails.js provider `unit`): PARTNER_BANK_PROVIDER=unit sends
+  # wire/ACH/book payments to Unit's JSON:API with the org API token, which
+  # partnerBankRails reads from UNIT_API_TOKEN when PARTNER_BANK_API_KEY is unset.
+  unit_secret_names = [
+    "UNIT_API_TOKEN",
+  ]
+  unit_partner_bank = lookup(var.runtime_environment, "PARTNER_BANK_PROVIDER", "") == "unit"
+  missing_unit_secrets = [
+    for s in local.unit_secret_names : s
+    if local.unit_partner_bank && !contains(local.runtime_secret_names, s)
+  ]
+
   # Payment Processor OS (paymentProcessorOsEngine.js). PAYMENT_PROCESSOR_LIVE=true
   # lets an approved submission (approvalRef + screeningRef) reach a processor,
   # so the Stripe payout/payments keys and the payment-data encryption key must

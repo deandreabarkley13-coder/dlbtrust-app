@@ -8,6 +8,8 @@ const ENV_KEYS = [
   'PARTNER_BANK_ACCOUNT_ID',
   'PARTNER_BANK_BASE_URL',
   'PARTNER_BANK_ACCOUNT_LABEL',
+  'UNIT_API_TOKEN',
+  'UNIT_ACCOUNT_ID',
 ];
 
 const INSTRUCTION = {
@@ -180,6 +182,185 @@ describe('Partner bank rails', () => {
 
       reply = { code: 500, body: 'boom' };
       await expect(PartnerBankRails.originate('wire', INSTRUCTION)).rejects.toThrow(/returned 500/);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('falls back to UNIT_API_TOKEN / UNIT_ACCOUNT_ID only for the unit provider', () => {
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    process.env.UNIT_API_TOKEN = 'unit_token';
+    process.env.UNIT_ACCOUNT_ID = '10001';
+    const cfg = PartnerBankRails.config();
+    expect(cfg.apiKey).toBe('unit_token');
+    expect(cfg.accountId).toBe('10001');
+    const status = PartnerBankRails.status();
+    expect(status.ready).toBe(true);
+    expect(status.providerLabel).toBe('Unit');
+    expect(status.baseUrl).toBe('https://api.s.unit.sh');
+    expect(status.rails).toEqual({ wire: true, ach: true, rtp: false });
+    expect(JSON.stringify(status)).not.toContain('unit_token');
+
+    process.env.PARTNER_BANK_API_KEY = 'shared_key';
+    process.env.PARTNER_BANK_ACCOUNT_ID = '20002';
+    expect(PartnerBankRails.config()).toMatchObject({ apiKey: 'shared_key', accountId: '20002' });
+
+    delete process.env.PARTNER_BANK_API_KEY;
+    delete process.env.PARTNER_BANK_ACCOUNT_ID;
+    process.env.PARTNER_BANK_PROVIDER = 'increase';
+    expect(PartnerBankRails.config()).toMatchObject({ apiKey: '', accountId: '' });
+
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    delete process.env.UNIT_API_TOKEN;
+    delete process.env.UNIT_ACCOUNT_ID;
+    expect(PartnerBankRails.status().missingConfiguration).toEqual([
+      'PARTNER_BANK_API_KEY (or UNIT_API_TOKEN)',
+      'PARTNER_BANK_ACCOUNT_ID (or UNIT_ACCOUNT_ID)',
+    ]);
+  });
+
+  it('builds Unit JSON:API achPayment / wirePayment / bookPayment envelopes', () => {
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    process.env.UNIT_API_TOKEN = 'unit_token';
+    process.env.UNIT_ACCOUNT_ID = '10001';
+    const account = { data: { type: 'depositAccount', id: '10001' } };
+
+    const ach = PartnerBankRails.prepare('ach', { ...INSTRUCTION, counterpartyId: '555' });
+    expect(ach.url).toBe('https://api.s.unit.sh/payments');
+    expect(ach.method).toBe('POST');
+    expect(ach.contentType).toBe('application/vnd.api+json');
+    const achBody = JSON.parse(ach.body);
+    expect(achBody.data.type).toBe('achPayment');
+    expect(achBody.data.attributes).toMatchObject({ amount: 25, direction: 'Credit', idempotencyKey: INSTRUCTION.reference });
+    expect(achBody.data.attributes.description.length).toBeLessThanOrEqual(10);
+    expect(achBody.data.relationships).toEqual({
+      account,
+      counterparty: { data: { type: 'counterparty', id: '555' } },
+    });
+    expect(ach.body).not.toContain('unit_token');
+
+    const inlineAch = JSON.parse(PartnerBankRails.prepare('ach', INSTRUCTION).body);
+    expect(inlineAch.data.type).toBe('achPayment');
+    expect(inlineAch.data.attributes.counterparty).toEqual({
+      name: 'Db Net Mgmt LLC',
+      routingNumber: '091017138',
+      accountNumber: '692101092959',
+      accountType: 'Checking',
+    });
+    expect(inlineAch.data.relationships).toEqual({ account });
+
+    const wire = JSON.parse(PartnerBankRails.prepare('wire', INSTRUCTION).body);
+    expect(wire.data.type).toBe('wirePayment');
+    expect(wire.data.attributes).toMatchObject({
+      amount: 25,
+      direction: 'Credit',
+      description: 'Micro deposit validation',
+      counterparty: { name: 'Db Net Mgmt LLC', routingNumber: '091017138', accountNumber: '692101092959' },
+    });
+    expect(wire.data.relationships).toEqual({ account });
+
+    const book = JSON.parse(PartnerBankRails.prepare('ach', {
+      ...INSTRUCTION,
+      beneficiaryRouting: '',
+      beneficiaryAccount: '',
+      receivingAccountId: '10002',
+    }).body);
+    expect(book.data.type).toBe('bookPayment');
+    expect(book.data.attributes).toMatchObject({ amount: 25, description: 'Micro deposit validation' });
+    expect(book.data.attributes.direction).toBeUndefined();
+    expect(book.data.relationships).toEqual({
+      account,
+      counterpartyAccount: { data: { type: 'depositAccount', id: '10002' } },
+    });
+  });
+
+  it('requires an inline beneficiary for Unit wires', () => {
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    process.env.UNIT_API_TOKEN = 'unit_token';
+    process.env.UNIT_ACCOUNT_ID = '10001';
+    expect(() => PartnerBankRails.prepare('wire', {
+      ...INSTRUCTION,
+      beneficiaryRouting: '',
+      beneficiaryAccount: '',
+      counterpartyId: '555',
+    })).toThrow(/Unit wire payments take the beneficiary inline/);
+    expect(() => PartnerBankRails.prepare('rtp', INSTRUCTION)).toThrow(/Unit does not support the rtp rail/);
+  });
+
+  it('originates against Unit with bearer auth and parses JSON:API responses', async () => {
+    const http = require('http');
+    const seen: any[] = [];
+    let reply: { code: number; body: string } = { code: 200, body: '{}' };
+    const server = http.createServer((req: any, res: any) => {
+      let data = '';
+      req.on('data', (c: any) => { data += c; });
+      req.on('end', () => {
+        seen.push({ url: req.url, method: req.method, headers: req.headers, body: data });
+        res.writeHead(reply.code, { 'Content-Type': 'application/vnd.api+json' });
+        res.end(reply.body);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as any).port;
+
+    process.env.PARTNER_BANK_PROVIDER = 'unit';
+    process.env.UNIT_API_TOKEN = 'unit_token';
+    process.env.UNIT_ACCOUNT_ID = '10001';
+    process.env.PARTNER_BANK_BASE_URL = `http://127.0.0.1:${port}`;
+
+    try {
+      reply = {
+        code: 201,
+        body: JSON.stringify({
+          data: {
+            type: 'wirePayment',
+            id: '9001',
+            attributes: { status: 'Sent', imadOmad: { imad: 'IMAD-U1', omad: 'OMAD-U1' } },
+          },
+        }),
+      };
+      const wire = await PartnerBankRails.originate('wire', INSTRUCTION);
+      expect(wire).toMatchObject({
+        provider: 'unit',
+        rail: 'wire',
+        providerReference: '9001',
+        providerStatus: 'Sent',
+        imad: 'IMAD-U1',
+        omad: 'OMAD-U1',
+        fedReference: 'IMAD-U1',
+        confirmationNumber: 'IMAD-U1',
+      });
+      expect(seen[0].url).toBe('/payments');
+      expect(seen[0].method).toBe('POST');
+      expect(seen[0].headers.authorization).toBe('Bearer unit_token');
+      expect(seen[0].headers['content-type']).toBe('application/vnd.api+json');
+      expect(seen[0].headers.accept).toBe('application/vnd.api+json');
+      expect(JSON.parse(seen[0].body).data.type).toBe('wirePayment');
+
+      reply = {
+        code: 201,
+        body: JSON.stringify({
+          data: { type: 'achPayment', id: '9002', attributes: { status: 'Pending', traceNumber: '123456780000001' } },
+        }),
+      };
+      const ach = await PartnerBankRails.originate('ach', { ...INSTRUCTION, counterpartyId: '555' });
+      expect(ach).toMatchObject({
+        providerReference: '9002',
+        providerStatus: 'Pending',
+        fedReference: '123456780000001',
+        confirmationNumber: '123456780000001',
+      });
+
+      reply = {
+        code: 201,
+        body: JSON.stringify({ data: { type: 'achPayment', id: '9003', attributes: { status: 'Rejected' } } }),
+      };
+      await expect(PartnerBankRails.originate('ach', { ...INSTRUCTION, counterpartyId: '555' }))
+        .rejects.toThrow(/Unit rejected the ach origination with status Rejected/);
+
+      reply = { code: 201, body: JSON.stringify({ data: { type: 'achPayment', attributes: { status: 'Pending' } } }) };
+      await expect(PartnerBankRails.originate('ach', { ...INSTRUCTION, counterpartyId: '555' }))
+        .rejects.toThrow(/Unit response did not include an external reference/);
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

@@ -645,7 +645,7 @@ service-to-service surface authenticated by `PAYMENT_SERVER_SERVICE_TOKEN`
 | --- | --- |
 | `POST /settlement-banks` | `SettlementBankRegistry.register` — `provider` in `lili`, `host_to_host`, `column`, `increase`, `generic`, `api_gateway`. Lili is auto-registered as `bank_id='lili'` from `LiliDirectDepositEngine.getDestination`; a Lili registration with any other destination is refused (same rule as `LiliSettlementBankEngine._resolveDestination`). |
 | `GET /settlement-banks`, `GET /settlement-banks/:id/readiness` | registry + per-bank readiness (`live`, `ready`, `blockers`) |
-| `POST /settlements` | `BankSettlementEngine.clearAndSettle` — `approvalRef` and `screeningRef` are mandatory on live calls; `lili` → `LiliSettlementBankEngine._sendPayment` (autoTransmit via the ODFI channel), `host_to_host` → `SettlementEngine`/`HostToHostEngine.executeSettlement`, `column|increase|generic` → `PartnerBankRails.originate`, `api_gateway` → `ApiGatewayClearingEngine.clearPayment` |
+| `POST /settlements` | `BankSettlementEngine.clearAndSettle` — `approvalRef` and `screeningRef` are mandatory on live calls; `lili` → `LiliSettlementBankEngine._sendPayment` (autoTransmit via the ODFI channel), `host_to_host` → `SettlementEngine`/`HostToHostEngine.executeSettlement`, `column|increase|unit|generic` → `PartnerBankRails.originate` (Unit: [UNIT_PARTNER_BANK.md](UNIT_PARTNER_BANK.md)), `api_gateway` → `ApiGatewayClearingEngine.clearPayment` |
 | `GET /settlements/:id`, `POST /settlements/:id/reconcile` | ledger row from `settlement_bank_events`; reconcile → `LiliDirectDepositEngine.reconcile` for Lili |
 
 Status codes: 401 without the token, 400 destination mismatch / validation,

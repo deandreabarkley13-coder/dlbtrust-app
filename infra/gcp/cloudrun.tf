@@ -283,6 +283,13 @@ resource "google_cloud_run_v2_service" "app" {
       error_message = "LILI_CLEARING_LIVE=true but secret_names lacks ${join(", ", local.missing_lili_secrets)}. Add them to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add`. The Lili OAuth tokens may also be captured into system_settings via server/scripts/liliMcpOAuthSetup.js, but the Secret Manager containers are still required for a live plan."
     }
 
+    # Unit partner bank: PARTNER_BANK_PROVIDER=unit needs the Unit org API
+    # token declared (secrets.tf unit_secret_names).
+    precondition {
+      condition     = length(local.missing_unit_secrets) == 0
+      error_message = "PARTNER_BANK_PROVIDER=unit but secret_names lacks ${join(", ", local.missing_unit_secrets)}. Add it to infra/gcp/terraform.tfvars (see terraform.tfvars.example) and seed with `gcloud secrets versions add UNIT_API_TOKEN --data-file=-`; GET /api/wire/rails reports the same blocker at runtime."
+    }
+
     # Payment Processor OS: PAYMENT_PROCESSOR_LIVE=true needs the processor
     # credentials declared (secrets.tf payment_processor_secret_names) and the
     # approvalRef / screeningRef gates left on.

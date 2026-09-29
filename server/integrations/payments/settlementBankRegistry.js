@@ -16,7 +16,7 @@ const { LiliSettlementBankEngine } = require('./liliSettlementBankEngine');
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const PROVIDERS = ['lili', 'host_to_host', 'column', 'increase', 'generic', 'api_gateway', 'stripe_payout'];
+const PROVIDERS = ['lili', 'host_to_host', 'column', 'increase', 'unit', 'generic', 'api_gateway', 'stripe_payout'];
 const LILI_BANK_ID = 'lili';
 
 function httpError(message, status) {
@@ -135,8 +135,9 @@ class SettlementBankRegistry {
 
     if (!name) throw httpError('name is required', 400);
     if (prov === 'host_to_host' && !endpointId) throw httpError('endpointId (host-to-host partner) is required for provider host_to_host', 400);
-    if (['column', 'increase', 'generic'].includes(prov) && !(routingNumber && accountNumber) && !endpointId) {
-      throw httpError('routingNumber + accountNumber (or endpointId counterparty) required for partner-bank providers', 400);
+    const unitBookTransfer = prov === 'unit' && Boolean(metadata && metadata.receivingAccountId);
+    if (['column', 'increase', 'unit', 'generic'].includes(prov) && !(routingNumber && accountNumber) && !endpointId && !unitBookTransfer) {
+      throw httpError('routingNumber + accountNumber (or endpointId counterparty; unit: metadata.receivingAccountId) required for partner-bank providers', 400);
     }
 
     if (!pool) throw httpError('settlement_banks storage unavailable', 503);

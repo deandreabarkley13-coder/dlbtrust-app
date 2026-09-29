@@ -12,13 +12,16 @@
  * Providers:
  * - `column`   — https://api.column.com (form encoded, basic auth, key as password)
  * - `increase` — https://api.increase.com (JSON, bearer auth)
+ * - `unit`     — https://api.s.unit.sh (Unit Finance BaaS sandbox, JSON:API, bearer
+ *                auth; set PARTNER_BANK_BASE_URL=https://api.unit.co for live)
  * - `generic`  — the platform's own JSON envelope, for a bank that implements it
  *
  * Configuration (env):
- *   PARTNER_BANK_PROVIDER        column | increase | generic
- *   PARTNER_BANK_API_KEY         API key / bearer token
+ *   PARTNER_BANK_PROVIDER        column | increase | unit | generic
+ *   PARTNER_BANK_API_KEY         API key / bearer token (unit: falls back to UNIT_API_TOKEN)
  *   PARTNER_BANK_BASE_URL        overrides the provider default
  *   PARTNER_BANK_ACCOUNT_ID      the trust's account/bank-account id at the provider
+ *                                (unit: deposit account id, falls back to UNIT_ACCOUNT_ID)
  *   PARTNER_BANK_ACCOUNT_LABEL   human label shown in dashboards
  */
 
@@ -43,6 +46,10 @@ function formEncode(pairs) {
     .join('&');
 }
 
+function jsonApiRef(type, id) {
+  return { data: { type, id: String(id) } };
+}
+
 function firstValue(body, names) {
   for (const name of names) {
     if (body && body[name] !== undefined && body[name] !== null && body[name] !== '') {
@@ -55,8 +62,8 @@ function firstValue(body, names) {
 /**
  * An instruction is rail-agnostic and provider-agnostic:
  * { reference, amountCents, currency, beneficiaryName, beneficiaryRouting,
- *   beneficiaryAccount, beneficiaryAccountType, description, counterpartyId,
- *   externalAccountId, secCode }
+ *   beneficiaryAccount, beneficiaryAccountType, beneficiaryAddress, description,
+ *   counterpartyId, externalAccountId, receivingAccountId, secCode }
  */
 const PROVIDERS = {
   column: {
@@ -188,6 +195,99 @@ const PROVIDERS = {
     },
   },
 
+  unit: {
+    label: 'Unit',
+    defaultBaseUrl: 'https://api.s.unit.sh',
+    authType: 'bearer',
+    supports: ['wire', 'ach'],
+    buildRequest(rail, instruction, cfg) {
+      const account = jsonApiRef('depositAccount', cfg.accountId);
+      const idempotencyKey = text(instruction.reference) || undefined;
+      const envelope = (type, attributes, relationships) => ({
+        method: 'POST',
+        path: '/payments',
+        contentType: 'application/vnd.api+json',
+        body: JSON.stringify({ data: { type, attributes: { ...attributes, idempotencyKey }, relationships } }),
+      });
+
+      if (instruction.receivingAccountId) {
+        return envelope('bookPayment', {
+          amount: instruction.amountCents,
+          description: text(instruction.description).slice(0, 80) || 'Trust transfer',
+        }, {
+          account,
+          counterpartyAccount: jsonApiRef('depositAccount', instruction.receivingAccountId),
+        });
+      }
+
+      const routingNumber = digits(instruction.beneficiaryRouting);
+      const accountNumber = digits(instruction.beneficiaryAccount);
+
+      if (rail === 'wire') {
+        if (!routingNumber || !accountNumber) {
+          throw new Error(
+            'Unit wire payments take the beneficiary inline — pass beneficiaryRouting and'
+            + ' beneficiaryAccount (Unit wires do not accept a counterparty id)'
+          );
+        }
+        return envelope('wirePayment', {
+          amount: instruction.amountCents,
+          direction: 'Credit',
+          description: text(instruction.description).slice(0, 50) || 'Trust wire',
+          counterparty: {
+            name: text(instruction.beneficiaryName),
+            routingNumber,
+            accountNumber,
+            ...(instruction.beneficiaryAddress ? { address: instruction.beneficiaryAddress } : {}),
+          },
+        }, { account });
+      }
+
+      const counterpartyId = instruction.counterpartyId || instruction.externalAccountId;
+      const attributes = {
+        amount: instruction.amountCents,
+        direction: 'Credit',
+        description: text(instruction.description).slice(0, 10) || 'TRUST PMT',
+        ...(instruction.secCode ? { secCode: String(instruction.secCode).toUpperCase() } : {}),
+      };
+      if (counterpartyId) {
+        return envelope('achPayment', attributes, {
+          account,
+          counterparty: jsonApiRef('counterparty', counterpartyId),
+        });
+      }
+      if (!routingNumber || !accountNumber) {
+        throw new Error(
+          'Unit requires a counterparty id or inline routing/account numbers — create the'
+          + ' beneficiary as a Unit counterparty and pass counterpartyId on the instruction'
+        );
+      }
+      return envelope('achPayment', {
+        ...attributes,
+        counterparty: {
+          name: text(instruction.beneficiaryName),
+          routingNumber,
+          accountNumber,
+          accountType: instruction.beneficiaryAccountType === 'savings' ? 'Savings' : 'Checking',
+        },
+      }, { account });
+    },
+    parseResponse(rail, body) {
+      const data = body?.data || {};
+      const attributes = data.attributes || {};
+      const imadOmad = attributes.imadOmad || {};
+      const imad = firstValue(imadOmad, ['imad']) || firstValue(attributes, ['imad']);
+      return {
+        providerReference: firstValue(data, ['id']),
+        providerStatus: firstValue(attributes, ['status']) || 'accepted',
+        imad,
+        omad: firstValue(imadOmad, ['omad']) || firstValue(attributes, ['omad']),
+        fedReference: imad || firstValue(attributes, ['traceNumber']),
+        confirmationNumber: firstValue(attributes, ['traceNumber']) || imad || firstValue(data, ['id']),
+      };
+    },
+  },
+
   generic: {
     label: 'Generic bank API',
     defaultBaseUrl: '',
@@ -234,11 +334,12 @@ class PartnerBankRails {
   static config() {
     const providerName = String(process.env.PARTNER_BANK_PROVIDER || '').toLowerCase().trim();
     const provider = PROVIDERS[providerName] || null;
+    const isUnit = providerName === 'unit';
     return {
       providerName: providerName || null,
       provider,
-      apiKey: process.env.PARTNER_BANK_API_KEY || '',
-      accountId: process.env.PARTNER_BANK_ACCOUNT_ID || '',
+      apiKey: process.env.PARTNER_BANK_API_KEY || (isUnit && process.env.UNIT_API_TOKEN) || '',
+      accountId: process.env.PARTNER_BANK_ACCOUNT_ID || (isUnit && process.env.UNIT_ACCOUNT_ID) || '',
       accountLabel: process.env.PARTNER_BANK_ACCOUNT_LABEL || '',
       baseUrl: (process.env.PARTNER_BANK_BASE_URL || provider?.defaultBaseUrl || '').replace(/\/+$/, ''),
       railPaths: {
@@ -254,8 +355,9 @@ class PartnerBankRails {
     const cfg = this.config();
     const missing = [];
     if (!cfg.provider) missing.push('PARTNER_BANK_PROVIDER');
-    if (!cfg.apiKey) missing.push('PARTNER_BANK_API_KEY');
-    if (!cfg.accountId) missing.push('PARTNER_BANK_ACCOUNT_ID');
+    const isUnit = cfg.providerName === 'unit';
+    if (!cfg.apiKey) missing.push(isUnit ? 'PARTNER_BANK_API_KEY (or UNIT_API_TOKEN)' : 'PARTNER_BANK_API_KEY');
+    if (!cfg.accountId) missing.push(isUnit ? 'PARTNER_BANK_ACCOUNT_ID (or UNIT_ACCOUNT_ID)' : 'PARTNER_BANK_ACCOUNT_ID');
     if (!cfg.baseUrl) missing.push('PARTNER_BANK_BASE_URL');
     const ready = missing.length === 0;
     return {
@@ -319,7 +421,7 @@ class PartnerBankRails {
     if (!text(instruction.beneficiaryName)) {
       throw new Error('Origination requires a beneficiary name');
     }
-    if (!instruction.externalAccountId && !instruction.counterpartyId
+    if (!instruction.externalAccountId && !instruction.counterpartyId && !instruction.receivingAccountId
       && (!digits(instruction.beneficiaryRouting) || !digits(instruction.beneficiaryAccount))) {
       throw new Error(
         'Origination requires either a provider counterparty/external account id or the'
@@ -345,7 +447,7 @@ class PartnerBankRails {
       'Content-Type': request.contentType,
       'Content-Length': Buffer.byteLength(request.body),
       'User-Agent': 'DLBTrust-Rails/1.0',
-      Accept: 'application/json',
+      Accept: request.contentType === 'application/vnd.api+json' ? 'application/vnd.api+json' : 'application/json',
     };
     const idempotencyKey = text(normalized.reference);
     if (idempotencyKey) {
