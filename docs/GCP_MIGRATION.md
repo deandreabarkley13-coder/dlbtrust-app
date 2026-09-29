@@ -949,10 +949,21 @@ Status on `dlb-treasury-management` at the time of writing:
      `https://finlynq.com/api/mcp` (Streamable HTTP, stateless JSON). Betterment
      is linked inside Finlynq (Settings → Bank Feeds, itself a SimpleFIN
      feed that Finlynq re-syncs on login roughly every 12 h, or CSV/OFX
-     imports), and the trust reads it with two MCP read tools only:
-     `get_account_balances` (ledger basis) and `search_transactions`
-     (per account, `start_date` = lookback or last pull − 5 days). Any other
-     tool name is refused client-side because a `pf_` key is account-wide.
+     imports). With `config.source: 'bank'` (the default the script sets) the
+     trust reads Finlynq's bank-side ledger, where that feed lands: balance =
+     latest bank-reported anchor (MCP `manage_bank_ledger` op `list_anchors`;
+     null until the account has an anchor — Finlynq only anchors accounts with
+     posted rows in its 90-day window), transactions = `GET
+     /api/import/bank-ledger?accountId=` rows (`start_date` = lookback or last
+     pull − 5 days). `config.syncBankFeed: true` re-syncs Finlynq's SimpleFIN
+     feed (`POST /api/settings/bank-feeds/simplefin/sync`, mapped accounts
+     only) when its last sync is older than `config.syncIntervalHours`
+     (default 6). `source: 'ledger'` instead reads Finlynq's bookkeeping ledger
+     with `get_account_balances` (ledger basis) and `search_transactions`. Any
+     other tool, or any non-read `op`, is refused client-side because a `pf_`
+     key is account-wide. In Finlynq, map each Betterment account (Bank Feeds
+     sync `choices`) and set its mode to `approve` so synced rows reach the
+     bank ledger.
      One-time setup: Finlynq Settings → API Keys → generate a `pf_` key →
      `printf '%s' "$KEY" | gcloud secrets create FINLYNQ_API_KEY --data-file=-`
      and add it to `secret_names` (or per connection
@@ -960,8 +971,9 @@ Status on `dlb-treasury-management` at the time of writing:
      → `node server/scripts/aggregateBettermentTrustChecking.js --connector
      finlynq --account-ids <finlynq account id> --pull`. Over a `pf_` key
      Finlynq returns account names encrypted, so pin the account with
-     `config.accountIds`. Handshake = MCP `initialize` + `tools/list` (both read
-     tools present) + `get_account_balances`; `external_connection_id` is
+     `config.accountIds`. Handshake = MCP `initialize` + `tools/list` (read
+     tools present, plus `manage_bank_ledger` for `source: 'bank'`) +
+     `get_account_balances`; `external_connection_id` is
      `finlynq:<host>`, capabilities `{ pull: true, push: false, webhook: false }`.
      `FINLYNQ_MCP_URL` points at a self-hosted Finlynq.
 
