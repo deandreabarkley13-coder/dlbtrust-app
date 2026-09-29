@@ -628,15 +628,15 @@ variable "runtime_environment" {
     COMPLIANCE_PROVIDER           = "opensanctions"
     # Fraud & Compliance OS (docs/FRAUD_COMPLIANCE_OS.md): live screeningRefs
     # from OpenSanctions + DLB internal fraud rules; the trust checker reviews.
-    # FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT stays "false" until the callers of
-    # BankSettlementEngine / Clearing Agent send FCS- screeningRefs.
+    # FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT: live BankSettlementEngine / Clearing
+    # Agent settlements must carry a clear, unused FCS- screeningRef.
     FRAUD_COMPLIANCE_ENABLED             = "true"
     FRAUD_COMPLIANCE_LIVE                = "true"
     FRAUD_COMPLIANCE_PROVIDER            = "internal"
     FRAUD_COMPLIANCE_TTL_MINUTES         = "60"
     FRAUD_COMPLIANCE_REVIEWERS           = "deandreabarkley13@gmail.com"
     FRAUD_COMPLIANCE_REVIEW_AMOUNT_CENTS = "1000000"
-    FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT  = "false"
+    FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT  = "true"
     TRUST_MAKER_EMAIL                    = "AnnRobinson1117@gmail.com"
     TRUST_CHECKER_EMAIL                  = "deandreabarkley13@gmail.com"
     MELIO_SOURCE_TYPE                    = "trust"

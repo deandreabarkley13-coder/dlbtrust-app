@@ -66,9 +66,11 @@ checker. The Transfer API gateway (`transfer_api.tf`,
 `transfer_api_openapi.yaml.tpl`) exposes `createScreening`, `getScreening` and
 `reviewScreening`; writes need a Google ID token + Idempotency-Key.
 
-`FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT` stays `false` until every caller of
-`/settlements` and the Transfer API sends FCS- refs (step 3 below); turning it
-on earlier refuses live settlements that carry older `COMP-` screening ids.
+`FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true` (the default): every live
+`/settlements`, payment-processor, fixed-income bank and Transfer API / Clearing
+Agent settlement must carry an FCS- `screeningRef` from
+`POST /api/payment-server/v1/fraud-compliance/screenings` or
+`POST /api/transfer/v1/screenings`. Older `COMP-` ids are refused.
 
 Terraform plan preconditions (`cloudrun.tf`) refuse: live with a provider other
 than internal / sardine, live with `COMPLIANCE_PROVIDER=local`, enforcement
@@ -91,7 +93,7 @@ sardine with credentials + explicit `SARDINE_BASE_URL`),
 2. Screen a real payee through `POST /api/transfer/v1/screenings` as the maker,
    review it as the checker, confirm readiness shows only the enforcement blocker.
 3. Send the returned FCS- ref as `screeningRef` on `/settlements` and Transfer
-   API items, then set `FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true` and apply.
+   API items (enforced by `FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT=true`).
 
 ## Adding Sardine (optional)
 
