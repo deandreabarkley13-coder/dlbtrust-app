@@ -10,6 +10,9 @@ const { EnterpriseCreditOsEngine } = require('../server/integrations/os/enterpri
 const { CustodyOsEngine } = require('../server/integrations/custody/custodyOsEngine');
 const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEngine');
 const { EnterpriseCapacityOsEngine } = require('../server/integrations/os/enterpriseCapacityOsEngine');
+const { DebtOsEngine } = require('../server/integrations/os/debtOsEngine');
+const { FixedIncomeDistributionEngine } = require('../server/integrations/os/fixedIncomeDistributionEngine');
+const { BondRedemptionOsEngine } = require('../server/integrations/os/bondRedemptionOsEngine');
 const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 const { AttestationOsEngine } = require('../server/integrations/os/attestationOsEngine');
 const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
@@ -127,6 +130,20 @@ function stubEngines(overrides: { pledgeChainIntact?: boolean; drift?: boolean; 
     },
     summary: { open: 0 }, chain: chain(),
   });
+  vi.spyOn(DebtOsEngine, 'schedule').mockResolvedValue({
+    horizonDays: 90,
+    events: [{ bondId: 1, bondName: 'DLB-PRB', type: 'coupon', date: '2026-10-15', amount: 1250000 }],
+    totals: { coupon: 1250000, principal: 0, total: 1250000 },
+  });
+  vi.spyOn(FixedIncomeDistributionEngine, 'readiness').mockResolvedValue({
+    enabled: true, rail: 'bank', autoStage: false, autoExecute: false, ready: true, issues: [],
+    buckets: [
+      { bucket: 'coupon_income', glAccountCode: '1020', payees: [{ bankId: 'lili', shareBps: 10000 }], funding: { accountCode: '1020', availableCents: 513554621, eligible: true } },
+      { bucket: 'trust_operating', glAccountCode: '1030', payees: [{ bankId: 'lili', shareBps: 10000 }], funding: { accountCode: '1030', availableCents: 0, eligible: true } },
+    ],
+  });
+  vi.spyOn(FixedIncomeDistributionEngine, 'summary').mockResolvedValue([{ bucket: 'coupon_income', status: 'planned', count: 1, totalUsd: 1250000 }]);
+  vi.spyOn(BondRedemptionOsEngine, 'status').mockResolvedValue({ notices: {}, batches: {}, upcomingMaturities: [], unpostedSettlements: 0 });
   vi.spyOn(CreditOsEngine, 'status').mockResolvedValue({ mode: 'validation-only', realValueCapable: false, fundingSources: [], ledger: { valid: true } });
   vi.spyOn(AttestationOsEngine, 'snapshot').mockResolvedValue({ attestedCents: 0, claimedCents: 19960000000, varianceCents: -19960000000, enforcement: 'shadow' });
   vi.spyOn(EgressOsEngine, 'status').mockResolvedValue({ enforce: true, path: { vpcConnector: 'dlbtrust-run', nat: 'dlbtrust-egress', staticIp: '34.138.243.108' }, lastProbe: { matched: true, observedIp: '34.138.243.108', error: null, at: '2026-09-30T00:00:00Z' } });
@@ -145,7 +162,7 @@ describe('Unified Trust Data OS', () => {
     process.env.PRIVATE_ACCESS_VPN_ENABLED = 'false';
     const { snapshots, rec, revalue } = stubEngines();
     const s = await UnifiedTrustDataOsEngine.run({ actor: 'dlbtrust-unified-trust-data' });
-    expect(s.steps.map((x: Row) => x.name)).toEqual(['custody', 'pe-holdings', 'pledge', 'collateral', 'enterprise-credit', 'enterprise-capacity', 'credit', 'attestation', 'ledger', 'cash', 'network']);
+    expect(s.steps.map((x: Row) => x.name)).toEqual(['custody', 'pe-holdings', 'pledge', 'collateral', 'enterprise-credit', 'enterprise-capacity', 'debt-service', 'credit', 'attestation', 'ledger', 'cash', 'network']);
     expect(s.steps.every((x: Row) => x.ok)).toBe(true);
     expect(revalue).toHaveBeenCalledWith({ actor: 'dlbtrust-unified-trust-data' });
     expect(s.ledger.accounts.inTransit).toEqual({ accountCode: '1015', balance: 250000 });
@@ -158,11 +175,19 @@ describe('Unified Trust Data OS', () => {
     expect(s.backing.pledges).toMatchObject({ counted: 0, countedValue: '0.00', liens: ['P24000656-2'] });
     expect(s.backing.enterpriseCredit).toMatchObject({ capacity: '0.00', available: '0.00' });
     expect(s.network.path.staticIp).toBe('34.138.243.108');
+    expect(s.debtService).toMatchObject({
+      schedule: { coupon: 1250000, principal: 0 },
+      coupon: { rail: 'bank', ready: true, funding: { coupon_income: { glAccountCode: '1020', available: 5135546.21 } }, distributions: { coupon_income: { planned: { count: 1, total: 1250000 } } } },
+      coverage: { couponDue: 1250000, couponFunding: 5135546.21, couponCovered: true },
+      movesMoney: false,
+    });
     const byName = Object.fromEntries(s.checks.map((c: Row) => [c.check, c]));
     expect(byName['intra-trust holdings excluded from collateral'].ok).toBe(true);
     expect(byName['intra capacity excluded from collateral + credit'].ok).toBe(true);
     expect(byName['intra capacity basis matches custody self-custody'].ok).toBe(true);
     expect(byName['trust_accounts match posted journal lines'].ok).toBe(true);
+    expect(byName['coupons due covered by coupon income funding'].ok).toBe(true);
+    expect(byName['coupon income rail ready'].ok).toBe(true);
     expect(byName['egress on VPC connector + Cloud NAT static IP'].ok).toBe(true);
     expect(byName['Cloud VPN tunnels up']).toMatchObject({ ok: false, detail: expect.stringMatching(/not provisioned/) });
     expect(rec).toHaveBeenCalledTimes(1);
@@ -190,7 +215,7 @@ describe('Unified Trust Data OS', () => {
     stubEngines({ custodyFails: true, pledgeChainIntact: false });
     const s = await UnifiedTrustDataOsEngine.run({ actor: 'op' });
     expect(s.steps.find((x: Row) => x.name === 'custody')).toMatchObject({ ok: false, error: 'custody db down' });
-    expect(s.steps.filter((x: Row) => x.ok)).toHaveLength(10);
+    expect(s.steps.filter((x: Row) => x.ok)).toHaveLength(11);
     expect(s.custody).toBeNull();
     expect(s.checks.find((c: Row) => c.check === 'pledge event chain intact')).toMatchObject({ ok: false, detail: '1 break(s)' });
     const r = await UnifiedTrustDataOsEngine.readiness();

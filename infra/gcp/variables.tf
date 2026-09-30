@@ -79,6 +79,18 @@ variable "enterprise_credit_wire_schedule" {
   default     = "30 6 * * 1-5"
 }
 
+variable "ppb_debt_service_wire_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-ppb-debt-service-wire,
+    which runs `ppbDebtServiceWire.js --plan`: it plans fixed-income
+    distributions (principal and coupon income to the trust and its
+    beneficiaries) for newly booked coupon / operating journals and reports the
+    schedule and funding. Staging and executing stay maker/checker.
+  EOT
+  type        = string
+  default     = "35 6 * * 1-5"
+}
+
 variable "enterprise_capacity_wire_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-enterprise-capacity-wire,
