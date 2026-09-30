@@ -61,8 +61,16 @@ function store({
       }
       return { rows: [] };
     }
+    if (text.startsWith('INSERT INTO fineract_gl_mappings')) {
+      writes.push({ sql: text, params });
+      mappings.push({ trust_account_code: params[0], fineract_gl_id: params[1], description: params[2] });
+      return { rows: [] };
+    }
     if (text.includes('FROM fineract_gl_mappings')) return { rows: mappings };
     if (text.startsWith('SELECT account_code, account_name, account_type, balance FROM trust_accounts')) return { rows: accounts };
+    if (text.startsWith('SELECT account_code, account_name, account_type, sub_type FROM trust_accounts WHERE account_code = ANY')) {
+      return { rows: accounts.filter((a) => params[0].includes(a.account_code)) };
+    }
     if (text.includes('journal_balance')) return { rows: integrity };
     if (text.includes('COUNT(*) FILTER (WHERE fineract_txn_id IS NULL) AS unsynced')) {
       return { rows: [{ total: String(entries.length), unsynced: String(entries.filter((e) => !e.fineract_txn_id).length) }] };
@@ -195,6 +203,36 @@ describe('DataBridge.pushToFineract', () => {
     expect(result.skipped).toBe(1);
     expect(result.errors[0]).toMatchObject({ entryId: 'JRN-A', skipped: true });
     expect(result.errors[0].error).toMatch(/PTC-UNMAPPED/);
+  });
+
+  it('creates and maps a Fineract GL account for a chart-of-accounts code added after seeding', async () => {
+    const entry = localEntry('JRN-CUS');
+    entry.lines[0].account_code = '1250';
+    entry.lines[1].account_code = '1251';
+    const { writes } = store({
+      entries: [entry],
+      accounts: [
+        { account_code: '1250', account_name: 'Assets in Custody', account_type: 'asset', sub_type: 'investment' },
+        { account_code: '1251', account_name: 'Custody Control (contra)', account_type: 'asset', sub_type: 'other' },
+      ],
+    });
+    vi.spyOn(FineractClient, 'getAllJournalEntries').mockResolvedValue([]);
+    vi.spyOn(FineractClient, 'getGLAccounts').mockResolvedValue([
+      { id: 90, glCode: '1251', usage: { id: 1 } },
+      { id: 91, glCode: '1250', usage: { id: 2 } },
+    ]);
+    const create = vi.spyOn(FineractClient, 'createGLAccount').mockResolvedValue({ resourceId: 95 });
+    const post = vi.spyOn(FineractClient, 'postJournalEntry').mockResolvedValue({ transactionId: 'TX-CUS' });
+
+    const result = await DataBridge.pushToFineract();
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][0]).toMatchObject({ glCode: '1250', type: 1, usage: 1 });
+    expect(writes.filter((w) => w.sql.startsWith('INSERT INTO fineract_gl_mappings')).map((w) => w.params.slice(0, 2)))
+      .toEqual([['1250', 95], ['1251', 90]]);
+    expect(post.mock.calls[0][0].debits).toEqual([{ glAccountId: 95, amount: 100 }]);
+    expect(post.mock.calls[0][0].credits).toEqual([{ glAccountId: 90, amount: 100 }]);
+    expect(result).toMatchObject({ synced: 1, skipped: 0, failed: 0 });
   });
 });
 
