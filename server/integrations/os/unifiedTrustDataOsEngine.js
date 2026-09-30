@@ -9,12 +9,13 @@
  *   2. pe-holdings        Private Equity Holdings OS evaluate -> eligible collateral, intra-trust book
  *   3. pledge             Pledge OS evaluate -> counted pledges + Collateral OS coverage
  *   4. collateral         Collateral OS revalue -> facility (collateral / spendable / drawn)
- *   5. enterprise-credit  Enterprise Credit OS evaluate -> capacity / used / available
- *   6. credit             Credit OS funding sources + ledger validation
- *   7. attestation        Attestation OS latest attested vs claimed
- *   8. ledger             trust_accounts synced to posted journal lines (reconcileTrustBalances)
- *   9. cash               DataBridge cash-module vs trust-ledger reconciliation
- *  10. network            Egress OS path (VPC connector -> Cloud NAT static IP) + Cloud VPN tunnels
+ *   5. enterprise-credit    Enterprise Credit OS evaluate -> capacity / used / available
+ *   6. enterprise-capacity  Enterprise Capacity OS evaluate -> intra-trust capacity of self-custody assets
+ *   7. credit               Credit OS funding sources + ledger validation
+ *   8. attestation          Attestation OS latest attested vs claimed
+ *   9. ledger               trust_accounts synced to posted journal lines (reconcileTrustBalances)
+ *  10. cash                 DataBridge cash-module vs trust-ledger reconciliation
+ *  11. network              Egress OS path (VPC connector -> Cloud NAT static IP) + Cloud VPN tunnels
  *
  * Each step runs even when an earlier one fails; failures and cross-engine
  * consistency checks are reported on the snapshot. Nothing here posts journal
@@ -36,6 +37,7 @@ const engines = {
   pledge: () => tryRequire('./pledgeOsEngine')?.PledgeOsEngine || null,
   collateral: () => tryRequire('./collateralOsEngine')?.CollateralOsEngine || null,
   enterpriseCredit: () => tryRequire('./enterpriseCreditOsEngine')?.EnterpriseCreditOsEngine || null,
+  enterpriseCapacity: () => tryRequire('./enterpriseCapacityOsEngine')?.EnterpriseCapacityOsEngine || null,
   credit: () => tryRequire('./creditOsEngine')?.CreditOsEngine || null,
   attestation: () => tryRequire('./attestationOsEngine')?.AttestationOsEngine || null,
   reconcile: () => tryRequire('../../scripts/reconcileTrustBalances') || null,
@@ -147,6 +149,12 @@ const UnifiedTrustDataOsEngine = {
       const status = await Ec.status();
       return { capacity: status.capacity, summary: status.summary, chain: status.chain, evaluateError };
     }));
+    steps.push(await step('enterprise-capacity', async () => {
+      const Capacity = need(engines.enterpriseCapacity(), 'Enterprise Capacity OS');
+      const evaluateError = await Capacity.evaluate({ actor: who }).then(() => null, (e) => e.message);
+      const status = await Capacity.status();
+      return { capacity: status.capacity, summary: status.summary, chain: status.chain, evaluateError };
+    }));
     steps.push(await step('credit', async () => {
       const Credit = need(engines.credit(), 'Credit OS');
       return Credit.status();
@@ -209,12 +217,15 @@ const UnifiedTrustDataOsEngine = {
     const facility = v.collateral ? v.collateral.facility : null;
     const cap = v['enterprise-credit'] ? v['enterprise-credit'].capacity : null;
     const pledge = v.pledge ? v.pledge.summary : null;
+    const intraCap = v['enterprise-capacity'] && v['enterprise-capacity'].capacity && !v['enterprise-capacity'].capacity.error
+      ? v['enterprise-capacity'].capacity : null;
 
     const chains = {
       custody: v.custody ? v.custody.chain : null,
       peHoldings: v['pe-holdings'] ? v['pe-holdings'].chain : null,
       pledge: v.pledge ? v.pledge.chain : null,
       enterpriseCredit: v['enterprise-credit'] ? v['enterprise-credit'].chain : null,
+      enterpriseCapacity: v['enterprise-capacity'] ? v['enterprise-capacity'].chain : null,
     };
 
     const checks = [];
@@ -228,6 +239,13 @@ const UnifiedTrustDataOsEngine = {
     if (pe) check('intra-trust holdings excluded from collateral', !intra.countsAsCollateral, `book ${dollars(intra.bookCents)} (not collateral)`);
     if (facility) check('Collateral OS drawn within spendable', Number(facility.drawnUsd || 0) <= Number(facility.spendableUsd || 0) + 0.005,
       `drawn ${Number(facility.drawnUsd || 0).toFixed(2)} / spendable ${Number(facility.spendableUsd || 0).toFixed(2)}`);
+    if (intraCap) {
+      check('intra capacity excluded from collateral + credit', !intraCap.countsAsCollateral && !intraCap.collateralOsBorrowingBase && !intraCap.enterpriseCreditCapacity,
+        `intra ${intraCap.capacity} (not collateral)`);
+      check('intra capacity earmarks within capacity', intraCap.usedCents <= intraCap.capacityCents, `earmarked ${intraCap.used} / intra ${intraCap.capacity}`);
+      if (statement) check('intra capacity basis matches custody self-custody', intraCap.selfCustodyCents === Number(statement.selfCustodyCents),
+        `capacity basis ${intraCap.selfCustody} / custody self-custody ${statement.selfCustody}`);
+    }
     if (cap) check('Enterprise Credit used within capacity', cap.usedCents <= cap.capacityCents, `used ${dollars(cap.usedCents)} / capacity ${dollars(cap.capacityCents)}`);
 
     if (v.network) {
@@ -255,6 +273,12 @@ const UnifiedTrustDataOsEngine = {
         pledges: pledge ? { total: pledge.pledges, counted: pledge.counted, countedValue: pledge.countedValue, liens: pledge.liens } : null,
         pledgeCoverage: v.pledge ? v.pledge.coverage : null,
         collateralOs: facility ? { collateral: Number(facility.collateralUsd || 0).toFixed(2), spendable: Number(facility.spendableUsd || 0).toFixed(2), drawn: Number(facility.drawnUsd || 0).toFixed(2), openDraws: facility.openDraws || 0 } : null,
+        intraCapacity: intraCap ? {
+          selfCustody: intraCap.selfCustody, selfCustodyReceipted: intraCap.selfCustodyReceipted.usd, intraRateBps: intraCap.intraRateBps,
+          capacity: intraCap.capacity, earmarked: intraCap.used, available: intraCap.available, outsideReceipted: intraCap.outsideReceipted.usd,
+          byAccount: intraCap.byAccount, countsAsCollateral: false,
+          open: v['enterprise-capacity'].summary ? v['enterprise-capacity'].summary.open : 0,
+        } : null,
         enterpriseCredit: cap ? { capacity: dollars(cap.capacityCents), used: dollars(cap.usedCents), available: dollars(cap.availableCents), open: v['enterprise-credit'].summary ? v['enterprise-credit'].summary.open : 0 } : null,
       },
       attestation: v.attestation ? {
@@ -278,6 +302,7 @@ const UnifiedTrustDataOsEngine = {
       ['peHoldings', engines.pe()],
       ['pledge', engines.pledge()],
       ['enterpriseCredit', engines.enterpriseCredit()],
+      ['enterpriseCapacity', engines.enterpriseCapacity()],
       ['custody', engines.custody()],
     ];
     for (const [name, engine] of targets) {

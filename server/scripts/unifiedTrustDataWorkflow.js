@@ -3,8 +3,9 @@
 
 /**
  * Unified Trust Data workflow — one ordered pass over Custody, Private Equity
- * Holdings, Pledge, Collateral, Enterprise Credit, Credit, Attestation, the
- * trust ledger and the cash module, stored as a unified snapshot.
+ * Holdings, Pledge, Collateral, Enterprise Credit, Enterprise Capacity, Credit,
+ * Attestation, the trust ledger, the cash module and the network path, stored
+ * as a unified snapshot.
  *
  * Run from the repo root:
  *   node server/scripts/unifiedTrustDataWorkflow.js                                  # latest snapshot (read-only)
@@ -55,6 +56,7 @@ function printSnapshot(s) {
   console.log(`-- backing  PE eligible collateral ${b.peEligibleCollateral}  intra-trust book ${b.intraTrust.book} (collateral: ${b.intraTrust.countsAsCollateral})`);
   if (b.pledges) console.log(`   pledges ${b.pledges.total} (${b.pledges.counted} counted, ${b.pledges.countedValue})  liens ${(b.pledges.liens || []).join(', ') || '-'}`);
   if (b.collateralOs) console.log(`   Collateral OS collateral ${b.collateralOs.collateral}  spendable ${b.collateralOs.spendable}  drawn ${b.collateralOs.drawn}`);
+  if (b.intraCapacity) console.log(`   Intra capacity (self custody ${b.intraCapacity.selfCustody} @ ${b.intraCapacity.intraRateBps} bps) ${b.intraCapacity.capacity}  earmarked ${b.intraCapacity.earmarked}  available ${b.intraCapacity.available}  (collateral: false)`);
   if (b.enterpriseCredit) console.log(`   Enterprise Credit capacity ${b.enterpriseCredit.capacity}  used ${b.enterpriseCredit.used}  available ${b.enterpriseCredit.available}`);
   if (s.attestation) console.log(`-- attestation attested ${s.attestation.attested}  claimed ${s.attestation.claimed}  variance ${s.attestation.variance}`);
   if (s.network) console.log(`-- network ${s.network.path ? `${s.network.path.vpcConnector} -> ${s.network.path.nat} (${s.network.path.staticIp})` : '-'}  vpn ${s.network.vpn.configured ? `${s.network.vpn.gateway} x${s.network.vpn.tunnels}` : 'not provisioned'}`);

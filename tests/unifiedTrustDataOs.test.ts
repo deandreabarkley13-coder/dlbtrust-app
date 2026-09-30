@@ -9,6 +9,7 @@ const { PrivateEquityHoldingsOsEngine } = require('../server/integrations/os/pri
 const { EnterpriseCreditOsEngine } = require('../server/integrations/os/enterpriseCreditOsEngine');
 const { CustodyOsEngine } = require('../server/integrations/custody/custodyOsEngine');
 const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEngine');
+const { EnterpriseCapacityOsEngine } = require('../server/integrations/os/enterpriseCapacityOsEngine');
 const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 const { AttestationOsEngine } = require('../server/integrations/os/attestationOsEngine');
 const { EgressOsEngine } = require('../server/integrations/os/egressOsEngine');
@@ -107,7 +108,7 @@ function stubEngines(overrides: { pledgeChainIntact?: boolean; drift?: boolean; 
   const chain = (intact = true) => ({ events: 3, intact, breaks: intact ? [] : [{ sequence: 1 }], tipHash: 'h' });
   if (overrides.custodyFails) vi.spyOn(CustodyOsEngine, 'verifyChain').mockRejectedValue(new Error('custody db down'));
   else vi.spyOn(CustodyOsEngine, 'verifyChain').mockResolvedValue(chain());
-  vi.spyOn(CustodyOsEngine, 'statement').mockResolvedValue({ accounts: [{}, {}], held: '98546521.91', thirdPartyReceipted: '0.00', selfCustody: '98546521.91', unreceipted: '96046521.91', byAssetClass: {} });
+  vi.spyOn(CustodyOsEngine, 'statement').mockResolvedValue({ accounts: [{}, {}], held: '105449718.25', thirdPartyReceipted: '0.00', selfCustodyCents: 10544971825, selfCustody: '105449718.25', unreceipted: '96046521.91', byAssetClass: {} });
   const peEval = vi.spyOn(PrivateEquityHoldingsOsEngine, 'evaluate').mockResolvedValue({ holdings: [], summary: {} });
   vi.spyOn(PrivateEquityHoldingsOsEngine, 'status').mockResolvedValue({ summary: { holdings: 0, eligibleCollateralCents: 0, intraTrust: { holdings: 1, bookCents: 9854652191, countsAsCollateral: false } }, chain: chain() });
   vi.spyOn(PledgeOsEngine, 'evaluate').mockResolvedValue({});
@@ -117,6 +118,15 @@ function stubEngines(overrides: { pledgeChainIntact?: boolean; drift?: boolean; 
   vi.spyOn(CollateralOsEngine, 'facility').mockResolvedValue({ collateralUsd: 0, spendableUsd: 0, drawnUsd: 0, openDraws: 0 });
   vi.spyOn(EnterpriseCreditOsEngine, 'evaluate').mockResolvedValue({});
   vi.spyOn(EnterpriseCreditOsEngine, 'status').mockResolvedValue({ capacity: { capacityCents: 0, usedCents: 0, availableCents: 0 }, summary: { open: 0 }, chain: chain() });
+  vi.spyOn(EnterpriseCapacityOsEngine, 'evaluate').mockResolvedValue({});
+  vi.spyOn(EnterpriseCapacityOsEngine, 'status').mockResolvedValue({
+    capacity: {
+      selfCustodyCents: 10544971825, selfCustody: '105449718.25', selfCustodyReceipted: { cents: 250000000, usd: '2500000.00' },
+      intraRateBps: 10000, capacityCents: 10544971825, capacity: '105449718.25', usedCents: 0, used: '0.00', availableCents: 10544971825, available: '105449718.25',
+      outsideReceipted: { cents: 0, usd: '0.00' }, byAccount: {}, countsAsCollateral: false, collateralOsBorrowingBase: false, enterpriseCreditCapacity: false,
+    },
+    summary: { open: 0 }, chain: chain(),
+  });
   vi.spyOn(CreditOsEngine, 'status').mockResolvedValue({ mode: 'validation-only', realValueCapable: false, fundingSources: [], ledger: { valid: true } });
   vi.spyOn(AttestationOsEngine, 'snapshot').mockResolvedValue({ attestedCents: 0, claimedCents: 19960000000, varianceCents: -19960000000, enforcement: 'shadow' });
   vi.spyOn(EgressOsEngine, 'status').mockResolvedValue({ enforce: true, path: { vpcConnector: 'dlbtrust-run', nat: 'dlbtrust-egress', staticIp: '34.138.243.108' }, lastProbe: { matched: true, observedIp: '34.138.243.108', error: null, at: '2026-09-30T00:00:00Z' } });
@@ -135,12 +145,14 @@ describe('Unified Trust Data OS', () => {
     process.env.PRIVATE_ACCESS_VPN_ENABLED = 'false';
     const { snapshots, rec, revalue } = stubEngines();
     const s = await UnifiedTrustDataOsEngine.run({ actor: 'dlbtrust-unified-trust-data' });
-    expect(s.steps.map((x: Row) => x.name)).toEqual(['custody', 'pe-holdings', 'pledge', 'collateral', 'enterprise-credit', 'credit', 'attestation', 'ledger', 'cash', 'network']);
+    expect(s.steps.map((x: Row) => x.name)).toEqual(['custody', 'pe-holdings', 'pledge', 'collateral', 'enterprise-credit', 'enterprise-capacity', 'credit', 'attestation', 'ledger', 'cash', 'network']);
     expect(s.steps.every((x: Row) => x.ok)).toBe(true);
     expect(revalue).toHaveBeenCalledWith({ actor: 'dlbtrust-unified-trust-data' });
     expect(s.ledger.accounts.inTransit).toEqual({ accountCode: '1015', balance: 250000 });
     expect(s.ledger.accounts.operatingCash).toEqual({ accountCode: '1030', balance: 1000 });
-    expect(s.custody).toMatchObject({ held: '98546521.91', thirdPartyReceipted: '0.00', selfCustody: '98546521.91' });
+    expect(s.custody).toMatchObject({ held: '105449718.25', thirdPartyReceipted: '0.00', selfCustody: '105449718.25' });
+    expect(s.backing.intraCapacity).toMatchObject({ selfCustody: '105449718.25', capacity: '105449718.25', earmarked: '0.00', countsAsCollateral: false });
+    expect(s.backing.collateralOs.spendable).toBe('0.00');
     expect(s.backing.intraTrust).toEqual({ holdings: 1, book: '98546521.91', countsAsCollateral: false });
     expect(s.backing.peEligibleCollateral).toBe('0.00');
     expect(s.backing.pledges).toMatchObject({ counted: 0, countedValue: '0.00', liens: ['P24000656-2'] });
@@ -148,6 +160,8 @@ describe('Unified Trust Data OS', () => {
     expect(s.network.path.staticIp).toBe('34.138.243.108');
     const byName = Object.fromEntries(s.checks.map((c: Row) => [c.check, c]));
     expect(byName['intra-trust holdings excluded from collateral'].ok).toBe(true);
+    expect(byName['intra capacity excluded from collateral + credit'].ok).toBe(true);
+    expect(byName['intra capacity basis matches custody self-custody'].ok).toBe(true);
     expect(byName['trust_accounts match posted journal lines'].ok).toBe(true);
     expect(byName['egress on VPC connector + Cloud NAT static IP'].ok).toBe(true);
     expect(byName['Cloud VPN tunnels up']).toMatchObject({ ok: false, detail: expect.stringMatching(/not provisioned/) });
@@ -176,7 +190,7 @@ describe('Unified Trust Data OS', () => {
     stubEngines({ custodyFails: true, pledgeChainIntact: false });
     const s = await UnifiedTrustDataOsEngine.run({ actor: 'op' });
     expect(s.steps.find((x: Row) => x.name === 'custody')).toMatchObject({ ok: false, error: 'custody db down' });
-    expect(s.steps.filter((x: Row) => x.ok)).toHaveLength(9);
+    expect(s.steps.filter((x: Row) => x.ok)).toHaveLength(10);
     expect(s.custody).toBeNull();
     expect(s.checks.find((c: Row) => c.check === 'pledge event chain intact')).toMatchObject({ ok: false, detail: '1 break(s)' });
     const r = await UnifiedTrustDataOsEngine.readiness();
@@ -195,6 +209,7 @@ describe('Unified Trust Data OS', () => {
     const plReseal = vi.spyOn(PledgeOsEngine, 'resealChain').mockResolvedValue({ events: 2, rewritten: 2, chain: { intact: true } });
     vi.spyOn(EnterpriseCreditOsEngine, 'verifyChain').mockResolvedValue({ events: 0, intact: true, breaks: [] });
     const ecReseal = vi.spyOn(EnterpriseCreditOsEngine, 'resealChain');
+    vi.spyOn(EnterpriseCapacityOsEngine, 'verifyChain').mockResolvedValue({ events: 1, intact: true, breaks: [] });
     vi.spyOn(CustodyOsEngine, 'verifyChain').mockResolvedValue({ events: 40, intact: true, breaks: [] });
     const cuReseal = vi.spyOn(CustodyOsEngine, 'resealChain');
     const r = await UnifiedTrustDataOsEngine.resealChains({ actor: 'operator', reason: 'canonical hashing' });
