@@ -11,11 +11,13 @@
  *   4. collateral         Collateral OS revalue -> facility (collateral / spendable / drawn)
  *   5. enterprise-credit    Enterprise Credit OS evaluate -> capacity / used / available
  *   6. enterprise-capacity  Enterprise Capacity OS evaluate -> intra-trust capacity of self-custody assets
- *   7. credit               Credit OS funding sources + ledger validation
- *   8. attestation          Attestation OS latest attested vs claimed
- *   9. ledger               trust_accounts synced to posted journal lines (reconcileTrustBalances)
- *  10. cash                 DataBridge cash-module vs trust-ledger reconciliation
- *  11. network              Egress OS path (VPC connector -> Cloud NAT static IP) + Cloud VPN tunnels
+ *   7. debt-service         PPB principal + coupon income: Debt OS schedule, Fixed Income
+ *                           Distribution OS funding/distributions, Bond Redemption OS
+ *   8. credit               Credit OS funding sources + ledger validation
+ *   9. attestation          Attestation OS latest attested vs claimed
+ *  10. ledger               trust_accounts synced to posted journal lines (reconcileTrustBalances)
+ *  11. cash                 DataBridge cash-module vs trust-ledger reconciliation
+ *  12. network              Egress OS path (VPC connector -> Cloud NAT static IP) + Cloud VPN tunnels
  *
  * Each step runs even when an earlier one fails; failures and cross-engine
  * consistency checks are reported on the snapshot. Nothing here posts journal
@@ -38,6 +40,7 @@ const engines = {
   collateral: () => tryRequire('./collateralOsEngine')?.CollateralOsEngine || null,
   enterpriseCredit: () => tryRequire('./enterpriseCreditOsEngine')?.EnterpriseCreditOsEngine || null,
   enterpriseCapacity: () => tryRequire('./enterpriseCapacityOsEngine')?.EnterpriseCapacityOsEngine || null,
+  debtService: () => tryRequire('./debtServiceSnapshot')?.debtServiceSnapshot || null,
   credit: () => tryRequire('./creditOsEngine')?.CreditOsEngine || null,
   attestation: () => tryRequire('./attestationOsEngine')?.AttestationOsEngine || null,
   reconcile: () => tryRequire('../../scripts/reconcileTrustBalances') || null,
@@ -155,6 +158,7 @@ const UnifiedTrustDataOsEngine = {
       const status = await Capacity.status();
       return { capacity: status.capacity, summary: status.summary, chain: status.chain, evaluateError };
     }));
+    steps.push(await step('debt-service', async () => need(engines.debtService(), 'PPB debt service')({ horizonDays: 90 })));
     steps.push(await step('credit', async () => {
       const Credit = need(engines.credit(), 'Credit OS');
       return Credit.status();
@@ -246,6 +250,12 @@ const UnifiedTrustDataOsEngine = {
       if (statement) check('intra capacity basis matches custody self-custody', intraCap.selfCustodyCents === Number(statement.selfCustodyCents),
         `capacity basis ${intraCap.selfCustody} / custody self-custody ${statement.selfCustody}`);
     }
+    const debt = v['debt-service'];
+    if (debt && !debt.schedule.error && !debt.coupon.error) {
+      check('coupons due covered by coupon income funding', debt.coverage.couponCovered,
+        `due ${Number(debt.coverage.couponDue || 0).toFixed(2)} / funding ${debt.coverage.couponFunding == null ? 'unavailable' : Number(debt.coverage.couponFunding).toFixed(2)} (${debt.horizonDays}d)`);
+      check('coupon income rail ready', debt.coupon.ready, debt.coupon.ready ? `${debt.coupon.rail} rail` : debt.coupon.issues.join('; '));
+    }
     if (cap) check('Enterprise Credit used within capacity', cap.usedCents <= cap.capacityCents, `used ${dollars(cap.usedCents)} / capacity ${dollars(cap.capacityCents)}`);
 
     if (v.network) {
@@ -281,6 +291,7 @@ const UnifiedTrustDataOsEngine = {
         } : null,
         enterpriseCredit: cap ? { capacity: dollars(cap.capacityCents), used: dollars(cap.usedCents), available: dollars(cap.availableCents), open: v['enterprise-credit'].summary ? v['enterprise-credit'].summary.open : 0 } : null,
       },
+      debtService: v['debt-service'] || null,
       attestation: v.attestation ? {
         attested: dollars(v.attestation.attestedCents), claimed: dollars(v.attestation.claimedCents), variance: dollars(v.attestation.varianceCents), enforcement: v.attestation.enforcement,
       } : null,
