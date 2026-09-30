@@ -767,18 +767,17 @@ variable "runtime_environment" {
     CLEARING_FUNDING_REQUIRE_BALANCE   = "true"
     CLEARING_FUNDING_TRUST_NAME        = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     # Settlement funding (settlementFundingEngine.js, fundSettlementAccount.js
-    # pipeline; job in settlement_funding_cron.tf). The registered destination
-    # is the Melio funding DDA; its account number is the SETTLEMENT_FUNDING_ACCOUNT
-    # secret, so no caller supplies routing/account. Committed funds sit in
+    # pipeline; job in settlement_funding_cron.tf). SETTLEMENT_FUNDING_ENGINE =
+    # "lili" registers the destination `lili_settlement` from the platform's own
+    # Lili settlement engine (LILI_DD_ROUTING_NUMBER above, LILI_DD_ACCOUNT_NUMBER
+    # secret), so no caller supplies routing/account and no third-party payables
+    # account is involved. Committed funds sit in
     # SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT (non-spendable asset) until the
     # bank's settlement reference moves them to SETTLEMENT_FUNDING_GL_ACCOUNT.
     SETTLEMENT_FUNDING_SOURCE                = "operating"
-    SETTLEMENT_FUNDING_DEFAULT_DESTINATION   = "melio"
-    SETTLEMENT_FUNDING_LABEL                 = "Lili Bank — Melio funding DDA"
-    SETTLEMENT_FUNDING_BANK_NAME             = "Lili Bank"
-    SETTLEMENT_FUNDING_BENEFICIARY_NAME      = "DLB TRUST"
-    SETTLEMENT_FUNDING_ROUTING               = "121145307"
-    SETTLEMENT_FUNDING_GL_ACCOUNT            = "1050"
+    SETTLEMENT_FUNDING_ENGINE                = "lili"
+    SETTLEMENT_FUNDING_DEFAULT_DESTINATION   = "lili_settlement"
+    SETTLEMENT_FUNDING_GL_ACCOUNT            = "1040"
     SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT = "1015"
   }
 }

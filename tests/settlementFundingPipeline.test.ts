@@ -28,7 +28,7 @@ function fundingWire(overrides: any = {}) {
     ...overrides,
     metadata: {
       fundingSource: { sourceType: 'trust_operating', sourceKey: 'trust:1010', sourceId: '1010' },
-      glDebitAccountCode: '1050',
+      glDebitAccountCode: '1040',
       glCreditAccountCode: '1010',
       approvalRef: 'APR-1',
       screeningRef: 'FCS-1',
@@ -204,6 +204,69 @@ describe('settlement funding — committed, not settled', () => {
   });
 });
 
+describe('settlement funding — engine-registered destination', () => {
+  const saved = { ...process.env };
+  const { LiliDirectDepositEngine } = require('../server/integrations/payments/liliDirectDepositEngine');
+
+  beforeEach(() => {
+    delete process.env.SETTLEMENT_FUNDING_DESTINATIONS;
+    delete process.env.SETTLEMENT_FUNDING_ROUTING;
+    delete process.env.SETTLEMENT_FUNDING_ACCOUNT;
+    delete process.env.SETTLEMENT_FUNDING_DEFAULT_DESTINATION;
+    delete process.env.SETTLEMENT_FUNDING_GL_ACCOUNT;
+    delete process.env.SETTLEMENT_FUNDING_ENGINE;
+    process.env.LILI_DD_ROUTING_NUMBER = '121145307';
+    process.env.LILI_DD_ACCOUNT_NUMBER = '692101092959';
+    process.env.LILI_DD_ACCOUNT_NAME = 'DB NET MGMT LLC';
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...saved };
+  });
+
+  it('defaults to the Lili account LiliSettlementBankEngine credits, on GL 1040', () => {
+    expect(SettlementFundingEngine.destination()).toMatchObject({
+      key: 'lili_settlement',
+      engine: 'lili',
+      bankName: 'Lili Bank',
+      beneficiaryName: 'DB NET MGMT LLC',
+      routingNumber: '121145307',
+      accountLast4: '2959',
+      glAccountCode: '1040',
+    });
+  });
+
+  it('registers nothing from the engine when SETTLEMENT_FUNDING_ENGINE is off', () => {
+    process.env.SETTLEMENT_FUNDING_ENGINE = 'none';
+    expect(() => SettlementFundingEngine.destination()).toThrowError(/is not a registered settlement account/);
+  });
+
+  it('refuses a destination the Lili engine is no longer registered against', async () => {
+    vi.spyOn(LiliDirectDepositEngine, 'getDestination').mockResolvedValue({
+      configured: true, routingNumber: '121145307', _account: '999900001111', accountNumberMasked: '****1111',
+    });
+    await expect(SettlementFundingEngine.assertEngineDestination(SettlementFundingEngine.destination()))
+      .rejects.toThrowError(/is not the account LiliSettlementBankEngine is registered against/);
+  });
+
+  it('accepts the destination the Lili engine is registered against', async () => {
+    vi.spyOn(LiliDirectDepositEngine, 'getDestination').mockResolvedValue({
+      configured: true, routingNumber: '121145307', _account: '692101092959', accountNumberMasked: '****2959',
+    });
+    await expect(SettlementFundingEngine.assertEngineDestination(SettlementFundingEngine.destination())).resolves.toBeUndefined();
+  });
+
+  it('provisions the destination GL as a settlement asset on first use', async () => {
+    const query = vi.spyOn(pool, 'query').mockResolvedValue({ rows: [] } as any);
+    vi.spyOn(TrustAccountingEngine, 'getAccount').mockResolvedValue({ account_code: '1040', account_type: 'asset', sub_type: 'settlement' } as any);
+    await SettlementFundingEngine.ensureDestinationAccount({ glDebitAccountCode: '1040', settlementFunding: { destination: 'lili_settlement' } });
+    const insert = query.mock.calls.find((c: any) => String(c[0]).includes('INSERT INTO trust_accounts')) as any;
+    expect(insert[1]).toEqual(['1040', 'Settlement Account (lili_settlement)']);
+    expect(String(insert[0])).toMatch(/'asset', 'settlement'/);
+  });
+});
+
 describe('settlement funding pipeline', () => {
   function harness({ drift = [], evidence = null as any, readinessReady = true } = {}) {
     let wire: any = null;
@@ -212,12 +275,12 @@ describe('settlement funding pipeline', () => {
       PAYMENT_TYPE: 'settlement_funding',
       inTransitAccountCode: () => '1015',
       config: () => ({ fundingSourceRef: 'operating' }),
-      destination: () => ({ key: 'melio', glAccountCode: '1050', beneficiaryName: 'DLB TRUST', routingNumber: '121145307', accountNumber: '692101092959' }),
+      destination: () => ({ key: 'lili_settlement', glAccountCode: '1040', beneficiaryName: 'DLB TRUST', routingNumber: '121145307', accountNumber: '692101092959' }),
       readiness: async () => ({ ready: readinessReady, blockers: readinessReady ? [] : ['compliance: FRAUD_COMPLIANCE_LIVE not true'] }),
       plan: async ({ amountCents }: any) => ({
         amountCents, amount: (amountCents / 100).toFixed(2), available: '50000.00', inFlight: '0.00', spendable: '50000.00', funded: true,
         source: { sourceId: '1010', accountName: 'Trust Checking', debtorName: 'DLB TRUST' },
-        destination: { key: 'melio', accountLast4: '2959', beneficiaryName: 'DLB TRUST', routingNumber: '121145307', accountNumber: '692101092959' },
+        destination: { key: 'lili_settlement', accountLast4: '2959', beneficiaryName: 'DLB TRUST', routingNumber: '121145307', accountNumber: '692101092959' },
       }),
       verifyScreeningFor: vi.fn(async () => ({ status: 'clear' })),
       verifyScreening: vi.fn(async () => ({ status: 'clear' })),

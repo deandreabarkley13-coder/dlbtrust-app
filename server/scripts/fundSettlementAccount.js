@@ -5,24 +5,25 @@
  * Fund a settlement account out of the trust's book of record.
  *
  * The wire this originates is the trust moving its own dollars from the Trust
- * Operating Account into a registered settlement account — the Melio funding
- * DDA, for one — so a rail that debits that bank account has real money to
- * spend. The destination is named by key, never by routing and account number:
- * the accounts this may credit are the ones registered in
- * SETTLEMENT_FUNDING_DESTINATIONS.
+ * Operating Account into a registered settlement account — by default the
+ * trust's Lili settlement account, the one LiliSettlementBankEngine credits
+ * (`lili_settlement`, from LILI_DD_*) — so a rail that debits that bank account
+ * has real money to spend. The destination is named by key, never by routing
+ * and account number: the accounts this may credit are the engine-registered
+ * one and those in SETTLEMENT_FUNDING_DESTINATIONS.
  *
  * Usage:
  *   node server/scripts/fundSettlementAccount.js status
- *   node server/scripts/fundSettlementAccount.js plan --amount 25000 [--destination melio]
+ *   node server/scripts/fundSettlementAccount.js plan --amount 25000 [--destination lili_settlement]
  *   node server/scripts/fundSettlementAccount.js initiate --amount 25000 \
  *     --maker trustee-one@example.com --approval-ref APR-… --screening-ref FCS-… \
- *     [--checker trustee-two@example.com] [--destination melio] [--memo "…"] [--send]
+ *     [--checker trustee-two@example.com] [--destination lili_settlement] [--memo "…"] [--send]
  *   node server/scripts/fundSettlementAccount.js approve --wire WIRE-… --checker trustee-two@example.com
  *   node server/scripts/fundSettlementAccount.js send    --wire WIRE-… [--screening-ref FCS-…] [--yes]
  *   node server/scripts/fundSettlementAccount.js commit  --wire WIRE-… | --all  [--apply] [--actor …]
  *   node server/scripts/fundSettlementAccount.js release --wire WIRE-… --actor … [--reason …]
  *   node server/scripts/fundSettlementAccount.js pipeline --amount 25000 --maker … --checker … \
- *     --approval-ref APR-… --screening-ref FCS-… [--destination melio] [--yes] \
+ *     --approval-ref APR-… --screening-ref FCS-… [--destination lili_settlement] [--yes] \
  *     [--poll-seconds 30] [--timeout-seconds 0]
  *   node server/scripts/fundSettlementAccount.js pipeline --wire WIRE-… [--yes] [--checker …] \
  *     [--reference <bank ref> --provider-status settled]

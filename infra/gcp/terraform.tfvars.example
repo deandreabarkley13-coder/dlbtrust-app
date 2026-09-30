@@ -89,15 +89,12 @@ secret_names = [
   # account itself (CLEARING_FUNDING_OPERATING_ACCOUNT) is a chart-of-accounts
   # code, 1010, and stays a plain runtime value.
   "CLEARING_FUNDING_SETTLEMENT_ACCOUNT",
-  # Settlement funding destination (Melio funding DDA) account number; its
-  # routing / bank / beneficiary / glAccountCode are the SETTLEMENT_FUNDING_*
-  # runtime_environment defaults. Required once SETTLEMENT_FUNDING_ROUTING is
-  # set (settlement_funding_cron.tf precondition). Seed with
-  #   printf %s '<account number>' | gcloud secrets versions add SETTLEMENT_FUNDING_ACCOUNT --data-file=- --project dlb-treasury-management
-  # A trust registering several destinations lists SETTLEMENT_FUNDING_DESTINATIONS
-  # instead (JSON: {"melio":{"label":…,"bankName":…,"beneficiaryName":…,
-  # "routingNumber":…,"accountNumber":…,"glAccountCode":"1050"}}), also a secret.
-  "SETTLEMENT_FUNDING_ACCOUNT",
+  # The settlement funding destination is LILI_DD_ACCOUNT_NUMBER above
+  # (SETTLEMENT_FUNDING_ENGINE = "lili"); no separate secret is needed. Only a
+  # trust registering an extra destination adds SETTLEMENT_FUNDING_ACCOUNT (with
+  # SETTLEMENT_FUNDING_ROUTING) or SETTLEMENT_FUNDING_DESTINATIONS (JSON keyed by
+  # name: routingNumber, accountNumber, glAccountCode, …), both secret-backed.
+  # "SETTLEMENT_FUNDING_ACCOUNT",
   # Optional: OpenSanctions commercial-use API key for data.opensanctions.org.
   # "COMPLIANCE_OPENSANCTIONS_API_KEY",
   # Bearer token for /api/payment-server/v1/* (server/routes/bankSettlement.js).
@@ -190,9 +187,6 @@ secret_names = [
 # rejects a revision referencing a version-less secret, so keep such names here
 # until seeded, then remove them and re-apply.
 unseeded_secret_names = [
-  # Until the destination account number is seeded; the funding engine then
-  # reports the destination unregistered and nothing can be wired.
-  "SETTLEMENT_FUNDING_ACCOUNT",
   "LILI_OAUTH_CLIENT_SECRET",
   "LILI_OAUTH_REFRESH_TOKEN",
   "LILI_BUSINESS_USER_ID",
@@ -228,8 +222,10 @@ unseeded_secret_names = [
 
 # Settlement funding pipeline (settlement_funding_cron.tf,
 # server/scripts/fundingPipeline.js). The variables.tf default registers the
-# Melio funding DDA (SETTLEMENT_FUNDING_ROUTING / _BANK_NAME /
-# _BENEFICIARY_NAME / _GL_ACCOUNT = 1050), draws on SETTLEMENT_FUNDING_SOURCE =
+# trust's Lili settlement account from the Lili settlement engine
+# (SETTLEMENT_FUNDING_ENGINE = "lili", destination `lili_settlement`,
+# LILI_DD_ROUTING_NUMBER / LILI_DD_ACCOUNT_NUMBER, SETTLEMENT_FUNDING_GL_ACCOUNT
+# = 1040, provisioned on first commit), draws on SETTLEMENT_FUNDING_SOURCE =
 # "operating" (CLEARING_FUNDING_OPERATING_ACCOUNT = 1010) and parks committed
 # dollars in SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT = 1015 (non-spendable)
 # until the bank's settlement reference is recorded. CLEARING_FUNDING_TRUST_NAME

@@ -9,13 +9,13 @@ const { FundingSourceRegistry } = require('../server/integrations/inhouseBank/cl
 const { WireEngine } = require('../server/integrations/wire/wireEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
-const MELIO_DDA = {
-  label: 'Lili Bank — Melio funding DDA',
+const LILI_SETTLEMENT = {
+  label: 'Lili Bank — trust settlement account',
   beneficiaryName: 'DLB TRUST',
   bankName: 'Lili Bank',
   routingNumber: '121145307',
   accountNumber: '692101092959',
-  glAccountCode: '1050',
+  glAccountCode: '1040',
 };
 
 function operatingSource(availableCents: number) {
@@ -52,7 +52,7 @@ describe('settlement funding — the trust funding its own settlement account', 
   const saved = { ...process.env };
 
   beforeEach(() => {
-    process.env.SETTLEMENT_FUNDING_DESTINATIONS = JSON.stringify({ melio: MELIO_DDA });
+    process.env.SETTLEMENT_FUNDING_DESTINATIONS = JSON.stringify({ lili_settlement: LILI_SETTLEMENT });
     process.env.CLEARING_FUNDING_OPERATING_ACCOUNT = '1010';
     delete process.env.SETTLEMENT_FUNDING_ROUTING;
     delete process.env.SETTLEMENT_FUNDING_ACCOUNT;
@@ -79,28 +79,28 @@ describe('settlement funding — the trust funding its own settlement account', 
 
     it('refuses a destination with no GL account to land the credit in', () => {
       process.env.SETTLEMENT_FUNDING_DESTINATIONS = JSON.stringify({
-        melio: { ...MELIO_DDA, glAccountCode: '' },
+        lili_settlement: { ...LILI_SETTLEMENT, glAccountCode: '' },
       });
-      expect(() => SettlementFundingEngine.destination('melio')).toThrowError(/needs glAccountCode/);
+      expect(() => SettlementFundingEngine.destination('lili_settlement')).toThrowError(/needs glAccountCode/);
     });
 
     it('refuses a destination whose routing number is not an ABA', () => {
       process.env.SETTLEMENT_FUNDING_DESTINATIONS = JSON.stringify({
-        melio: { ...MELIO_DDA, routingNumber: '1211453' },
+        lili_settlement: { ...LILI_SETTLEMENT, routingNumber: '1211453' },
       });
-      expect(() => SettlementFundingEngine.destination('melio')).toThrowError(/9-digit ABA/);
+      expect(() => SettlementFundingEngine.destination('lili_settlement')).toThrowError(/9-digit ABA/);
     });
 
     it('takes a single destination from plain variables', () => {
       delete process.env.SETTLEMENT_FUNDING_DESTINATIONS;
       process.env.SETTLEMENT_FUNDING_ROUTING = '121145307';
       process.env.SETTLEMENT_FUNDING_ACCOUNT = '692101092959';
-      process.env.SETTLEMENT_FUNDING_GL_ACCOUNT = '1050';
+      process.env.SETTLEMENT_FUNDING_GL_ACCOUNT = '1040';
       expect(SettlementFundingEngine.destination()).toMatchObject({
-        key: 'melio',
+        key: 'lili_settlement',
         routingNumber: '121145307',
         accountLast4: '2959',
-        glAccountCode: '1050',
+        glAccountCode: '1040',
       });
     });
   });
@@ -142,7 +142,7 @@ describe('settlement funding — the trust funding its own settlement account', 
 
     it('refuses a wire from the funding account to itself', async () => {
       process.env.SETTLEMENT_FUNDING_DESTINATIONS = JSON.stringify({
-        melio: { ...MELIO_DDA, glAccountCode: '1010' },
+        lili_settlement: { ...LILI_SETTLEMENT, glAccountCode: '1010' },
       });
       ledger(5_000_000);
       inFlight(0);
@@ -174,7 +174,7 @@ describe('settlement funding — the trust funding its own settlement account', 
       const { wire } = await SettlementFundingEngine.initiate({
         amountCents: 2_500_000,
         initiatedBy: 'trustee-one',
-        memo: 'Fund Melio DDA for August bills',
+        memo: 'Fund Lili settlement account for August bills',
       });
 
       expect(wire.wire_id).toBe('WIRE-TEST-1');
@@ -185,7 +185,7 @@ describe('settlement funding — the trust funding its own settlement account', 
         paymentType: 'settlement_funding',
         requiresApproval: true,
         initiatedBy: 'trustee-one',
-        description: 'Fund Melio DDA for August bills',
+        description: 'Fund Lili settlement account for August bills',
         beneficiaryName: 'DLB TRUST',
         beneficiaryRouting: '121145307',
         beneficiaryAccount: '692101092959',
@@ -194,9 +194,9 @@ describe('settlement funding — the trust funding its own settlement account', 
       });
       // The trust's own money changing accounts: the DDA gains what 1010 loses.
       expect(opts.metadata).toMatchObject({
-        glDebitAccountCode: '1050',
+        glDebitAccountCode: '1040',
         glCreditAccountCode: '1010',
-        settlementFunding: { destination: 'melio', accountLast4: '2959' },
+        settlementFunding: { destination: 'lili_settlement', accountLast4: '2959' },
       });
       expect(opts.metadata.fundingSource.sourceKey).toBe('trust:1010');
     });
@@ -255,7 +255,7 @@ describe('settlement funding — the trust funding its own settlement account', 
       expect(readiness.partnerBank.ready).toBe(false);
       expect(readiness.blockers.join(' ')).toMatch(/No bank channel can originate the wire/);
       expect(readiness.destinations).toEqual([
-        { key: 'melio', label: MELIO_DDA.label, accountLast4: '2959', glAccountCode: '1050' },
+        { key: 'lili_settlement', label: LILI_SETTLEMENT.label, accountLast4: '2959', glAccountCode: '1040' },
       ]);
       expect(readiness.fundingSource).toMatchObject({ sourceKey: 'trust:1010', spendable: '50000.00' });
     });
