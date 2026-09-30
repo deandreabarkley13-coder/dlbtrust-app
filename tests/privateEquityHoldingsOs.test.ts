@@ -11,6 +11,15 @@ const { CollateralOsEngine } = require('../server/integrations/os/collateralOsEn
 const wire = require('../server/scripts/privateEquityHoldingsWire');
 const pool = require('../server/integrations/bonds/pgPool');
 
+// Postgres JSONB returns object keys ordered by length, then bytewise.
+function jsonb(v: any): any {
+  if (Array.isArray(v)) return v.map(jsonb);
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.keys(v).sort((a, b) => a.length - b.length || (a < b ? -1 : 1)).map((k) => [k, jsonb(v[k])]));
+  }
+  return v;
+}
+
 const saved = { ...process.env };
 const today = new Date().toISOString().slice(0, 10);
 
@@ -22,7 +31,7 @@ function fakeDb(state: { holdings: Row[]; events: Row[]; receipts: Row[] }) {
     if (/^(CREATE|ALTER)/i.test(s)) return { rows: [] };
     if (s.startsWith('SELECT event_hash FROM pe_holding_events')) return { rows: state.events.slice(-1) };
     if (s.startsWith('INSERT INTO pe_holding_events')) {
-      state.events.push({ sequence: state.events.length + 1, event_id: p[0], holding_id: p[1], event_type: p[2], actor: p[3], payload: JSON.parse(p[4]), prev_hash: p[5], event_hash: p[6], created_at: p[7] });
+      state.events.push({ sequence: state.events.length + 1, event_id: p[0], holding_id: p[1], event_type: p[2], actor: p[3], payload: jsonb(JSON.parse(p[4])), prev_hash: p[5], event_hash: p[6], created_at: p[7] });
       return { rows: [] };
     }
     if (s.startsWith('SELECT * FROM pe_holding_events')) return { rows: state.events };
