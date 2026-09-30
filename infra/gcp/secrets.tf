@@ -40,7 +40,14 @@ locals {
     local.enterprise_network_live ? local.enterprise_network_secret_names : [],
     local.private_payment_network_live ? local.private_payment_network_secret_names : [],
     local.canonical_funding_live ? local.canonical_funding_secret_names : [],
+    local.enterprise_odfi_live ? local.trust_account_credit_secret_names : [],
   ))
+
+  # Enterprise ODFI trust-account credit (ACH credit into Betterment): the
+  # trust's funding account number at the sponsor ODFI. The Betterment
+  # creditor numbers are the BETTERMENT_* secrets above.
+  enterprise_odfi_live              = lookup(var.runtime_environment, "ENTERPRISE_ODFI_LIVE", "false") == "true"
+  trust_account_credit_secret_names = ["ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER"]
 
   # Env-only credentials each live flag needs (cannot be generated; values come
   # from the provider, so they are listed in terraform.tfvars secret_names once

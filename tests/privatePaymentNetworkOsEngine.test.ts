@@ -16,6 +16,7 @@ const { EngineWiringReadiness } = require('../server/integrations/os/engineWirin
 const { PaymentGatewayServerEngine } = require('../server/integrations/payments/paymentGatewayServerEngine');
 const { CashEngine } = require('../server/integrations/cash/cashEngine');
 const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+const { TrustAccountStructure } = require('../server/integrations/fineract/trustAccountStructure');
 const OS = require('../server/integrations/os/osEngine');
 const osRouter = require('../server/routes/os');
 const { MftGatewayClient } = require('../server/integrations/edi/mftGatewayClient');
@@ -455,6 +456,27 @@ describe('private-payment-network Fineract core-banking funding source', () => {
     expect(fx.withdraw).toHaveBeenCalledWith(expect.objectContaining({ accountId: '7', amount: 2500, paymentTypeId: 1 }));
     expect(out.result.coreBanking).toMatchObject({ savingsAccountId: '7', withdrawalTransactionId: '77' });
     expect(fx.deposit).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the Fineract account of record recorded by the trust account structure when no account is linked or pinned', async () => {
+    const rows = { 'PPN-1': txRow() };
+    stubCloudSql(rows);
+    const fx = coreBankingLive({ '2': savingsAccount(2) });
+    process.env.PRIVATE_PAYMENT_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_PROCESSOR_LIVE = 'true';
+    process.env.ENTERPRISE_NETWORK_LIVE = 'true';
+    process.env.PAYMENT_DATA_ENCRYPTION_KEY = 'ab'.repeat(32);
+    delete process.env.CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID;
+    vi.spyOn(PaymentProcessorOsEngine, 'processors').mockResolvedValue(upstreamLive());
+    stubLedger();
+    vi.spyOn(PaymentGatewayServerEngine, 'getMethod').mockResolvedValue(achMethod());
+    vi.spyOn(EnterpriseNetworkOsEngine, 'admit').mockResolvedValue({});
+    const recorded = vi.spyOn(TrustAccountStructure, 'recordedAccountId').mockResolvedValue('2');
+    vi.spyOn(PaymentGatewayServerEngine, 'sale').mockResolvedValue({ gatewayTxId: 'GW-TX-1', processorTxId: 'PH-1', status: 'processing' });
+    const out = await PrivatePaymentNetworkOsEngine.approve({ transactionId: 'PPN-1', approvedBy: 'checker@dlbtrust.com', approvalRef: 'APR-1', screeningRef: 'SCR-1' });
+    expect(recorded).toHaveBeenCalledWith('account-of-record');
+    expect(fx.withdraw).toHaveBeenCalledWith(expect.objectContaining({ accountId: '2' }));
+    expect(out.result.coreBanking).toMatchObject({ savingsAccountId: '2' });
   });
 
   it('redeposits the withdrawal when the processor rejects the payout and when a cleared payout is returned', async () => {

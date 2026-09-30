@@ -49,6 +49,9 @@ try { ({ TreasuryOdfiBank } = require('../ach/treasuryOdfiBank')); } catch (e) {
 let TreasuryFundingBankEngine = null;
 try { ({ TreasuryFundingBankEngine } = require('../payments/treasuryFundingBankEngine')); } catch (e) { TreasuryFundingBankEngine = null; }
 
+let EnterpriseOdfiOsEngine = null;
+try { ({ EnterpriseOdfiOsEngine } = require('../os/enterpriseOdfiOsEngine')); } catch (e) { EnterpriseOdfiOsEngine = null; }
+
 let BankingAggregator = null;
 try { ({ BankingAggregator } = require('../aggregator/bankingAggregator')); } catch (e) { BankingAggregator = null; }
 
@@ -213,15 +216,22 @@ class TrustAdministrationWorkflowEngine {
   }
 
   /**
-   * Funding = the trust's own bank. With TREASURY_BANK_ENABLED it is the
-   * Betterment ACH-debit mandate in Stripe (TreasuryFundingBankEngine, fail
-   * closed until linked and verified); otherwise the ODFI for the files
-   * dlb-treasury originates.
+   * Funding = the trust's own bank. The Enterprise ODFI trust-account credit
+   * (ACH credit into Betterment, maker/checker released) when that engine is
+   * loadable; else, with TREASURY_BANK_ENABLED, the Betterment ACH-debit
+   * mandate in Stripe (TreasuryFundingBankEngine, fail closed until linked and
+   * verified); otherwise the ODFI for the files dlb-treasury originates.
    */
   static async funding() {
-    return attempt((TreasuryOdfiBank || TreasuryFundingBankEngine) && (async () => {
+    return attempt((EnterpriseOdfiOsEngine || TreasuryOdfiBank || TreasuryFundingBankEngine) && (async () => {
       const odfi = TreasuryOdfiBank ? TreasuryOdfiBank.status() : null;
       const treasuryBankEnabled = Boolean(TreasuryFundingBankEngine && TreasuryFundingBankEngine.getConfig().enabled);
+      if (EnterpriseOdfiOsEngine) {
+        const r = await EnterpriseOdfiOsEngine.readiness();
+        const credit = r.trustAccountCredit || { ready: false, blockers: [] };
+        const issues = [...(r.blockers || []), ...(credit.blockers || [])];
+        return { ready: Boolean(credit.ready), enabled: true, channel: 'enterprise_odfi_trust_account_credit', direction: 'credit', treasuryBankEnabled, status: { ...credit, issues }, trustAccountCredit: credit, odfi };
+      }
       if (treasuryBankEnabled) {
         const treasuryBank = await TreasuryFundingBankEngine.status();
         return { ready: Boolean(treasuryBank.ready), enabled: true, treasuryBankEnabled, channel: treasuryBank.channel, status: { ...treasuryBank, issues: treasuryBank.issues || [] }, treasuryBank, odfi };
@@ -229,7 +239,7 @@ class TrustAdministrationWorkflowEngine {
       if (!odfi) return { ready: null, enabled: false, treasuryBankEnabled, status: { issues: [] }, odfi };
       const issues = odfi.enabled ? odfi.issues : [];
       return { ready: odfi.enabled ? Boolean(odfi.ready) : null, enabled: odfi.enabled, treasuryBankEnabled, status: { ...odfi, issues }, odfi };
-    }), 'TreasuryOdfiBank / TreasuryFundingBankEngine unavailable');
+    }), 'EnterpriseOdfiOsEngine / TreasuryOdfiBank / TreasuryFundingBankEngine unavailable');
   }
 
   static async proof() {

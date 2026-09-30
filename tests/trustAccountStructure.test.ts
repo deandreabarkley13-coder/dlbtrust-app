@@ -75,6 +75,32 @@ describe('TrustAccountStructure', () => {
     expect(await TrustAccountStructure.resolveAccountId('account-of-record', { env })).toBe('2');
   });
 
+  it('resolves trustee / beneficiary sub-accounts by CRM contact id, only when active', async () => {
+    stubCrm([trustee, beneficiary]);
+    vi.spyOn(FineractClient, 'findSavingsAccountByExternalId').mockImplementation(async (ext: string) => {
+      if (ext === 'beneficiary:CRM-B1:savings') return active(11, ext);
+      if (ext === 'trustee:CRM-T1:savings') return { ...active(7, ext), status: { active: false, value: 'Closed' } };
+      return null;
+    });
+    await TrustAccountStructure.inventory({ fresh: true, env });
+    expect(await TrustAccountStructure.resolveAccountId('beneficiary', { env, partyRef: 'CRM-B1' })).toBe('11');
+    expect(await TrustAccountStructure.resolveAccountId('beneficiary', { env, partyRef: 'CRM-B9' })).toBeNull();
+    expect(await TrustAccountStructure.resolveAccountId('beneficiary', { env })).toBeNull();
+    expect(await TrustAccountStructure.resolveAccountId('trustee', { env, partyRef: 'CRM-T1' })).toBeNull();
+  });
+
+  it('recordedAccountId reads the last recorded account from fineract_trust_accounts without calling Fineract', async () => {
+    const q = vi.spyOn(pool, 'query').mockImplementation(async (text: string, params: any[]) => {
+      if (/FROM fineract_trust_accounts/i.test(text)) return { rows: params[0] === 'account-of-record' ? [{ fineract_account_id: 2 }] : [] } as any;
+      return { rows: [] } as any;
+    });
+    const find = vi.spyOn(FineractClient, 'findSavingsAccountByExternalId');
+    expect(await TrustAccountStructure.recordedAccountId('account-of-record')).toBe('2');
+    expect(await TrustAccountStructure.recordedAccountId('trustee', { partyRef: 'CRM-T1' })).toBeNull();
+    expect(q.mock.calls[1][1]).toEqual(['trustee', 'CRM-T1']);
+    expect(find).not.toHaveBeenCalled();
+  });
+
   it('provision creates only the missing accounts (client -> savings -> approve -> activate), reuses existing clients and never creates the account of record', async () => {
     stubCrm([trustee]);
     const existing: Record<string, any> = { 'holder:dlb-irrevocable-trust:savings': active(2, 'holder:dlb-irrevocable-trust:savings') };

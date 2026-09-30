@@ -38,10 +38,16 @@ const pool = require('../bonds/pgPool');
 const { EgressOsEngine } = require('./egressOsEngine');
 const { ClearingAgentOsEngine, canonicalize, redactPayload } = require('./clearingAgentOsEngine');
 const { FineractClient } = require('../fineract/fineractClient');
+const { TrustAccountStructure } = require('../fineract/trustAccountStructure');
 const { getAccessToken, googleFetch, loadServiceAccount, onGoogleRuntime } = require('../google/googleServiceAccount');
 
 const COUNTRY = 'US';
 const PURPOSE_CLASSES = ['distribution', 'disbursement', 'vendor_payout', 'trustee_expense'];
+// Credit to the trust's own Betterment account: its creditor is resolved from
+// configuration, never from the caller, so it is not a public purpose class.
+const TRUST_ACCOUNT_CREDIT = 'trust_account_credit';
+const TRUST_ACCOUNT_CREDIT_ORIGINATE = Symbol('trustAccountCredit');
+const TRUST_ACCOUNT_SOURCE_ROLES = ['account-of-record', 'principal', 'interest-income', 'trustee', 'beneficiary'];
 const RAILS = ['family_book', 'rtp', 'fednow', 'ach_same_day', 'ach_standard'];
 const SEC_CODES = ['PPD', 'CCD'];
 const BATCH_STATES = ['planned', 'released', 'originated', 'partially_failed', 'cancelled'];
@@ -96,6 +102,44 @@ function getEnterpriseOdfiConfig(env = process.env) {
     makers: actorList(env.ENTERPRISE_ODFI_MAKERS),
     checkers: actorList(env.ENTERPRISE_ODFI_CHECKERS),
   };
+}
+
+/**
+ * Trust-account credit: an ACH CCD credit (direct deposit) from the trust's
+ * funding account at the sponsor ODFI into the trust's Betterment Checking
+ * account. Account numbers come from Secret Manager only.
+ */
+function getTrustAccountCreditConfig(env = process.env) {
+  const digits = (v) => String(v || '').replace(/\D/g, '');
+  const acct = (v) => String(v || '').replace(/\s/g, '');
+  return {
+    bankId: env.ENTERPRISE_ODFI_TRUST_ACCOUNT_BANK_ID || env.TREASURY_BANK_ID || 'betterment',
+    bankName: env.ENTERPRISE_ODFI_TRUST_ACCOUNT_BANK_NAME || env.TREASURY_BANK_NAME || 'Betterment Checking',
+    creditor: {
+      name: env.ENTERPRISE_ODFI_TRUST_ACCOUNT_NAME || env.TREASURY_BANK_ACCOUNT_HOLDER || null,
+      routingNumber: digits(env.BETTERMENT_ROUTING_NUMBER),
+      accountNumber: acct(env.BETTERMENT_ACCOUNT_NUMBER),
+      accountType: 'checking',
+    },
+    debtor: {
+      name: env.ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME || null,
+      routingNumber: digits(env.ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER),
+      accountNumber: acct(env.ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER),
+      accountType: String(env.ENTERPRISE_ODFI_FUNDING_ACCOUNT_TYPE || '').toLowerCase() === 'savings' ? 'savings' : 'checking',
+    },
+    secCode: 'CCD',
+  };
+}
+
+function trustAccountCreditConfigBlockers(c) {
+  const blockers = [];
+  if (c.creditor.routingNumber.length !== 9) blockers.push('BETTERMENT_ROUTING_NUMBER not configured (9-digit ABA, Secret Manager)');
+  if (!c.creditor.accountNumber) blockers.push('BETTERMENT_ACCOUNT_NUMBER not configured (Secret Manager)');
+  if (!c.creditor.name) blockers.push('ENTERPRISE_ODFI_TRUST_ACCOUNT_NAME / TREASURY_BANK_ACCOUNT_HOLDER not set (Betterment account holder name)');
+  if (c.debtor.routingNumber.length !== 9) blockers.push('ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER not configured (9-digit ABA of the trust funding account at the sponsor ODFI)');
+  if (!c.debtor.accountNumber) blockers.push('ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER not configured (Secret Manager)');
+  if (!c.debtor.name) blockers.push('ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME not set (trust funding account holder name)');
+  return blockers;
 }
 
 /** Comma-separated trustee identities (portal usernames / emails); empty = any trustee may act in that role. */
@@ -381,14 +425,14 @@ const EnterpriseOdfiOsEngine = {
    * originate: { purposeClass, items:[{ idempotencyKey, approvalRef, screeningRef, urgency, instruction }], actor }
    * Creates a planned batch. Nothing leaves the box; nothing is booked.
    */
-  async originate({ purposeClass, items = [], actor = null } = {}) {
+  async originate({ purposeClass, items = [], actor = null, [TRUST_ACCOUNT_CREDIT_ORIGINATE]: trustAccountCredit = false } = {}) {
     const cfg = getEnterpriseOdfiConfig();
     if (!cfg.enabled) throw new EnterpriseOdfiError('ENTERPRISE_ODFI_ENABLED=false', 'ENTERPRISE_ODFI_DISABLED', 503);
     if (!pool) throw new EnterpriseOdfiError('ledger database not connected', 'ENTERPRISE_ODFI_DB', 503);
     const a = normalizeActor(actor);
     if (!a) throw new EnterpriseOdfiError('originating trustee identity required', 'ENTERPRISE_ODFI_ACTOR', 401);
     assertRole(cfg, 'maker', a);
-    if (!PURPOSE_CLASSES.includes(purposeClass)) throw new EnterpriseOdfiError(`purposeClass must be one of ${PURPOSE_CLASSES.join(', ')}`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
+    if (!PURPOSE_CLASSES.includes(purposeClass) && !(trustAccountCredit && purposeClass === TRUST_ACCOUNT_CREDIT)) throw new EnterpriseOdfiError(`purposeClass must be one of ${PURPOSE_CLASSES.join(', ')}`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     if (!Array.isArray(items) || !items.length) throw new EnterpriseOdfiError('items required', 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     if (items.length > cfg.maxBatchItems) throw new EnterpriseOdfiError(`batch exceeds ENTERPRISE_ODFI_MAX_BATCH_ITEMS (${cfg.maxBatchItems})`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
     const p = await this._profile();
@@ -433,6 +477,95 @@ const EnterpriseOdfiOsEngine = {
     }
     await this._event('enterprise_odfi.planned', { batchId, actor: a, detail: { purposeClass, items: prepared.length, totalCents: total, planner: plan.planner, model: plan.model } });
     return this.batch({ batchId });
+  },
+
+  /**
+   * creditTrustAccount: plan an ACH credit from the trust's sponsor-ODFI funding
+   * account into its Betterment Checking account. The debtor's Fineract savings
+   * account is the trust account structure's (account of record by default, or
+   * a trustee / beneficiary sub-account by CRM contact id), withdrawn when the
+   * Clearing Agent posts. Plans only: a distinct checker must release it.
+   */
+  async creditTrustAccount({ amountCents, idempotencyKey, approvalRef, screeningRef, urgency = 'standard', from = {}, purpose = null, actor = null } = {}) {
+    const c = getTrustAccountCreditConfig();
+    const missing = trustAccountCreditConfigBlockers(c);
+    if (missing.length) throw new EnterpriseOdfiError(`trust account credit not configured: ${missing.join('; ')}`, 'ENTERPRISE_ODFI_TRUST_ACCOUNT_CONFIG', 503, { blockers: missing });
+    const role = (from && from.role) || 'account-of-record';
+    if (!TRUST_ACCOUNT_SOURCE_ROLES.includes(role)) throw new EnterpriseOdfiError(`from.role must be one of ${TRUST_ACCOUNT_SOURCE_ROLES.join(', ')}`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
+    const partyRef = from && from.partyRef ? String(from.partyRef) : null;
+    if (['trustee', 'beneficiary'].includes(role) && !partyRef) throw new EnterpriseOdfiError(`from.partyRef (CRM contact id) required for a ${role} sub-account`, 'ENTERPRISE_ODFI_BAD_REQUEST', 400);
+    let savingsAccountId;
+    try {
+      savingsAccountId = await TrustAccountStructure.resolveAccountId(role, partyRef ? { partyRef } : {});
+    } catch (e) {
+      throw new EnterpriseOdfiError(`Fineract trust account structure unavailable: ${e.message}`, 'ENTERPRISE_ODFI_TRUST_ACCOUNT_SOURCE', 503);
+    }
+    if (!savingsAccountId) {
+      throw new EnterpriseOdfiError(`no active Fineract savings account for ${role}${partyRef ? ` ${partyRef}` : ''} (GET /api/fineract/trust-accounts; POST /api/fineract/trust-accounts/provision opens trustee / beneficiary sub-accounts)`, 'ENTERPRISE_ODFI_TRUST_ACCOUNT_SOURCE', 409);
+    }
+    const item = {
+      idempotencyKey,
+      approvalRef,
+      screeningRef,
+      urgency,
+      instruction: {
+        amountCents,
+        purpose: purpose || `TRUST ACCOUNT CREDIT ${c.bankName}`,
+        secCode: c.secCode,
+        debtor: { ...c.debtor, fineractAccountId: savingsAccountId },
+        creditor: { ...c.creditor },
+      },
+    };
+    const batch = await this.originate({ purposeClass: TRUST_ACCOUNT_CREDIT, items: [item], actor, [TRUST_ACCOUNT_CREDIT_ORIGINATE]: true });
+    return {
+      ...batch,
+      trustAccountCredit: {
+        bankId: c.bankId,
+        bankName: c.bankName,
+        creditorAccountLast4: last4(c.creditor.accountNumber),
+        source: { role, partyRef, fineractSavingsAccountId: savingsAccountId },
+        state: 'planned',
+        note: 'planned only; moves when a distinct checker releases it, and Betterment is credited only when the sponsor ODFI settles the ACH credit',
+      },
+    };
+  },
+
+  /** Configuration, source accounts and per-state totals of trust-account credits. */
+  async trustAccountCreditStatus() {
+    const c = getTrustAccountCreditConfig();
+    const blockers = trustAccountCreditConfigBlockers(c);
+    let accountOfRecord = null;
+    try {
+      accountOfRecord = await TrustAccountStructure.resolveAccountId('account-of-record');
+      if (!accountOfRecord) blockers.push('Fineract account of record (holder:<trust>:savings) not active: GET /api/fineract/trust-accounts');
+    } catch (e) {
+      blockers.push(`Fineract trust account structure: ${e.message}`);
+    }
+    const totals = { queuedCents: 0, inFlightCents: 0, originatedCents: 0, returnedCents: 0, failedCents: 0, items: 0 };
+    if (pool) {
+      const r = await pool.query('SELECT status, COUNT(*)::int AS n, COALESCE(SUM(amount_cents),0)::bigint AS cents FROM enterprise_odfi_items WHERE purpose_class = $1 GROUP BY status', [TRUST_ACCOUNT_CREDIT]);
+      for (const row of r.rows) {
+        const cents = Number(row.cents);
+        totals.items += Number(row.n);
+        if (row.status === 'planned') totals.queuedCents += cents;
+        else if (row.status === 'cleared') totals.inFlightCents += cents;
+        else if (row.status === 'posted') totals.originatedCents += cents;
+        else if (['returned', 'noc'].includes(row.status)) totals.returnedCents += cents;
+        else totals.failedCents += cents;
+      }
+    }
+    return {
+      purposeClass: TRUST_ACCOUNT_CREDIT,
+      direction: 'credit',
+      secCode: c.secCode,
+      destination: { bankId: c.bankId, bankName: c.bankName, name: c.creditor.name, routingConfigured: c.creditor.routingNumber.length === 9, accountLast4: last4(c.creditor.accountNumber) },
+      fundingAccount: { name: c.debtor.name, routingNumber: c.debtor.routingNumber || null, accountLast4: last4(c.debtor.accountNumber), accountType: c.debtor.accountType },
+      sourceAccounts: { accountOfRecord, roles: TRUST_ACCOUNT_SOURCE_ROLES },
+      totals,
+      receiptConfirmed: false,
+      receiptSource: 'Betterment statement / Banking Aggregator pull (server/scripts/aggregateBettermentTrustChecking.js); a posted item is originated, not proof of receipt',
+      blockers,
+    };
   },
 
   /** replan: re-run the planner on a planned batch (e.g. after a new network verifies). */
@@ -621,7 +754,9 @@ const EnterpriseOdfiOsEngine = {
     if (!s.rails.external.length) blockers.push('no verified external sponsor ODFI network (ach_operator / rtp_participant / fednow_participant); only family book transfers can route');
     if (!s.live) blockers.push('ENTERPRISE_ODFI_LIVE not true');
     const live = blockers.length === 0;
-    return { ready: live, mode: live ? 'live' : 'shadow', blockers, status: s };
+    const credit = await this.trustAccountCreditStatus().catch((e) => ({ blockers: [`trust account credit: ${e.message}`] }));
+    const trustAccountCredit = { ...credit, ready: live && credit.blockers.length === 0 };
+    return { ready: live, mode: live ? 'live' : 'shadow', blockers, status: s, trustAccountCredit };
   },
 
   async list({ limit = 50 } = {}) {
@@ -639,6 +774,8 @@ const EnterpriseOdfiOsEngine = {
       case 'profile': return this.profile({ ...body, actor });
       case 'countersign': return this.countersign({ actor });
       case 'originate': return this.originate({ ...body, actor });
+      case 'credit-trust-account': return this.creditTrustAccount({ ...body, actor });
+      case 'trust-account-credit': return this.trustAccountCreditStatus();
       case 'replan': return this.replan({ ...body, actor });
       case 'release': return this.release({ ...body, actor });
       case 'cancel': return this.cancel({ ...body, actor });
@@ -647,7 +784,7 @@ const EnterpriseOdfiOsEngine = {
       case 'rails': return this.rails();
       case 'batches': return this.batches(body);
       case 'batch': return this.batch(body);
-      default: throw new EnterpriseOdfiError('action must be profile|countersign|originate|replan|release|cancel|exception|reconcile|rails|batches|batch', 'ENTERPRISE_ODFI_BAD_ACTION', 400);
+      default: throw new EnterpriseOdfiError('action must be profile|countersign|originate|credit-trust-account|trust-account-credit|replan|release|cancel|exception|reconcile|rails|batches|batch', 'ENTERPRISE_ODFI_BAD_ACTION', 400);
     }
   },
 };
@@ -656,12 +793,14 @@ module.exports = {
   EnterpriseOdfiOsEngine,
   EnterpriseOdfiError,
   getEnterpriseOdfiConfig,
+  getTrustAccountCreditConfig,
   rulesPlan,
   acceptProposal,
   publicInstruction,
   encrypt,
   decrypt,
   PURPOSE_CLASSES,
+  TRUST_ACCOUNT_CREDIT,
   RAILS,
   BATCH_STATES,
   ITEM_STATES,

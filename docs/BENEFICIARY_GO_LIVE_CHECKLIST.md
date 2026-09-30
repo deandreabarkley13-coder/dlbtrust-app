@@ -9,7 +9,8 @@ is retired and is intentionally absent from this checklist. Companion document:
 ```
 coupon / interest credit lands in Betterment Trust Checking
   → SimpleFIN aggregator pull (15 min)            DR 1020 Coupon Cash / CR 4100 Coupon Income  (DataBridge → Fineract)
-  → TreasuryFundingBankEngine.pull()              Stripe ACH debit of Betterment → CA-STRIPE-BALANCE on signed webhook
+trust funding account at the sponsor ODFI
+  → EnterpriseOdfi creditTrustAccount → release    ACH CCD credit (direct deposit) into Betterment Trust Checking
   → PPN submit(payout) → approve(approvalRef, screeningRef)
   → PaymentGateway → PaymentProcessor → direct deposit to beneficiary instrument
   → webhook / reconcile → settled                 DR 2000 Distributions Payable / CR 1000 Cash
@@ -38,7 +39,8 @@ Check with `GET /api/os/readiness` (`x-admin-token`). "Prod" changes are made in
 | --- | --- | --- | --- |
 | B1 | Income is being read from Betterment | `GET /api/os/readiness/aggregator` → 1 live connection, handshake `verified`, `lastPullAt` recent | `SIMPLEFIN_ACCESS_URL` secret + Cloud Scheduler aggregator job (already live) |
 | B2 | Income posts to the GL as coupon / interest, not corpus | Fineract journal for the credit shows CR 4100 / 4000 | descriptor rules in `DataBridge.classifyAggregatorTxn`; add the obligor's descriptor if it lands in 3000 |
-| B3 | Betterment linked to Stripe as ACH-debit source | `GET /api/payment-server/v1/treasury-bank` → `ready: true, verified: true` | `TREASURY_BANK_ENABLED=true`, live `STRIPE_PAYMENTS_SECRET_KEY`, `BETTERMENT_ROUTING_NUMBER` / `BETTERMENT_ACCOUNT_NUMBER` secret versions, `POST /treasury-bank/link` then `/verify` (micro-deposits) |
+| B3 | Trust can credit Betterment (ACH credit) | `POST /api/os/enterprise-odfi/process { action: 'trust-account-credit' }` → `blockers: []`; `GET /api/os/enterprise-odfi/readiness` → `trustAccountCredit.ready: true` | `BETTERMENT_ROUTING_NUMBER` / `BETTERMENT_ACCOUNT_NUMBER` and `ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER` secret versions, `ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER` / `_NAME`, countersigned originator profile, verified sponsor network, active Fineract account of record (runbook §4) |
+| B3a | Trustee / beneficiary savings accounts exist | `GET /api/fineract/trust-accounts` → no `blockers`, one active `trustee:<id>:savings` / `beneficiary:<id>:savings` per eligible contact | `POST /api/fineract/trust-accounts/provision { dryRun: true }`, then without `dryRun` |
 | B4 | Stripe webhook reaches the app | `GET /api/payment-server/v1/stripe-intakes/readiness` → webhook configured | `STRIPE_WEBHOOK_SECRET` for the Cloud Run URL `/api/payment-server/v1/stripe/webhook` |
 | B5 | Payment Processor live and real-value capable | `GET /api/os/payment-processor/readiness`; `processors()` shows the chosen processor `live: true, realValue: true` | `PAYMENT_PROCESSOR_LIVE=true`, `STRIPE_SECRET_KEY`, `STRIPE_PAYMENTS_SECRET_KEY`, `PAYMENT_DATA_ENCRYPTION_KEY` |
 | B6 | Payment Gateway live | `GET /api/os/payment-gateway/readiness` | `PAYMENT_GATEWAY_LIVE=true`, `PAYMENT_GATEWAY_WEBHOOK_SECRET`, `PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST=true` |
@@ -48,7 +50,7 @@ Check with `GET /api/os/readiness` (`x-admin-token`). "Prod" changes are made in
 | B10 | Distribution request approved by two trustees | distribution request `approved`, `approvalRef` issued | maker/checker flow (`PAYMENT_APPROVAL_THRESHOLD=2`) |
 | B11 | Compliance screening passed | `screeningRef` issued for the beneficiary | compliance engine screening |
 | B12 | Source ledger account funded by real money | `CA-STRIPE-BALANCE` ≥ amount **and** the funding intake is `succeeded` on Stripe | §C |
-| B13 | Real dollars back the ledgers | `POST /api/os/canonical-money/process { action: 'pipeline' }` → `data.result.spendable.value.summary.realSpendableCents` ≥ amount, `unbackedCents: 0`, `fundingRailReady: true`, `gaps: []` | §C, then a Reserve OS attestation of the funded balance |
+| B13 | Real dollars back the ledgers | `POST /api/os/canonical-money/process { action: 'pipeline' }` → `data.result.spendable.value.summary.realSpendableCents` ≥ amount, `unbackedCents: 0`, `fundingRailReady: true` (Enterprise ODFI trust-account credit), `gaps: []` | §C, then a Reserve OS attestation of the funded balance |
 
 Flags set in `infra/gcp/variables.tf` on 2026-09-30 (runbook §8): `TREASURY_BANK_ENABLED`,
 `PAYMENT_PROCESSOR_LIVE`, `PAYMENT_GATEWAY_LIVE`, `ENTERPRISE_NETWORK_LIVE`,
@@ -60,20 +62,27 @@ the next deploy; B3's link/verify, B4/B5/B6 secret versions,
 remain operator steps. Enabling the flags moves no money — only the trustee's explicit
 pull in §C does.
 
+Superseded the same day (runbook §8, second change): `TREASURY_BANK_ENABLED=false` —
+Betterment is credited by the Enterprise ODFI, not debited through Stripe; B3 is the
+trust-account credit gate and §C is the credit procedure. `CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID`
+may stay empty once the Fineract account of record is recorded (B3a). With the debit
+off, `CA-STRIPE-BALANCE` (B12) is funded only by other signed Stripe intakes.
+
 Gates that are **not** on this rail and must stay closed: `PRIVATE_PAYMENT_NETWORK_MFT_LIVE`
 (no ODFI AS2 partner), every `THIRDWEB_*` / `STABLECOIN_*` / `SPRITZ_*` / `TRUST_POLICY_*`
 flag (retired rail).
 
-## C. Fund the disbursing balance (real ACH debit of Betterment)
+## C. Credit Betterment from the trust (ACH credit, runbook §4)
 
-1. Confirm the coupon credit is in Betterment and posted (B1, B2).
-2. `POST /api/payment-server/v1/treasury-bank/pull { amountCents, reference:
-   "<distribution request id>", purpose: "trust_income" }` (service token). Returns
-   `202` with the intake id; status `processing`.
-3. Wait for `payment_intent.succeeded` (~4 business days). `GET
-   /api/payment-server/v1/stripe-intakes/:id` → `succeeded`, `CA-STRIPE-BALANCE`
-   credited, Fineract entry present. A failure webhook (R01 NSF etc.) leaves the balance
-   untouched — stop here.
+1. B3 and B3a open; approval and screening references issued (B10, B11).
+2. Maker: `POST /api/os/enterprise-odfi/process { action: 'credit-trust-account',
+   amountCents, idempotencyKey, approvalRef, screeningRef, from: { role:
+   'account-of-record' } }` (or `role: 'trustee' | 'beneficiary', partyRef: '<crm
+   contact_id>'`) → `planned` batch; nothing has moved.
+3. Checker (different trustee): `{ action: 'release', batchId }` → items `posted` by the
+   Clearing Agent (originated to the sponsor network, Fineract debtor account withdrawn).
+4. Receipt: the credit appears in the Betterment feed (B1). Until then treat the funds as
+   in flight; a return comes back through `{ action: 'exception' }` and is redeposited.
 
 ## D. Distribute (the only step that moves value to a beneficiary)
 

@@ -229,6 +229,16 @@ class PrivatePaymentNetworkOsEngine {
     return String(acct?.linked_fineract_account_id || cfg.coreBanking.defaultSavingsAccountId || '').trim() || null;
   }
 
+  /** Linked / configured savings account, else the trust structure's recorded Fineract account of record. */
+  static async _resolveSavingsAccountId(acct, cfg = this.getConfig()) {
+    const direct = this._savingsAccountId(acct, cfg);
+    if (direct) return direct;
+    const Structure = tryRequire('../fineract/trustAccountStructure')?.TrustAccountStructure;
+    if (!Structure) return null;
+    const recorded = await settle(() => Structure.recordedAccountId('account-of-record'));
+    return recorded.ok ? recorded.value : null;
+  }
+
   /** Live Fineract savings position of a linked ledger account. */
   static async _coreBankingPosition(savingsAccountId) {
     const Fineract = this._fineract();
@@ -426,8 +436,9 @@ class PrivatePaymentNetworkOsEngine {
       configured: cfg.coreBanking.configured,
       live: cfg.coreBanking.live,
       defaultSavingsAccountId: cfg.coreBanking.defaultSavingsAccountId,
+      fallbackSavingsAccount: 'fineract_trust_accounts account-of-record (TrustAccountStructure)',
       reason: coreBankingGate,
-      route: 'cash_accounts.linked_fineract_account_id → FineractClient.getAccountBalance / withdrawSavings (redeposit on return)',
+      route: 'cash_accounts.linked_fineract_account_id | CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID | Fineract account of record → FineractClient.getAccountBalance / withdrawSavings (redeposit on return)',
     };
     return { config: cfg, gate, ledgerGate, mftGate, coreBankingGate, fundingSource, sources, realValueCapable, anyRealValueCapable: realValueCapable.length > 0, familyOnly: cfg.familyOnly, excludedProcessors: cfg.excludedProcessors };
   }
@@ -471,9 +482,9 @@ class PrivatePaymentNetworkOsEngine {
     if (!cfg.coreBanking.required) return acct;
     const gate = this._coreBankingGate(cfg);
     if (gate) throw httpError(`core-banking funding source: ${gate}`, 409);
-    const savingsAccountId = this._savingsAccountId(acct, cfg);
+    const savingsAccountId = await this._resolveSavingsAccountId(acct, cfg);
     if (!savingsAccountId) {
-      throw httpError(`ledger account ${accountId} is not linked to a Fineract core-banking account (POST /api/cash/accounts/${accountId}/link-fineract or set CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID)`, 409);
+      throw httpError(`ledger account ${accountId} is not linked to a Fineract core-banking account (POST /api/cash/accounts/${accountId}/link-fineract, set CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID, or record the Fineract account of record via GET /api/fineract/trust-accounts)`, 409);
     }
     const position = await this._coreBankingPosition(savingsAccountId);
     if (!position.active) throw httpError(`Fineract account ${savingsAccountId} is not active`, 409);
@@ -667,7 +678,7 @@ class PrivatePaymentNetworkOsEngine {
       const gate = this._coreBankingGate(cfg);
       if (gate) throw new Error(`core-banking funding source: ${gate}`);
       const src = await this._ledger().getAccount(tx.sourceAccountId);
-      const savingsAccountId = this._savingsAccountId(src, cfg);
+      const savingsAccountId = await this._resolveSavingsAccountId(src, cfg);
       if (!savingsAccountId) throw new Error(`ledger account ${tx.sourceAccountId} is not linked to a Fineract core-banking account`);
       coreBanking = await this._coreBankingWithdraw(savingsAccountId, tx, tx.memo);
     }
