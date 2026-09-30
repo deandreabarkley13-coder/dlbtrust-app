@@ -15,23 +15,38 @@
  *   node server/scripts/fundSettlementAccount.js status
  *   node server/scripts/fundSettlementAccount.js plan --amount 25000 [--destination melio]
  *   node server/scripts/fundSettlementAccount.js initiate --amount 25000 \
- *     --maker trustee-one@example.com [--checker trustee-two@example.com] \
- *     [--destination melio] [--memo "Fund Melio DDA for August bills"] [--send]
+ *     --maker trustee-one@example.com --approval-ref APR-… --screening-ref FCS-… \
+ *     [--checker trustee-two@example.com] [--destination melio] [--memo "…"] [--send]
  *   node server/scripts/fundSettlementAccount.js approve --wire WIRE-… --checker trustee-two@example.com
- *   node server/scripts/fundSettlementAccount.js send    --wire WIRE-…
+ *   node server/scripts/fundSettlementAccount.js send    --wire WIRE-… [--screening-ref FCS-…] [--yes]
+ *   node server/scripts/fundSettlementAccount.js commit  --wire WIRE-… | --all  [--apply] [--actor …]
+ *   node server/scripts/fundSettlementAccount.js release --wire WIRE-… --actor … [--reason …]
+ *   node server/scripts/fundSettlementAccount.js pipeline --amount 25000 --maker … --checker … \
+ *     --approval-ref APR-… --screening-ref FCS-… [--destination melio] [--yes] \
+ *     [--poll-seconds 30] [--timeout-seconds 0]
+ *   node server/scripts/fundSettlementAccount.js pipeline --wire WIRE-… [--yes] [--checker …] \
+ *     [--reference <bank ref> --provider-status settled]
+ *   node server/scripts/fundSettlementAccount.js pipeline --advance
  *   node server/scripts/fundSettlementAccount.js confirm --wire WIRE-… --reference … --provider-status confirmed
  *   node server/scripts/fundSettlementAccount.js settle  --wire WIRE-… --reference … --provider-status settled
  *   node server/scripts/fundSettlementAccount.js list [--status pending_approval]
  *   node server/scripts/fundSettlementAccount.js show   --wire WIRE-…
  *   node server/scripts/fundSettlementAccount.js cancel --wire WIRE-… --actor trustee-one@example.com
  *
- * Nothing is transmitted unless `send` is run (or `initiate --send`), and the
- * settlement account is credited in the GL only at `settle`, against the bank's
- * own settlement reference. `plan` and `status` change nothing.
+ * Nothing is transmitted unless `send --yes` is run (or `initiate --send`), and
+ * only against a live, clear FCS- screening (AML / OFAC) that is consumed at
+ * transmission. `commit` reclassifies an in-flight wire's dollars from the
+ * operating GL to the in-transit clearing asset (dry run unless --apply); the
+ * settlement account is credited in the GL only at `settle`, against the
+ * bank's own settlement reference. `plan` and `status` change nothing.
+ * `pipeline` chains the steps (see fundingPipeline.js); `pipeline --advance` is
+ * the scheduled pass and settles only wires whose bank reference is recorded.
  */
 
 const { SettlementFundingEngine } = require('../integrations/inhouseBank/settlementFundingEngine');
 const { WireEngine } = require('../integrations/wire/wireEngine');
+const { TreasuryOdfiBank } = require('../integrations/ach/treasuryOdfiBank');
+const { runPipeline, advancePipeline } = require('./fundingPipeline');
 
 function parseArgs(argv) {
   const args = { flags: new Set(), _: [] };
@@ -104,6 +119,7 @@ function evidence(args) {
 }
 
 async function main() {
+  TreasuryOdfiBank.apply();
   const args = parseArgs(process.argv.slice(2));
   const command = (args._[0] || 'status').toLowerCase();
 
@@ -143,6 +159,8 @@ async function main() {
       fundingSourceRef: args.source || null,
       initiatedBy: args.maker,
       memo: args.memo || null,
+      approvalRef: args['approval-ref'] || null,
+      screeningRef: args['screening-ref'] || null,
     });
     console.log(
       `\nInitiated ${wire.wire_id}: $${plan.amount} ${plan.source.accountName}`
@@ -159,7 +177,7 @@ async function main() {
       if (!args.checker && current.status !== 'approved') {
         throw new Error('Dual control: a second trustee must approve before --send');
       }
-      current = await SettlementFundingEngine.send(wire.wire_id);
+      current = await SettlementFundingEngine.sendScreened(wire.wire_id);
       print('Transmitted:', describeWire(current));
       return;
     }
@@ -183,11 +201,13 @@ async function main() {
     const wireId = requireWire(args);
     const preview = await WireEngine.previewWireOrigination(wireId);
     print('Bank request:', preview);
+    const screening = await SettlementFundingEngine.verifyScreening(wireId, { screeningRef: args['screening-ref'] || null });
+    print('Screening (not yet consumed):', { screeningRef: screening.screeningRef, status: screening.status, mode: screening.mode });
     if (!args.flags.has('yes')) {
       console.log('\nNot transmitted. Re-run with --yes to originate this wire.');
       return;
     }
-    const wire = await SettlementFundingEngine.send(wireId);
+    const wire = await SettlementFundingEngine.sendScreened(wireId, { screeningRef: args['screening-ref'] || null });
     print('Transmitted:', describeWire(wire));
     return;
   }
@@ -210,6 +230,79 @@ async function main() {
     return;
   }
 
+  if (command === 'commit') {
+    const apply = args.flags.has('apply');
+    const wireIds = args.flags.has('all')
+      ? (await Promise.all(SettlementFundingEngine.IN_FLIGHT_STATUSES.map((status) => SettlementFundingEngine.list({ status, limit: 500 }))))
+        .flat()
+        .map((wire) => wire.wire_id)
+      : [requireWire(args)];
+    const results = [];
+    for (const wireId of wireIds) {
+      let result;
+      try {
+        result = await SettlementFundingEngine.commitInTransit(wireId, { committedBy: args.actor || null, apply });
+      } catch (error) {
+        results.push({ wireId, error: error.message });
+        process.exitCode = 1;
+        continue;
+      }
+      results.push({
+        wireId,
+        alreadyCommitted: result.alreadyCommitted,
+        applied: result.applied,
+        entryId: result.entryId || null,
+        amount: result.amount || (result.amountCents / 100).toFixed(2),
+        debit: result.debitAccountCode || null,
+        credit: result.creditAccountCode || null,
+      });
+    }
+    print(apply ? 'Committed to in transit:' : 'Commitment plan — nothing was posted (re-run with --apply):', results);
+    if (apply) {
+      console.log('\nNext: `node server/scripts/reconcileTrustBalances.js` (dry run) should show no drift on these accounts.');
+    }
+    return;
+  }
+
+  if (command === 'release') {
+    const result = await SettlementFundingEngine.releaseInTransit(requireWire(args), {
+      releasedBy: args.actor || null,
+      reason: args.reason || null,
+    });
+    print(result.released ? 'Released from in transit:' : `Not released (${result.reason}):`, {
+      wireId: result.wire.wire_id,
+      status: result.wire.status,
+      entryId: result.entryId || null,
+    });
+    return;
+  }
+
+  if (command === 'pipeline') {
+    const log = (step, detail) => console.log(`[pipeline] ${step} ${JSON.stringify(detail)}`);
+    const result = args.flags.has('advance')
+      ? await advancePipeline({ actor: args.actor || null }, { log })
+      : await runPipeline({
+        wireId: args.wire || null,
+        amountCents: args.amount !== undefined ? toCents(args.amount) : null,
+        destination: args.destination || null,
+        fundingSourceRef: args.source || null,
+        maker: args.maker || null,
+        checker: args.checker || null,
+        approvalRef: args['approval-ref'] || null,
+        screeningRef: args['screening-ref'] || null,
+        memo: args.memo || null,
+        yes: args.flags.has('yes'),
+        reference: args.reference || null,
+        providerStatus: args['provider-status'] || null,
+        pollSeconds: args['poll-seconds'] !== undefined ? Number(args['poll-seconds']) : 30,
+        timeoutSeconds: args['timeout-seconds'] !== undefined ? Number(args['timeout-seconds']) : 0,
+        actor: args.actor || null,
+      }, { log });
+    print(`Pipeline ${result.status}:`, result);
+    process.exitCode = result.exitCode;
+    return;
+  }
+
   if (command === 'list') {
     const wires = await SettlementFundingEngine.list({ status: args.status || null, limit: args.limit });
     print('Settlement funding wires:', wires.map(describeWire));
@@ -226,7 +319,8 @@ async function main() {
 
   throw new Error(
     `Unknown command "${command}".`
-    + ' Commands: status, destinations, plan, initiate, approve, send, confirm, settle, cancel, list, show'
+    + ' Commands: status, destinations, plan, initiate, approve, send, confirm, settle, cancel,'
+    + ' commit, release, pipeline, list, show'
   );
 }
 

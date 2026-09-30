@@ -26,12 +26,25 @@
  *     to send without an independent checker and a configured bank channel, and
  *     the settlement account is credited in the GL only when the bank confirms
  *     the wire settled — never when the file was assembled.
+ *
+ * Between approval and settlement the dollars are committed but not settled:
+ * `commitInTransit` reclassifies them in the GL — DR the in-transit clearing
+ * asset (SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT, default 1015), CR the
+ * funding account — and repoints the wire's settlement credit at the clearing
+ * account, so settlement posts DR destination / CR in-transit and the
+ * operating account is relieved exactly once. `releaseInTransit` reverses the
+ * commitment for a wire that was cancelled, failed or returned before it
+ * settled. The clearing account is not a liquid sub-type, so committed dollars
+ * are never reported as spendable.
  */
 
 const pool = require('../bonds/pgPool');
 const { WireEngine } = require('../wire/wireEngine');
 const { PartnerBankRails } = require('../rails/partnerBankRails');
 const { FundingSourceRegistry, FundingSourceError } = require('./clearing/fundingSourceRegistry');
+const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+const { ComplianceEngine } = require('../compliance/complianceEngine');
+const { FraudComplianceOsEngine, getFraudComplianceConfig } = require('../os/fraudComplianceOsEngine');
 
 // A wire in one of these states has been promised to the bank or is about to be,
 // so its dollars are spoken for and cannot back a second wire.
@@ -46,6 +59,13 @@ const IN_FLIGHT_STATUSES = [
 
 const PAYMENT_TYPE = 'settlement_funding';
 
+const DEFAULT_IN_TRANSIT_GL_ACCOUNT = '1015';
+const COMMIT_REFERENCE_TYPE = 'settlement_funding_commit';
+const RELEASE_REFERENCE_TYPE = 'settlement_funding_release';
+// Terminal states in which a committed wire never reached the destination.
+const RELEASABLE_STATUSES = ['cancelled', 'failed', 'rejected', 'returned'];
+const BANK_SETTLED_STATUSES = ['completed', 'settled'];
+
 class SettlementFundingError extends Error {
   constructor(message, code = 'SETTLEMENT_FUNDING_ERROR', status = 409) {
     super(message);
@@ -54,6 +74,38 @@ class SettlementFundingError extends Error {
     this.status = status;
     this.statusCode = status;
   }
+}
+
+function parseMetadata(value) {
+  if (!value) return {};
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(value); } catch (e) { return {}; }
+}
+
+function inTransitAccountCode() {
+  return String(process.env.SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT || DEFAULT_IN_TRANSIT_GL_ACCOUNT).trim();
+}
+
+/**
+ * The bank's own settlement evidence already recorded on a wire — by the bank
+ * adapter at send, or by an operator through POST /api/wire/:id/confirm — or
+ * null. Only a provider reference whose status says the money settled counts;
+ * nothing generated locally is evidence.
+ */
+function settlementEvidence(wire) {
+  const meta = parseMetadata(wire && wire.metadata);
+  const candidates = [
+    [meta.providerSettlementReference, meta.providerSettlementStatus],
+    [meta.providerConfirmationReference, meta.providerConfirmationStatus],
+    [meta.externalProviderReference, meta.externalProviderStatus],
+  ];
+  for (const [reference, status] of candidates) {
+    const providerStatus = String(status || '').trim().toLowerCase();
+    if (reference && BANK_SETTLED_STATUSES.includes(providerStatus)) {
+      return { reference: String(reference), providerStatus };
+    }
+  }
+  return null;
 }
 
 function text(name, fallback = '') {
@@ -171,6 +223,8 @@ const SettlementFundingEngine = {
   IN_FLIGHT_STATUSES,
 
   config: getSettlementFundingConfig,
+  inTransitAccountCode,
+  settlementEvidence,
 
   /** Every account this engine may credit, as registered. */
   destinations(config = null) {
@@ -198,7 +252,10 @@ const SettlementFundingEngine = {
   /**
    * What the trust has already promised out of one funding source and not yet
    * settled. Read from the wire ledger rather than tracked separately, so a
-   * cancelled or failed wire releases its dollars by itself.
+   * cancelled or failed wire releases its dollars by itself. A wire already
+   * committed to the in-transit account is excluded: its dollars have left the
+   * funding account's ledger balance, and counting them again would reserve
+   * them twice.
    */
   async inFlightCents(sourceKey) {
     await WireEngine.ensureTables();
@@ -207,7 +264,8 @@ const SettlementFundingEngine = {
          FROM wire_transfers
         WHERE payment_type = $1
           AND status = ANY($2::text[])
-          AND metadata->'fundingSource'->>'sourceKey' = $3`,
+          AND metadata->'fundingSource'->>'sourceKey' = $3
+          AND metadata->'inTransit'->>'entryId' IS NULL`,
       [PAYMENT_TYPE, IN_FLIGHT_STATUSES, sourceKey]
     );
     return Number(rows.rows[0]?.cents || 0);
@@ -289,6 +347,8 @@ const SettlementFundingEngine = {
     fundingSourceRef = null,
     initiatedBy,
     memo = null,
+    approvalRef = null,
+    screeningRef = null,
   } = {}) {
     if (!initiatedBy) {
       throw new SettlementFundingError(
@@ -334,6 +394,8 @@ const SettlementFundingEngine = {
           accountLast4: plan.destination.accountLast4,
         },
         fundingSource: plan.source,
+        ...(approvalRef ? { approvalRef: String(approvalRef) } : {}),
+        ...(screeningRef ? { screeningRef: String(screeningRef) } : {}),
         // The trust's own money changing accounts: the destination bank account
         // gains what the operating account loses. Neither leg is an expense.
         glDebitAccountCode: plan.destination.glAccountCode,
@@ -342,6 +404,71 @@ const SettlementFundingEngine = {
     });
 
     return { wire, plan };
+  },
+
+  /**
+   * AML / OFAC gate for a funding wire. The screeningRef must be a live FCS-
+   * screening from the Fraud & Compliance OS (sanctions list ingested and
+   * fresh, DLB fraud rules, checker review), clear, unexpired, for exactly this
+   * amount and payee. With consume it is spent, single use, before transmission.
+   */
+  async verifyScreeningFor({ screeningRef, amountCents, payee, consume = false, consumer = null } = {}) {
+    if (!screeningRef) {
+      throw new SettlementFundingError(
+        'screeningRef is required: a settlement funding wire leaves only against a live Fraud & Compliance screening',
+        'SETTLEMENT_FUNDING_NO_SCREENING',
+        409
+      );
+    }
+    if (!String(screeningRef).startsWith('FCS-')) {
+      throw new SettlementFundingError(
+        `screeningRef ${screeningRef} is not a Fraud & Compliance OS (FCS-) screening`,
+        'SETTLEMENT_FUNDING_SCREENING',
+        409
+      );
+    }
+    const cfg = getFraudComplianceConfig();
+    if (!cfg.enabled || !cfg.live) {
+      throw new SettlementFundingError(
+        'FRAUD_COMPLIANCE_ENABLED and FRAUD_COMPLIANCE_LIVE must be true: a shadow screening cannot authorize a funding wire',
+        'SETTLEMENT_FUNDING_SCREENING',
+        503
+      );
+    }
+    await ComplianceEngine.assertPaymentReady();
+    return FraudComplianceOsEngine.verify({
+      screeningRef,
+      amountCents: Number(amountCents),
+      payee,
+      requireLive: true,
+      consume,
+      consumer,
+    });
+  },
+
+  async verifyScreening(wireId, { screeningRef = null, consume = false } = {}) {
+    const wire = await this._requireFundingWire(wireId);
+    const meta = parseMetadata(wire.metadata);
+    if (!meta.approvalRef) {
+      throw new SettlementFundingError(
+        `${wireId} has no approvalRef: a settlement funding wire is transmitted only under a recorded trustee approval`,
+        'SETTLEMENT_FUNDING_NO_APPROVAL_REF',
+        409
+      );
+    }
+    return this.verifyScreeningFor({
+      screeningRef: screeningRef || meta.screeningRef,
+      amountCents: Number(wire.amount_cents),
+      payee: { name: wire.beneficiary_name, routingNumber: wire.beneficiary_routing, accountNumber: wire.beneficiary_account },
+      consume,
+      consumer: consume ? `settlement_funding:${wireId}` : null,
+    });
+  },
+
+  /** Transmit after the screening is verified and consumed. */
+  async sendScreened(wireId, { screeningRef = null } = {}) {
+    await this.verifyScreening(wireId, { screeningRef, consume: true });
+    return this.send(wireId);
   },
 
   /** Second signature. The checker must not be the maker; WireEngine enforces it. */
@@ -378,7 +505,234 @@ const SettlementFundingEngine = {
 
   async cancel(wireId, cancelledBy) {
     await this._requireFundingWire(wireId);
-    return WireEngine.cancelWire(wireId, cancelledBy);
+    const wire = await WireEngine.cancelWire(wireId, cancelledBy);
+    if (parseMetadata(wire.metadata).inTransit?.entryId) {
+      await this.releaseInTransit(wireId, { releasedBy: cancelledBy, reason: 'cancelled before transmission' });
+      return WireEngine.getWire(wireId);
+    }
+    return wire;
+  },
+
+  /** The in-transit clearing asset, created on first use. Refuses a liquid or non-asset account. */
+  async ensureInTransitAccount(db = pool) {
+    const code = inTransitAccountCode();
+    await db.query(
+      `INSERT INTO trust_accounts (account_code, account_name, account_type, sub_type, description)
+       VALUES ($1, 'Settlement Funding In Transit', 'asset', 'other',
+               'Trust cash committed to a settlement funding wire, not yet settled at the bank; not spendable')
+       ON CONFLICT (account_code) DO NOTHING`,
+      [code]
+    );
+    const account = await TrustAccountingEngine.getAccount(code);
+    if (!account || account.account_type !== 'asset') {
+      throw new SettlementFundingError(
+        `In-transit account ${code} must be an asset account`,
+        'SETTLEMENT_FUNDING_IN_TRANSIT_ACCOUNT',
+        409
+      );
+    }
+    if (account.funding_eligible) {
+      throw new SettlementFundingError(
+        `In-transit account ${code} is classified as spendable (${account.sub_type});`
+        + ' committed dollars must not be reported as available',
+        'SETTLEMENT_FUNDING_IN_TRANSIT_ACCOUNT',
+        409
+      );
+    }
+    return account;
+  },
+
+  /**
+   * What committing this wire would post, without posting it. Refuses a wire
+   * that is not in flight, not drawn on the Trust Operating Account, or whose
+   * funding account does not hold the amount.
+   */
+  async commitmentFor(wireId) {
+    const wire = await this._requireFundingWire(wireId);
+    const meta = parseMetadata(wire.metadata);
+    const inTransit = inTransitAccountCode();
+    const amountCents = Number(wire.amount_cents);
+    if (meta.inTransit?.entryId) {
+      return { wire, alreadyCommitted: true, entryId: meta.inTransit.entryId, amountCents };
+    }
+    if (!IN_FLIGHT_STATUSES.includes(wire.status)) {
+      throw new SettlementFundingError(
+        `${wireId} is ${wire.status}; only an in-flight wire can be committed to the in-transit account`,
+        'SETTLEMENT_FUNDING_NOT_IN_FLIGHT',
+        409
+      );
+    }
+    if (meta.fundingSource?.sourceType !== 'trust_operating') {
+      throw new SettlementFundingError(
+        `${wireId} draws on ${meta.fundingSource?.sourceKey || 'an unrecorded source'};`
+        + ' only a wire drawn on the Trust Operating Account GL is committed to the in-transit account',
+        'SETTLEMENT_FUNDING_SOURCE',
+        409
+      );
+    }
+    if (String(meta.glDebitAccountCode || '') === inTransit) {
+      throw new SettlementFundingError(
+        `${wireId} settles into ${inTransit}, the in-transit account itself; register the destination on its own GL account`,
+        'SETTLEMENT_FUNDING_IN_TRANSIT_STATE',
+        409
+      );
+    }
+    const sourceAccountCode = String(meta.glCreditAccountCode || meta.fundingSource.sourceId);
+    if (sourceAccountCode === inTransit) {
+      throw new SettlementFundingError(
+        `${wireId} already credits ${inTransit} at settlement but has no commitment entry`,
+        'SETTLEMENT_FUNDING_IN_TRANSIT_STATE',
+        409
+      );
+    }
+    const source = await TrustAccountingEngine.getAccount(sourceAccountCode);
+    if (!source) {
+      throw new SettlementFundingError(`Funding GL account ${sourceAccountCode} not found`, 'SETTLEMENT_FUNDING_SOURCE', 409);
+    }
+    const sourceBalanceCents = Math.round(Number(source.balance || 0) * 100);
+    if (sourceBalanceCents < amountCents) {
+      throw new SettlementFundingError(
+        `${source.account_name} (${sourceAccountCode}) holds ${(sourceBalanceCents / 100).toFixed(2)}`
+        + ` and ${wireId} commits ${(amountCents / 100).toFixed(2)}`,
+        'SETTLEMENT_FUNDING_INSUFFICIENT',
+        409
+      );
+    }
+    return {
+      wire,
+      alreadyCommitted: false,
+      amountCents,
+      amount: (amountCents / 100).toFixed(2),
+      debitAccountCode: inTransit,
+      creditAccountCode: sourceAccountCode,
+    };
+  },
+
+  /**
+   * DR in-transit / CR the funding account for an in-flight wire, and point the
+   * wire's settlement credit at the in-transit account. Idempotent per wire.
+   * Posted through TrustAccountingEngine.postJournalEntry; balances are never
+   * written directly.
+   */
+  async commitInTransit(wireId, { committedBy = null, apply = true } = {}) {
+    const preview = await this.commitmentFor(wireId);
+    if (preview.alreadyCommitted || !apply) return { ...preview, applied: false };
+    await this.ensureInTransitAccount();
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${COMMIT_REFERENCE_TYPE}:${wireId}`]);
+      const locked = await client.query('SELECT * FROM wire_transfers WHERE wire_id = $1 FOR UPDATE', [wireId]);
+      const current = locked.rows[0];
+      const currentMeta = parseMetadata(current && current.metadata);
+      if (!current || currentMeta.inTransit?.entryId || !IN_FLIGHT_STATUSES.includes(current.status)) {
+        await client.query('ROLLBACK');
+        return { ...(await this.commitmentFor(wireId)), applied: false };
+      }
+      const amount = preview.amountCents / 100;
+      const entry = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date().toISOString().slice(0, 10),
+        description: `Settlement funding ${wireId} committed, not yet settled at the bank`,
+        referenceType: COMMIT_REFERENCE_TYPE,
+        referenceId: wireId,
+        postedBy: committedBy || 'settlement_funding',
+        postToFineract: false,
+        transactionClient: client,
+        lines: [
+          { accountCode: preview.debitAccountCode, debitAmount: amount, creditAmount: 0, memo: `In transit: ${wireId}` },
+          { accountCode: preview.creditAccountCode, debitAmount: 0, creditAmount: amount, memo: `Committed to ${wireId}` },
+        ],
+      });
+      const inTransit = {
+        entryId: entry.entry_id,
+        glAccountCode: preview.debitAccountCode,
+        sourceAccountCode: preview.creditAccountCode,
+        committedAt: new Date().toISOString(),
+        committedBy: committedBy || null,
+      };
+      await client.query(
+        `UPDATE wire_transfers
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+          WHERE wire_id = $1`,
+        [wireId, JSON.stringify({ glCreditAccountCode: preview.debitAccountCode, inTransit })]
+      );
+      await client.query('COMMIT');
+      return { ...preview, applied: true, entryId: entry.entry_id, wire: await WireEngine.getWire(wireId) };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  },
+
+  /**
+   * Reverse the commitment of a wire that will never settle: DR the funding
+   * account / CR in-transit, and restore the wire's original settlement credit.
+   */
+  async releaseInTransit(wireId, { releasedBy = null, reason = null } = {}) {
+    const wire = await this._requireFundingWire(wireId);
+    const meta = parseMetadata(wire.metadata);
+    const committed = meta.inTransit;
+    if (!committed?.entryId) return { wire, released: false, reason: 'not committed' };
+    if (committed.releaseEntryId) return { wire, released: false, reason: 'already released', entryId: committed.releaseEntryId };
+    if (wire.status === 'settled' || wire.journal_entry_id) {
+      throw new SettlementFundingError(
+        `${wireId} settled; its settlement entry already cleared the in-transit account`,
+        'SETTLEMENT_FUNDING_SETTLED',
+        409
+      );
+    }
+    if (!RELEASABLE_STATUSES.includes(wire.status)) {
+      throw new SettlementFundingError(
+        `${wireId} is ${wire.status} and may still settle; cancel it or record the bank's return first`,
+        'SETTLEMENT_FUNDING_IN_FLIGHT',
+        409
+      );
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${COMMIT_REFERENCE_TYPE}:${wireId}`]);
+      const locked = await client.query('SELECT * FROM wire_transfers WHERE wire_id = $1 FOR UPDATE', [wireId]);
+      const currentMeta = parseMetadata(locked.rows[0] && locked.rows[0].metadata);
+      if (currentMeta.inTransit?.releaseEntryId) {
+        await client.query('ROLLBACK');
+        return { wire, released: false, reason: 'already released', entryId: currentMeta.inTransit.releaseEntryId };
+      }
+      const amount = Number(wire.amount_cents) / 100;
+      const entry = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date().toISOString().slice(0, 10),
+        description: `Settlement funding ${wireId} released from in transit${reason ? `: ${reason}` : ''}`,
+        referenceType: RELEASE_REFERENCE_TYPE,
+        referenceId: wireId,
+        postedBy: releasedBy || 'settlement_funding',
+        postToFineract: false,
+        transactionClient: client,
+        lines: [
+          { accountCode: committed.sourceAccountCode, debitAmount: amount, creditAmount: 0, memo: `Released: ${wireId}` },
+          { accountCode: committed.glAccountCode, debitAmount: 0, creditAmount: amount, memo: `Released: ${wireId}` },
+        ],
+      });
+      await client.query(
+        `UPDATE wire_transfers
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+          WHERE wire_id = $1`,
+        [wireId, JSON.stringify({
+          glCreditAccountCode: committed.sourceAccountCode,
+          inTransit: { ...committed, releaseEntryId: entry.entry_id, releasedAt: new Date().toISOString(), releasedBy, reason },
+        })]
+      );
+      await client.query('COMMIT');
+      return { wire: await WireEngine.getWire(wireId), released: true, entryId: entry.entry_id };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   },
 
   async get(wireId) {
@@ -446,6 +800,14 @@ const SettlementFundingEngine = {
       blockers.push(error.message);
     }
 
+    let compliance = null;
+    try {
+      compliance = await FraudComplianceOsEngine.readiness();
+      blockers.push(...compliance.blockers.map((b) => `compliance: ${b}`));
+    } catch (error) {
+      blockers.push(`compliance: ${error.message}`);
+    }
+
     const partnerBank = PartnerBankRails.status();
     if (!partnerBank.ready) {
       blockers.push(
@@ -484,6 +846,10 @@ const SettlementFundingEngine = {
         accountLast4: entry.accountLast4,
         glAccountCode: entry.glAccountCode,
       })),
+      compliance: compliance
+        ? { ready: compliance.ready, mode: compliance.mode, sanctionsProvider: compliance.status?.sanctions?.provider || null }
+        : { ready: false, mode: 'unavailable', sanctionsProvider: null },
+      inTransitGlAccount: inTransitAccountCode(),
       partnerBank: {
         ready: partnerBank.ready,
         provider: partnerBank.provider || null,
@@ -500,6 +866,8 @@ const SettlementFundingEngine = {
 
 module.exports = {
   SettlementFundingEngine,
+  settlementEvidence,
+  inTransitAccountCode,
   SettlementFundingError,
   getSettlementFundingConfig,
   describeDestination,

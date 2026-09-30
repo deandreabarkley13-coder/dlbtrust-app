@@ -126,6 +126,25 @@ locals {
     lookup(var.runtime_environment, "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT", "false") == "true" && !local.fraud_compliance_live
   )
 
+  # Settlement funding (settlementFundingEngine.js): a registered destination's
+  # account number is a secret; its routing is plain runtime_environment.
+  settlement_funding_registered = lookup(var.runtime_environment, "SETTLEMENT_FUNDING_ROUTING", "") != ""
+  settlement_funding_account_missing = (
+    local.settlement_funding_registered && !contains(local.runtime_secret_names, "SETTLEMENT_FUNDING_ACCOUNT")
+  )
+  settlement_funding_account_plain = contains(keys(var.runtime_environment), "SETTLEMENT_FUNDING_ACCOUNT")
+  # The pipeline moves real trust dollars, so it runs only behind dual control
+  # and live AML / OFAC screening.
+  settlement_funding_unsafe_controls = compact([
+    tonumber(lookup(var.runtime_environment, "PAYMENT_APPROVAL_THRESHOLD", "0")) < 2 ? "PAYMENT_APPROVAL_THRESHOLD must be >= 2" : "",
+    lookup(var.runtime_environment, "FRAUD_COMPLIANCE_ENABLED", "false") != "true" ? "FRAUD_COMPLIANCE_ENABLED must be \"true\"" : "",
+    !local.fraud_compliance_live ? "FRAUD_COMPLIANCE_LIVE must be \"true\"" : "",
+    lookup(var.runtime_environment, "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT", "false") != "true" ? "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT must be \"true\"" : "",
+    !contains(["ofac", "opensanctions"], lookup(var.runtime_environment, "COMPLIANCE_PROVIDER", "local")) ? "COMPLIANCE_PROVIDER must be \"ofac\" or \"opensanctions\"" : "",
+    lookup(var.runtime_environment, "COMPLIANCE_ALLOW_LOCAL_SCREENING", "false") == "true" ? "COMPLIANCE_ALLOW_LOCAL_SCREENING must not be \"true\"" : "",
+    lookup(var.runtime_environment, "COMPLIANCE_ALLOW_TEST_PAYMENT_EXECUTION", "false") == "true" ? "COMPLIANCE_ALLOW_TEST_PAYMENT_EXECUTION must not be \"true\"" : "",
+  ])
+
   # Payment Processor OS (paymentProcessorOsEngine.js). PAYMENT_PROCESSOR_LIVE=true
   # lets an approved submission (approvalRef + screeningRef) reach a processor,
   # so the Stripe payout/payments keys and the payment-data encryption key must

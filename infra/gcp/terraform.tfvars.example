@@ -89,6 +89,17 @@ secret_names = [
   # account itself (CLEARING_FUNDING_OPERATING_ACCOUNT) is a chart-of-accounts
   # code, 1010, and stays a plain runtime value.
   "CLEARING_FUNDING_SETTLEMENT_ACCOUNT",
+  # Settlement funding destination (Melio funding DDA) account number; its
+  # routing / bank / beneficiary / glAccountCode are the SETTLEMENT_FUNDING_*
+  # runtime_environment defaults. Required once SETTLEMENT_FUNDING_ROUTING is
+  # set (settlement_funding_cron.tf precondition). Seed with
+  #   printf %s '<account number>' | gcloud secrets versions add SETTLEMENT_FUNDING_ACCOUNT --data-file=- --project dlb-treasury-management
+  # A trust registering several destinations lists SETTLEMENT_FUNDING_DESTINATIONS
+  # instead (JSON: {"melio":{"label":…,"bankName":…,"beneficiaryName":…,
+  # "routingNumber":…,"accountNumber":…,"glAccountCode":"1050"}}), also a secret.
+  "SETTLEMENT_FUNDING_ACCOUNT",
+  # Optional: OpenSanctions commercial-use API key for data.opensanctions.org.
+  # "COMPLIANCE_OPENSANCTIONS_API_KEY",
   # Bearer token for /api/payment-server/v1/* (server/routes/bankSettlement.js).
   "PAYMENT_SERVER_SERVICE_TOKEN",
   # Payment Processor OS live plan (PAYMENT_PROCESSOR_LIVE=true). Already in
@@ -179,6 +190,9 @@ secret_names = [
 # rejects a revision referencing a version-less secret, so keep such names here
 # until seeded, then remove them and re-apply.
 unseeded_secret_names = [
+  # Until the destination account number is seeded; the funding engine then
+  # reports the destination unregistered and nothing can be wired.
+  "SETTLEMENT_FUNDING_ACCOUNT",
   "LILI_OAUTH_CLIENT_SECRET",
   "LILI_OAUTH_REFRESH_TOKEN",
   "LILI_BUSINESS_USER_ID",
@@ -211,3 +225,25 @@ unseeded_secret_names = [
 #   FRAUD_COMPLIANCE_REVIEWERS          = "deandreabarkley13@gmail.com"
 #   # Turn on last, after a live screening has been issued and reviewed:
 #   FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT = "true"
+
+# Settlement funding pipeline (settlement_funding_cron.tf,
+# server/scripts/fundingPipeline.js). The variables.tf default registers the
+# Melio funding DDA (SETTLEMENT_FUNDING_ROUTING / _BANK_NAME /
+# _BENEFICIARY_NAME / _GL_ACCOUNT = 1050), draws on SETTLEMENT_FUNDING_SOURCE =
+# "operating" (CLEARING_FUNDING_OPERATING_ACCOUNT = 1010) and parks committed
+# dollars in SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT = 1015 (non-spendable)
+# until the bank's settlement reference is recorded. CLEARING_FUNDING_TRUST_NAME
+# names the debtor; CLEARING_FUNDING_SETTLEMENT_ACCOUNT / _ROUTING are
+# projected from BETTERMENT_* at startup. The job refuses to plan unless
+# PAYMENT_APPROVAL_THRESHOLD >= 2, FRAUD_COMPLIANCE_ENABLED / _LIVE /
+# _ENFORCE_SETTLEMENT = "true", COMPLIANCE_PROVIDER is "ofac" or
+# "opensanctions" and COMPLIANCE_ALLOW_LOCAL_SCREENING /
+# COMPLIANCE_ALLOW_TEST_PAYMENT_EXECUTION are not "true".
+# settlement_funding_pipeline_schedule = "*/30 7-20 * * 1-5"
+#
+# AML / OFAC: the default sanctions list is OpenSanctions "sanctions" (OFAC SDN
+# + consolidated, UN, EU, UK HMT), refreshed every 12 h and refused when older
+# than 48 h or under 5000 entities. To screen against the Treasury SDN feed
+# directly instead, set in runtime_environment:
+#   COMPLIANCE_PROVIDER           = "ofac"
+#   COMPLIANCE_OFAC_MAX_AGE_HOURS = "48"

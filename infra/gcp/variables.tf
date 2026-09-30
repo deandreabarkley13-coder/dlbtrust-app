@@ -45,6 +45,17 @@ variable "openach_nightly_schedule" {
 # Payment Hub EE channel connector (paymenthub.tf). Mirrored from Docker Hub
 # openmf/ph-ee-connector-channel into Artifact Registry; Cloud Run only pulls
 # from registries it can authenticate to.
+variable "settlement_funding_pipeline_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-settlement-funding-pipeline,
+    which runs `fundSettlementAccount.js pipeline --advance`: it settles only
+    funding wires whose bank settlement reference is recorded, and never
+    originates or transmits a wire.
+  EOT
+  type        = string
+  default     = "*/30 7-20 * * 1-5"
+}
+
 variable "phee_image" {
   type    = string
   default = "us-east1-docker.pkg.dev/dlb-treasury-management/dlbtrust/ph-ee-connector-channel:mifos-v2.0.0"
@@ -638,13 +649,31 @@ variable "runtime_environment" {
     FRAUD_COMPLIANCE_REVIEWERS           = "deandreabarkley13@gmail.com"
     FRAUD_COMPLIANCE_REVIEW_AMOUNT_CENTS = "1000000"
     FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT  = "true"
-    TRUST_MAKER_EMAIL                    = "AnnRobinson1117@gmail.com"
-    TRUST_CHECKER_EMAIL                  = "deandreabarkley13@gmail.com"
-    MELIO_SOURCE_TYPE                    = "trust"
-    MELIO_SOURCE_ACCOUNT_ID              = "1010"
-    MELIO_ALLOWED_SOURCE_ACCOUNTS        = "1010,cash:CA-OPERATING"
-    TRUST_SEGREGATED_ACCOUNT_CODES       = "1210"
-    TRUST_SIGNATURE_DOCUMENT_PATH        = "/data/governance/Trustees_Signature_Page.pdf"
+    # AML / OFAC sanctions list behind every live screening (complianceEngine.js,
+    # openSanctionsListEngine.js). OpenSanctions "sanctions" carries the OFAC SDN
+    # and consolidated lists plus UN/EU/UK HMT; readiness blocks every payment
+    # until it is ingested, holds MIN_TARGETS entities and is younger than
+    # MAX_AGE_HOURS. COMPLIANCE_PROVIDER = "ofac" uses the Treasury SDN feed
+    # directly (COMPLIANCE_OFAC_*). Local name lists never authorize a payment.
+    COMPLIANCE_OPENSANCTIONS_BASE_URL               = "https://data.opensanctions.org"
+    COMPLIANCE_OPENSANCTIONS_DATASET                = "sanctions"
+    COMPLIANCE_OPENSANCTIONS_AUTO_REFRESH           = "true"
+    COMPLIANCE_OPENSANCTIONS_REFRESH_INTERVAL_HOURS = "12"
+    COMPLIANCE_OPENSANCTIONS_MAX_AGE_HOURS          = "48"
+    COMPLIANCE_OPENSANCTIONS_MIN_TARGETS            = "5000"
+    COMPLIANCE_OFAC_AUTO_REFRESH                    = "true"
+    COMPLIANCE_OFAC_REFRESH_INTERVAL_HOURS          = "12"
+    COMPLIANCE_OFAC_MAX_AGE_HOURS                   = "48"
+    COMPLIANCE_ALLOW_LOCAL_SCREENING                = "false"
+    COMPLIANCE_ALLOW_TEST_PAYMENT_EXECUTION         = "false"
+
+    TRUST_MAKER_EMAIL              = "AnnRobinson1117@gmail.com"
+    TRUST_CHECKER_EMAIL            = "deandreabarkley13@gmail.com"
+    MELIO_SOURCE_TYPE              = "trust"
+    MELIO_SOURCE_ACCOUNT_ID        = "1010"
+    MELIO_ALLOWED_SOURCE_ACCOUNTS  = "1010,cash:CA-OPERATING"
+    TRUST_SEGREGATED_ACCOUNT_CODES = "1210"
+    TRUST_SIGNATURE_DOCUMENT_PATH  = "/data/governance/Trustees_Signature_Page.pdf"
 
     # Family Trust Company mandate + fixed-income distribution (docs/TRUST_CONTROL_PLANE.md)
     TRUST_LEGAL_NAME                 = "DEANDREA LAVAR BARKLEY FAMILY TRUST"
@@ -727,6 +756,30 @@ variable "runtime_environment" {
     ERP_PAYOUT_CASH_GL_CODE      = "1000"
     ERP_PAYOUT_CLEARING_GL_CODE  = "1150"
     ERP_PAYOUT_SOURCE_ACCOUNT_ID = "CA-OPERATING"
+
+    # Trust Operating Account (fundingSourceRegistry.js) and the bank account it
+    # settles through. CLEARING_FUNDING_SETTLEMENT_ACCOUNT / _ROUTING are the
+    # trust's ODFI account: projected at startup from BETTERMENT_ROUTING_NUMBER /
+    # BETTERMENT_ACCOUNT_NUMBER (treasuryOdfiBank.js), Secret Manager only.
+    CLEARING_FUNDING_OPERATING_ACCOUNT = "1010"
+    CLEARING_FUNDING_OPERATING_ALIASES = "cash:CA-OPERATING"
+    CLEARING_FUNDING_DEFAULT_SOURCE    = "operating"
+    CLEARING_FUNDING_REQUIRE_BALANCE   = "true"
+    CLEARING_FUNDING_TRUST_NAME        = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    # Settlement funding (settlementFundingEngine.js, fundSettlementAccount.js
+    # pipeline; job in settlement_funding_cron.tf). The registered destination
+    # is the Melio funding DDA; its account number is the SETTLEMENT_FUNDING_ACCOUNT
+    # secret, so no caller supplies routing/account. Committed funds sit in
+    # SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT (non-spendable asset) until the
+    # bank's settlement reference moves them to SETTLEMENT_FUNDING_GL_ACCOUNT.
+    SETTLEMENT_FUNDING_SOURCE                = "operating"
+    SETTLEMENT_FUNDING_DEFAULT_DESTINATION   = "melio"
+    SETTLEMENT_FUNDING_LABEL                 = "Lili Bank — Melio funding DDA"
+    SETTLEMENT_FUNDING_BANK_NAME             = "Lili Bank"
+    SETTLEMENT_FUNDING_BENEFICIARY_NAME      = "DLB TRUST"
+    SETTLEMENT_FUNDING_ROUTING               = "121145307"
+    SETTLEMENT_FUNDING_GL_ACCOUNT            = "1050"
+    SETTLEMENT_FUNDING_IN_TRANSIT_GL_ACCOUNT = "1015"
   }
 }
 
