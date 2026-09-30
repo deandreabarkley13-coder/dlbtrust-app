@@ -12,6 +12,7 @@
  *   node server/scripts/privateEquityHoldingsWire.js                        # readiness (read-only)
  *   node server/scripts/privateEquityHoldingsWire.js --evaluate [--prove] [--holding PEH-...] --actor <id>
  *   node server/scripts/privateEquityHoldingsWire.js --plan-draw --amount 250000
+ *   node server/scripts/privateEquityHoldingsWire.js --intra-trust --bond 1 --actor <id>   # PPB as intra-trust holding
  *   ... [--json] [--strict]
  *
  * --evaluate re-checks every gate and records each holding's verdict
@@ -28,7 +29,7 @@ require('dotenv').config();
 const { PrivateEquityHoldingsOsEngine } = require('../integrations/os/privateEquityHoldingsOsEngine');
 
 function parseArgs(argv) {
-  const out = { evaluate: false, prove: false, planDraw: false, amount: null, holding: null, actor: null, json: false, strict: false };
+  const out = { evaluate: false, prove: false, planDraw: false, intraTrust: false, bond: null, amount: null, holding: null, actor: null, json: false, strict: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = argv[i + 1];
@@ -37,10 +38,14 @@ function parseArgs(argv) {
     else if (arg === '--evaluate') out.evaluate = true;
     else if (arg === '--prove') out.prove = true;
     else if (arg === '--plan-draw') out.planDraw = true;
+    else if (arg === '--intra-trust') out.intraTrust = true;
+    else if (arg === '--bond') { out.bond = next; i += 1; }
     else if (arg === '--amount') { out.amount = next; i += 1; } else if (arg === '--holding') { out.holding = next; i += 1; } else if (arg === '--actor') { out.actor = next; i += 1; } else throw new Error(`unknown argument "${arg}"`);
   }
   if (out.prove && !out.evaluate) throw new Error('--prove is only valid with --evaluate');
   if (out.evaluate && !out.actor) throw new Error('--evaluate requires --actor <id>');
+  if (out.intraTrust && !out.bond) throw new Error('--intra-trust requires --bond <id>');
+  if (out.intraTrust && !out.actor) throw new Error('--intra-trust requires --actor <id>');
   if (out.planDraw && !(Number(out.amount) > 0)) throw new Error('--plan-draw requires --amount <usd>');
   return out;
 }
@@ -66,6 +71,10 @@ function planDraw(readiness, amountUsd) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   let evaluation = null;
+  let intraTrust = null;
+  if (args.intraTrust) {
+    intraTrust = await PrivateEquityHoldingsOsEngine.registerIntraTrust({ bondId: args.bond, actor: args.actor });
+  }
   if (args.evaluate) {
     evaluation = await PrivateEquityHoldingsOsEngine.evaluate({ holdingId: args.holding, prove: args.prove, actor: args.actor });
   }
@@ -74,7 +83,7 @@ async function main() {
   const { status } = readiness;
 
   if (args.json) {
-    console.log(JSON.stringify({ readiness: { ready: readiness.ready, mode: readiness.mode, blockers: readiness.blockers, warnings: readiness.warnings }, summary: status.summary, evaluation, plan }, null, 2));
+    console.log(JSON.stringify({ readiness: { ready: readiness.ready, mode: readiness.mode, blockers: readiness.blockers, warnings: readiness.warnings }, summary: status.summary, intraTrust, evaluation, plan }, null, 2));
   } else {
     console.log(`\n== readiness (${readiness.mode}, ${readiness.ready ? 'ready' : `${readiness.blockers.length} blocking`}) ==`);
     for (const b of readiness.blockers) console.log(`  BLK ${b}`);
