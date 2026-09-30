@@ -368,7 +368,7 @@ variable "runtime_environment" {
     # in secret_names (cloudrun.tf precondition, secrets.tf
     # missing_payment_processor_secrets). The approval/screening gates cannot be
     # relaxed in a live plan; GET /api/os/readiness/payment-processor lists the blockers.
-    PAYMENT_PROCESSOR_LIVE                  = "false"
+    PAYMENT_PROCESSOR_LIVE                  = "true"
     PAYMENT_PROCESSOR_REQUIRE_APPROVAL_REF  = "true"
     PAYMENT_PROCESSOR_REQUIRE_SCREENING_REF = "true"
     PAYMENT_PROCESSOR_DEFAULT               = "lili"
@@ -381,7 +381,7 @@ variable "runtime_environment" {
     # (cloudrun.tf precondition, secrets.tf missing_payment_gateway_secrets).
     # REQUIRE_DISTRIBUTION_REQUEST=true binds every intent to an approved
     # dapp_distribution_requests row; MAX_DISBURSEMENT_CENTS caps one intent.
-    PAYMENT_GATEWAY_LIVE                         = "false"
+    PAYMENT_GATEWAY_LIVE                         = "true"
     PAYMENT_GATEWAY_REQUIRE_APPROVAL_REF         = "true"
     PAYMENT_GATEWAY_REQUIRE_SCREENING_REF        = "true"
     PAYMENT_GATEWAY_REQUIRE_DISTRIBUTION_REQUEST = "true"
@@ -394,7 +394,7 @@ variable "runtime_environment" {
     # ENTERPRISE_NETWORK_WEBHOOK_SECRET in secret_names (cloudrun.tf
     # precondition, secrets.tf missing_enterprise_network_secrets) and the
     # approvalRef / screeningRef gates left on.
-    ENTERPRISE_NETWORK_LIVE                  = "false"
+    ENTERPRISE_NETWORK_LIVE                  = "true"
     ENTERPRISE_NETWORK_REQUIRE_APPROVAL_REF  = "true"
     ENTERPRISE_NETWORK_REQUIRE_SCREENING_REF = "true"
     # Private Electronic Payment Network (server/integrations/os/
@@ -406,7 +406,7 @@ variable "runtime_environment" {
     # PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET, PAYMENT_DATA_ENCRYPTION_KEY and
     # STRIPE_PAYMENTS_SECRET_KEY in secret_names (secrets.tf
     # missing_private_payment_network_secrets) and every REQUIRE_* gate on.
-    PRIVATE_PAYMENT_NETWORK_LIVE                  = "false"
+    PRIVATE_PAYMENT_NETWORK_LIVE                  = "true"
     PRIVATE_PAYMENT_NETWORK_REQUIRE_APPROVAL_REF  = "true"
     PRIVATE_PAYMENT_NETWORK_REQUIRE_SCREENING_REF = "true"
     PRIVATE_PAYMENT_NETWORK_REQUIRE_PARTICIPANT   = "true"
@@ -440,7 +440,10 @@ variable "runtime_environment" {
     # is withdrawn from it before the processor is called (redeposited on
     # return). Shadow until CANONICAL_FUNDING_LIVE=true.
     # PRIVATE_PAYMENT_NETWORK_CORE_BANKING=false runs sub-ledger only.
-    CANONICAL_FUNDING_LIVE               = "false"
+    # CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is set per deployment in the
+    # git-ignored terraform.tfvars; empty falls back to each source ledger
+    # account's linked_fineract_account_id and otherwise blocks the payout.
+    CANONICAL_FUNDING_LIVE               = "true"
     CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = ""
     CANONICAL_FUNDING_PAYMENT_TYPE_ID    = "1"
     PRIVATE_PAYMENT_NETWORK_CORE_BANKING = "true"
@@ -685,10 +688,13 @@ variable "runtime_environment" {
     ACH_ODFI_ORIGINATOR_NAME = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     ACH_ODFI_COMPANY_NAME    = "DLB TRUST CO"
     ACH_ODFI_COMPANY_ID      = ""
-    # Optional secondary path (treasuryFundingBankEngine.js): the same account
-    # saved in Stripe as an ACH-debit mandate feeding the Stripe balance. Off:
-    # dlb-treasury funds the files directly; Betterment is not funding Stripe.
-    TREASURY_BANK_ENABLED             = "false"
+    # Funding rail (treasuryFundingBankEngine.js, docs/LIVE_VALUE_RUNBOOK.md §4):
+    # the same account saved in Stripe as an ACH-debit mandate feeding the
+    # Stripe balance (CA-STRIPE-BALANCE, credited only by the signed
+    # payment_intent.succeeded webhook). Enabled 2026-09-30; link/verify/pull
+    # stay operator actions and fail closed until the mandate is verified.
+    # Routing/account are BETTERMENT_* Secret Manager versions (secrets.tf).
+    TREASURY_BANK_ENABLED             = "true"
     TREASURY_BANK_ID                  = "betterment"
     TREASURY_BANK_NAME                = "Betterment Checking"
     TREASURY_BANK_ACCOUNT_HOLDER      = "DEANDREA LAVAR BARKLEY TRUST COMPANY"

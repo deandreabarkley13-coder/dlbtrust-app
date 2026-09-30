@@ -27,7 +27,20 @@ locals {
     "BETTERMENT_ROUTING_NUMBER",
     "BETTERMENT_ACCOUNT_NUMBER",
   ]
-  runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names))
+  runtime_secret_names = distinct(concat(var.secret_names, local.payment_hub_secret_names, local.live_rail_secret_names))
+
+  # Fiat live rails enabled in runtime_environment declare their own Secret
+  # Manager containers, so a live plan never depends on terraform.tfvars
+  # listing them. Values are written out of band with `gcloud secrets versions
+  # add`; Cloud Run refuses a revision that mounts a secret without a version
+  # (list such names in unseeded_secret_names until seeded).
+  live_rail_secret_names = distinct(concat(
+    local.payment_processor_live ? local.payment_processor_secret_names : [],
+    local.payment_gateway_live ? local.payment_gateway_secret_names : [],
+    local.enterprise_network_live ? local.enterprise_network_secret_names : [],
+    local.private_payment_network_live ? local.private_payment_network_secret_names : [],
+    local.canonical_funding_live ? local.canonical_funding_secret_names : [],
+  ))
 
   # Env-only credentials each live flag needs (cannot be generated; values come
   # from the provider, so they are listed in terraform.tfvars secret_names once

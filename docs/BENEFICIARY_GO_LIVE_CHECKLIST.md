@@ -24,7 +24,7 @@ and a distinct maker and checker.
 | --- | --- |
 | lint | `npm run lint` |
 | types | `npm run typecheck` |
-| rail tests | `npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts` |
+| rail tests | `npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts tests/unifiedPipelineSpendable.test.ts` |
 | infra | `cd infra/gcp && terraform validate` |
 
 ## B. Gates (production Cloud Run env / Secret Manager)
@@ -48,6 +48,17 @@ Check with `GET /api/os/readiness` (`x-admin-token`). "Prod" changes are made in
 | B10 | Distribution request approved by two trustees | distribution request `approved`, `approvalRef` issued | maker/checker flow (`PAYMENT_APPROVAL_THRESHOLD=2`) |
 | B11 | Compliance screening passed | `screeningRef` issued for the beneficiary | compliance engine screening |
 | B12 | Source ledger account funded by real money | `CA-STRIPE-BALANCE` ≥ amount **and** the funding intake is `succeeded` on Stripe | §C |
+| B13 | Real dollars back the ledgers | `POST /api/os/canonical-money/process { action: 'pipeline' }` → `data.result.spendable.value.summary.realSpendableCents` ≥ amount, `unbackedCents: 0`, `fundingRailReady: true`, `gaps: []` | §C, then a Reserve OS attestation of the funded balance |
+
+Flags set in `infra/gcp/variables.tf` on 2026-09-30 (runbook §8): `TREASURY_BANK_ENABLED`,
+`PAYMENT_PROCESSOR_LIVE`, `PAYMENT_GATEWAY_LIVE`, `ENTERPRISE_NETWORK_LIVE`,
+`PRIVATE_PAYMENT_NETWORK_LIVE` and `CANONICAL_FUNDING_LIVE` → `true`, with
+`TREASURY_BANK_ID=betterment`, `PAYMENT_PROCESSOR_DEFAULT=lili` and every `REQUIRE_*`
+gate still `true`. B3's config half and B5/B6/B7/B9's flag half are therefore closed on
+the next deploy; B3's link/verify, B4/B5/B6 secret versions,
+`CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID` (per-deployment, `terraform.tfvars`) and B12/B13
+remain operator steps. Enabling the flags moves no money — only the trustee's explicit
+pull in §C does.
 
 Gates that are **not** on this rail and must stay closed: `PRIVATE_PAYMENT_NETWORK_MFT_LIVE`
 (no ODFI AS2 partner), every `THIRDWEB_*` / `STABLECOIN_*` / `SPRITZ_*` / `TRUST_POLICY_*`

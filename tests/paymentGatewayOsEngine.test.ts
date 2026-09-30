@@ -495,7 +495,7 @@ describe('canonical-money unified pipeline', () => {
   it('includes the payment_gateway stage after payment_processor', async () => {
     stubCloudSql();
     const out = await OS.CanonicalMoneyOSEngine.process({ action: 'pipeline', limit: 5 });
-    expect(out.result.stages.slice(-2)).toEqual(['payment_processor', 'payment_gateway']);
+    expect(out.result.stages.slice(-3)).toEqual(['payment_processor', 'payment_gateway', 'spendable']);
     expect(out.result.paymentGateway.ok).toBe(true);
     expect(out.result.paymentGateway.value.engine).toBe('payment-gateway');
     expect(out.result.paymentGateway.value.mode).toBe('shadow');
