@@ -5,7 +5,8 @@
  *
  * The in-house family bank is the source of truth for whose money is whose, but
  * every virtual account is a claim on one real account; a rail that debits a
- * different bank account — Melio debiting its linked funding DDA, for one — can
+ * different bank account — the trust's Lili settlement account, which
+ * LiliSettlementBankEngine and the S2S settlement bank registry credit — can
  * only spend dollars that are physically in that account. This engine is the
  * wire that puts them there: it debits the Trust Operating Account in the book
  * of record and credits a pre-registered settlement account at the bank.
@@ -18,7 +19,9 @@
  *   • The credit side is an allowlist, never free-form. A wire that accepts a
  *     routing and account number from its caller is a wire that can be pointed
  *     at any account in the country; destinations are registered in
- *     SETTLEMENT_FUNDING_DESTINATIONS and named by key.
+ *     SETTLEMENT_FUNDING_DESTINATIONS and named by key. The default,
+ *     `lili_settlement`, is not typed in at all: it is the Lili account the
+ *     platform's own settlement engine is registered against (LILI_DD_*).
  *   • The money is committed once. Available balance is read from the ledger
  *     that owns it, net of settlement funding wires already in flight, so two
  *     operators cannot each promise the same dollars.
@@ -45,6 +48,7 @@ const { FundingSourceRegistry, FundingSourceError } = require('./clearing/fundin
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 const { ComplianceEngine } = require('../compliance/complianceEngine');
 const { FraudComplianceOsEngine, getFraudComplianceConfig } = require('../os/fraudComplianceOsEngine');
+const { LiliDirectDepositEngine } = require('../payments/liliDirectDepositEngine');
 
 // A wire in one of these states has been promised to the bank or is about to be,
 // so its dollars are spoken for and cannot back a second wire.
@@ -60,6 +64,8 @@ const IN_FLIGHT_STATUSES = [
 const PAYMENT_TYPE = 'settlement_funding';
 
 const DEFAULT_IN_TRANSIT_GL_ACCOUNT = '1015';
+const DEFAULT_DESTINATION_KEY = 'lili_settlement';
+const DEFAULT_DESTINATION_GL_ACCOUNT = '1040';
 const COMMIT_REFERENCE_TYPE = 'settlement_funding_commit';
 const RELEASE_REFERENCE_TYPE = 'settlement_funding_release';
 // Terminal states in which a committed wire never reached the destination.
@@ -154,9 +160,35 @@ function inlineDestination() {
   };
 }
 
+/**
+ * The settlement account the platform's own engine already owns: with
+ * SETTLEMENT_FUNDING_ENGINE=lili (the default) it is the Lili account
+ * LiliSettlementBankEngine credits, read from the same LILI_DD_* settings, so
+ * the funding wire and the settlement engine can never disagree about where
+ * the money lands.
+ */
+function engineDestination() {
+  const engine = text('SETTLEMENT_FUNDING_ENGINE', 'lili').toLowerCase();
+  if (engine !== 'lili') return null;
+  const routingNumber = text('LILI_DD_ROUTING_NUMBER');
+  const accountNumber = text('LILI_DD_ACCOUNT_NUMBER');
+  if (!routingNumber || !accountNumber) return null;
+  return {
+    label: 'Lili settlement account (LiliSettlementBankEngine)',
+    beneficiaryName: text('LILI_DD_ACCOUNT_NAME', 'DB NET MGMT LLC'),
+    bankName: 'Lili Bank',
+    routingNumber,
+    accountNumber,
+    glAccountCode: text('SETTLEMENT_FUNDING_GL_ACCOUNT', DEFAULT_DESTINATION_GL_ACCOUNT),
+    engine: 'lili',
+  };
+}
+
 function getSettlementFundingConfig() {
-  const defaultKey = text('SETTLEMENT_FUNDING_DEFAULT_DESTINATION', 'melio').toLowerCase();
+  const defaultKey = text('SETTLEMENT_FUNDING_DEFAULT_DESTINATION', DEFAULT_DESTINATION_KEY).toLowerCase();
   const destinations = {};
+  const fromEngine = engineDestination();
+  if (fromEngine) destinations[DEFAULT_DESTINATION_KEY] = fromEngine;
   const inline = inlineDestination();
   if (inline) destinations[defaultKey] = inline;
   for (const [key, value] of Object.entries(parseDestinations(text('SETTLEMENT_FUNDING_DESTINATIONS')))) {
@@ -214,6 +246,7 @@ function describeDestination(key, raw) {
     accountNumber,
     accountLast4: accountNumber.slice(-4),
     glAccountCode,
+    engine: raw.engine ? String(raw.engine) : null,
   };
 }
 
@@ -287,6 +320,7 @@ const SettlementFundingEngine = {
       );
     }
     const credit = this.destination(destination, config);
+    await this.assertEngineDestination(credit);
     const source = await FundingSourceRegistry.resolve(fundingSourceRef || config.fundingSourceRef);
 
     if (String(source.sourceId) === credit.glAccountCode) {
@@ -471,6 +505,32 @@ const SettlementFundingEngine = {
     return this.send(wireId);
   },
 
+  /**
+   * An engine-backed destination must still be the account that engine is
+   * registered against: a Lili destination updated in system settings
+   * (LiliDirectDepositEngine.setDestination) supersedes the environment, and a
+   * wire to the stale account is refused rather than sent.
+   */
+  async assertEngineDestination(credit) {
+    if (credit.engine !== 'lili') return;
+    const registered = await LiliDirectDepositEngine.getDestination();
+    if (!registered.configured) {
+      throw new SettlementFundingError(
+        'The Lili settlement account is not registered (LILI_DD_ROUTING_NUMBER / LILI_DD_ACCOUNT_NUMBER)',
+        'SETTLEMENT_FUNDING_BAD_DESTINATION',
+        409
+      );
+    }
+    if (String(registered.routingNumber) !== credit.routingNumber || String(registered._account) !== credit.accountNumber) {
+      throw new SettlementFundingError(
+        `${credit.label} (…${credit.accountLast4}) is not the account LiliSettlementBankEngine is registered against`
+        + ` (${registered.accountNumberMasked}); update LILI_DD_* so both engines name one account`,
+        'SETTLEMENT_FUNDING_BAD_DESTINATION',
+        409
+      );
+    }
+  },
+
   /** Second signature. The checker must not be the maker; WireEngine enforces it. */
   async approve(wireId, approvedBy) {
     await this._requireFundingWire(wireId);
@@ -536,6 +596,33 @@ const SettlementFundingEngine = {
         `In-transit account ${code} is classified as spendable (${account.sub_type});`
         + ' committed dollars must not be reported as available',
         'SETTLEMENT_FUNDING_IN_TRANSIT_ACCOUNT',
+        409
+      );
+    }
+    return account;
+  },
+
+  /**
+   * The GL account that carries the destination, created on first use so the
+   * settlement entry has somewhere to land. Refuses a non-asset account.
+   */
+  async ensureDestinationAccount(meta, db = pool) {
+    const code = String(meta.glDebitAccountCode || '').trim();
+    if (!code) {
+      throw new SettlementFundingError('Funding wire records no destination GL account', 'SETTLEMENT_FUNDING_BAD_DESTINATION', 409);
+    }
+    const key = meta.settlementFunding?.destination || 'settlement';
+    await db.query(
+      `INSERT INTO trust_accounts (account_code, account_name, account_type, sub_type, description)
+       VALUES ($1, $2, 'asset', 'settlement', 'Trust cash held at the settlement bank, credited when a funding wire settles')
+       ON CONFLICT (account_code) DO NOTHING`,
+      [code, `Settlement Account (${key})`]
+    );
+    const account = await TrustAccountingEngine.getAccount(code);
+    if (!account || account.account_type !== 'asset') {
+      throw new SettlementFundingError(
+        `Destination account ${code} must be an asset account`,
+        'SETTLEMENT_FUNDING_BAD_DESTINATION',
         409
       );
     }
@@ -618,6 +705,7 @@ const SettlementFundingEngine = {
     const preview = await this.commitmentFor(wireId);
     if (preview.alreadyCommitted || !apply) return { ...preview, applied: false };
     await this.ensureInTransitAccount();
+    await this.ensureDestinationAccount(parseMetadata(preview.wire.metadata));
 
     const client = await pool.connect();
     try {
@@ -786,8 +874,9 @@ const SettlementFundingEngine = {
     }
     if (config && !destinations.length) {
       blockers.push(
-        'No settlement account is registered: set SETTLEMENT_FUNDING_DESTINATIONS'
-        + ' (or SETTLEMENT_FUNDING_ROUTING/_ACCOUNT/_GL_ACCOUNT) to the account the wire credits'
+        'No settlement account is registered: set LILI_DD_ROUTING_NUMBER / LILI_DD_ACCOUNT_NUMBER'
+        + ' (SETTLEMENT_FUNDING_ENGINE=lili), SETTLEMENT_FUNDING_DESTINATIONS'
+        + ' or SETTLEMENT_FUNDING_ROUTING/_ACCOUNT/_GL_ACCOUNT to the account the wire credits'
       );
     }
 

@@ -113,13 +113,13 @@ resource "google_cloud_run_v2_job" "settlement_funding_pipeline" {
     }
 
     precondition {
-      condition     = !local.settlement_funding_account_missing
-      error_message = "SETTLEMENT_FUNDING_ROUTING registers a settlement funding destination but secret_names lacks SETTLEMENT_FUNDING_ACCOUNT. Add it to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add SETTLEMENT_FUNDING_ACCOUNT --data-file=-`."
+      condition     = length(local.settlement_funding_missing_account_secrets) == 0
+      error_message = "The settlement funding destination's account number must be secret-backed; secret_names lacks: ${join(", ", local.settlement_funding_missing_account_secrets)}. Add it to infra/gcp/terraform.tfvars and seed with `gcloud secrets versions add <name> --data-file=-`."
     }
 
     precondition {
-      condition     = !local.settlement_funding_account_plain
-      error_message = "SETTLEMENT_FUNDING_ACCOUNT is a bank account number: list it in secret_names, never in runtime_environment."
+      condition     = length(local.settlement_funding_plain_accounts) == 0
+      error_message = "Bank account numbers belong in secret_names, never in runtime_environment: ${join(", ", local.settlement_funding_plain_accounts)}."
     }
   }
 }

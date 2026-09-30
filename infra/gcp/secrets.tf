@@ -126,13 +126,19 @@ locals {
     lookup(var.runtime_environment, "FRAUD_COMPLIANCE_ENFORCE_SETTLEMENT", "false") == "true" && !local.fraud_compliance_live
   )
 
-  # Settlement funding (settlementFundingEngine.js): a registered destination's
-  # account number is a secret; its routing is plain runtime_environment.
-  settlement_funding_registered = lookup(var.runtime_environment, "SETTLEMENT_FUNDING_ROUTING", "") != ""
-  settlement_funding_account_missing = (
-    local.settlement_funding_registered && !contains(local.runtime_secret_names, "SETTLEMENT_FUNDING_ACCOUNT")
-  )
-  settlement_funding_account_plain = contains(keys(var.runtime_environment), "SETTLEMENT_FUNDING_ACCOUNT")
+  # Settlement funding (settlementFundingEngine.js): a destination's account
+  # number is a secret; its routing is plain runtime_environment. The default
+  # destination comes from the Lili settlement engine (LILI_DD_*); an inline
+  # SETTLEMENT_FUNDING_ROUTING destination needs SETTLEMENT_FUNDING_ACCOUNT.
+  settlement_funding_engine_lili = lookup(var.runtime_environment, "SETTLEMENT_FUNDING_ENGINE", "lili") == "lili"
+  settlement_funding_missing_account_secrets = compact([
+    local.settlement_funding_engine_lili && !contains(local.runtime_secret_names, "LILI_DD_ACCOUNT_NUMBER") ? "LILI_DD_ACCOUNT_NUMBER" : "",
+    lookup(var.runtime_environment, "SETTLEMENT_FUNDING_ROUTING", "") != "" && !contains(local.runtime_secret_names, "SETTLEMENT_FUNDING_ACCOUNT") ? "SETTLEMENT_FUNDING_ACCOUNT" : "",
+  ])
+  settlement_funding_plain_accounts = [
+    for k in ["LILI_DD_ACCOUNT_NUMBER", "SETTLEMENT_FUNDING_ACCOUNT", "SETTLEMENT_FUNDING_DESTINATIONS"] : k
+    if contains(keys(var.runtime_environment), k)
+  ]
   # The pipeline moves real trust dollars, so it runs only behind dual control
   # and live AML / OFAC screening.
   settlement_funding_unsafe_controls = compact([
