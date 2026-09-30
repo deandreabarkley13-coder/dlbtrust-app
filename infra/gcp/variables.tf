@@ -79,13 +79,26 @@ variable "enterprise_credit_wire_schedule" {
   default     = "30 6 * * 1-5"
 }
 
+variable "enterprise_capacity_wire_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-enterprise-capacity-wire,
+    which runs `enterpriseCapacityWire.js --evaluate` after the custody, PE
+    holdings and enterprise credit passes: it recomputes the intra-trust
+    capacity of self-custody assets and each open internal earmark's verdict.
+    It never books GL lines or sends a wire.
+  EOT
+  type        = string
+  default     = "40 6 * * 1-5"
+}
+
 variable "unified_trust_data_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-unified-trust-data,
     which runs `unifiedTrustDataWorkflow.js --run --sync-ledger` after the PE
     holdings, pledge and enterprise credit passes: one ordered pass over
-    custody, PE holdings, pledge, collateral, enterprise credit, credit,
-    attestation, the trust ledger and the cash module, stored as a unified
+    custody, PE holdings, pledge, collateral, enterprise credit, enterprise
+    capacity, credit, attestation, the trust ledger and the cash module, the
+    network path, stored as a unified
     snapshot. It posts no journal entries and sends no wire.
   EOT
   type        = string
@@ -529,7 +542,14 @@ variable "runtime_environment" {
     ENTERPRISE_CREDIT_ENABLED                  = "true"
     ENTERPRISE_CREDIT_LIVE                     = "true"
     ENTERPRISE_CREDIT_CUSTODY_ADVANCE_RATE_BPS = "5000"
-    UNIFIED_DATA_ENABLED                       = "true"
+    # Enterprise Capacity OS (server/integrations/os/enterpriseCapacityOsEngine):
+    # intra-trust capacity = self-custody Custody OS book value at the intra
+    # rate; internal maker/checker earmarks only. Not collateral, not a
+    # Collateral OS borrowing base, not Enterprise Credit capacity.
+    ENTERPRISE_CAPACITY_ENABLED        = "true"
+    ENTERPRISE_CAPACITY_LIVE           = "true"
+    ENTERPRISE_CAPACITY_INTRA_RATE_BPS = "10000"
+    UNIFIED_DATA_ENABLED               = "true"
     # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
     # backend-to-backend agent for the private Electronic Payment Networks.
     # Each network is registered with a credential_ref = the NAME of a Secret

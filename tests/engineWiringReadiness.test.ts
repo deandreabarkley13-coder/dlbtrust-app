@@ -49,12 +49,13 @@ const { PrivateEquityHoldingsOsEngine } = require('../server/integrations/os/pri
 const { PledgeOsEngine } = require('../server/integrations/os/pledgeOsEngine');
 const { EnterpriseCreditOsEngine } = require('../server/integrations/os/enterpriseCreditOsEngine');
 const { UnifiedTrustDataOsEngine } = require('../server/integrations/os/unifiedTrustDataOsEngine');
+const { EnterpriseCapacityOsEngine } = require('../server/integrations/os/enterpriseCapacityOsEngine');
 const { ClearingAgentOsEngine } = require('../server/integrations/os/clearingAgentOsEngine');
 const { EnterpriseOdfiOsEngine } = require('../server/integrations/os/enterpriseOdfiOsEngine');
 const { TransferApiOsEngine } = require('../server/integrations/os/transferApiOsEngine');
 const { FraudComplianceOsEngine } = require('../server/integrations/os/fraudComplianceOsEngine');
 
-const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'unified-data', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'].sort();
+const ALL_ENGINES = ['accounting', 'aggregator', 'back-office', 'clearing', 'clearing-netting', 'collateral', 'credit', 'custody', 'debt', 'egress', 'enterprise-network', 'fixed-income', 'funding-os', 'gateway', 'h2h-discovery', 'interop', 'liquidity', 'm2m', 'mft', 'open-bank-rest-api', 'openach', 'payer', 'payment', 'payment-gateway', 'payment-hub', 'payment-processor', 'private-access', 'private-payment-network', 'proof-of-asset', 'reconciliation', 'stripe-intake', 'third-party-sender', 'treasury-funding-bank', 'wealth-back-office', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'enterprise-capacity', 'unified-data', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'].sort();
 const TOTAL = ALL_ENGINES.length;
 
 const GCP_ENV: Record<string, string> = {
@@ -155,6 +156,7 @@ function stubFiatComponents() {
   vi.spyOn(PrivateEquityHoldingsOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], warnings: [], status: { custody: {}, policy: {}, summary: { holdings: 1, collateralEligible: 1 }, chain: { intact: true }, collateralOs: { ready: true, issues: [] }, legalStatus: 'declared' } });
   vi.spyOn(PledgeOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], warnings: [], status: { policy: {}, summary: { pledges: 1, counted: 1 }, chain: { intact: true }, coverage: { unbackedCents: 0 }, legalStatus: 'recorded' } });
   vi.spyOn(EnterpriseCreditOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], warnings: [], status: { policy: {}, capacity: { capacityCents: 0 }, summary: { open: 0 }, chain: { intact: true } } });
+  vi.spyOn(EnterpriseCapacityOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], warnings: [], status: { policy: {}, capacity: { error: 'stub' }, summary: { open: 0 }, chain: { intact: true } } });
   vi.spyOn(UnifiedTrustDataOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], warnings: [], status: { enabled: true, latest: null, movesMoney: false } });
   vi.spyOn(ClearingAgentOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { networks: { total: 1, verified: 1 }, formats: [], instructions: {}, policy: {} } });
   vi.spyOn(EnterpriseOdfiOsEngine, 'readiness').mockResolvedValue({ ready: true, mode: 'live', blockers: [], status: { profile: { countersigned: true }, rails: { external: [{ networkId: 'SPONSOR-ODFI', kind: 'ach_operator' }] }, planner: { provider: 'rules' }, exposure: {}, storage: {}, policy: { isBank: false } } });
