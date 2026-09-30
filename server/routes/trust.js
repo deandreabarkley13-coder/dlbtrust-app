@@ -20,8 +20,9 @@
  *   POST /token-rail/runs/:id/notarize record Fabric evidence for a run whose evidence stage failed (admin)
  *   POST /token-rail/reconcile         rail-wide reconciliation from state
  *
- * Trust administration workflow (Stripe payment processing → ledger → Fineract → distribution → Lili direct deposit):
+ * Trust administration workflow (bank feeds → Fineract → Reserve OS → distribution → screening → maker/checker → Lili NACHA credit):
  *   GET  /administration/workflow      every stage's readiness + recent activity; ?includeFineract=true adds DataBridge status
+ *   POST /administration/workflow/run  run one ordered administration cycle (feeds -> reserve -> proof -> distribution); never pays
  */
 
 const express = require('express');
@@ -53,6 +54,14 @@ router.get('/administration/workflow', operatorAuth, async (req, res) => {
       limit: Math.min(Number(req.query.limit) || 10, 100),
     });
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/administration/workflow/run', adminAuth, async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store');
+    const actor = (req.user && (req.user.username || req.user.email)) || 'trust-admin-workflow';
+    res.json({ success: true, data: await TrustAdministrationWorkflowEngine.run({ actor }) });
   } catch (err) { sendError(res, err); }
 });
 
