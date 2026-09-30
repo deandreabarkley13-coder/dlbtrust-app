@@ -56,6 +56,17 @@ variable "pe_holdings_wire_schedule" {
   default     = "0 6 * * 1-5"
 }
 
+variable "pledge_os_wire_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-pledge-os-wire,
+    which runs `pledgeOsWire.js --evaluate` after the private-equity holdings
+    pass: it re-checks every recorded pledge and its backing and never books
+    GL lines or sends a wire.
+  EOT
+  type        = string
+  default     = "15 6 * * 1-5"
+}
+
 variable "settlement_funding_pipeline_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-settlement-funding-pipeline,
@@ -480,6 +491,13 @@ variable "runtime_environment" {
     PE_HOLDINGS_CUSTODY_ACCOUNT_ID          = "CUS-PE-HOLDINGS"
     PE_HOLDINGS_MAX_VALUATION_AGE_DAYS      = "120"
     PE_HOLDINGS_REQUIRE_THIRD_PARTY_CUSTODY = "true"
+    # Pledge OS (server/integrations/os/pledgeOsEngine): pledges + lien
+    # evidence (UCC financing statements), looked through to their backing
+    # (PE holding, custody position, or bond backed by eligible PE holdings).
+    # Counted value = custody-receipted value; moves no money.
+    PLEDGE_OS_ENABLED                     = "true"
+    PLEDGE_OS_LIVE                        = "true"
+    PLEDGE_OS_REQUIRE_THIRD_PARTY_CUSTODY = "true"
     # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
     # backend-to-backend agent for the private Electronic Payment Networks.
     # Each network is registered with a credential_ref = the NAME of a Secret

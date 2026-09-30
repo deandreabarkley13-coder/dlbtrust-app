@@ -21,6 +21,12 @@
  * against it, and any wire, still goes through Collateral OS and the screened
  * maker/checker settlement pipeline.
  *
+ * Intra-trust holdings (`registerIntraTrust`) record the trust's own
+ * private-placement bond as an internal holding, pointing at the bond's
+ * self-custody issuer-register position in Custody OS. They carry status
+ * `intra_trust`, are never evaluated for collateral eligibility, and are
+ * reported separately from backing holdings.
+ *
  * What this engine is not: a valuation opinion, a title search, or a
  * securities-law determination. It records what the trustees declared and
  * evidenced, and whether the platform's controls hold.
@@ -35,7 +41,8 @@ function tryRequire(mod) {
 
 const CUSTODY_ASSET_CLASS = 'private_equity';
 const COLLATERAL_ASSET_CLASS = 'equity';
-const STATUSES = ['registered', 'blocked', 'collateral_eligible', 'retired'];
+const STATUSES = ['registered', 'blocked', 'collateral_eligible', 'intra_trust', 'retired'];
+const UNEVALUATED_STATUSES = ['retired', 'intra_trust'];
 const TERMINAL_BOND_STATUSES = ['matured', 'called', 'defaulted'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -153,7 +160,7 @@ const PrivateEquityHoldingsOsEngine = {
         valuation_as_of     DATE NOT NULL,
         valuation_source    TEXT NOT NULL,
         status              TEXT NOT NULL DEFAULT 'registered'
-                            CHECK (status IN ('registered','blocked','collateral_eligible','retired')),
+                            CHECK (status IN ('registered','blocked','collateral_eligible','intra_trust','retired')),
         evaluation          JSONB,
         registered_by       TEXT NOT NULL,
         evaluated_at        TIMESTAMPTZ,
@@ -173,6 +180,10 @@ const PrivateEquityHoldingsOsEngine = {
         created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`);
     await pool.query('CREATE INDEX IF NOT EXISTS idx_pe_holdings_bond ON pe_holdings (bond_id)');
+    await pool.query(`
+      ALTER TABLE pe_holdings DROP CONSTRAINT IF EXISTS pe_holdings_status_check,
+        ADD CONSTRAINT pe_holdings_status_check
+        CHECK (status IN ('registered','blocked','collateral_eligible','intra_trust','retired'))`);
     return true;
   },
 
@@ -283,6 +294,61 @@ const PrivateEquityHoldingsOsEngine = {
     return rowToHolding(holding);
   },
 
+  /**
+   * Record a private-placement bond as an intra-trust holding: the trust's own
+   * bond, held in its self-custody issuer register (Custody OS `BOND-<id>`).
+   * Status is `intra_trust`; it is excluded from backing and collateral totals.
+   */
+  async registerIntraTrust({ bondId, holdingName = null, instrumentRef = null, actor = null } = {}) {
+    const cfg = this.config();
+    if (!cfg.enabled) throw new PrivateEquityHoldingsError('PE_HOLDINGS_ENABLED=false', 'PE_HOLDINGS_DISABLED', 503);
+    const who = text(actor, 'trustee identity required', 'PE_HOLDINGS_ACTOR');
+    const bond = await this._bond(bondId);
+    const Custody = custody();
+    if (!Custody) throw new PrivateEquityHoldingsError('Custody OS not loadable', 'PE_HOLDINGS_DEPENDENCY', 503);
+    const issuerAccountId = Custody.config().issuerAccountId;
+    const bondRef = `BOND-${bond.id}`;
+    const find = async () => (await Custody.listPositions({ custodyAccountId: issuerAccountId })).find((p) => p.instrument_ref === bondRef);
+    let position = await find();
+    if (!position && typeof Custody.syncFixedIncome === 'function') {
+      await Custody.syncFixedIncome({ syncedBy: who, proposeReceipts: false });
+      position = await find();
+    }
+    if (!position) throw new PrivateEquityHoldingsError(`no ${bondRef} position in ${issuerAccountId} (run Custody OS fixed-income sync)`, 'PE_HOLDINGS_NO_POSITION', 409);
+    const value = Number(position.valuation_cents || 0) || Math.round(Number(bond.face_value || 0) * 100);
+    if (!Number.isInteger(value) || value <= 0) throw new PrivateEquityHoldingsError(`${bondRef} has no book value`, 'PE_HOLDINGS_INVALID', 400);
+    const Pe = privateEntity();
+    const profile = Pe ? await Pe.current().catch(() => null) : null;
+    const ref = String(instrumentRef || `INTRA-${bondRef}`).trim();
+    const name = String(holdingName || `${bond.bond_name || bondRef} (intra-trust)`).trim();
+    const asOf = new Date().toISOString().slice(0, 10);
+
+    await this.ensureTables();
+    const { rows } = await pool.query(
+      `INSERT INTO pe_holdings
+         (holding_id, bond_id, entity_profile_id, issuer_name, holding_name, instrument_ref, custody_account_id,
+          custody_position_id, quantity, valuation_cents, valuation_as_of, valuation_source, registered_by, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'intra_trust')
+       ON CONFLICT (instrument_ref) DO UPDATE
+         SET bond_id = EXCLUDED.bond_id, entity_profile_id = EXCLUDED.entity_profile_id,
+             issuer_name = EXCLUDED.issuer_name, holding_name = EXCLUDED.holding_name,
+             custody_account_id = EXCLUDED.custody_account_id, custody_position_id = EXCLUDED.custody_position_id,
+             quantity = EXCLUDED.quantity, valuation_cents = EXCLUDED.valuation_cents,
+             valuation_as_of = EXCLUDED.valuation_as_of, valuation_source = EXCLUDED.valuation_source,
+             status = 'intra_trust', evaluation = NULL, evaluated_at = NULL, updated_at = NOW()
+       RETURNING *`,
+      [newId('PEH'), Number(bond.id), (profile && profile.profile_id) || null, (profile && profile.entity_name) || null, name, ref,
+        issuerAccountId, position.position_id, Number(position.quantity || bond.face_value || 1), value, asOf,
+        `custody-os:${issuerAccountId}:${bondRef} (self_custody issuer register)`, who]
+    );
+    const holding = rows[0];
+    await this._event('holding_registered_intra_trust', holding.holding_id, who, {
+      bondId: Number(bond.id), instrumentRef: ref, custodyAccountId: issuerAccountId, custodyPositionId: position.position_id,
+      custodyType: position.custody_type || 'self_custody', valuationCents: value,
+    });
+    return rowToHolding(holding);
+  },
+
   /** Maker side of the custody receipt: documentary evidence for the holding's current value. */
   async proposeReceipt({ holdingId, evidenceReference, actor = null } = {}) {
     const who = text(actor, 'trustee identity required', 'PE_HOLDINGS_ACTOR');
@@ -388,7 +454,7 @@ const PrivateEquityHoldingsOsEngine = {
     const rateBps = Collateral ? Collateral.advanceRateFor({ assetClass: COLLATERAL_ASSET_CLASS, override: cfg.advanceRateBps }) : 0;
     const results = [];
     for (const h of rows) {
-      if (h.status === 'retired') { results.push(rowToHolding(h)); continue; }
+      if (UNEVALUATED_STATUSES.includes(h.status)) { results.push(rowToHolding(h)); continue; }
       const position = Custody ? await Custody.getPosition(h.custody_position_id).catch(() => null) : null;
       const { gates, receiptedCents } = this._gates(h, position, ctx, cfg);
       const failing = gates.filter((g) => !g.ok).map((g) => g.id);
@@ -415,7 +481,8 @@ const PrivateEquityHoldingsOsEngine = {
   },
 
   _summary(holdings) {
-    const open = holdings.filter((h) => h.status !== 'retired');
+    const open = holdings.filter((h) => !UNEVALUATED_STATUSES.includes(h.status));
+    const intra = holdings.filter((h) => h.status === 'intra_trust');
     const eligible = open.filter((h) => h.status === 'collateral_eligible');
     const sum = (list, f) => list.reduce((s, h) => s + f(h), 0);
     const byBond = {};
@@ -436,6 +503,12 @@ const PrivateEquityHoldingsOsEngine = {
       eligibleCollateral: dollars(sum(eligible, (h) => h.evaluation.eligibleCollateralCents || 0)),
       eligibleCollateralCents: sum(eligible, (h) => h.evaluation.eligibleCollateralCents || 0),
       byBond: Object.values(byBond),
+      intraTrust: {
+        holdings: intra.length,
+        book: dollars(sum(intra, (h) => h.valuationCents)),
+        bookCents: sum(intra, (h) => h.valuationCents),
+        countsAsCollateral: false,
+      },
     };
   },
 
@@ -492,7 +565,7 @@ const PrivateEquityHoldingsOsEngine = {
     if (!s.enabled) blockers.push('PE_HOLDINGS_ENABLED=false');
     if (!s.live) blockers.push('PE_HOLDINGS_LIVE not true');
     if (!s.chain.intact) blockers.push(`private-equity holdings event chain broken: ${s.chain.error || (s.chain.breaks || []).length + ' break(s)'}`);
-    const open = s.holdings.filter((h) => h.status !== 'retired');
+    const open = s.holdings.filter((h) => !UNEVALUATED_STATUSES.includes(h.status));
     if (!open.length) blockers.push('no private-equity holding registered against a private-placement bond (action=register)');
     for (const h of open) {
       if (h.status === 'registered') blockers.push(`${h.holdingId}: not evaluated (action=evaluate)`);
@@ -507,6 +580,7 @@ const PrivateEquityHoldingsOsEngine = {
   async process({ action, actor = null, ...body } = {}) {
     switch (action) {
       case 'register': return this.register({ ...body, actor });
+      case 'register_intra_trust': return this.registerIntraTrust({ ...body, actor });
       case 'propose_receipt': return this.proposeReceipt({ ...body, actor });
       case 'countersign': return this.countersign({ ...body, actor });
       case 'evaluate': return this.evaluate({ ...body, actor });
@@ -514,7 +588,7 @@ const PrivateEquityHoldingsOsEngine = {
       case 'verify_chain': return this.verifyChain();
       default:
         throw new PrivateEquityHoldingsError(
-          `unknown action "${action}" (register, propose_receipt, countersign, evaluate, retire, verify_chain)`,
+          `unknown action "${action}" (register, register_intra_trust, propose_receipt, countersign, evaluate, retire, verify_chain)`,
           'PE_HOLDINGS_UNKNOWN_ACTION', 400
         );
     }

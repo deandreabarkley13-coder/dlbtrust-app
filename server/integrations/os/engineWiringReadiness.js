@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -78,6 +78,7 @@ const ENGINE_TITLES = {
   'idp-ocr': 'IDP / OCR OS (Document AI intake of distribution, disbursement, request and vendor-payout documents; classification, redaction, confidence gate, trustee review -> distinct approver -> link to maker-checker request; moves no money)',
   'tax-os': 'Tax OS (Form 1041 + Schedule K-1 reports from the trust journal and Fineract principal / interest-income accounts; JSON / CSV / PDF exports; reports only, no e-file)',
   'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
+  'pledge-os': 'Pledge OS (register of pledges and their lien evidence, e.g. UCC financing statements; each pledge looks through to its backing: a Private Equity Holdings OS holding, a Custody OS position, or a bond backed by eligible private-equity holdings; counted value = custody-receipted value; coverage of the Collateral OS borrowing base; moves no money)',
   'private-equity-holdings': 'Private Equity Holdings OS (PFTC-issued private-placement bond backing: private-equity interests held in Custody OS as private_equity positions, receipted on documentary evidence + second-trustee countersignature, certified Proof of Asset verdict, valuation freshness, equity advance rate for collateral eligibility; moves no money)',
   'enterprise-odfi': 'Enterprise ODFI OS (agentic originator operating system for trust administration: maker/checker originator profile, approved+screened distribution / disbursement / vendor-payout / trustee-expense batches, Vertex AI advisory rail planner with deterministic validator, distinct-trustee release through the Clearing Agent to a verified sponsor ODFI network, returns/NOC handling with Fineract re-deposit, exposure reconciliation; the software is not a bank)',
   'transfer-api': 'Transfer API OS (single versioned transfer facade /api/transfer/v1 behind GCP API Gateway: Google ID-token / API-key edge auth, quotas, mandatory Idempotency-Key with stored-response replay, caller identity from the gateway user-info header only when IAP proves the gateway called; every write delegates to the Enterprise ODFI OS maker/checker flow — the facade never moves money itself)',
@@ -123,6 +124,7 @@ const TABLES = {
   'idp-ocr': ['idp_documents', 'idp_events'],
   'tax-os': ['tax_returns_1041', 'k1_schedules', 'trust_config', 'tax_payments', 'tax_report_exports', 'trust_journal_lines', 'fineract_trust_accounts', 'crm_contacts'],
   'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
+  'pledge-os': ['pledge_os_pledges', 'pledge_os_events', 'pe_holdings', 'custody_positions', 'collateral_positions'],
   'private-equity-holdings': ['pe_holdings', 'pe_holding_events', 'custody_positions', 'custody_receipts', 'proof_of_asset_proofs', 'private_entity_profile', 'bonds'],
   'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
   'enterprise-odfi': ['enterprise_odfi_profiles', 'enterprise_odfi_batches', 'enterprise_odfi_items', 'enterprise_odfi_events', 'clearing_agent_networks', 'clearing_agent_instructions'],
@@ -405,6 +407,7 @@ const REPORTERS = {
   'tax-os': taxOsReadiness,
   'private-entity': privateEntityReadiness,
   'private-equity-holdings': privateEquityHoldingsReadiness,
+  'pledge-os': pledgeOsReadiness,
   'clearing-agent': clearingAgentReadiness,
   'enterprise-odfi': enterpriseOdfiReadiness,
   'transfer-api': transferApiReadiness,
@@ -1686,6 +1689,32 @@ async function privateEquityHoldingsReadiness(ctx, env = process.env) {
     },
     modules: s ? { custody: s.custody, policy: s.policy, summary: s.summary, chain: s.chain, collateralOs: s.collateralOs, legalStatus: s.legalStatus } : { error: r.error },
     routes: ['/api/os/private-equity-holdings/{status,readiness,list,process}', '/api/os/readiness/private-equity-holdings'],
+    secrets: ['none'],
+    warnings: r.ok ? r.value.warnings : [],
+    tables,
+    blockers,
+  };
+}
+
+async function pledgeOsReadiness(ctx, env = process.env) {
+  const Pledge = tryRequire('./pledgeOsEngine')?.PledgeOsEngine;
+  const tables = await tablesPresent(TABLES['pledge-os']);
+  const blockers = baseBlockers(ctx, tables, Pledge, 'PledgeOsEngine');
+  const r = Pledge && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Pledge.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`pledge-os: ${r.error}`);
+  const s = r.ok ? r.value.status : null;
+  return {
+    provider: 'pledge-os (lien evidence + look-through to Private Equity Holdings OS / Custody OS receipted value + Collateral OS coverage)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      PLEDGE_OS_ENABLED: String(env.PLEDGE_OS_ENABLED || 'true').toLowerCase() !== 'false',
+      PLEDGE_OS_LIVE: isTrue(env.PLEDGE_OS_LIVE),
+      PLEDGE_OS_REQUIRE_THIRD_PARTY_CUSTODY: String(env.PLEDGE_OS_REQUIRE_THIRD_PARTY_CUSTODY || 'true').toLowerCase() !== 'false',
+      MOVES_MONEY: false,
+    },
+    modules: s ? { policy: s.policy, summary: s.summary, chain: s.chain, coverage: s.coverage, legalStatus: s.legalStatus } : { error: r.error },
+    routes: ['/api/os/pledge-os/{status,readiness,list,process}', '/api/os/readiness/pledge-os'],
     secrets: ['none'],
     warnings: r.ok ? r.value.warnings : [],
     tables,

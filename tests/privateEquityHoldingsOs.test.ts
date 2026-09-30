@@ -19,7 +19,7 @@ type Row = Record<string, any>;
 function fakeDb(state: { holdings: Row[]; events: Row[]; receipts: Row[] }) {
   return vi.spyOn(pool, 'query').mockImplementation(async (sql: any, p: any[] = []) => {
     const s = String(sql).replace(/\s+/g, ' ').trim();
-    if (/^CREATE/i.test(s)) return { rows: [] };
+    if (/^(CREATE|ALTER)/i.test(s)) return { rows: [] };
     if (s.startsWith('SELECT event_hash FROM pe_holding_events')) return { rows: state.events.slice(-1) };
     if (s.startsWith('INSERT INTO pe_holding_events')) {
       state.events.push({ sequence: state.events.length + 1, event_id: p[0], holding_id: p[1], event_type: p[2], actor: p[3], payload: JSON.parse(p[4]), prev_hash: p[5], event_hash: p[6], created_at: p[7] });
@@ -32,7 +32,7 @@ function fakeDb(state: { holdings: Row[]; events: Row[]; receipts: Row[] }) {
       const row = {
         holding_id: existing ? existing.holding_id : p[0], bond_id: p[1], entity_profile_id: p[2], issuer_name: p[3], holding_name: p[4], instrument_ref: p[5],
         custody_account_id: p[6], custody_position_id: p[7], quantity: p[8], valuation_cents: p[9], valuation_as_of: p[10], valuation_source: p[11],
-        registered_by: existing ? existing.registered_by : p[12], status: 'registered', evaluation: null, created_at: new Date().toISOString(),
+        registered_by: existing ? existing.registered_by : p[12], status: s.includes("'intra_trust')") ? 'intra_trust' : 'registered', evaluation: null, created_at: new Date().toISOString(),
       };
       if (existing) Object.assign(existing, row); else state.holdings.push(row);
       return { rows: [existing || row] };
@@ -172,5 +172,37 @@ describe('Private Equity Holdings OS', () => {
     expect(() => wire.parseArgs(['--evaluate'])).toThrow(/--actor/);
     expect(() => wire.parseArgs(['--prove', '--actor', 'x'])).toThrow(/--evaluate/);
     expect(() => wire.parseArgs(['--plan-draw'])).toThrow(/--amount/);
+  });
+});
+
+describe('Private Equity Holdings OS intra-trust holdings', () => {
+  let state: { holdings: Row[]; events: Row[]; receipts: Row[] };
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    state = { holdings: [], events: [], receipts: [] };
+    fakeDb(state);
+    process.env.PE_HOLDINGS_LIVE = 'true';
+  });
+  afterEach(() => { process.env = { ...saved }; });
+
+  it('records the PPB as a self-custody intra-trust holding that is never evaluated or counted as collateral', async () => {
+    stubEngines();
+    const issuerPos = { position_id: 'CPS-BOND-7', custody_account_id: 'CUS-ISSUER-FIXED-INCOME', instrument_ref: 'BOND-7', asset_class: 'fixed_income', control_status: 'unverified', valuation_cents: 9854652191, quantity: 100000000, custody_type: 'self_custody' };
+    vi.spyOn(CustodyOsEngine, 'listPositions').mockResolvedValue([issuerPos]);
+    const h = await PrivateEquityHoldingsOsEngine.process({ action: 'register_intra_trust', bondId: 7, actor: 'trustee.a' });
+    expect(h).toMatchObject({ status: 'intra_trust', instrumentRef: 'INTRA-BOND-7', custodyAccountId: 'CUS-ISSUER-FIXED-INCOME', custodyPositionId: 'CPS-BOND-7', valuationCents: 9854652191 });
+    expect(CustodyOsEngine.recordPosition).not.toHaveBeenCalled();
+    expect(state.events.map((e) => e.event_type)).toEqual(['holding_registered_intra_trust']);
+
+    const { holdings, summary } = await PrivateEquityHoldingsOsEngine.evaluate({ actor: 'job' });
+    expect(holdings[0].status).toBe('intra_trust');
+    expect(summary).toMatchObject({ holdings: 0, collateralEligible: 0, eligibleCollateralCents: 0, intraTrust: { holdings: 1, bookCents: 9854652191, countsAsCollateral: false } });
+    const r = await PrivateEquityHoldingsOsEngine.readiness();
+    expect(r.blockers).toContain('no private-equity holding registered against a private-placement bond (action=register)');
+  });
+
+  it('wire script parses --intra-trust --bond', () => {
+    expect(wire.parseArgs(['--intra-trust', '--bond', '1', '--actor', 'trustee.a'])).toMatchObject({ intraTrust: true, bond: '1', actor: 'trustee.a' });
+    expect(() => wire.parseArgs(['--intra-trust', '--actor', 'a'])).toThrow(/--bond/);
   });
 });
