@@ -149,6 +149,7 @@ const ENGINES = {
   'private-equity-holdings': require('../integrations/os/privateEquityHoldingsOsEngine').PrivateEquityHoldingsOsEngine,
   'pledge-os': require('../integrations/os/pledgeOsEngine').PledgeOsEngine,
   'enterprise-credit': require('../integrations/os/enterpriseCreditOsEngine').EnterpriseCreditOsEngine,
+  'unified-data': require('../integrations/os/unifiedTrustDataOsEngine').UnifiedTrustDataOsEngine,
   'clearing-agent': require('../integrations/os/clearingAgentOsEngine').ClearingAgentOsEngine,
   'enterprise-odfi': require('../integrations/os/enterpriseOdfiOsEngine').EnterpriseOdfiOsEngine,
   'transfer-api': require('../integrations/os/transferApiOsEngine').TransferApiOsEngine,
@@ -156,7 +157,7 @@ const ENGINES = {
 };
 
 // Engines whose actions are attributed to the authenticated trustee (maker/checker).
-const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance']);
+const ACTOR_STAMPED_ENGINES = new Set(['h2h-discovery', 'open-bank-rest-api', 'egress', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'unified-data', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance']);
 
 function sendError(res, err) {
   const status = err.status || 400;

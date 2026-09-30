@@ -34,6 +34,7 @@
 
 const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
+const { resealEventChain } = require('./eventChainReseal');
 
 function tryRequire(mod) {
   try { return require(mod); } catch (e) { return null; }
@@ -223,6 +224,15 @@ const PrivateEquityHoldingsOsEngine = {
       prevHash = row.event_hash;
     }
     return { events: rows.length, intact: breaks.length === 0, breaks, tipHash: prevHash };
+  },
+
+  async resealChain({ actor = null, reason } = {}) {
+    await this.ensureTables();
+    const result = await resealEventChain({
+      db: pool, table: 'pe_holding_events', subjectColumn: 'holding_id', subjectKey: 'holdingId', hashEvent,
+      appendEvent: (type, id, who, payload) => this._event(type, id, who, payload), actor, reason,
+    });
+    return { ...result, chain: await this.verifyChain() };
   },
 
   async _bond(bondId) {
@@ -594,9 +604,10 @@ const PrivateEquityHoldingsOsEngine = {
       case 'evaluate': return this.evaluate({ ...body, actor });
       case 'retire': return this.retire({ ...body, actor });
       case 'verify_chain': return this.verifyChain();
+      case 'reseal_chain': return this.resealChain({ ...body, actor });
       default:
         throw new PrivateEquityHoldingsError(
-          `unknown action "${action}" (register, register_intra_trust, propose_receipt, countersign, evaluate, retire, verify_chain)`,
+          `unknown action "${action}" (register, register_intra_trust, propose_receipt, countersign, evaluate, retire, verify_chain, reseal_chain)`,
           'PE_HOLDINGS_UNKNOWN_ACTION', 400
         );
     }

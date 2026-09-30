@@ -23,6 +23,7 @@
 
 const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
+const { resealEventChain } = require('./eventChainReseal');
 
 function tryRequire(mod) {
   try { return require(mod); } catch (e) { return null; }
@@ -202,6 +203,15 @@ const EnterpriseCreditOsEngine = {
       prevHash = row.event_hash;
     }
     return { events: rows.length, intact: breaks.length === 0, breaks, tipHash: prevHash };
+  },
+
+  async resealChain({ actor = null, reason } = {}) {
+    await this.ensureTables();
+    const result = await resealEventChain({
+      db: pool, table: 'enterprise_credit_events', subjectColumn: 'allocation_id', subjectKey: 'allocationId', hashEvent,
+      appendEvent: (type, id, who, payload) => this._event(type, id, who, payload), actor, reason,
+    });
+    return { ...result, chain: await this.verifyChain() };
   },
 
   /** Counted asset backing available to distributions and disbursements. Read-only. */
@@ -457,9 +467,10 @@ const EnterpriseCreditOsEngine = {
       case 'capacity': return this.capacity();
       case 'funding_plan': return this.fundingPlan(body);
       case 'verify_chain': return this.verifyChain();
+      case 'reseal_chain': return this.resealChain({ ...body, actor });
       default:
         throw new EnterpriseCreditError(
-          `unknown action "${action}" (request, approve, disburse, repay, cancel, evaluate, capacity, funding_plan, verify_chain)`,
+          `unknown action "${action}" (request, approve, disburse, repay, cancel, evaluate, capacity, funding_plan, verify_chain, reseal_chain)`,
           'ENTERPRISE_CREDIT_UNKNOWN_ACTION', 400
         );
     }
