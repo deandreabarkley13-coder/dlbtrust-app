@@ -8265,9 +8265,10 @@ class MoovPaygateEngine extends BaseOSEngine {
 // `pipeline` action exposes the ERP -> policy contract -> Spritz -> settlement
 // stages (and the trust control plane's gap analysis) from the OS layer.
 
-// Real-value position behind the ledgers: the Betterment ACH-debit rail,
-// the webhook-funded Stripe balance, Payer OS's funding source and Reserve OS
-// attested coverage. Ledger balances without attested external reserves are
+// Real-value position behind the ledgers: the Enterprise ODFI trust-account
+// credit rail (ACH credit into Betterment), the optional Betterment ACH-debit
+// rail, the webhook-funded Stripe balance, Payer OS's funding source and
+// Reserve OS attested coverage. Ledger balances without attested external reserves are
 // reported as unbacked, never as spendable.
 
 const STRIPE_BALANCE_ACCOUNT_ID = 'CA-STRIPE-BALANCE';
@@ -8284,7 +8285,8 @@ async function spendablePosition() {
   const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
   const PayerOs = tryRequire('./payerOsEngine')?.PayerOsEngine;
   const Reserve = tryRequire('../finops/reserveEngine')?.ReserveEngine;
-  const [treasuryBank, stripeBalance, payerSource, reserve] = await Promise.all([
+  const EnterpriseOdfi = tryRequire('./enterpriseOdfiOsEngine')?.EnterpriseOdfiOsEngine;
+  const [treasuryBank, stripeBalance, payerSource, reserve, trustAccountCredit] = await Promise.all([
     TreasuryBank ? settle(TreasuryBank.status()) : Promise.resolve({ ok: false, error: 'TreasuryFundingBankEngine not available' }),
     Cash ? settle(Cash.getAccount(STRIPE_BALANCE_ACCOUNT_ID).then((row) => {
       if (!row) throw new Error(`cash account ${STRIPE_BALANCE_ACCOUNT_ID} not found`);
@@ -8296,13 +8298,19 @@ async function spendablePosition() {
       return { ready: Boolean(r.ready), source, spendableCents: source ? dollarsToCents(source.spendable) : null, blockers: r.blockers || [] };
     })) : Promise.resolve({ ok: false, error: 'PayerOsEngine not available' }),
     Reserve ? settle(Reserve.coverage()) : Promise.resolve({ ok: false, error: 'ReserveEngine not available' }),
+    EnterpriseOdfi ? settle(EnterpriseOdfi.readiness().then((r) => r.trustAccountCredit)) : Promise.resolve({ ok: false, error: 'EnterpriseOdfiOsEngine not available' }),
   ]);
 
   const gaps = [];
-  for (const [name, r] of Object.entries({ treasuryBank, stripeBalance, payerSource, reserve })) {
+  const treasuryBankEnabled = process.env.TREASURY_BANK_ENABLED === 'true';
+  for (const [name, r] of Object.entries({ trustAccountCredit, stripeBalance, payerSource, reserve })) {
     if (!r.ok) gaps.push(`${name}: ${r.error}`);
   }
-  if (treasuryBank.ok && !treasuryBank.value.ready) gaps.push(`treasuryBank: ${(treasuryBank.value.issues || []).join('; ') || 'not ready'}`);
+  if (treasuryBankEnabled && !treasuryBank.ok) gaps.push(`treasuryBank: ${treasuryBank.error}`);
+  if (trustAccountCredit.ok && !trustAccountCredit.value.ready) {
+    gaps.push(`trustAccountCredit: ${(trustAccountCredit.value.blockers || []).join('; ') || 'enterprise ODFI originator not live'}`);
+  }
+  if (treasuryBankEnabled && treasuryBank.ok && !treasuryBank.value.ready) gaps.push(`treasuryBank: ${(treasuryBank.value.issues || []).join('; ') || 'not ready'}`);
   if (reserve.ok && reserve.value.unbackedCents > 0) gaps.push(`reserve: ledger cash exceeds attested reserves by ${reserve.value.unbacked}`);
 
   const stripeBalanceCents = stripeBalance.ok ? stripeBalance.value.balanceCents : null;
@@ -8311,6 +8319,7 @@ async function spendablePosition() {
   const ledgerCashCents = reserve.ok ? reserve.value.ledgerCashCents : null;
   const unbackedCents = reserve.ok ? reserve.value.unbackedCents : null;
   const realSpendableCents = attestedReserveCents === null ? 0 : attestedReserveCents;
+  const credits = trustAccountCredit.ok ? trustAccountCredit.value.totals || null : null;
   return {
     summary: {
       realSpendableCents,
@@ -8321,9 +8330,16 @@ async function spendablePosition() {
       backingStatus: reserve.ok ? reserve.value.status : 'unknown',
       stripeBalanceCents,
       payerSourceSpendableCents,
-      fundingRailReady: treasuryBank.ok ? Boolean(treasuryBank.value.ready) : false,
-      treasuryBankEnabled: process.env.TREASURY_BANK_ENABLED === 'true',
+      fundingRail: 'enterprise_odfi_trust_account_credit',
+      fundingRailReady: trustAccountCredit.ok ? Boolean(trustAccountCredit.value.ready) : false,
+      trustAccountCreditQueuedCents: credits ? credits.queuedCents : null,
+      trustAccountCreditInFlightCents: credits ? credits.inFlightCents : null,
+      trustAccountCreditOriginatedCents: credits ? credits.originatedCents : null,
+      trustAccountCreditReturnedCents: credits ? credits.returnedCents : null,
+      treasuryBankEnabled,
+      debitRailReady: treasuryBankEnabled && treasuryBank.ok ? Boolean(treasuryBank.value.ready) : false,
     },
+    trustAccountCredit,
     treasuryBank,
     stripeBalance,
     payerSource,

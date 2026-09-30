@@ -21,9 +21,12 @@ Scope decisions that govern this document:
   or a signed processor webhook proves settlement.
 
 ```
-Betterment Trust Checking (nbkc)              read: SimpleFIN aggregator → DataBridge → Fineract GL
-   │  ACH debit (Stripe us_bank_account mandate)   TreasuryFundingBankEngine.pull()      TREASURY_BANK_ENABLED
+Trust funding account at the sponsor ODFI     Fineract account of record (holder:<trust>:savings) or a trustee / beneficiary sub-account
+   │  ACH CCD credit (direct deposit)            EnterpriseOdfiOsEngine.creditTrustAccount() → release()   ENTERPRISE_ODFI_LIVE
+   │  maker plans (approvalRef + screeningRef) → distinct checker releases → Clearing Agent → sponsor network
    ▼
+Betterment Trust Checking (nbkc)              read: SimpleFIN aggregator → DataBridge → Fineract GL (receipt evidence)
+
 Stripe balance  (CA-STRIPE-BALANCE)           signed webhook payment_intent.succeeded → treasury ledger + GL
    │  maker submit → checker approve (approvalRef + screeningRef)
    ▼
@@ -67,12 +70,14 @@ defaults in `variables.tf`. See `docs/GCP_MIGRATION.md` for the deploy procedure
   stamps the trust's routing/account onto originated files but `status()` fails closed
   with "no ready file-delivery channel" because there is nowhere to deliver them.
   **Do not treat Betterment as an executing ODFI.**
-- **The only bidirectional path** is `server/integrations/payments/treasuryFundingBankEngine.js`
-  (§4). Betterment is saved in Stripe as a `us_bank_account` PaymentMethod under an ACH
-  debit mandate; the platform pulls funds from Betterment into the Stripe balance and
-  pays out from there. `TREASURY_BANK_ENABLED=true` in `infra/gcp/variables.tf` since
-  2026-09-30 (§8); the engine still fails closed until the mandate is linked and
-  verified, and nothing is pulled without the operator steps in §4.
+- **Funding in (credit):** the trust pushes funds into Betterment as an ACH CCD credit
+  (direct deposit) originated by the Enterprise ODFI OS through the sponsor ODFI (§4).
+  Betterment is the RDFI / creditor only; its routing and account numbers are the
+  `BETTERMENT_ROUTING_NUMBER` / `BETTERMENT_ACCOUNT_NUMBER` Secret Manager versions and
+  are never taken from a request.
+- **Debit (off):** `server/integrations/payments/treasuryFundingBankEngine.js` can save
+  Betterment in Stripe under an ACH-debit mandate, but `TREASURY_BANK_ENABLED=false`
+  since the second 2026-09-30 change (§8): Betterment is credited, not debited.
 - BILL.com is separately linked to the same account (`systemSettings.js` partner
   `bill-cash`, `server/integrations/bill/billClient.js`); BILL debits appear in the feed
   and post to 5300 Operating Expense.
@@ -127,45 +132,64 @@ curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d '{"action":"pipel
 (`ReserveEngine.coverage()`), never a ledger balance. Alongside it: `ledgerCashCents`
 and `unbackedCents` (ledger cash with no attestation behind it), `stripeBalanceCents`
 (`CA-STRIPE-BALANCE`), `payerSourceSpendableCents` (`PayerOsEngine.readiness()` funding
-source net of in-flight wires/ACH) and `fundingRailReady` (`TreasuryFundingBankEngine.status()`).
+source net of in-flight wires/ACH), `fundingRailReady` (Enterprise ODFI
+`readiness().trustAccountCredit.ready`) and the trust-account credit totals
+`trustAccountCreditQueuedCents` (planned, not released), `…InFlightCents` (released,
+cleared), `…OriginatedCents` (posted by the Clearing Agent) and `…ReturnedCents`. None of
+these is proof Betterment received the funds; receipt is the Betterment credit in the
+aggregator feed (§2a). `treasuryBank` / `debitRailReady` are reported only for the
+optional debit rail and add a gap only when `TREASURY_BANK_ENABLED=true`.
 Each source that is missing or fails is listed in `gaps` instead of failing the pipeline.
 
 Locally: `npm run lint && npm run typecheck && npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts tests/unifiedPipelineSpendable.test.ts`.
 
-## 4. Funding the platform from Betterment (Stripe ACH debit)
+## 4. Crediting Betterment from the trust (Enterprise ODFI ACH credit)
 
 Gates (all in `infra/gcp/variables.tf` / Secret Manager, applied with Terraform or
 `gcloud run services update`):
 
 | Variable / secret | Required value | Why |
 | --- | --- | --- |
-| `TREASURY_BANK_ENABLED` | `true` | `TreasuryFundingBankEngine` refuses `link/verify/pull` otherwise |
-| `TREASURY_BANK_ID` / `TREASURY_BANK_NAME` | `betterment` / `Betterment Checking` | account identity on ledger postings |
-| `TREASURY_BANK_ACCOUNT_HOLDER` | `DEANDREA LAVAR BARKLEY TRUST COMPANY` | mandate holder name |
-| `TREASURY_BANK_REGISTER_SETTLEMENT` | `true` | also registers Betterment as a payout destination |
-| `BETTERMENT_ROUTING_NUMBER`, `BETTERMENT_ACCOUNT_NUMBER` | Secret Manager versions | never in env or docs |
-| `STRIPE_PAYMENTS_SECRET_KEY` | live-mode key | creates the PaymentMethod, mandate and PaymentIntents |
-| `STRIPE_WEBHOOK_SECRET` | live endpoint secret | funds are recognised only from the signed webhook |
+| `ENTERPRISE_ODFI_ENABLED`, `ENTERPRISE_ODFI_LIVE` | `true` | `release()` refuses otherwise |
+| `ENTERPRISE_ODFI_REQUIRE_DISTINCT_RELEASER` | `true` | the releaser must differ from the maker |
+| `ENTERPRISE_ODFI_MAKERS` / `ENTERPRISE_ODFI_CHECKERS` | trustee identities | who may plan / release |
+| `BETTERMENT_ROUTING_NUMBER`, `BETTERMENT_ACCOUNT_NUMBER` | Secret Manager versions | the ACH creditor; readiness shows last 4 only |
+| `ENTERPRISE_ODFI_TRUST_ACCOUNT_NAME` | `DEANDREA LAVAR BARKLEY TRUST COMPANY` | creditor name on the entry |
+| `ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER`, `ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME` | the trust's funding account at the sponsor ODFI | debtor of the credit (`terraform.tfvars`) |
+| `ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER` | Secret Manager version | debtor account number |
+| `PAYMENT_DATA_ENCRYPTION_KEY` | Secret Manager version | the instruction is stored encrypted |
+| Fineract (`FINERACT_*`) | Secret Manager versions | debtor savings account is withdrawn when the Clearing Agent posts |
 
-Procedure (service token `Authorization: Bearer $PAYMENT_SERVER_SERVICE_TOKEN`):
+Procedure (`POST /api/os/enterprise-odfi/process`, admin auth; nothing moves before step 6):
 
-1. `POST /api/payment-server/v1/treasury-bank/link` — Stripe creates the
-   `us_bank_account` PaymentMethod and ACH mandate. Response says whether instant
-   verification succeeded or micro-deposits were sent (1–2 business days; they appear in
-   the SimpleFIN feed and post to the GL automatically).
-2. `POST /api/payment-server/v1/treasury-bank/verify { amounts | descriptorCode }` when
-   micro-deposits were used. `GET /treasury-bank` must then show `verified: true`.
-3. `POST /api/payment-server/v1/treasury-bank/pull { amountCents, reference, purpose,
-   description }` (`purpose` defaults to `trust_income`) — originates a
-   real ACH debit of Betterment. The intake is `processing` until Stripe's
-   `payment_intent.succeeded` webhook arrives (~4 business days); only then is
-   `CA-STRIPE-BALANCE` credited and Fineract posted (DR cash / CR 3000 or 4100 per
-   classification). A `payment_failed` webhook (NSF, R-codes) closes the intake with no
-   posting.
-4. `GET /api/payment-server/v1/stripe-intakes/:id` to follow it.
+1. Accounts: `GET /api/fineract/trust-accounts` shows the account of record, principal,
+   interest-income and one savings sub-account per active, approved, KYC-verified
+   trustee / beneficiary in `crm_contacts` (external ids `holder:<trust>:savings`,
+   `trustee:<contact_id>:savings`, `beneficiary:<contact_id>:savings`).
+   `POST /api/fineract/trust-accounts/provision { dryRun: true }` lists what would be
+   opened; without `dryRun` it opens the missing clients / savings accounts (no deposit,
+   no withdrawal). The ids are recorded in `fineract_trust_accounts`; nothing is typed in.
+2. Originator: `{ action: 'profile', … }` then a different trustee `{ action: 'countersign' }`.
+3. Sponsor network: register and verify it on the Clearing Agent (e.g. TabaPay, see the
+   `TABAPAY_BASE_URL` comment in `variables.tf`). `{ action: 'trust-account-credit' }`
+   must then list no `blockers`.
+4. Maker: `{ action: 'credit-trust-account', amountCents, idempotencyKey, approvalRef,
+   screeningRef, urgency?, from?: { role: 'account-of-record' | 'principal' |
+   'interest-income' | 'trustee' | 'beneficiary', partyRef?: '<crm contact_id>' } }`.
+   The creditor is always the configured Betterment account; the debtor's Fineract
+   savings account is resolved from the trust account structure (default: account of
+   record). Returns a `planned` batch — no money has moved.
+5. Review `{ action: 'batch', batchId }` (rail, SEC `CCD`, amount, Betterment last 4).
+6. Checker (a different trustee): `{ action: 'release', batchId }` — the only step that
+   moves money: the Clearing Agent submits the ACH credit to the verified sponsor network
+   and posts it (Fineract withdrawal from the debtor savings account).
+7. Receipt: a `posted` item is originated, not received. Betterment has received the
+   funds only when the credit appears in the Betterment feed
+   (`server/scripts/aggregateBettermentTrustChecking.js`, SimpleFIN); returns come back
+   through `{ action: 'exception', … }` and redeposit the Fineract withdrawal.
 
-Nothing in this section is executed automatically; every pull is an operator action
-subject to the amount limits in `TREASURY_BANK_*` and the maker/checker record.
+Nothing in this section is executed automatically; every credit is planned by a maker and
+released by a distinct checker, within `ENTERPRISE_ODFI_*_LIMIT_CENTS`.
 
 ## 5. Distributing income (Private Electronic Payment Network)
 
@@ -212,7 +236,7 @@ transmitted, never confirmed, closed out as `returned`.
 | `mft_as2` NACHA file drop (PPN / OpenACH `OpenAchFileRelay`) | shadow; files accumulate in the OpenACH export bucket | an ODFI or sponsor bank that accepts AS2/SFTP intake for the trust: set `MFTGATEWAY_PARTNER_AS2_ID` (or `ACH_SFTP_URL` + creds), then `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=true` |
 | Payment Hub EE ACH connector | health ok, origination queued | System Settings production partner (`bank_endpoint`, auth, webhook secret) pointing at a real ODFI API |
 | Lili reconciliation via MCP | blocked | Lili enables MCP for the trust's business login, then `POST /api/finops/lili/mcp/oauth/start` |
-| Betterment origination by file/API | not possible | n/a — use §4 |
+| Betterment origination by file/API | not possible | n/a — Betterment only receives ACH credits (§4) |
 
 ## 7. Operating rules
 
@@ -264,3 +288,22 @@ flag `true`, `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false`, and every `THIRDWEB_*` /
   explicit pull) and the signed `payment_intent.succeeded` webhook posts it. Until
   then the pipeline's `spendable.summary.realSpendableCents` stays at the attested
   reserve and `gaps` lists the unverified treasury bank.
+
+### 2026-09-30 (second change) — Betterment is credited, not debited
+
+| Variable | Was | Now |
+| --- | --- | --- |
+| `TREASURY_BANK_ENABLED` | `true` | `false` |
+| `ENTERPRISE_ODFI_TRUST_ACCOUNT_BANK_ID` / `_BANK_NAME` / `_NAME` | unset | `betterment` / `Betterment Checking` / `DEANDREA LAVAR BARKLEY TRUST COMPANY` |
+| `ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME`, `ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER` | unset | `""` (per deployment, `terraform.tfvars`) |
+| `ENTERPRISE_ODFI_FUNDING_ACCOUNT_TYPE` | unset | `checking` |
+
+- New Secret Manager container `ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER` (declared when
+  `ENTERPRISE_ODFI_LIVE=true`; list it in `unseeded_secret_names` until a version exists).
+- `CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID` may stay empty: the Private Payment Network now
+  falls back to the Fineract account of record recorded by the trust account structure.
+- The pipeline's `spendable.summary.fundingRailReady` and the Trust Administration
+  `funding` stage now report the Enterprise ODFI trust-account credit.
+- Unchanged: `ENTERPRISE_ODFI_LIVE=true`, `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false`, every
+  `REQUIRE_*` gate `true`, every `THIRDWEB_*` / `STABLECOIN_*` / `SPRITZ_*` /
+  `TRUST_POLICY_*` flag off. Configuration moves no money; only §4 step 6 does.

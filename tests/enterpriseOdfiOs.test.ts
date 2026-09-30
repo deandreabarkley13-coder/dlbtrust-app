@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const { EnterpriseOdfiOsEngine, rulesPlan, acceptProposal, encrypt, decrypt, getEnterpriseOdfiConfig, RAILS } = require('../server/integrations/os/enterpriseOdfiOsEngine');
 const { ClearingAgentOsEngine } = require('../server/integrations/os/clearingAgentOsEngine');
 const { FineractClient } = require('../server/integrations/fineract/fineractClient');
+const { TrustAccountStructure } = require('../server/integrations/fineract/trustAccountStructure');
 const pool = require('../server/integrations/bonds/pgPool');
 
 const saved = { ...process.env };
@@ -259,5 +260,102 @@ describe('Enterprise ODFI OS — readiness', () => {
     process.env.ENTERPRISE_ODFI_LIVE = 'false';
     r = await EnterpriseOdfiOsEngine.readiness();
     expect(r.blockers).toEqual(['ENTERPRISE_ODFI_LIVE not true']);
+  });
+});
+
+describe('Enterprise ODFI OS — trust-account credit into Betterment', () => {
+  const CREDIT_ENV = {
+    BETTERMENT_ROUTING_NUMBER: '011000015',
+    BETTERMENT_ACCOUNT_NUMBER: '123456789012',
+    ENTERPRISE_ODFI_TRUST_ACCOUNT_NAME: 'DEANDREA LAVAR BARKLEY TRUST COMPANY',
+    ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER: '021000021',
+    ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER: '000000002',
+    ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME: 'DLB TRUST FUNDING',
+  };
+  const credit = (extra: any = {}) => ({ amountCents: 500000, idempotencyKey: 'tc1', approvalRef: 'APR-tc1', screeningRef: 'OFAC-tc1', actor: 'trustee.a@f', ...extra });
+
+  beforeEach(() => { Object.assign(process.env, CREDIT_ENV); });
+
+  it('plans an ACH CCD credit to the configured Betterment account from the Fineract account of record; the caller cannot redirect it', async () => {
+    await countersignedProfile();
+    networks = [FAMILY_NET, ODFI_NET];
+    const resolve = vi.spyOn(TrustAccountStructure, 'resolveAccountId').mockResolvedValue('2');
+    const submit = vi.spyOn(ClearingAgentOsEngine, 'submit');
+    const b = await EnterpriseOdfiOsEngine.creditTrustAccount(credit({ creditor: { routingNumber: '011000015', accountNumber: '999999999' } }));
+    expect(resolve).toHaveBeenCalledWith('account-of-record', {});
+    expect(b.status).toBe('planned');
+    expect(b.items).toHaveLength(1);
+    expect(b.items[0]).toMatchObject({ rail: 'ach_standard', network_id: 'SPONSOR-ODFI', creditor_last4: '********9012', purpose_class: 'trust_account_credit' });
+    expect(b.trustAccountCredit).toMatchObject({ bankId: 'betterment', creditorAccountLast4: '********9012', state: 'planned', source: { role: 'account-of-record', partyRef: null, fineractSavingsAccountId: '2' } });
+    expect(JSON.stringify(b)).not.toContain('123456789012');
+    expect(JSON.stringify(b)).not.toContain('999999999');
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it('release by a distinct checker submits the credit with Betterment as creditor and the trust savings account as debtor; posted is not receipt', async () => {
+    await countersignedProfile();
+    networks = [FAMILY_NET, ODFI_NET];
+    vi.spyOn(TrustAccountStructure, 'resolveAccountId').mockResolvedValue('2');
+    const submit = vi.spyOn(ClearingAgentOsEngine, 'submit').mockImplementation(async ({ idempotencyKey }: any) => ({ instruction_id: `CAI-${idempotencyKey}`, status: 'cleared' }));
+    vi.spyOn(ClearingAgentOsEngine, 'post').mockImplementation(async () => ({ status: 'posted' }));
+    const b = await EnterpriseOdfiOsEngine.creditTrustAccount(credit());
+    let st = await EnterpriseOdfiOsEngine.trustAccountCreditStatus();
+    expect(st.totals).toMatchObject({ queuedCents: 500000, originatedCents: 0 });
+    await expect(EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'trustee.a@f' })).rejects.toThrow(/must differ/);
+    const rel = await EnterpriseOdfiOsEngine.release({ batchId: b.batch_id, actor: 'trustee.b@f' });
+    expect(rel.status).toBe('originated');
+    const ix = submit.mock.calls[0][0].instruction;
+    expect(submit.mock.calls[0][0]).toMatchObject({ networkId: 'SPONSOR-ODFI', approvalRef: 'APR-tc1', screeningRef: 'OFAC-tc1' });
+    expect(ix).toMatchObject({ secCode: 'CCD', amountCents: 500000 });
+    expect(ix.creditor).toMatchObject({ routingNumber: '011000015', accountNumber: '123456789012', accountType: 'checking', name: 'DEANDREA LAVAR BARKLEY TRUST COMPANY' });
+    expect(ix.debtor).toMatchObject({ routingNumber: '021000021', accountNumber: '000000002', fineractAccountId: '2' });
+    st = await EnterpriseOdfiOsEngine.trustAccountCreditStatus();
+    expect(st.totals).toMatchObject({ queuedCents: 0, originatedCents: 500000, items: 1 });
+    expect(st.receiptConfirmed).toBe(false);
+    expect(st.destination).toMatchObject({ bankId: 'betterment', routingConfigured: true, accountLast4: '********9012' });
+    expect(JSON.stringify(st)).not.toContain('123456789012');
+  });
+
+  it('debits a trustee / beneficiary savings sub-account by CRM contact id when asked', async () => {
+    await countersignedProfile();
+    networks = [FAMILY_NET, ODFI_NET];
+    const resolve = vi.spyOn(TrustAccountStructure, 'resolveAccountId').mockResolvedValue('11');
+    await expect(EnterpriseOdfiOsEngine.creditTrustAccount(credit({ from: { role: 'beneficiary' } }))).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_BAD_REQUEST' });
+    await expect(EnterpriseOdfiOsEngine.creditTrustAccount(credit({ from: { role: 'vendor' } }))).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_BAD_REQUEST' });
+    const b = await EnterpriseOdfiOsEngine.creditTrustAccount(credit({ from: { role: 'beneficiary', partyRef: 'CRM-B1' } }));
+    expect(resolve).toHaveBeenCalledWith('beneficiary', { partyRef: 'CRM-B1' });
+    expect(b.trustAccountCredit.source).toEqual({ role: 'beneficiary', partyRef: 'CRM-B1', fineractSavingsAccountId: '11' });
+  });
+
+  it('fails closed without Betterment secrets, without an active Fineract source account, or without approval + screening', async () => {
+    await countersignedProfile();
+    networks = [FAMILY_NET, ODFI_NET];
+    const resolve = vi.spyOn(TrustAccountStructure, 'resolveAccountId').mockResolvedValue(null);
+    await expect(EnterpriseOdfiOsEngine.creditTrustAccount(credit())).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_TRUST_ACCOUNT_SOURCE', statusCode: 409 });
+    resolve.mockResolvedValue('2');
+    await expect(EnterpriseOdfiOsEngine.creditTrustAccount(credit({ approvalRef: undefined }))).rejects.toThrow(/approvalRef and screeningRef/);
+    delete process.env.BETTERMENT_ACCOUNT_NUMBER;
+    await expect(EnterpriseOdfiOsEngine.creditTrustAccount(credit())).rejects.toMatchObject({ code: 'ENTERPRISE_ODFI_TRUST_ACCOUNT_CONFIG' });
+    expect(tables.enterprise_odfi_items.size).toBe(0);
+  });
+
+  it('is not reachable as a public purpose class with a caller-supplied creditor', async () => {
+    await countersignedProfile();
+    await expect(EnterpriseOdfiOsEngine.originate({ purposeClass: 'trust_account_credit', items: [item('x1')], actor: 'trustee.a@f' })).rejects.toThrow(/purposeClass/);
+    await expect(EnterpriseOdfiOsEngine.process({ action: 'originate', purposeClass: 'trust_account_credit', items: [item('x2')], actor: 'trustee.a@f' })).rejects.toThrow(/purposeClass/);
+  });
+
+  it('readiness reports trust-account credit ready only with the originator live, Betterment + funding account configured and an active account of record', async () => {
+    await countersignedProfile();
+    networks = [FAMILY_NET, ODFI_NET];
+    const resolve = vi.spyOn(TrustAccountStructure, 'resolveAccountId').mockResolvedValue('2');
+    let r = await EnterpriseOdfiOsEngine.readiness();
+    expect(r.trustAccountCredit).toMatchObject({ ready: true, blockers: [], direction: 'credit', sourceAccounts: { accountOfRecord: '2' } });
+    delete process.env.BETTERMENT_ROUTING_NUMBER;
+    resolve.mockResolvedValue(null);
+    r = await EnterpriseOdfiOsEngine.readiness();
+    expect(r.ready).toBe(true);
+    expect(r.trustAccountCredit.ready).toBe(false);
+    expect(r.trustAccountCredit.blockers).toEqual(expect.arrayContaining([expect.stringMatching(/BETTERMENT_ROUTING_NUMBER/), expect.stringMatching(/account of record/)]));
   });
 });

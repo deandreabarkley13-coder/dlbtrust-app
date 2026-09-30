@@ -440,9 +440,11 @@ variable "runtime_environment" {
     # is withdrawn from it before the processor is called (redeposited on
     # return). Shadow until CANONICAL_FUNDING_LIVE=true.
     # PRIVATE_PAYMENT_NETWORK_CORE_BANKING=false runs sub-ledger only.
-    # CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID is set per deployment in the
-    # git-ignored terraform.tfvars; empty falls back to each source ledger
-    # account's linked_fineract_account_id and otherwise blocks the payout.
+    # CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID may pin the account per deployment
+    # in terraform.tfvars; empty falls back to the source ledger account's
+    # linked_fineract_account_id, then to the Fineract account of record
+    # recorded by the trust account structure (fineract_trust_accounts, filled
+    # by GET /api/fineract/trust-accounts and .../provision), else blocks.
     CANONICAL_FUNDING_LIVE               = "true"
     CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID = ""
     CANONICAL_FUNDING_PAYMENT_TYPE_ID    = "1"
@@ -614,6 +616,22 @@ variable "runtime_environment" {
     # countersign and release. Empty = any trustee, distinct-actor rule only.
     ENTERPRISE_ODFI_MAKERS   = "malissa.robinson"
     ENTERPRISE_ODFI_CHECKERS = "deandreabarkley13@gmail.com,legacy-admin"
+    # Trust-account credit (enterpriseOdfiOsEngine creditTrustAccount): an ACH
+    # CCD credit (direct deposit) from the trust's funding account at the
+    # sponsor ODFI into its Betterment Checking. Creditor routing/account are
+    # BETTERMENT_ROUTING_NUMBER / BETTERMENT_ACCOUNT_NUMBER (Secret Manager);
+    # the funding account number is ENTERPRISE_ODFI_FUNDING_ACCOUNT_NUMBER
+    # (Secret Manager). ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER / _NAME are the
+    # sponsor ODFI's (e.g. TabaPay settlement) account, set per deployment in
+    # terraform.tfvars. The debtor's Fineract savings account is resolved from
+    # the trust account structure (account of record, or a trustee /
+    # beneficiary sub-account by CRM contact id), never typed in.
+    ENTERPRISE_ODFI_TRUST_ACCOUNT_BANK_ID   = "betterment"
+    ENTERPRISE_ODFI_TRUST_ACCOUNT_BANK_NAME = "Betterment Checking"
+    ENTERPRISE_ODFI_TRUST_ACCOUNT_NAME      = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
+    ENTERPRISE_ODFI_FUNDING_ACCOUNT_NAME    = ""
+    ENTERPRISE_ODFI_FUNDING_ROUTING_NUMBER  = ""
+    ENTERPRISE_ODFI_FUNDING_ACCOUNT_TYPE    = "checking"
     # TabaPay (licensed US money-movement processor: ACH next/same-day, RTP,
     # push-to-card) as the trust's external sponsor network, driven through the
     # Clearing Agent adapter (server/integrations/os/clearingAgentTabaPayAdapter).
@@ -688,13 +706,12 @@ variable "runtime_environment" {
     ACH_ODFI_ORIGINATOR_NAME = "DEANDREA LAVAR BARKLEY TRUST COMPANY"
     ACH_ODFI_COMPANY_NAME    = "DLB TRUST CO"
     ACH_ODFI_COMPANY_ID      = ""
-    # Funding rail (treasuryFundingBankEngine.js, docs/LIVE_VALUE_RUNBOOK.md §4):
-    # the same account saved in Stripe as an ACH-debit mandate feeding the
-    # Stripe balance (CA-STRIPE-BALANCE, credited only by the signed
-    # payment_intent.succeeded webhook). Enabled 2026-09-30; link/verify/pull
-    # stay operator actions and fail closed until the mandate is verified.
-    # Routing/account are BETTERMENT_* Secret Manager versions (secrets.tf).
-    TREASURY_BANK_ENABLED             = "true"
+    # Optional debit rail (treasuryFundingBankEngine.js): the same account saved
+    # in Stripe as an ACH-debit mandate feeding the Stripe balance. Off: the
+    # trust credits Betterment instead (Enterprise ODFI trust-account credit,
+    # ENTERPRISE_ODFI_TRUST_ACCOUNT_* / ENTERPRISE_ODFI_FUNDING_* below,
+    # docs/LIVE_VALUE_RUNBOOK.md §4); Betterment is never debited.
+    TREASURY_BANK_ENABLED             = "false"
     TREASURY_BANK_ID                  = "betterment"
     TREASURY_BANK_NAME                = "Betterment Checking"
     TREASURY_BANK_ACCOUNT_HOLDER      = "DEANDREA LAVAR BARKLEY TRUST COMPANY"

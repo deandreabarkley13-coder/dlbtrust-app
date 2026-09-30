@@ -242,11 +242,36 @@ class TrustAccountStructure {
     }
   }
 
-  /** Active Fineract savings account id for a role (null when absent or inactive). */
+  /**
+   * Active Fineract savings account id for a role (null when absent or inactive).
+   * Trustee / beneficiary sub-accounts are resolved by CRM contact id (opts.partyRef).
+   */
   static async resolveAccountId(role, opts = {}) {
-    const inv = await this.inventory(opts);
-    const entry = role === 'interest-income' ? inv.interestIncome : role === 'principal' ? inv.principal : role === 'account-of-record' ? inv.accountOfRecord : null;
+    const { partyRef, ...invOpts } = opts;
+    const inv = await this.inventory(invOpts);
+    let entry = null;
+    if (PARTY_ROLES.includes(role)) {
+      const list = role === 'trustee' ? inv.trustees : inv.beneficiaries;
+      entry = partyRef ? list.find((a) => a.partyRef === String(partyRef)) || null : null;
+    } else {
+      entry = role === 'interest-income' ? inv.interestIncome : role === 'principal' ? inv.principal : role === 'account-of-record' ? inv.accountOfRecord : null;
+    }
     return entry && entry.active ? String(entry.id) : null;
+  }
+
+  /**
+   * Last recorded Fineract savings account id for a role (and CRM contact id for
+   * trustee / beneficiary) from fineract_trust_accounts; no Fineract call. The
+   * caller still checks the account is active before moving money on it.
+   */
+  static async recordedAccountId(role, { partyRef = null } = {}) {
+    if (!pool) return null;
+    const r = await pool.query(
+      `SELECT fineract_account_id FROM ${TABLE}
+        WHERE role = $1 AND ($2::text IS NULL OR party_ref = $2) AND fineract_account_id IS NOT NULL AND status <> 'missing'
+        ORDER BY updated_at DESC LIMIT 1`, [role, partyRef]);
+    const id = r && r.rows && r.rows[0] ? r.rows[0].fineract_account_id : null;
+    return id == null ? null : String(id);
   }
 
   static async _ensureClient(entry, actor) {
@@ -302,4 +327,4 @@ class TrustAccountStructure {
   }
 }
 
-module.exports = { TrustAccountStructure, GL, TABLE };
+module.exports = { TrustAccountStructure, GL, TABLE, PARTY_ROLES };
