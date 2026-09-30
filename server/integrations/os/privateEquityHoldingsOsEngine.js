@@ -99,9 +99,17 @@ function isoDate(value, field) {
 
 function dollars(cents) { return (Number(cents || 0) / 100).toFixed(2); }
 
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonical(value[key])]));
+  }
+  return value;
+}
+
 function hashEvent(e) {
   return crypto.createHash('sha256').update(JSON.stringify([
-    e.prevHash || null, e.eventType, e.holdingId || null, e.actor || null, e.payload || {}, e.createdAt,
+    e.prevHash || null, e.eventType, e.holdingId || null, e.actor || null, canonical(e.payload || {}), e.createdAt,
   ])).digest('hex');
 }
 

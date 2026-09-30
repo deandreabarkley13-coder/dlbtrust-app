@@ -9,6 +9,15 @@ const { CreditOsEngine } = require('../server/integrations/os/creditOsEngine');
 const wire = require('../server/scripts/enterpriseCreditWire');
 const pool = require('../server/integrations/bonds/pgPool');
 
+// Postgres JSONB returns object keys ordered by length, then bytewise.
+function jsonb(v: any): any {
+  if (Array.isArray(v)) return v.map(jsonb);
+  if (v && typeof v === 'object') {
+    return Object.fromEntries(Object.keys(v).sort((a, b) => a.length - b.length || (a < b ? -1 : 1)).map((k) => [k, jsonb(v[k])]));
+  }
+  return v;
+}
+
 const saved = { ...process.env };
 type Row = Record<string, any>;
 
@@ -19,7 +28,7 @@ function fakeDb(state: { rows: Row[]; events: Row[]; journal: number }) {
     if (/trust_journal/i.test(s)) { state.journal += 1; return { rows: [] }; }
     if (s.startsWith('SELECT event_hash FROM enterprise_credit_events')) return { rows: state.events.slice(-1) };
     if (s.startsWith('INSERT INTO enterprise_credit_events')) {
-      state.events.push({ sequence: state.events.length + 1, event_id: p[0], allocation_id: p[1], event_type: p[2], actor: p[3], payload: JSON.parse(p[4]), prev_hash: p[5], event_hash: p[6], created_at: p[7] });
+      state.events.push({ sequence: state.events.length + 1, event_id: p[0], allocation_id: p[1], event_type: p[2], actor: p[3], payload: jsonb(JSON.parse(p[4])), prev_hash: p[5], event_hash: p[6], created_at: p[7] });
       return { rows: [] };
     }
     if (s.startsWith('SELECT * FROM enterprise_credit_events')) return { rows: state.events };
