@@ -67,6 +67,18 @@ variable "pledge_os_wire_schedule" {
   default     = "15 6 * * 1-5"
 }
 
+variable "enterprise_credit_wire_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-enterprise-credit-wire,
+    which runs `enterpriseCreditWire.js --evaluate` after the PE holdings and
+    pledge passes: it recomputes asset-backed capacity and each open
+    distribution / disbursement's backing verdict. It never books GL lines or
+    sends a wire.
+  EOT
+  type        = string
+  default     = "30 6 * * 1-5"
+}
+
 variable "settlement_funding_pipeline_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-settlement-funding-pipeline,
@@ -498,6 +510,12 @@ variable "runtime_environment" {
     PLEDGE_OS_ENABLED                     = "true"
     PLEDGE_OS_LIVE                        = "true"
     PLEDGE_OS_REQUIRE_THIRD_PARTY_CUSTODY = "true"
+    # Enterprise Credit OS (server/integrations/os/enterpriseCreditOsEngine):
+    # asset-backed distributions + disbursements against counted PE holdings /
+    # custody-position pledges; funded via the settlement-funding pipeline.
+    ENTERPRISE_CREDIT_ENABLED                  = "true"
+    ENTERPRISE_CREDIT_LIVE                     = "true"
+    ENTERPRISE_CREDIT_CUSTODY_ADVANCE_RATE_BPS = "5000"
     # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
     # backend-to-backend agent for the private Electronic Payment Networks.
     # Each network is registered with a credential_ref = the NAME of a Secret
