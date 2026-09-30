@@ -44,7 +44,7 @@ try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine
 
 const CUSTODY_TYPES = ['self_custody', 'third_party'];
 
-const ASSET_CLASSES = ['cash', 'fixed_income', 'digital_asset', 'physical'];
+const ASSET_CLASSES = ['cash', 'fixed_income', 'digital_asset', 'physical', 'private_equity'];
 
 const RECEIPT_ACTIONS = ['safekeeping', 'release', 'revaluation'];
 
@@ -150,7 +150,7 @@ class CustodyOsEngine {
         position_id        TEXT PRIMARY KEY,
         custody_account_id TEXT NOT NULL REFERENCES custody_accounts(custody_account_id),
         asset_class        TEXT NOT NULL
-                           CHECK (asset_class IN ('cash','fixed_income','digital_asset','physical')),
+                           CHECK (asset_class IN ('cash','fixed_income','digital_asset','physical','private_equity')),
         instrument_ref     TEXT NOT NULL,
         instrument_name    TEXT,
         quantity           NUMERIC(28,8) NOT NULL DEFAULT 0,
@@ -196,6 +196,20 @@ class CustodyOsEngine {
         event_hash         TEXT NOT NULL,
         created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
+    `);
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+           WHERE conname = 'custody_positions_asset_class_check'
+             AND pg_get_constraintdef(oid) LIKE '%private_equity%'
+        ) THEN
+          ALTER TABLE custody_positions DROP CONSTRAINT IF EXISTS custody_positions_asset_class_check;
+          ALTER TABLE custody_positions ADD CONSTRAINT custody_positions_asset_class_check
+            CHECK (asset_class IN ('cash','fixed_income','digital_asset','physical','private_equity'));
+        END IF;
+      END $$
     `);
     await pool.query(
       `CREATE INDEX IF NOT EXISTS idx_custody_positions_account

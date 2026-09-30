@@ -45,6 +45,17 @@ variable "openach_nightly_schedule" {
 # Payment Hub EE channel connector (paymenthub.tf). Mirrored from Docker Hub
 # openmf/ph-ee-connector-channel into Artifact Registry; Cloud Run only pulls
 # from registries it can authenticate to.
+variable "pe_holdings_wire_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-pe-holdings-wire,
+    which runs `privateEquityHoldingsWire.js --evaluate`: it re-checks the
+    private-equity asset backing of the PFTC private-placement bond and never
+    books GL lines or sends a wire.
+  EOT
+  type        = string
+  default     = "0 6 * * 1-5"
+}
+
 variable "settlement_funding_pipeline_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-settlement-funding-pipeline,
@@ -458,6 +469,17 @@ variable "runtime_environment" {
     # The software records the declaration; it does not establish legal status.
     PRIVATE_ENTITY_ENABLED = "true"
     PRIVATE_ENTITY_LIVE    = "true"
+    # Private Equity Holdings OS (server/integrations/os/privateEquityHoldingsOsEngine):
+    # private-equity interests backing the PFTC-issued private-placement bond,
+    # held as Custody OS private_equity positions. A holding is collateral
+    # eligible only when receipted by two trustees at a third-party custodian,
+    # valued within PE_HOLDINGS_MAX_VALUATION_AGE_DAYS and covered by a
+    # certified Proof of Asset. Evidence only; moves no money.
+    PE_HOLDINGS_ENABLED                     = "true"
+    PE_HOLDINGS_LIVE                        = "true"
+    PE_HOLDINGS_CUSTODY_ACCOUNT_ID          = "CUS-PE-HOLDINGS"
+    PE_HOLDINGS_MAX_VALUATION_AGE_DAYS      = "120"
+    PE_HOLDINGS_REQUIRE_THIRD_PARTY_CUSTODY = "true"
     # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
     # backend-to-backend agent for the private Electronic Payment Networks.
     # Each network is registered with a credential_ref = the NAME of a Secret
