@@ -70,7 +70,9 @@ defaults in `variables.tf`. See `docs/GCP_MIGRATION.md` for the deploy procedure
 - **The only bidirectional path** is `server/integrations/payments/treasuryFundingBankEngine.js`
   (§4). Betterment is saved in Stripe as a `us_bank_account` PaymentMethod under an ACH
   debit mandate; the platform pulls funds from Betterment into the Stripe balance and
-  pays out from there. Currently `TREASURY_BANK_ENABLED=false` in production.
+  pays out from there. `TREASURY_BANK_ENABLED=true` in `infra/gcp/variables.tf` since
+  2026-09-30 (§8); the engine still fails closed until the mandate is linked and
+  verified, and nothing is pulled without the operator steps in §4.
 - BILL.com is separately linked to the same account (`systemSettings.js` partner
   `bill-cash`, `server/integrations/bill/billClient.js`); BILL debits appear in the feed
   and post to 5300 Operating Expense.
@@ -113,7 +115,22 @@ does **not** mean money has moved: the liquidity reserve
 (`MOV-1790548206543-IL2GNN`, CA-OPERATING → CA-RESERVE, $985,246.28) is a ledger sweep
 with no bank funds behind it.
 
-Locally: `npm run lint && npm run typecheck && npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts`.
+How many real dollars back the ledgers is reported by the unified value pipeline's
+`spendable` stage:
+
+```sh
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' -d '{"action":"pipeline"}' \
+  $BASE/api/os/canonical-money/process | jq '.data.result.spendable.value | {summary, gaps}'
+```
+
+`summary.realSpendableCents` is Reserve OS's externally **attested** reserve
+(`ReserveEngine.coverage()`), never a ledger balance. Alongside it: `ledgerCashCents`
+and `unbackedCents` (ledger cash with no attestation behind it), `stripeBalanceCents`
+(`CA-STRIPE-BALANCE`), `payerSourceSpendableCents` (`PayerOsEngine.readiness()` funding
+source net of in-flight wires/ACH) and `fundingRailReady` (`TreasuryFundingBankEngine.status()`).
+Each source that is missing or fails is listed in `gaps` instead of failing the pipeline.
+
+Locally: `npm run lint && npm run typecheck && npx vitest run tests/aggregatorConnector.test.ts tests/engineWiringReadiness.test.ts tests/liliDirectDeposit.test.ts tests/unifiedPipelineSpendable.test.ts`.
 
 ## 4. Funding the platform from Betterment (Stripe ACH debit)
 
@@ -207,3 +224,43 @@ transmitted, never confirmed, closed out as `returned`.
   destination, amount and purpose.
 - When this document and `GET /api/os/readiness` disagree, readiness wins; update this
   document in the same PR that changes a flag.
+
+## 8. Flag change log
+
+### 2026-09-30 — fiat funding and payout gates enabled (`infra/gcp/variables.tf`)
+
+| Variable | Was | Now |
+| --- | --- | --- |
+| `TREASURY_BANK_ENABLED` | `false` | `true` |
+| `PAYMENT_PROCESSOR_LIVE` | `false` | `true` |
+| `PAYMENT_GATEWAY_LIVE` | `false` | `true` |
+| `ENTERPRISE_NETWORK_LIVE` | `false` | `true` |
+| `PRIVATE_PAYMENT_NETWORK_LIVE` | `false` | `true` |
+| `CANONICAL_FUNDING_LIVE` | `false` | `true` |
+
+Unchanged and confirmed: `TREASURY_BANK_ID=betterment`, `TREASURY_BANK_NAME="Betterment Checking"`,
+`TREASURY_BANK_ACCOUNT_HOLDER="DEANDREA LAVAR BARKLEY TRUST COMPANY"`,
+`TREASURY_BANK_REGISTER_SETTLEMENT=true`, `PAYMENT_PROCESSOR_DEFAULT=lili`, every
+`PRIVATE_PAYMENT_NETWORK_REQUIRE_*` / `*_REQUIRE_APPROVAL_REF` / `*_REQUIRE_SCREENING_REF`
+flag `true`, `PRIVATE_PAYMENT_NETWORK_MFT_LIVE=false`, and every `THIRDWEB_*` /
+`STABLECOIN_*` / `SPRITZ_*` / `TRUST_POLICY_*` flag off.
+
+- `CANONICAL_FUNDING_SAVINGS_ACCOUNT_ID` is a per-deployment value set in the git-ignored
+  `infra/gcp/terraform.tfvars` (the Fineract savings account of record); left empty,
+  each source ledger account's linked Fineract account is used and an unlinked
+  account blocks the payout.
+- `infra/gcp/secrets.tf` now declares the Secret Manager containers each enabled rail
+  needs (`STRIPE_SECRET_KEY`, `STRIPE_PAYMENTS_SECRET_KEY`, `PAYMENT_DATA_ENCRYPTION_KEY`,
+  `PAYMENT_GATEWAY_WEBHOOK_SECRET`, `ENTERPRISE_NETWORK_WEBHOOK_SECRET`,
+  `PRIVATE_PAYMENT_NETWORK_WEBHOOK_SECRET`, `FINERACT_URL` / `FINERACT_USERNAME` /
+  `FINERACT_PASSWORD`, plus the always-declared `STRIPE_WEBHOOK_SECRET`,
+  `BETTERMENT_ROUTING_NUMBER`, `BETTERMENT_ACCOUNT_NUMBER`). Values are added out of
+  band with `gcloud secrets versions add`, never in Terraform.
+- The Trust Administration workflow's `funding` stage reports
+  `TreasuryFundingBankEngine.status()` whenever `TREASURY_BANK_ENABLED=true` (the ODFI
+  otherwise).
+- This makes the rail **capable**; it moves no money. Real dollars reach
+  `CA-STRIPE-BALANCE` only after the trustee runs §4 (link, verify micro-deposits,
+  explicit pull) and the signed `payment_intent.succeeded` webhook posts it. Until
+  then the pipeline's `spendable.summary.realSpendableCents` stays at the attested
+  reserve and `gaps` lists the unverified treasury bank.

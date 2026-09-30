@@ -8265,6 +8265,73 @@ class MoovPaygateEngine extends BaseOSEngine {
 // `pipeline` action exposes the ERP -> policy contract -> Spritz -> settlement
 // stages (and the trust control plane's gap analysis) from the OS layer.
 
+// Real-value position behind the ledgers: the Betterment ACH-debit rail,
+// the webhook-funded Stripe balance, Payer OS's funding source and Reserve OS
+// attested coverage. Ledger balances without attested external reserves are
+// reported as unbacked, never as spendable.
+
+const STRIPE_BALANCE_ACCOUNT_ID = 'CA-STRIPE-BALANCE';
+
+function dollarsToCents(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace(/[^0-9.-]/g, ''));
+  return Number.isFinite(n) ? Math.round(n * 100) : null;
+}
+
+async function spendablePosition() {
+  const settle = (p) => Promise.resolve().then(() => p).then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
+  const TreasuryBank = tryRequire('../payments/treasuryFundingBankEngine')?.TreasuryFundingBankEngine;
+  const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+  const PayerOs = tryRequire('./payerOsEngine')?.PayerOsEngine;
+  const Reserve = tryRequire('../finops/reserveEngine')?.ReserveEngine;
+  const [treasuryBank, stripeBalance, payerSource, reserve] = await Promise.all([
+    TreasuryBank ? settle(TreasuryBank.status()) : Promise.resolve({ ok: false, error: 'TreasuryFundingBankEngine not available' }),
+    Cash ? settle(Cash.getAccount(STRIPE_BALANCE_ACCOUNT_ID).then((row) => {
+      if (!row) throw new Error(`cash account ${STRIPE_BALANCE_ACCOUNT_ID} not found`);
+      const balanceCents = Math.round(Number(row.balance_cents || 0));
+      return { accountId: row.account_id, status: row.status || null, balanceCents, balance: (balanceCents / 100).toFixed(2) };
+    })) : Promise.resolve({ ok: false, error: 'CashEngine not available' }),
+    PayerOs ? settle(PayerOs.readiness().then((r) => {
+      const source = r.fundingSource || null;
+      return { ready: Boolean(r.ready), source, spendableCents: source ? dollarsToCents(source.spendable) : null, blockers: r.blockers || [] };
+    })) : Promise.resolve({ ok: false, error: 'PayerOsEngine not available' }),
+    Reserve ? settle(Reserve.coverage()) : Promise.resolve({ ok: false, error: 'ReserveEngine not available' }),
+  ]);
+
+  const gaps = [];
+  for (const [name, r] of Object.entries({ treasuryBank, stripeBalance, payerSource, reserve })) {
+    if (!r.ok) gaps.push(`${name}: ${r.error}`);
+  }
+  if (treasuryBank.ok && !treasuryBank.value.ready) gaps.push(`treasuryBank: ${(treasuryBank.value.issues || []).join('; ') || 'not ready'}`);
+  if (reserve.ok && reserve.value.unbackedCents > 0) gaps.push(`reserve: ledger cash exceeds attested reserves by ${reserve.value.unbacked}`);
+
+  const stripeBalanceCents = stripeBalance.ok ? stripeBalance.value.balanceCents : null;
+  const payerSourceSpendableCents = payerSource.ok ? payerSource.value.spendableCents : null;
+  const attestedReserveCents = reserve.ok ? reserve.value.attestedReserveCents : null;
+  const ledgerCashCents = reserve.ok ? reserve.value.ledgerCashCents : null;
+  const unbackedCents = reserve.ok ? reserve.value.unbackedCents : null;
+  const realSpendableCents = attestedReserveCents === null ? 0 : attestedReserveCents;
+  return {
+    summary: {
+      realSpendableCents,
+      realSpendable: (realSpendableCents / 100).toFixed(2),
+      attestedReserveCents,
+      ledgerCashCents,
+      unbackedCents,
+      backingStatus: reserve.ok ? reserve.value.status : 'unknown',
+      stripeBalanceCents,
+      payerSourceSpendableCents,
+      fundingRailReady: treasuryBank.ok ? Boolean(treasuryBank.value.ready) : false,
+      treasuryBankEnabled: process.env.TREASURY_BANK_ENABLED === 'true',
+    },
+    treasuryBank,
+    stripeBalance,
+    payerSource,
+    reserve,
+    gaps,
+  };
+}
+
 async function unifiedPipeline({ limit = 20 } = {}) {
   const settle = (p) => Promise.resolve().then(() => p).then((value) => ({ ok: true, value })).catch((e) => ({ ok: false, error: e.message }));
   const SpritzLeg = tryRequire('../spritz/spritzTreasuryLegEngine')?.SpritzTreasuryLegEngine;
@@ -8274,7 +8341,7 @@ async function unifiedPipeline({ limit = 20 } = {}) {
   const GatewayClearing = tryRequire('../dapp/apiGatewayClearingEngine')?.ApiGatewayClearingEngine;
   const PaymentProcessor = tryRequire('./paymentProcessorOsEngine')?.PaymentProcessorOsEngine;
   const PaymentGateway = tryRequire('./paymentGatewayOsEngine')?.PaymentGatewayOsEngine;
-  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing, paymentProcessor, paymentGateway] = await Promise.all([
+  const [treasuryLeg, controlPlane, collateral, canonicalFunding, gatewayClearing, paymentProcessor, paymentGateway, spendable] = await Promise.all([
     SpritzLeg ? settle(SpritzLeg.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'SpritzTreasuryLegEngine not available' }),
     ControlPlane ? settle(ControlPlane.controlPlane()) : Promise.resolve({ ok: false, error: 'TrustControlPlaneEngine not available' }),
     Collateral ? settle(Collateral.status()) : Promise.resolve({ ok: false, error: 'CollateralOsEngine not available' }),
@@ -8282,9 +8349,10 @@ async function unifiedPipeline({ limit = 20 } = {}) {
     GatewayClearing ? settle(GatewayClearing.pipeline({ limit })) : Promise.resolve({ ok: false, error: 'ApiGatewayClearingEngine not available' }),
     PaymentProcessor ? settle(PaymentProcessor.status()) : Promise.resolve({ ok: false, error: 'PaymentProcessorOsEngine not available' }),
     PaymentGateway ? settle(PaymentGateway.status()) : Promise.resolve({ ok: false, error: 'PaymentGatewayOsEngine not available' }),
+    settle(spendablePosition()),
   ]);
   return {
-    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing', 'payment_processor', 'payment_gateway'],
+    stages: ['erp', 'policy_contract', 'spritz', 'settlement', 'gateway_clearing', 'payment_processor', 'payment_gateway', 'spendable'],
     canonicalFunding,
     treasuryLeg,
     controlPlane,
@@ -8292,6 +8360,7 @@ async function unifiedPipeline({ limit = 20 } = {}) {
     gatewayClearing,
     paymentProcessor,
     paymentGateway,
+    spendable,
     generatedAt: new Date().toISOString(),
   };
 }
