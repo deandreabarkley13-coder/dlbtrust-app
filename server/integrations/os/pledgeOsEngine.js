@@ -23,6 +23,7 @@
 
 const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
+const { resealEventChain } = require('./eventChainReseal');
 
 function tryRequire(mod) {
   try { return require(mod); } catch (e) { return null; }
@@ -202,6 +203,15 @@ const PledgeOsEngine = {
       prevHash = row.event_hash;
     }
     return { events: rows.length, intact: breaks.length === 0, breaks, tipHash: prevHash };
+  },
+
+  async resealChain({ actor = null, reason } = {}) {
+    await this.ensureTables();
+    const result = await resealEventChain({
+      db: pool, table: 'pledge_os_events', subjectColumn: 'pledge_id', subjectKey: 'pledgeId', hashEvent,
+      appendEvent: (type, id, who, payload) => this._event(type, id, who, payload), actor, reason,
+    });
+    return { ...result, chain: await this.verifyChain() };
   },
 
   async _requirePledge(pledgeId) {
@@ -453,9 +463,10 @@ const PledgeOsEngine = {
       case 'release': return this.release({ ...body, actor });
       case 'coverage': return this.coverage();
       case 'verify_chain': return this.verifyChain();
+      case 'reseal_chain': return this.resealChain({ ...body, actor });
       default:
         throw new PledgeOsError(
-          `unknown action "${action}" (record, evaluate, release, coverage, verify_chain)`,
+          `unknown action "${action}" (record, evaluate, release, coverage, verify_chain, reseal_chain)`,
           'PLEDGE_OS_UNKNOWN_ACTION', 400
         );
     }

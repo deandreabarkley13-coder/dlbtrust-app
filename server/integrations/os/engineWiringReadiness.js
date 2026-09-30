@@ -38,7 +38,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const EXPECTED_PROJECT = 'dlb-treasury-management';
 
-const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'];
+const ENGINE_KEYS = ['payment', 'gateway', 'clearing', 'reconciliation', 'interop', 'credit', 'debt', 'liquidity', 'funding-os', 'payment-processor', 'payment-gateway', 'enterprise-network', 'private-payment-network', 'aggregator', 'accounting', 'stripe-intake', 'treasury-funding-bank', 'payment-hub', 'openach', 'mft', 'fixed-income', 'custody', 'collateral', 'proof-of-asset', 'payer', 'third-party-sender', 'm2m', 'clearing-netting', 'wealth-back-office', 'back-office', 'h2h-discovery', 'open-bank-rest-api', 'egress', 'private-access', 'idp-ocr', 'tax-os', 'private-entity', 'private-equity-holdings', 'pledge-os', 'enterprise-credit', 'unified-data', 'clearing-agent', 'enterprise-odfi', 'transfer-api', 'fraud-compliance'];
 
 const ENGINE_TITLES = {
   payment: 'Payment Initiation Engine',
@@ -79,6 +79,7 @@ const ENGINE_TITLES = {
   'tax-os': 'Tax OS (Form 1041 + Schedule K-1 reports from the trust journal and Fineract principal / interest-income accounts; JSON / CSV / PDF exports; reports only, no e-file)',
   'private-entity': 'Private Entity OS (trustee-declared Ohio ORC 1111-1112 family trust company profile: private, single-family multigenerational, unlicensed, non-depository, income-support only, PPN settlement; two-trustee attestation; platform audit against the declaration)',
   'enterprise-credit': 'Enterprise Credit OS (asset-backed distributions and disbursements: capacity = collateral-eligible Private Equity Holdings OS value + counted custody-position pledges at the custody advance rate, intra-trust holdings excluded; maker/checker allocations with backing verdicts; funded only through the screened settlement-funding pipeline and recorded against the settling bank reference; moves no money)',
+  'unified-data': 'Unified Trust Data OS (one ordered pass over Custody, Private Equity Holdings, Pledge, Collateral, Enterprise Credit, Credit, Attestation, the trust ledger and the cash module; stores a unified snapshot of balances, backing and cross-engine consistency checks; ledger step only syncs trust_accounts to posted journal lines; moves no money)',
   'pledge-os': 'Pledge OS (register of pledges and their lien evidence, e.g. UCC financing statements; each pledge looks through to its backing: a Private Equity Holdings OS holding, a Custody OS position, or a bond backed by eligible private-equity holdings; counted value = custody-receipted value; coverage of the Collateral OS borrowing base; moves no money)',
   'private-equity-holdings': 'Private Equity Holdings OS (PFTC-issued private-placement bond backing: private-equity interests held in Custody OS as private_equity positions, receipted on documentary evidence + second-trustee countersignature, certified Proof of Asset verdict, valuation freshness, equity advance rate for collateral eligibility; moves no money)',
   'enterprise-odfi': 'Enterprise ODFI OS (agentic originator operating system for trust administration: maker/checker originator profile, approved+screened distribution / disbursement / vendor-payout / trustee-expense batches, Vertex AI advisory rail planner with deterministic validator, distinct-trustee release through the Clearing Agent to a verified sponsor ODFI network, returns/NOC handling with Fineract re-deposit, exposure reconciliation; the software is not a bank)',
@@ -126,6 +127,7 @@ const TABLES = {
   'tax-os': ['tax_returns_1041', 'k1_schedules', 'trust_config', 'tax_payments', 'tax_report_exports', 'trust_journal_lines', 'fineract_trust_accounts', 'crm_contacts'],
   'private-entity': ['private_entity_profile', 'private_entity_attestations', 'trust_config'],
   'enterprise-credit': ['enterprise_credit_allocations', 'enterprise_credit_events', 'pe_holdings', 'pledge_os_pledges'],
+  'unified-data': ['unified_trust_snapshots', 'trust_accounts', 'trust_journal_lines', 'custody_events'],
   'pledge-os': ['pledge_os_pledges', 'pledge_os_events', 'pe_holdings', 'custody_positions', 'collateral_positions'],
   'private-equity-holdings': ['pe_holdings', 'pe_holding_events', 'custody_positions', 'custody_receipts', 'proof_of_asset_proofs', 'private_entity_profile', 'bonds'],
   'clearing-agent': ['clearing_agent_networks', 'clearing_agent_instructions', 'clearing_agent_events', 'ppn_agent_clearing_receipts', 'ppn_agent_events', 'egress_events'],
@@ -411,6 +413,7 @@ const REPORTERS = {
   'private-equity-holdings': privateEquityHoldingsReadiness,
   'pledge-os': pledgeOsReadiness,
   'enterprise-credit': enterpriseCreditReadiness,
+  'unified-data': unifiedDataReadiness,
   'clearing-agent': clearingAgentReadiness,
   'enterprise-odfi': enterpriseOdfiReadiness,
   'transfer-api': transferApiReadiness,
@@ -1744,6 +1747,30 @@ async function enterpriseCreditReadiness(ctx, env = process.env) {
     },
     modules: s ? { policy: s.policy, capacity: s.capacity, summary: s.summary, chain: s.chain } : { error: r.error },
     routes: ['/api/os/enterprise-credit/{status,readiness,list,process}', '/api/os/readiness/enterprise-credit'],
+    secrets: ['none'],
+    warnings: r.ok ? r.value.warnings : [],
+    tables,
+    blockers,
+  };
+}
+
+async function unifiedDataReadiness(ctx, env = process.env) {
+  const Unified = tryRequire('./unifiedTrustDataOsEngine')?.UnifiedTrustDataOsEngine;
+  const tables = await tablesPresent(TABLES['unified-data']);
+  const blockers = baseBlockers(ctx, tables, Unified, 'UnifiedTrustDataOsEngine');
+  const r = Unified && ctx.ledger.connected && !missingTables(tables).length ? await settle(() => Unified.readiness()) : { ok: false, error: 'skipped' };
+  if (r.ok) blockers.push(...r.value.blockers);
+  else if (r.error !== 'skipped') blockers.push(`unified-data: ${r.error}`);
+  const latest = r.ok && r.value.status ? r.value.status.latest : null;
+  return {
+    provider: 'unified-data (ordered pass: custody -> pe-holdings -> pledge -> collateral -> enterprise-credit -> credit -> attestation -> ledger -> cash)',
+    mode: r.ok ? r.value.mode : 'shadow',
+    liveFlags: {
+      UNIFIED_DATA_ENABLED: String(env.UNIFIED_DATA_ENABLED || 'true').toLowerCase() !== 'false',
+      MOVES_MONEY: false,
+    },
+    modules: latest ? { snapshotId: latest.snapshotId, createdAt: latest.createdAt, ledger: latest.ledger.accounts, custody: latest.custody, backing: latest.backing, checks: latest.checks } : { latest: null, error: r.ok ? null : r.error },
+    routes: ['/api/os/unified-data/{status,readiness,process}', '/api/os/readiness/unified-data'],
     secrets: ['none'],
     warnings: r.ok ? r.value.warnings : [],
     tables,

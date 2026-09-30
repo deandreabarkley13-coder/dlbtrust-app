@@ -79,6 +79,19 @@ variable "enterprise_credit_wire_schedule" {
   default     = "30 6 * * 1-5"
 }
 
+variable "unified_trust_data_schedule" {
+  description = <<-EOT
+    Cloud Scheduler cadence (America/New_York) of dlbtrust-unified-trust-data,
+    which runs `unifiedTrustDataWorkflow.js --run --sync-ledger` after the PE
+    holdings, pledge and enterprise credit passes: one ordered pass over
+    custody, PE holdings, pledge, collateral, enterprise credit, credit,
+    attestation, the trust ledger and the cash module, stored as a unified
+    snapshot. It posts no journal entries and sends no wire.
+  EOT
+  type        = string
+  default     = "45 6 * * 1-5"
+}
+
 variable "settlement_funding_pipeline_schedule" {
   description = <<-EOT
     Cloud Scheduler cadence (America/New_York) of dlbtrust-settlement-funding-pipeline,
@@ -516,6 +529,7 @@ variable "runtime_environment" {
     ENTERPRISE_CREDIT_ENABLED                  = "true"
     ENTERPRISE_CREDIT_LIVE                     = "true"
     ENTERPRISE_CREDIT_CUSTODY_ADVANCE_RATE_BPS = "5000"
+    UNIFIED_DATA_ENABLED                       = "true"
     # Clearing Agent OS (server/integrations/os/clearingAgentOsEngine):
     # backend-to-backend agent for the private Electronic Payment Networks.
     # Each network is registered with a credential_ref = the NAME of a Secret
