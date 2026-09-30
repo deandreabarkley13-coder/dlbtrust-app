@@ -1321,6 +1321,54 @@ class DataBridge {
   }
 
   /**
+   * Map chart-of-accounts codes that have no Fineract GL mapping yet: reuse the
+   * Fineract detail GL account with the same glCode, else create it from the
+   * trust_accounts row. Codes absent from the chart of accounts stay unmapped.
+   * Returns { account_code: fineract_gl_id } for every code it mapped.
+   */
+  static async _provisionFineractGlMappings(codes, FineractClient) {
+    var TYPE_MAP = { asset: 1, liability: 2, equity: 3, income: 4, expense: 5 };
+    var mapped = {};
+    try {
+      var accounts = await pool.query(
+        'SELECT account_code, account_name, account_type, sub_type FROM trust_accounts WHERE account_code = ANY($1)',
+        [codes]
+      );
+      if (accounts.rows.length === 0) return mapped;
+      var existing = await FineractClient.getGLAccounts();
+      var byCode = new Map();
+      (Array.isArray(existing) ? existing : []).forEach(function(a) {
+        if (!a.usage || a.usage.id === 1) byCode.set(String(a.glCode), a);
+      });
+      for (var i = 0; i < accounts.rows.length; i++) {
+        var acct = accounts.rows[i];
+        var type = TYPE_MAP[acct.account_type];
+        if (!type) continue;
+        try {
+          var glId = byCode.has(acct.account_code) ? byCode.get(acct.account_code).id : null;
+          if (!glId) {
+            var created = await FineractClient.createGLAccount({
+              name: acct.account_name, glCode: acct.account_code, type: type, usage: 1,
+              description: 'Trust account: ' + acct.account_name + ' (' + (acct.sub_type || acct.account_type) + ')',
+            });
+            glId = created.resourceId || created.id;
+          }
+          await pool.query(
+            "INSERT INTO fineract_gl_mappings (mapping_type, trust_account_code, fineract_gl_id, description) SELECT 'trust_journal', $1, $2, $3 WHERE NOT EXISTS (SELECT 1 FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal' AND trust_account_code = $1)",
+            [acct.account_code, glId, acct.account_name + ' (' + acct.account_type + ')']
+          );
+          mapped[acct.account_code] = parseInt(glId);
+        } catch (acctErr) {
+          console.warn('[DataBridge] Could not map ' + acct.account_code + ' to a Fineract GL account:', acctErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[DataBridge] Fineract GL provisioning unavailable:', err.message);
+    }
+    return mapped;
+  }
+
+  /**
    * Push all unsynced trust journal entries to Fineract GL.
    *
    * Every local journal entry that moved balances is mirrored — including
@@ -1369,6 +1417,13 @@ class DataBridge {
       var glMap = {};
       for (var m = 0; m < mappings.rows.length; m++) {
         glMap[mappings.rows[m].trust_account_code] = parseInt(mappings.rows[m].fineract_gl_id);
+      }
+      var unmapped = new Set();
+      entries.rows.forEach(function(row) {
+        (row.lines || []).forEach(function(line) { if (!glMap[line.account_code]) unmapped.add(line.account_code); });
+      });
+      if (unmapped.size > 0) {
+        Object.assign(glMap, await DataBridge._provisionFineractGlMappings(Array.from(unmapped), FineractClient));
       }
 
       // Idempotency: index live Fineract entries by local entry_id
